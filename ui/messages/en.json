@@ -67,5 +67,9 @@
   "account_setup_cert_probe_failed": "Could not retrieve the server certificate to display: {reason}",
   "account_setup_cert_trusting_one": "Trusting 1 self-signed certificate for this account.",
   "account_setup_cert_trusting_many": "Trusting {n} self-signed certificates for this account.",
-  "account_setup_save_failed": "Failed to save account"
+  "account_setup_save_failed": "Failed to save account",
+
+  "compose_attachment_warning_title": "You mentioned an attachment but didn't attach a file.",
+  "compose_attachment_warning_body": "Add a file before sending, or dismiss this warning if it's a false alarm.",
+  "compose_attachment_warning_dismiss": "Dismiss"
 }

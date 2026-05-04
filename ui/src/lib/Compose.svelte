@@ -36,6 +36,8 @@
   import FileTypeIcon from './FileTypeIcon.svelte'
   import AttachmentThumb, { prewarm as prewarmAttachmentThumb } from './AttachmentThumb.svelte'
   import { openAttachment } from './attachmentOpen'
+  import { mentionsAttachment } from './attachmentMentions'
+  import { m } from '../paraglide/messages'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
 
@@ -430,6 +432,37 @@
   // plain text, so we convert newlines to <br> for the WYSIWYG view.
   // svelte-ignore state_referenced_locally
   let bodyHtml = $state(initialBodyHtml())
+
+  // ── Attachment-mention warning (#250) ────────────────────────
+  // When the user writes "attachment" / "Anhang" / "anbei" /
+  // similar in the body but hasn't actually attached a file, we
+  // surface a small warning banner above the editor.  Goes away
+  // automatically once a file is attached, or when the user
+  // dismisses it explicitly.  Per-Compose-instance state — a
+  // fresh draft starts with the dismissal cleared so a previous
+  // draft's "I don't care" doesn't leak across.
+  let attachmentMentionDismissed = $state(false)
+  /** Cheap plain-text projection of `bodyHtml`.  Doesn't go
+   *  through the heavier `htmlToText` we use at submit time —
+   *  this runs on every keystroke, so we just strip tags
+   *  (regex) and rely on the mention detector's own quoted-
+   *  reply strip downstream. */
+  function bodyToPlainTextForMentionCheck(html: string): string {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|tr)>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+  }
+  const showAttachmentMentionWarning = $derived(
+    !attachmentMentionDismissed
+      && attachments.length === 0
+      && mentionsAttachment(bodyToPlainTextForMentionCheck(bodyHtml)),
+  )
 
   // Cards (Talk + meeting + quoted-history) all live IN the
   // editor's HTML body (#195 follow-up²). The RichTextEditor's
@@ -1620,6 +1653,29 @@
           extraTabs={composeExtraTabs}
         />
       </div>
+
+      <!-- #250 — gentle "you mentioned an attachment but didn't
+           attach a file" warning.  Hides itself the moment any
+           file is attached; user can also dismiss it explicitly
+           if their mention is intentional (e.g. "as we discussed
+           in the attached PDF I sent earlier"). -->
+      {#if showAttachmentMentionWarning}
+        <div
+          class="flex items-start gap-3 px-3 py-2 rounded-md border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
+          role="alert"
+        >
+          <span aria-hidden="true">⚠️</span>
+          <div class="flex-1 min-w-0">
+            <p class="font-medium">{m.compose_attachment_warning_title()}</p>
+            <p class="text-xs mt-0.5">{m.compose_attachment_warning_body()}</p>
+          </div>
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-warning-500 shrink-0"
+            onclick={() => (attachmentMentionDismissed = true)}
+          >{m.compose_attachment_warning_dismiss()}</button>
+        </div>
+      {/if}
 
       {#if attachments.length > 0}
         <div class="flex flex-wrap gap-2">

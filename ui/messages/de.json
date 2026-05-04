@@ -67,5 +67,9 @@
   "account_setup_cert_probe_failed": "Server-Zertifikat konnte nicht abgerufen werden: {reason}",
   "account_setup_cert_trusting_one": "1 selbst signiertes Zertifikat wird für dieses Konto akzeptiert.",
   "account_setup_cert_trusting_many": "{n} selbst signierte Zertifikate werden für dieses Konto akzeptiert.",
-  "account_setup_save_failed": "Konto konnte nicht gespeichert werden"
+  "account_setup_save_failed": "Konto konnte nicht gespeichert werden",
+
+  "compose_attachment_warning_title": "Sie haben einen Anhang erwähnt, aber keine Datei angehängt.",
+  "compose_attachment_warning_body": "Fügen Sie vor dem Senden eine Datei hinzu oder schließen Sie diese Warnung, falls es ein Fehlalarm ist.",
+  "compose_attachment_warning_dismiss": "Schließen"
 }
