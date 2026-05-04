@@ -2049,7 +2049,7 @@
     title="Save the current draft to the Drafts folder"
     onclick={saveDraft}
   >
-    <span class="ctb-icon"><Icon name="save-draft" size={16} /></span>
+    <span class="ctb-icon"><Icon name="save-draft" size={20} /></span>
     <span class="ctb-label">Save</span>
   </button>
   <button
@@ -2059,7 +2059,7 @@
     title="Discard this draft and close the window"
     onclick={cancel}
   >
-    <span class="ctb-icon"><Icon name="trash" size={16} /></span>
+    <span class="ctb-icon"><Icon name="trash" size={20} /></span>
     <span class="ctb-label">Discard</span>
   </button>
   <button
@@ -2069,7 +2069,7 @@
     title="Send the message"
     onclick={send}
   >
-    <span class="ctb-icon"><Icon name="sent" size={16} /></span>
+    <span class="ctb-icon"><Icon name="sent" size={20} /></span>
     <span class="ctb-label">{sending ? 'Sending…' : 'Send'}</span>
   </button>
 {/snippet}
@@ -2197,8 +2197,8 @@
     display: inline-flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.05rem;
-    padding: 0.25rem 0.5rem;
+    gap: 0.15rem;
+    padding: 0.5rem 0.75rem;
     border-radius: 0.375rem;
     line-height: 1;
     color: inherit;
@@ -2215,11 +2215,14 @@
     opacity: 0.5;
     cursor: not-allowed;
   }
+  /* #152: bumped from 16px / 10px to 22px / 12px so the
+     trailing send / discard / save trio reads at the same
+     visual weight as the resized ribbon panel buttons. */
   :global(.ctb-icon) {
-    font-size: 1rem;
+    font-size: 1.375rem;
   }
   :global(.ctb-label) {
-    font-size: 0.625rem;
+    font-size: 0.75rem;
     line-height: 1;
     white-space: nowrap;
   }
