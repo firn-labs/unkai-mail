@@ -39,6 +39,7 @@
   import { mentionsAttachment } from './attachmentMentions'
   import { m } from '../paraglide/messages'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
+  import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
 
   /** Slim Nextcloud account row — same shape `TalkView` / `Sidebar` use.
@@ -785,6 +786,144 @@
     if (id) showTalkModal = true
   }
 
+  // ── Stage-on-send meeting event (#152) ──────────────────────
+  // The "Event" button mounts EventEditor in `stage` mode.  On
+  // save we cache the editor's draft here; the actual CalDAV
+  // create runs only after `send_email` succeeds, so a discarded
+  // mail leaves no orphaned event behind.  Talk room (when the
+  // user opted in) IS minted up-front because its URL has to
+  // embed in the body — Compose's existing cancel-time Talk
+  // cleanup (line ~1465) handles rollback automatically because
+  // the EventEditor records the new room into the same
+  // `talkRoomToken` slot.
+  interface StagedMeetingEvent {
+    summary: string
+    start: string
+    end: string
+    attendees: string[]
+    location?: string | null
+    description?: string | null
+    calendarId: string
+    /** Opaque payload that round-trips into
+     *  `create_calendar_event` on send-success — same shape the
+     *  editor builds in create mode.  Typed `unknown` because
+     *  Compose doesn't need to introspect it. */
+    input: unknown
+  }
+  let stagedEvent = $state<StagedMeetingEvent | null>(null)
+  let showEventEditor = $state(false)
+  let editorCalendars = $state<CalendarSummary[]>([])
+  let editorDraftSeed = $state<{
+    calendarId: string
+    start: Date
+    end: Date
+    summary?: string
+    attendees?: string[]
+    createTalkRoom?: boolean
+  } | null>(null)
+
+  /** Round-up helper used to seed a fresh event's start time at
+   *  the next half-hour boundary — same convention the
+   *  "Respond with meeting" flow in App.svelte uses. */
+  function nextHalfHour(d: Date): Date {
+    const n = new Date(d)
+    n.setSeconds(0, 0)
+    const m = n.getMinutes()
+    if (m === 0 || m === 30) {
+      n.setMinutes(m + 30)
+    } else if (m < 30) {
+      n.setMinutes(30)
+    } else {
+      n.setMinutes(0)
+      n.setHours(n.getHours() + 1)
+    }
+    return n
+  }
+
+  async function openEventEditor() {
+    error = ''
+    const ncId = await ensureNextcloudAccount()
+    if (!ncId) return
+    let cals: CalendarSummary[] = []
+    try {
+      cals = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+    } catch (e) {
+      error = formatError(e) || 'Failed to load calendars'
+      return
+    }
+    const visible = cals.filter((c) => !c.hidden)
+    if (visible.length === 0) {
+      error = 'No writable calendars found on your Nextcloud account.'
+      return
+    }
+    let initialCalendarId = visible[0].id
+    try {
+      const s = await invoke<{ default_calendar_id: string | null }>('get_app_settings')
+      if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
+        initialCalendarId = s.default_calendar_id!
+      }
+    } catch {
+      // Best-effort — fall back to first visible calendar.
+    }
+    const start = nextHalfHour(new Date())
+    const end = new Date(start.getTime() + 30 * 60 * 1000)
+
+    editorCalendars = visible
+    editorDraftSeed = {
+      calendarId: initialCalendarId,
+      start,
+      end,
+      summary: subject.trim() || undefined,
+      attendees: recipients(),
+      // Auto-mint Talk room on open.  Matches the spirit of the
+      // existing "Respond with meeting" flow (where Talk is on
+      // by default for thread-replies); the user can untick the
+      // box inside EventEditor if they don't want one.
+      createTalkRoom: false,
+    }
+    showEventEditor = true
+  }
+
+  function onEventEditorClose() {
+    showEventEditor = false
+    editorDraftSeed = null
+  }
+
+  function onEventEditorSaved(saved?: SavedEvent) {
+    showEventEditor = false
+    editorDraftSeed = null
+    if (!saved || !saved.input || !saved.calendarId) return
+    stagedEvent = {
+      summary: saved.summary,
+      start: saved.start,
+      end: saved.end,
+      attendees: saved.attendees,
+      location: saved.location ?? null,
+      description: saved.description ?? null,
+      calendarId: saved.calendarId,
+      input: saved.input,
+    }
+    // Render the meeting card into the body so the recipient
+    // sees an inline summary.  Splits Talk URL out of `location`
+    // the same way App.svelte's "Respond with meeting" handler
+    // does — keeps the styled "Join Talk meeting" CTA rendering
+    // when the user opted into Talk.
+    const loc = (saved.location ?? '').trim()
+    const isUrl = /^https?:\/\//i.test(loc)
+    const invite: MeetingInvite = {
+      summary: saved.summary,
+      start: saved.start,
+      end: saved.end,
+      location: isUrl ? null : loc || null,
+      description: saved.description ?? null,
+      talkUrl: isUrl ? loc : null,
+    }
+    const html = meetingInviteHtml(invite)
+    if (editorApi) {
+      editorApi.insertBeforeNimbusBlock(html, 'quoted-history')
+    }
+  }
+
   /** Combined To + Cc list as bare/RFC-formatted address strings,
       ready to seed CreateTalkRoomModal / EventEditor's attendee inputs. */
   function recipients(): string[] {
@@ -1234,6 +1373,11 @@
       accountsAtSend: accounts,
       initialAtSend: initial,
       draftSource: initial?.draftSource ?? null,
+      // #152 — staged meeting event.  Snapshotted here so the
+      // background pipeline can fire `create_calendar_event`
+      // *after* `send_email` succeeds.  We clear the in-scope
+      // `stagedEvent` below to disarm any cancel-time rollback.
+      stagedEvent,
     }
 
     // Disarm the delete-on-discard cleanups *now* — once the modal
@@ -1250,6 +1394,10 @@
     talkRoomToken = null
     pendingTalkParticipants = []
     createdShares = []
+    // #152 — disarm any cancel-time rollback for the staged
+    // event; the background pipeline will create it on
+    // send-success.
+    stagedEvent = null
 
     onclose()
 
@@ -1295,6 +1443,7 @@
     accountsAtSend: MailAccount[]
     initialAtSend: ComposeInitial | undefined
     draftSource: { accountId: string; folder: string; uid: number } | null
+    stagedEvent: StagedMeetingEvent | null
   }): Promise<void> {
     try {
       await invoke('send_email', {
@@ -1397,6 +1546,25 @@
             console.warn('set_talk_room_public(false) failed', e)
           }
         }
+      }
+    }
+
+    // #152 — create the staged calendar event now that the
+    // mail has actually shipped.  Best-effort; a failure here
+    // leaves the email already sent (the user can re-create
+    // the event manually if they care) but doesn't undo the
+    // send.  The Talk room (if minted) is already public + has
+    // the user-supplied URL embedded in the body, so the event
+    // creation finishing up is purely a "now schedule it"
+    // step.
+    if (snap.stagedEvent) {
+      try {
+        await invoke('create_calendar_event', {
+          calendarId: snap.stagedEvent.calendarId,
+          input: snap.stagedEvent.input,
+        })
+      } catch (e) {
+        console.warn('create_calendar_event after send failed', e)
       }
     }
 
@@ -1769,7 +1937,7 @@
      reads as visually indistinguishable from a built-in. -->
 {#snippet attachTabContent()}
   <label class="rt-btn cursor-pointer" title="Attach a file from your computer">
-    <span class="rt-btn-icon"><Icon name="attachment" size={16} /></span>
+    <span class="rt-btn-icon"><Icon name="attachment" size={20} /></span>
     <span class="rt-btn-label">Attach</span>
     <input type="file" multiple class="hidden" onchange={onPickFiles} />
   </label>
@@ -1779,7 +1947,7 @@
     title="Attach a file or link from Nextcloud"
     onclick={() => (showNcPicker = true)}
   >
-    <span class="rt-btn-icon"><Icon name="cloud" size={16} /></span>
+    <span class="rt-btn-icon"><Icon name="cloud" size={20} /></span>
     <span class="rt-btn-label">NC Files</span>
   </button>
 {/snippet}
@@ -1794,8 +1962,26 @@
     title="Create a Nextcloud Talk room with the current recipients"
     onclick={openTalkModal}
   >
-    <span class="rt-btn-icon"><Icon name="meetings" size={16} /></span>
+    <span class="rt-btn-icon"><Icon name="meetings" size={20} /></span>
     <span class="rt-btn-label">Talk</span>
+  </button>
+  <!-- #152 — Event button: opens EventEditor in stage mode.  The
+       calendar event itself isn't created until the user
+       successfully sends the mail; an unsent draft leaves no
+       orphaned event.  When the user opts into "Make it a Talk
+       conversation" inside the editor the Talk room IS minted up
+       front (the URL has to land in the body), and Compose's
+       cancel-time Talk cleanup deletes that room if the mail is
+       discarded. -->
+  <button
+    type="button"
+    class="rt-btn"
+    title="Create a calendar event with the current recipients (saved on send)"
+    disabled={!!stagedEvent}
+    onclick={() => void openEventEditor()}
+  >
+    <span class="rt-btn-icon"><Icon name="calendar" size={20} /></span>
+    <span class="rt-btn-label">Event</span>
   </button>
 {/snippet}
 
@@ -1928,6 +2114,20 @@
     deferParticipants={true}
     onclose={() => (showTalkModal = false)}
     oncreated={onTalkRoomCreated}
+  />
+{/if}
+
+<!-- #152 — EventEditor in stage mode for the "Event" button on
+     the Meetings tab.  The editor mounts only when
+     `showEventEditor` is true; on save we cache the staged
+     details and create the actual CalDAV event after send. -->
+{#if showEventEditor && editorDraftSeed}
+  <EventEditor
+    mode="stage"
+    calendars={editorCalendars}
+    draft={editorDraftSeed}
+    onclose={onEventEditorClose}
+    onsaved={onEventEditorSaved}
   />
 {/if}
 

@@ -79,14 +79,25 @@
     last_synced_at: string | null
   }
 
-  type Mode = 'create' | 'edit'
+  // `stage` — used by Compose's "Add event" button (#152). Captures
+  // the same fields as `create` but doesn't actually call
+  // `create_calendar_event` on save: the parent (Compose) holds the
+  // staged details and creates the event only after the email is
+  // successfully sent, so a discarded mail leaves no orphaned event
+  // behind.  A Talk room (when the user opted in) IS minted up-front
+  // because its URL has to embed in the body — Compose deletes the
+  // room on cancel via the existing rollback path.
+  type Mode = 'create' | 'edit' | 'stage'
 
   /** Payload `onsaved` carries back after a successful create. Edit /
       delete still fire `onsaved()` with no argument — callers that
       don't care about the payload keep their `() => void` handler
       unchanged. */
   export interface SavedEvent {
-    /** App-side composite event id returned by `create_calendar_event`. */
+    /** App-side composite event id returned by `create_calendar_event`.
+     *  Empty string in `stage` mode where the event hasn't been
+     *  persisted to CalDAV yet — Compose keeps the rest of the
+     *  payload around and creates the event on send-success. */
     uid: string
     summary: string
     start: string
@@ -102,6 +113,13 @@
     location?: string | null
     /** Plain-text description / agenda. */
     description?: string | null
+    /** Stage-mode only — the calendar id the user picked, so the
+     *  parent can pass it through to `create_calendar_event` later. */
+    calendarId?: string
+    /** Stage-mode only — the raw input the editor would otherwise
+     *  have handed to `create_calendar_event`.  Opaque to callers,
+     *  round-tripped verbatim into the create call on send-success. */
+    input?: unknown
   }
 
   interface Props {
@@ -1189,6 +1207,27 @@
           location: input.location,
           description: input.description,
         })
+      } else if (mode === 'stage') {
+        // #152 — Compose-driven staging.  Skip the CalDAV
+        // create entirely; the parent will call
+        // `create_calendar_event` with the same `input` once
+        // the user successfully sends the mail.  We still
+        // report the staged details via `onsaved` (with `uid`
+        // empty as the "not yet persisted" sentinel) so the
+        // parent can render the meeting card / track Talk
+        // room cleanup.
+        onsaved({
+          uid: '',
+          summary: input.summary,
+          start: input.start,
+          end: input.end,
+          url: null,
+          attendees: input.attendees.map((a) => a.email),
+          location: input.location,
+          description: input.description,
+          calendarId,
+          input,
+        })
       } else if (event) {
         // RSVP-only fast path: when the user is themselves an
         // attendee and changed their PARTSTAT, route the update
@@ -1847,7 +1886,13 @@
 
     <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-700 flex items-center gap-2">
       <button class="btn preset-filled-primary-500" disabled={saving || deleting} onclick={save}>
-        {saving ? 'Saving…' : mode === 'create' ? 'Create' : 'Save'}
+        {saving
+          ? 'Saving…'
+          : mode === 'create'
+            ? 'Create'
+            : mode === 'stage'
+              ? 'Add to message'
+              : 'Save'}
       </button>
       {#if mode === 'edit'}
         <button class="btn preset-outlined-error-500" disabled={saving || deleting} onclick={remove}>
