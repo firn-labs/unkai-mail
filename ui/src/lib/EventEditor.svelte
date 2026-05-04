@@ -120,6 +120,13 @@
      *  have handed to `create_calendar_event`.  Opaque to callers,
      *  round-tripped verbatim into the create call on send-success. */
     input?: unknown
+    /** Stage-mode only — when the user opted into "Make it a Talk
+     *  conversation", the room was minted up-front (its URL has
+     *  to embed in the email body).  Compose tracks the token in
+     *  its own cancel-time cleanup slot so a discarded mail
+     *  deletes the orphan room. */
+    talkRoomToken?: string | null
+    talkRoomNcId?: string | null
   }
 
   interface Props {
@@ -262,7 +269,11 @@
   // one) gets used reliably instead of whichever calendar happened
   // to come back first from the cache.
   $effect(() => {
-    if (mode !== 'create') return
+    // create + stage modes both seed a fresh event — same
+    // "default-calendar lookup + optional auto-Talk-room"
+    // bootstrapping applies.  Edit mode opens an existing
+    // event so neither step is appropriate.
+    if (mode === 'edit') return
     void invoke<{ default_calendar_id: string | null }>('get_app_settings')
       .then((s) => {
         const def = s.default_calendar_id
@@ -273,11 +284,12 @@
       .catch(() => {})
       .finally(() => {
         // Auto-mint a Talk room once the calendar selection has
-        // settled — used by "Respond with meeting" so the event
-        // mounts with a join URL pre-attached.  Mirrors the manual
-        // "Add Talk link" button so all the save-time wiring
-        // (participant invites, public/private downgrade) reuses
-        // the same path.
+        // settled — used by "Respond with meeting" and #152's
+        // Compose Event button so the event mounts with a join
+        // URL pre-attached.  Mirrors the manual "Add Talk link"
+        // button so all the save-time wiring (participant
+        // invites, public/private downgrade) reuses the same
+        // path.
         if (draft?.createTalkRoom && !pendingTalkRoom && !creatingTalkRoom) {
           void addTalkLink()
         }
@@ -1215,7 +1227,12 @@
         // report the staged details via `onsaved` (with `uid`
         // empty as the "not yet persisted" sentinel) so the
         // parent can render the meeting card / track Talk
-        // room cleanup.
+        // room cleanup.  We hand off the Talk room token (when
+        // one was minted via the in-editor toggle) so Compose
+        // can register it in its own cancel-time cleanup slot
+        // and delete the orphan room on Discard — the event
+        // itself was never persisted, but the Talk room was.
+        const cal = calendars.find((c) => c.id === calendarId)
         onsaved({
           uid: '',
           summary: input.summary,
@@ -1227,7 +1244,13 @@
           description: input.description,
           calendarId,
           input,
+          talkRoomToken: pendingTalkRoom?.token ?? null,
+          talkRoomNcId: cal?.nextcloud_account_id ?? null,
         })
+        // Clear the editor's own pending-room slot so its own
+        // cancel-time cleanup doesn't fire — Compose owns the
+        // room from here on.
+        pendingTalkRoom = null
       } else if (event) {
         // RSVP-only fast path: when the user is themselves an
         // attendee and changed their PARTSTAT, route the update

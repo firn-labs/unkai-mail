@@ -895,6 +895,20 @@
     showEventEditor = false
     editorDraftSeed = null
     if (!saved || !saved.input || !saved.calendarId) return
+    // Hand-off the Talk room (if EventEditor minted one) into
+    // Compose's own cleanup slots so Discard rolls it back
+    // exactly the same way the in-Compose Talk button does.
+    if (saved.talkRoomToken && saved.talkRoomNcId) {
+      talkRoomToken = saved.talkRoomToken
+      ncAccountId = saved.talkRoomNcId
+      const isUrl = /^https?:\/\//i.test((saved.location ?? '').trim())
+      if (isUrl) {
+        createdTalkLink = {
+          name: saved.summary || '(meeting)',
+          url: saved.location!.trim(),
+        }
+      }
+    }
     stagedEvent = {
       summary: saved.summary,
       start: saved.start,
