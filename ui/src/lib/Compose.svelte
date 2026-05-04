@@ -442,21 +442,53 @@
   // fresh draft starts with the dismissal cleared so a previous
   // draft's "I don't care" doesn't leak across.
   let attachmentMentionDismissed = $state(false)
-  /** Cheap plain-text projection of `bodyHtml`.  Doesn't go
-   *  through the heavier `htmlToText` we use at submit time —
-   *  this runs on every keystroke, so we just strip tags
-   *  (regex) and rely on the mention detector's own quoted-
-   *  reply strip downstream. */
+  /** Plain-text projection of `bodyHtml` for the mention
+   *  detector.  Two reply-quote shapes have to be removed
+   *  *structurally* before scanning, since neither is "the
+   *  user's own new text" — finding "attached" inside a
+   *  quoted thread we're replying to should never fire the
+   *  warning:
+   *
+   *    1. `<div data-nimbus-block="quoted-history">…</div>` —
+   *       the wrapper Compose stamps around the quoted
+   *       original message on reply / forward.  Wraps a
+   *       multi-paragraph block, so the closing `</div>` is
+   *       far away from the opener and a regex can't match
+   *       it reliably.
+   *    2. `<blockquote>…</blockquote>` — the standard HTML
+   *       reply-quote, used when the user pastes / quotes
+   *       text manually via the editor's blockquote button.
+   *
+   *  We use DOMParser (browser-native, no dep) to walk the
+   *  tree and remove the matching elements, then take the
+   *  remaining text content.  Newlines are inserted at
+   *  natural block boundaries so the mention detector's
+   *  word-boundary regex doesn't accidentally bridge two
+   *  paragraphs into one match.  */
   function bodyToPlainTextForMentionCheck(html: string): string {
-    return html
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(p|div|li|tr)>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/&amp;/gi, '&')
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&quot;/gi, '"')
+    if (!html) return ''
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html')
+      doc
+        .querySelectorAll('div[data-nimbus-block="quoted-history"], blockquote')
+        .forEach((el) => el.remove())
+      // Inject `\n` at block-element boundaries before grabbing
+      // textContent, so a paragraph break in the source HTML
+      // becomes a newline in the plain-text output.
+      doc.querySelectorAll('br').forEach((el) => el.replaceWith(doc.createTextNode('\n')))
+      doc
+        .querySelectorAll('p, div, li, tr, h1, h2, h3, h4, h5, h6')
+        .forEach((el) => el.append(doc.createTextNode('\n')))
+      return (doc.body.textContent ?? '').trim()
+    } catch {
+      // DOMParser is part of the standard Web platform but
+      // some test / non-browser harnesses don't ship it.  Fall
+      // back to the raw HTML so the detector still gets to
+      // run; the worst case is a stale-quoted-text false
+      // positive in that environment, which is strictly
+      // better than crashing the editor.
+      return html
+    }
   }
   const showAttachmentMentionWarning = $derived(
     !attachmentMentionDismissed
