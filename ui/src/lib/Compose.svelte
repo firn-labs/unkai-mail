@@ -2064,8 +2064,8 @@
     title="Send the message"
     onclick={send}
   >
-    <Icon name="sent" size={18} />
     <span>{sending ? 'Sending…' : 'Send'}</span>
+    <Icon name="sent" size={18} />
   </button>
 {/snippet}
 
