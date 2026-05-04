@@ -2038,9 +2038,14 @@
   </button>
 {/snippet}
 
-<!-- Always-visible Save / Discard / Send actions in the tab-strip
-     trailing slot.  Compact (`.ctb`) so they fit alongside the tab
-     buttons.  Send is primary-filled and rightmost. -->
+<!-- Always-visible Save / Send actions in the tab-strip trailing
+     slot.  Save stays compact (stacked icon + label) on the left;
+     Send is the primary action and gets the wider, horizontally-
+     laid-out rectangle treatment so it reads as the obvious
+     commit button.  Discard moved off the toolbar entirely (the
+     window's Esc / close path still cancels the draft, with the
+     same Talk-room / share-link rollback that the menu button
+     used to trigger). -->
 {#snippet sendActions()}
   <button
     type="button"
@@ -2054,23 +2059,13 @@
   </button>
   <button
     type="button"
-    class="ctb ctb-danger"
-    disabled={sending}
-    title="Discard this draft and close the window"
-    onclick={cancel}
-  >
-    <span class="ctb-icon"><Icon name="trash" size={20} /></span>
-    <span class="ctb-label">Discard</span>
-  </button>
-  <button
-    type="button"
-    class="ctb ctb-primary"
+    class="ctb-send"
     disabled={sending}
     title="Send the message"
     onclick={send}
   >
-    <span class="ctb-icon"><Icon name="sent" size={20} /></span>
-    <span class="ctb-label">{sending ? 'Sending…' : 'Send'}</span>
+    <Icon name="sent" size={18} />
+    <span>{sending ? 'Sending…' : 'Send'}</span>
   </button>
 {/snippet}
 
@@ -2190,9 +2185,10 @@
      `:global` is needed because these buttons render inside the
      RichTextEditor's `actionsTrailing` snippet — Svelte scopes
      parent styles to the parent's DOM, but snippet contents land
-     in the child component's tree.  Variants:
-       - `.ctb-primary` — the Send button (filled primary).
-       - `.ctb-danger`  — the Discard button (red on hover). */
+     in the child component's tree.
+     The Save button uses `.ctb` (compact stacked icon + label).
+     Send has its own `.ctb-send` rule below — wider rectangle,
+     icon + label in a row, primary-filled. */
   :global(.ctb) {
     display: inline-flex;
     flex-direction: column;
@@ -2226,15 +2222,34 @@
     line-height: 1;
     white-space: nowrap;
   }
-  :global(.ctb-primary) {
+  /* Send button — primary action, gets the rectangular pill
+     treatment so it reads as the obvious commit button.  Icon
+     and label are laid out horizontally and centered together
+     so the button looks "filled" rather than padded around two
+     tiny stacked elements. */
+  :global(.ctb-send) {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-width: 7.5rem;
+    padding: 0.625rem 1.25rem;
+    border-radius: 0.5rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    line-height: 1;
+    border: none;
+    cursor: pointer;
     color: white;
     background: var(--color-primary-500, #3b82f6);
+    transition: background-color 100ms ease;
   }
-  :global(.ctb-primary:hover:not(:disabled)) {
+  :global(.ctb-send:hover:not(:disabled)) {
     background: var(--color-primary-600, #2563eb);
   }
-  :global(.ctb-danger:hover:not(:disabled)) {
-    color: rgb(239 68 68);
-    background: rgb(239 68 68 / 0.12);
+  :global(.ctb-send:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>
