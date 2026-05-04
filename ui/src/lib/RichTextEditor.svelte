@@ -1433,16 +1433,18 @@
     border-bottom-color: var(--color-primary-500);
   }
 
-  /* Panel buttons — large stacked icon-above-label.  Ribbon
-     proportions: ~50px tall, 24px icon, 11px label. */
+  /* Panel buttons — large stacked icon-above-label.  #152: bumped
+     from the original ~3.25rem-wide / 18px-icon / 11px-label
+     proportions to give the ribbon more visual weight; the old
+     sizing read as cramped at 1.0 zoom. */
   :global(.rt-btn) {
     display: inline-flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.125rem;
-    min-width: 3.25rem;
-    padding: 0.375rem 0.5rem;
+    gap: 0.25rem;
+    min-width: 3.75rem;
+    padding: 0.5rem 0.625rem;
     border-radius: 0.375rem;
     background: transparent;
     border: none;
@@ -1462,24 +1464,46 @@
     cursor: not-allowed;
   }
   :global(.rt-btn-icon) {
-    font-size: 1.125rem;
+    font-size: 1.375rem;
     line-height: 1;
-    height: 1.25rem;
+    height: 1.5rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
   }
   :global(.rt-btn-label) {
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     line-height: 1;
     white-space: nowrap;
   }
   :global(.rt-btn-wide) {
-    min-width: 6rem;
+    min-width: 7rem;
   }
   :global(.rt-btn.is-active) {
     background: rgb(from var(--color-primary-500) r g b / 0.15);
     color: var(--color-primary-500);
+  }
+
+  /* #152 — keep the toolbar's horizontal scrollbar visually
+     unobtrusive.  WebKit (Tauri's macOS / Linux engines) needs
+     `::-webkit-scrollbar` rules; Firefox / Edge respect
+     `scrollbar-width`. */
+  :global(.rt-tab-panel) {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-surface-300) transparent;
+  }
+  :global([data-mode='dark'] .rt-tab-panel) {
+    scrollbar-color: var(--color-surface-700) transparent;
+  }
+  :global(.rt-tab-panel::-webkit-scrollbar) {
+    height: 6px;
+  }
+  :global(.rt-tab-panel::-webkit-scrollbar-thumb) {
+    background: var(--color-surface-300);
+    border-radius: 3px;
+  }
+  :global([data-mode='dark'] .rt-tab-panel::-webkit-scrollbar-thumb) {
+    background: var(--color-surface-700);
   }
 
   /* Vertical rule between sub-groups inside a panel. */
@@ -1663,8 +1687,12 @@
     <!-- Tab panel — flex row of large stacked-icon buttons.  Each
          tab's content lives behind its own `{#if}` so swapping tabs
          doesn't carry hidden DOM.  Dividers split logical sub-
-         groups within a panel for scannability. -->
-    <div class="flex flex-wrap items-center gap-0.5 px-2 py-1.5 min-h-[3rem]">
+         groups within a panel for scannability.
+         #152: switched from flex-wrap to flex-nowrap +
+         overflow-x-auto so a narrow window scrolls the ribbon
+         horizontally instead of wrapping it onto a confusing
+         second row. -->
+    <div class="rt-tab-panel flex flex-nowrap items-center gap-0.5 px-2 py-1.5 min-h-12 overflow-x-auto">
       {#if activeTab === 'format'}
         <!-- Font family — wider trigger, dropdown menu. -->
         <div class="relative inline-block">
@@ -1756,12 +1784,12 @@
 
         <!-- Colors -->
         <label class="rt-btn cursor-pointer" title="Text color">
-          <span class="rt-btn-icon"><Icon name="text-color" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="text-color" size={20} /></span>
           <span class="rt-btn-label">Color</span>
           <input type="color" class="w-0 h-0 opacity-0 absolute" onchange={setColor} />
         </label>
         <label class="rt-btn cursor-pointer" title="Highlight color">
-          <span class="rt-btn-icon"><Icon name="highlight-text" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="highlight-text" size={20} /></span>
           <span class="rt-btn-label">Highlight</span>
           <input type="color" value="#fde68a" class="w-0 h-0 opacity-0 absolute" onchange={setHighlight} />
         </label>
@@ -1771,16 +1799,16 @@
         <!-- Clear formatting — strips marks AND collapses to plain
              paragraph (the standard "Clear all formatting" action). -->
         <button class="rt-btn" title="Clear all formatting" onclick={clearFormatting}>
-          <span class="rt-btn-icon"><Icon name="clear" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="clear" size={20} /></span>
           <span class="rt-btn-label">Clear</span>
         </button>
       {:else if activeTab === 'insert'}
         <button class="rt-btn {active('link')}" title="Insert link" onclick={setLink}>
-          <span class="rt-btn-icon"><Icon name="open-link" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="open-link" size={20} /></span>
           <span class="rt-btn-label">Link</span>
         </button>
         <button class="rt-btn" title="Insert image from local file" onclick={() => addImageFromFile()}>
-          <span class="rt-btn-icon"><Icon name="insert-image" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="insert-image" size={20} /></span>
           <span class="rt-btn-label">Image</span>
         </button>
         <button
@@ -1788,7 +1816,7 @@
           title={onrequestncimage ? 'Insert image from Nextcloud' : 'Insert image from URL'}
           onclick={() => addImageFromNcOrUrl()}
         >
-          <span class="rt-btn-icon"><Icon name={onrequestncimage ? 'cloud' : 'open-link'} size={16} /></span>
+          <span class="rt-btn-icon"><Icon name={onrequestncimage ? 'cloud' : 'open-link'} size={20} /></span>
           <span class="rt-btn-label">{onrequestncimage ? 'NC image' : 'From URL'}</span>
         </button>
 
@@ -1797,7 +1825,7 @@
         <!-- Table picker -->
         <div class="relative inline-block" bind:this={tablePickerAnchor}>
           <button class="rt-btn" title="Insert table at cursor" onclick={openTablePicker}>
-            <span class="rt-btn-icon"><Icon name="table" size={16} /></span>
+            <span class="rt-btn-icon"><Icon name="table" size={20} /></span>
             <span class="rt-btn-label">Table</span>
           </button>
           {#if showTablePicker}
@@ -1842,7 +1870,7 @@
              follow-up).  Click outside or pick an emoji to dismiss. -->
         <div class="relative inline-block">
           <button class="rt-btn" title="Insert emoji" onclick={() => (showEmojiPicker = !showEmojiPicker)}>
-            <span class="rt-btn-icon"><Icon name="emoji" size={16} /></span>
+            <span class="rt-btn-icon"><Icon name="emoji" size={20} /></span>
             <span class="rt-btn-label">Emoji</span>
           </button>
           {#if showEmojiPicker}
@@ -1871,40 +1899,40 @@
              email compatibility. -->
         {@const tblOn = tableActive()}
         <button class="rt-btn" title="Add row above" disabled={!tblOn} onclick={tblAddRowAbove}>
-          <span class="rt-btn-icon"><Icon name="insert-row-above" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="insert-row-above" size={20} /></span>
           <span class="rt-btn-label">Row above</span>
         </button>
         <button class="rt-btn" title="Add row below" disabled={!tblOn} onclick={tblAddRowBelow}>
-          <span class="rt-btn-icon"><Icon name="insert-row-below" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="insert-row-below" size={20} /></span>
           <span class="rt-btn-label">Row below</span>
         </button>
         <button class="rt-btn" title="Add column left" disabled={!tblOn} onclick={tblAddColLeft}>
-          <span class="rt-btn-icon"><Icon name="insert-column-left" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="insert-column-left" size={20} /></span>
           <span class="rt-btn-label">Col left</span>
         </button>
         <button class="rt-btn" title="Add column right" disabled={!tblOn} onclick={tblAddColRight}>
-          <span class="rt-btn-icon"><Icon name="insert-column-right" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="insert-column-right" size={20} /></span>
           <span class="rt-btn-label">Col right</span>
         </button>
         <button class="rt-btn" title="Delete current row" disabled={!tblOn} onclick={tblDeleteRow}>
-          <span class="rt-btn-icon"><Icon name="delete-row" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="delete-row" size={20} /></span>
           <span class="rt-btn-label">Del row</span>
         </button>
         <button class="rt-btn" title="Delete current column" disabled={!tblOn} onclick={tblDeleteCol}>
-          <span class="rt-btn-icon"><Icon name="delete-column" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="delete-column" size={20} /></span>
           <span class="rt-btn-label">Del col</span>
         </button>
         <label class="rt-btn cursor-pointer" title="Cell background colour" class:opacity-50={!tblOn}>
-          <span class="rt-btn-icon"><Icon name="highlight-text" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="highlight-text" size={20} /></span>
           <span class="rt-btn-label">Cell colour</span>
           <input type="color" class="w-0 h-0 opacity-0 absolute" disabled={!tblOn} onchange={tblSetCellColor} />
         </label>
         <button class="rt-btn" title="Clear cell background colour" disabled={!tblOn} onclick={tblClearCellColor}>
-          <span class="rt-btn-icon"><Icon name="clear" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="clear" size={20} /></span>
           <span class="rt-btn-label">Clear fill</span>
         </button>
         <button class="rt-btn" title="Delete entire table" disabled={!tblOn} onclick={tblDelete}>
-          <span class="rt-btn-icon"><Icon name="trash" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="trash" size={20} /></span>
           <span class="rt-btn-label">Del table</span>
         </button>
       {:else if activeTab === 'layout'}
@@ -1926,11 +1954,11 @@
 
         <!-- Lists -->
         <button class="rt-btn {active('bulletList')}" title="Bullet list" onclick={() => $editor?.chain().focus().toggleBulletList().run()}>
-          <span class="rt-btn-icon"><Icon name="bullet-list" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="bullet-list" size={20} /></span>
           <span class="rt-btn-label">Bullets</span>
         </button>
         <button class="rt-btn {active('orderedList')}" title="Numbered list" onclick={() => $editor?.chain().focus().toggleOrderedList().run()}>
-          <span class="rt-btn-icon"><Icon name="numbered-list" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="numbered-list" size={20} /></span>
           <span class="rt-btn-label">Numbered</span>
         </button>
 
@@ -1938,26 +1966,26 @@
 
         <!-- Alignment -->
         <button class="rt-btn {activeAttrs({ textAlign: 'left' })}" title="Align left" onclick={() => $editor?.chain().focus().setTextAlign('left').run()}>
-          <span class="rt-btn-icon"><Icon name="align-left" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="align-left" size={20} /></span>
           <span class="rt-btn-label">Left</span>
         </button>
         <button class="rt-btn {activeAttrs({ textAlign: 'center' })}" title="Align center" onclick={() => $editor?.chain().focus().setTextAlign('center').run()}>
-          <span class="rt-btn-icon"><Icon name="align-center" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="align-center" size={20} /></span>
           <span class="rt-btn-label">Center</span>
         </button>
         <button class="rt-btn {activeAttrs({ textAlign: 'right' })}" title="Align right" onclick={() => $editor?.chain().focus().setTextAlign('right').run()}>
-          <span class="rt-btn-icon"><Icon name="align-right" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="align-right" size={20} /></span>
           <span class="rt-btn-label">Right</span>
         </button>
         <button class="rt-btn {activeAttrs({ textAlign: 'justify' })}" title="Justify" onclick={() => $editor?.chain().focus().setTextAlign('justify').run()}>
-          <span class="rt-btn-icon"><Icon name="justify" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="justify" size={20} /></span>
           <span class="rt-btn-label">Justify</span>
         </button>
 
         <span class="rt-divider"></span>
 
         <button class="rt-btn {active('blockquote')}" title="Blockquote" onclick={() => cmd().toggleBlockquote().run()}>
-          <span class="rt-btn-icon"><Icon name="quote" size={16} /></span>
+          <span class="rt-btn-icon"><Icon name="quote" size={20} /></span>
           <span class="rt-btn-label">Quote</span>
         </button>
       {:else}
