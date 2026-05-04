@@ -2224,14 +2224,15 @@
   }
   /* Send button — primary action, gets the rectangular pill
      treatment so it reads as the obvious commit button.  Icon
-     and label are laid out horizontally and centered together
-     so the button looks "filled" rather than padded around two
-     tiny stacked elements. */
+     and label are laid out horizontally with `space-between`
+     so the label hugs the left edge and the icon trails on the
+     right edge — reads as "verb → action" rather than a
+     symmetric centered cluster. */
   :global(.ctb-send) {
     display: inline-flex;
     flex-direction: row;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
     gap: 0.5rem;
     min-width: 7.5rem;
     padding: 0.625rem 1.25rem;
