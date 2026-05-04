@@ -1374,15 +1374,20 @@
 <style>
   /* Compact toolbar buttons — used by the tab strip's undo/redo +
      embedder-supplied trailing actions where vertical space is
-     scarce.  Same idiom as before; the ribbon's panel buttons get
-     `.rt-btn` styling instead. */
+     scarce.  #152: bumped padding + font size in lockstep with
+     the ribbon's `.rt-btn` resize so undo / redo / send /
+     discard / save all read at the same visual weight; the
+     previous 0.75rem font + 14px icons looked like an
+     afterthought next to the wider tabs.  Same idiom as before
+     otherwise; the ribbon's panel buttons get `.rt-btn` styling
+     instead. */
   .tb {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0.25rem 0.5rem;
+    padding: 0.375rem 0.75rem;
     border-radius: 0.25rem;
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     line-height: 1;
     cursor: pointer;
     transition: background 0.1s;
@@ -1675,8 +1680,8 @@
            user expects Send + Save + Undo to be reachable
            regardless of which tab is open. -->
       <div class="ml-auto flex items-center gap-1 px-1">
-        <button class="tb" title="Undo (Ctrl+Z)" aria-label="Undo" onclick={() => doUndo()}><Icon name="undo" size={14} /></button>
-        <button class="tb" title="Redo (Ctrl+Y)" aria-label="Redo" onclick={() => doRedo()}><Icon name="redo" size={14} /></button>
+        <button class="tb" title="Undo (Ctrl+Z)" aria-label="Undo" onclick={() => doUndo()}><Icon name="undo" size={18} /></button>
+        <button class="tb" title="Redo (Ctrl+Y)" aria-label="Redo" onclick={() => doRedo()}><Icon name="redo" size={18} /></button>
         {#if actionsTrailing}
           <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
           {@render actionsTrailing()}
