@@ -935,9 +935,46 @@
       talkUrl: isUrl ? loc : null,
     }
     const html = meetingInviteHtml(invite)
-    if (editorApi) {
-      editorApi.insertBeforeNimbusBlock(html, 'quoted-history')
+    if (!editorApi) return
+    // Body order we want, from top to bottom:
+    //   1. lead spacer
+    //   2. **meeting card**            ← new
+    //   3. signature
+    //   4. (Talk / file-share cards)
+    //   5. quoted history (replies / forwards)
+    //
+    // The signature is a plain `<p>-- <br>...</p>` (no
+    // NimbusBlock wrapper), so `insertBeforeNimbusBlock` can't
+    // target it.  We do a string splice on `bodyHtml` instead:
+    // find the previously-inserted signature substring and
+    // splice the card just before it.  Fallback paths cover
+    // every shape the body might be in:
+    //
+    //   - signature present in source → splice before it.
+    //   - signature missing (no signature configured, or the
+    //     signature `$effect` hasn't run yet) → splice after
+    //     the lead spacer so future signature insertion still
+    //     lands below the card.
+    //   - neither marker found (e.g. an opened draft with a
+    //     bespoke shape) → fall back to the existing
+    //     before-quoted-history target so the card still
+    //     reads above the reply quote.
+    if (insertedSignatureHtml && bodyHtml.includes(insertedSignatureHtml)) {
+      const idx = bodyHtml.indexOf(insertedSignatureHtml)
+      const replaced = bodyHtml.slice(0, idx) + html + bodyHtml.slice(idx)
+      editorApi.setHtml(replaced)
+      bodyHtml = replaced
+      return
     }
+    const leadIdx = bodyHtml.indexOf('<p></p><p></p>')
+    if (leadIdx !== -1) {
+      const after = leadIdx + '<p></p><p></p>'.length
+      const replaced = bodyHtml.slice(0, after) + html + bodyHtml.slice(after)
+      editorApi.setHtml(replaced)
+      bodyHtml = replaced
+      return
+    }
+    editorApi.insertBeforeNimbusBlock(html, 'quoted-history')
   }
 
   /** Combined To + Cc list as bare/RFC-formatted address strings,
