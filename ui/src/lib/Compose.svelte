@@ -875,11 +875,13 @@
       end,
       summary: subject.trim() || undefined,
       attendees: recipients(),
-      // Auto-mint Talk room on open.  Matches the spirit of the
-      // existing "Respond with meeting" flow (where Talk is on
-      // by default for thread-replies); the user can untick the
-      // box inside EventEditor if they don't want one.
-      createTalkRoom: false,
+      // Auto-mint Talk room on open — same default as the
+      // "Respond with meeting" flow in App.svelte.  Compose-
+      // initiated meetings almost always want a join link in
+      // the email body, so opting in by default matches the
+      // common case; the user can untick the box inside
+      // EventEditor if they don't want one.
+      createTalkRoom: true,
     }
     showEventEditor = true
   }
