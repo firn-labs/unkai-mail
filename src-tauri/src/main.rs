@@ -621,6 +621,9 @@ fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), N
     if let Err(e) = cache.wipe_nextcloud_calendars(&id) {
         tracing::warn!("failed to wipe calendars for NC account '{id}': {e}");
     }
+    if let Err(e) = cache.wipe_notes_for_account(&id) {
+        tracing::warn!("failed to wipe notes for NC account '{id}': {e}");
+    }
     nextcloud_store::remove_account(&cache, &id)
 }
 
@@ -1603,46 +1606,97 @@ async fn rename_talk_room(
 // user just typed there without a sync-roundtrip dance. Cost is
 // one HTTP call per list-refresh, which is cheap.
 
-/// List every note the connected Nextcloud user can see.
-#[tauri::command]
-async fn list_nextcloud_notes(nc_id: String) -> Result<Vec<nimbus_nextcloud::Note>, NimbusError> {
-    let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::list_notes(&account.server_url, &account.username, &app_password).await
+/// Convert the wire-shape `nimbus_nextcloud::Note` (which doesn't
+/// know about accounts) into the canonical `nimbus_core::models::Note`
+/// we cache and ship to the UI.  Stamping the account id at the
+/// boundary keeps the `Note` type a single source of truth across
+/// the codebase.
+fn nc_note_to_core(nc_id: &str, n: nimbus_nextcloud::Note) -> nimbus_core::models::Note {
+    nimbus_core::models::Note {
+        id: n.id,
+        nextcloud_account_id: nc_id.to_string(),
+        etag: n.etag,
+        modified: n.modified,
+        title: n.title,
+        category: n.category,
+        content: n.content,
+        favorite: n.favorite,
+    }
 }
 
-/// Fetch a single note, primarily to refresh the etag right before
-/// an edit lands so we don't trip a 412 on a note the user looked
-/// at long ago.
+/// Cache-first list (#138).  Returns whatever's on disk so the UI
+/// paints instantly; the frontend kicks off a background sync via
+/// `sync_nextcloud_notes` to refresh.  Mirrors how `get_contacts`
+/// and the mail list work.
+#[tauri::command]
+fn list_nextcloud_notes(
+    nc_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<nimbus_core::models::Note>, NimbusError> {
+    cache.list_notes(&nc_id).map_err(Into::into)
+}
+
+/// Pull every note from the server, diff against the cache, and
+/// persist the result transactionally.  Server-deleted notes
+/// disappear from the cache as part of the same delta.  Returns
+/// the fresh list so the caller can update its state without a
+/// second round-trip through `list_nextcloud_notes`.
+#[tauri::command]
+async fn sync_nextcloud_notes(
+    nc_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<nimbus_core::models::Note>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let server =
+        nimbus_nextcloud::list_notes(&account.server_url, &account.username, &app_password).await?;
+    let notes: Vec<nimbus_core::models::Note> = server
+        .into_iter()
+        .map(|n| nc_note_to_core(&nc_id, n))
+        .collect();
+    cache.apply_notes_delta(&nc_id, &notes)?;
+    Ok(notes)
+}
+
+/// Fetch a single note from the server (refreshing its etag) and
+/// upsert it into the cache.  Used right before an edit lands so a
+/// 412 doesn't fire because the user looked at a stale note ages
+/// ago.
 #[tauri::command]
 async fn get_nextcloud_note(
     nc_id: String,
     note_id: u64,
-) -> Result<nimbus_nextcloud::Note, NimbusError> {
+    cache: State<'_, Cache>,
+) -> Result<nimbus_core::models::Note, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::get_note(
+    let server = nimbus_nextcloud::get_note(
         &account.server_url,
         &account.username,
         &app_password,
         note_id,
     )
-    .await
+    .await?;
+    let note = nc_note_to_core(&nc_id, server);
+    cache.upsert_note(&note)?;
+    Ok(note)
 }
 
 /// Create a new note. Title can be empty — the server derives it
 /// from the first content line in that case, matching the behaviour
-/// of the Notes web UI.
+/// of the Notes web UI.  Cache-write-through: the server stamps
+/// the id + etag, then we persist locally before returning.
 #[tauri::command]
 async fn create_nextcloud_note(
     nc_id: String,
     title: String,
     content: String,
     category: String,
-) -> Result<nimbus_nextcloud::Note, NimbusError> {
+    cache: State<'_, Cache>,
+) -> Result<nimbus_core::models::Note, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::create_note(
+    let server = nimbus_nextcloud::create_note(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1652,12 +1706,17 @@ async fn create_nextcloud_note(
             category: &category,
         },
     )
-    .await
+    .await?;
+    let note = nc_note_to_core(&nc_id, server);
+    cache.upsert_note(&note)?;
+    Ok(note)
 }
 
 /// Apply a partial update. Each field is optional — the frontend
 /// sends only the ones the user touched so a category-only edit
 /// doesn't have to round-trip body bytes the user didn't change.
+/// Cache-write-through: the server is authoritative on etag /
+/// modified; we persist what it returns.
 #[tauri::command]
 async fn update_nextcloud_note(
     nc_id: String,
@@ -1667,10 +1726,11 @@ async fn update_nextcloud_note(
     content: Option<String>,
     category: Option<String>,
     favorite: Option<bool>,
-) -> Result<nimbus_nextcloud::Note, NimbusError> {
+    cache: State<'_, Cache>,
+) -> Result<nimbus_core::models::Note, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::update_note(
+    let server = nimbus_nextcloud::update_note(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1683,13 +1743,21 @@ async fn update_nextcloud_note(
             favorite,
         },
     )
-    .await
+    .await?;
+    let note = nc_note_to_core(&nc_id, server);
+    cache.upsert_note(&note)?;
+    Ok(note)
 }
 
-/// Delete a note. Called by the trash button in NotesView; the
-/// frontend confirms in JS first so we don't need a confirm here.
+/// Delete a note. Server first (so a 4xx surfaces before we touch
+/// local state); cache delete only runs on success so a network
+/// failure leaves the user's note intact locally.
 #[tauri::command]
-async fn delete_nextcloud_note(nc_id: String, note_id: u64) -> Result<(), NimbusError> {
+async fn delete_nextcloud_note(
+    nc_id: String,
+    note_id: u64,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     nimbus_nextcloud::delete_note(
@@ -1698,7 +1766,9 @@ async fn delete_nextcloud_note(nc_id: String, note_id: u64) -> Result<(), Nimbus
         &app_password,
         note_id,
     )
-    .await
+    .await?;
+    cache.delete_note(&nc_id, note_id)?;
+    Ok(())
 }
 
 // ── CardDAV contacts ────────────────────────────────────────────
@@ -9806,6 +9876,7 @@ fn main() {
             add_talk_participant,
             rename_talk_room,
             list_nextcloud_notes,
+            sync_nextcloud_notes,
             get_nextcloud_note,
             create_nextcloud_note,
             update_nextcloud_note,

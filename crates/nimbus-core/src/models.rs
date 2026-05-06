@@ -1028,3 +1028,42 @@ pub struct EventReminder {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
 }
+
+/// One Nextcloud Notes document (#138).  Mirrors what the Notes
+/// REST app exposes — a flat document keyed by an integer id with
+/// an etag for optimistic-concurrency edits.  Lives in
+/// `nimbus-core` rather than inside `nimbus-nextcloud` so the
+/// store + Tauri layers can refer to a single canonical type;
+/// the Nextcloud-specific wire shape is converted at the network
+/// boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Note {
+    /// Per-account note id (server-assigned by NC on create).
+    pub id: u64,
+    /// Owning Nextcloud account — needed because the cache mixes
+    /// notes from multiple accounts in one table and the integer
+    /// `id` only collides within an account.
+    pub nextcloud_account_id: String,
+    /// Optimistic-concurrency token from the server.  Sent back
+    /// in `If-Match` on update; a 412 response means the body
+    /// changed underneath us and the user has to merge.
+    pub etag: String,
+    /// `modified` Unix timestamp (seconds).  Sort key for the
+    /// "recent" view and an input to the sync delta logic.
+    pub modified: i64,
+    /// First markdown line is conventionally treated as the
+    /// title in NC; we store whatever the server returned so the
+    /// UI doesn't have to re-derive it.
+    pub title: String,
+    /// `/`-separated category path.  Empty = uncategorized.  NC's
+    /// web UI renders nested categories as folders, and so do
+    /// we — `Joplin/ProjectX` becomes a `ProjectX` sub-folder
+    /// under `Joplin`.
+    pub category: String,
+    /// Raw markdown body.  We do not pre-render to HTML; the
+    /// editor + preview are responsible for that.
+    pub content: String,
+    /// User-pinned ⭐ flag.  Drives the "Favorites" virtual
+    /// folder in the sidebar.
+    pub favorite: bool,
+}

@@ -823,6 +823,46 @@ const MIGRATIONS: &[&str] = &[
         value TEXT NOT NULL
     );
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v23 → v24: Nextcloud Notes cache (#138)
+    //
+    // The Notes REST app exposes flat documents keyed by an integer
+    // `id`, with `etag` for optimistic concurrency and `modified` as
+    // a Unix timestamp.  We cache them locally so the list paints
+    // instantly and edits work offline.  `category` is a vCard-
+    // style path string that NC interprets as nested folders
+    // (e.g. `Joplin/ProjectX` renders as a sub-folder); we store
+    // it verbatim and let the UI tree-build at render time.
+    //
+    // `notes_sync_state` carries the high-water marks the
+    // background sync uses to skip unchanged documents; it's
+    // intentionally separate from the main notes table so a forced
+    // re-sync only has to clear one row per account.
+    r#"
+    CREATE TABLE notes (
+        nextcloud_account_id  TEXT NOT NULL,
+        note_id               INTEGER NOT NULL,
+        etag                  TEXT NOT NULL,
+        modified_unix         INTEGER NOT NULL,
+        title                 TEXT NOT NULL DEFAULT '',
+        category              TEXT NOT NULL DEFAULT '',
+        content               TEXT NOT NULL DEFAULT '',
+        favorite              INTEGER NOT NULL DEFAULT 0,
+        cached_at             INTEGER NOT NULL,
+        PRIMARY KEY (nextcloud_account_id, note_id)
+    );
+
+    CREATE INDEX notes_by_modified
+        ON notes (nextcloud_account_id, modified_unix DESC);
+
+    CREATE INDEX notes_by_category
+        ON notes (nextcloud_account_id, category);
+
+    CREATE TABLE notes_sync_state (
+        nextcloud_account_id  TEXT PRIMARY KEY,
+        last_synced_at        INTEGER
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
