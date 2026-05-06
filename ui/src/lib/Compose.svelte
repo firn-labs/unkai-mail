@@ -115,6 +115,15 @@
         saves the event in EventEditor — Compose then opens with
         a styled HTML invite card pre-filled in the body. */
     meetingInvite?: MeetingInvite
+    /** When `true`, `body` is interpreted as user-authored
+        content (not a quoted reply / forward history) and lands
+        *above* the signature in the editor — the layout becomes
+        "empty paragraphs → body → signature" instead of the
+        default "empty paragraphs → signature → body".  Used by
+        NotesView's "Send as mail" action so the recipient sees
+        the note content with the user's signature *below* it,
+        not stranded above an empty body.  Default `false`. */
+    bodyAboveSignature?: boolean
     /** When Compose is opened by clicking "Edit" on an existing draft
         in the Drafts folder, this points at the server-side copy we
         opened from. Once the user sends or re-saves, that copy needs
@@ -539,6 +548,17 @@
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
     let lead = '<p></p><p></p>'
+
+    // `bodyAboveSignature` flips the layout for user-authored
+    // seeds (e.g. NotesView's "Send as mail"): the body becomes
+    // part of the lead, before the signature, and `html` is
+    // emptied so the trailing concat doesn't double-stamp it.
+    // Default path leaves `body` at the bottom (replies / forwards
+    // / quoted history).
+    if (initial?.bodyAboveSignature && html) {
+      lead += html
+      html = ''
+    }
 
     // Signature: best-effort grab of the active account at init
     // time so replies open with the user's name already attached.
