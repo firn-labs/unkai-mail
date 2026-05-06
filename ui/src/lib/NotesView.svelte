@@ -34,6 +34,7 @@
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
   import type { ComposeInitial } from './Compose.svelte'
+  import Icon from './Icon.svelte'
   import NotesMarkdownEditor from './NotesMarkdownEditor.svelte'
 
   interface NextcloudAccount {
@@ -557,12 +558,13 @@
     {/if}
 
     <button
-      class="btn btn-sm preset-outlined-surface-500"
+      class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
       onclick={() => syncNow()}
       disabled={syncing || !accountId}
       title="Refresh from Nextcloud"
+      aria-label="Refresh from Nextcloud"
     >
-      {syncing ? '⟳' : '↻'}
+      <Icon name="refresh" size={16} class={syncing ? 'animate-spin' : ''} />
     </button>
     <button
       class="btn btn-sm preset-filled-primary-500"
@@ -590,7 +592,7 @@
           class="notes-side-row {selectionMatches(selection, { kind: 'all' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'all' })}
         >
-          <span class="notes-side-icon">📋</span>
+          <span class="notes-side-icon"><Icon name="notes" size={16} /></span>
           <span class="flex-1 truncate text-left">All notes</span>
           <span class="notes-side-count">{totalNotes}</span>
         </button>
@@ -598,7 +600,7 @@
           class="notes-side-row {selectionMatches(selection, { kind: 'favorites' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'favorites' })}
         >
-          <span class="notes-side-icon">⭐</span>
+          <span class="notes-side-icon text-warning-500"><Icon name="star" size={16} /></span>
           <span class="flex-1 truncate text-left">Favorites</span>
           <span class="notes-side-count">{favoriteCount}</span>
         </button>
@@ -606,7 +608,7 @@
           class="notes-side-row {selectionMatches(selection, { kind: 'uncategorized' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'uncategorized' })}
         >
-          <span class="notes-side-icon">📄</span>
+          <span class="notes-side-icon"><Icon name="drafts" size={16} /></span>
           <span class="flex-1 truncate text-left">Uncategorized</span>
           <span class="notes-side-count">{uncategorizedCount}</span>
         </button>
@@ -641,7 +643,7 @@
               class="flex-1 flex items-center gap-1.5 truncate text-left"
               onclick={() => (selection = { kind: 'category', path: node.path })}
             >
-              <span class="notes-side-icon">📁</span>
+              <span class="notes-side-icon"><Icon name="files" size={16} /></span>
               <span class="truncate">{node.name}</span>
             </button>
             {#if node.descendantCount > 0}
@@ -661,10 +663,13 @@
 
         <button
           type="button"
-          class="notes-side-add"
+          class="notes-side-add inline-flex items-center justify-center gap-1.5"
           onclick={addFolder}
           disabled={!accountId}
-        >+ Add folder</button>
+        >
+          <Icon name="add-folder" size={14} />
+          <span>Add folder</span>
+        </button>
       </aside>
 
       <!-- List pane -->
@@ -691,9 +696,11 @@
               onclick={() => openNote(n)}
             >
               <div class="flex items-center justify-between mb-1 gap-2">
-                <span class="text-sm font-medium truncate flex-1">
-                  {#if n.favorite}<span class="text-warning-500 mr-1">★</span>{/if}
-                  {n.title || '(untitled)'}
+                <span class="text-sm font-medium truncate flex-1 inline-flex items-center gap-1">
+                  {#if n.favorite}
+                    <span class="text-warning-500 shrink-0"><Icon name="star" size={12} /></span>
+                  {/if}
+                  <span class="truncate">{n.title || '(untitled)'}</span>
                 </span>
                 <span class="text-xs text-surface-500 shrink-0">{fmtDate(n.modified)}</span>
               </div>
@@ -701,7 +708,9 @@
                 <p class="text-xs text-surface-500 truncate">{preview(n)}</p>
               {/if}
               {#if n.category}
-                <p class="text-[10px] text-surface-400 mt-1 truncate">📁 {n.category}</p>
+                <p class="text-[10px] text-surface-400 mt-1 truncate inline-flex items-center gap-1">
+                  <Icon name="files" size={11} />{n.category}
+                </p>
               {/if}
             </button>
           {/each}
@@ -732,21 +741,31 @@
                 <span class="text-xs text-error-500">Save failed</span>
               {/if}
               <button
-                class="btn btn-sm preset-outlined-surface-500"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={toggleFavorite}
                 title={open.favorite ? 'Unstar' : 'Star'}
-              >{open.favorite ? '★' : '☆'}</button>
+                aria-label={open.favorite ? 'Unstar note' : 'Star note'}
+              >
+                <Icon
+                  name="star"
+                  size={16}
+                  class={open.favorite ? 'text-warning-500' : 'text-surface-400'}
+                />
+              </button>
               <button
                 class="btn btn-sm preset-outlined-surface-500"
                 onclick={() => (showPreview = !showPreview)}
-                title={showPreview ? 'Hide preview' : 'Show preview'}
+                title={showPreview ? 'Hide rendered preview' : 'Show rendered preview'}
                 aria-pressed={showPreview}
-              >{showPreview ? '◨' : '◧'}</button>
+              >{showPreview ? 'Source' : 'Preview'}</button>
               <button
-                class="btn btn-sm preset-outlined-primary-500"
+                class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
                 onclick={sendAsEmail}
                 title="Open Compose with this note as the message body"
-              >✉ Send as email</button>
+              >
+                <Icon name="email-envelope" size={14} />
+                <span>Send as email</span>
+              </button>
               <button
                 class="btn btn-sm preset-outlined-error-500"
                 onclick={deleteSelected}
