@@ -1468,25 +1468,19 @@
     <!-- Primary action — same shape + filled-primary preset as
          the mail Compose CTA / Notes' "New note" button.  Back
          navigation lives in the app-wide IconRail; the per-tab
-         title was redundant with the active tab strip below. -->
+         title was redundant with the active tab strip below.
+         "+ New contact" stays on both tabs — creating contacts is
+         the universal action across this view, and the Lists tab
+         already has its own "+ Mailing lists" affordance inline
+         with the section header further down the sidebar. -->
     <div class="p-3">
-      {#if activeTab === 'contacts'}
-        <button
-          class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
-          onclick={startNew}
-        >
-          <span class="text-lg font-semibold leading-none">+</span>
-          New contact
-        </button>
-      {:else}
-        <button
-          class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
-          onclick={openNewMailingListForm}
-        >
-          <span class="text-lg font-semibold leading-none">+</span>
-          New list
-        </button>
-      {/if}
+      <button
+        class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
+        onclick={startNew}
+      >
+        <span class="text-lg font-semibold leading-none">+</span>
+        New contact
+      </button>
     </div>
     <!-- Tab strip.  Buttons explicitly stop propagation +
          set activeTab on a separate handler so any pending
@@ -1989,7 +1983,7 @@
              `pickerOpen` swaps the bound query so the same input
              alternates between filtering members and filtering the
              contact-picker pool. -->
-        <div class="border-b border-surface-200 dark:border-surface-700 p-2">
+        <div class="border-b border-surface-200 dark:border-surface-700 p-2 flex flex-col">
           <div class="relative w-full">
             <span
               class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
@@ -2034,8 +2028,13 @@
             {/if}
           </div>
           {#if editable}
+            <!-- Compact "+ Add contact" / "Done" toggle — same
+                 shape as NC Files' "+ New folder" affordance:
+                 primary-text, no border, subtle primary halo on
+                 hover.  Sits below the search bar so it doesn't
+                 fight the search input for visual weight. -->
             <button
-              class="btn preset-filled-primary-500 w-full mt-2 inline-flex items-center justify-center gap-1.5"
+              class="self-start mt-2 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-md px-2 py-1"
               onclick={() => {
                 pickerOpen = !pickerOpen
                 pickerQuery = ''
@@ -2044,7 +2043,7 @@
               {#if pickerOpen}
                 Done
               {:else}
-                <span class="text-lg font-semibold leading-none">+</span>
+                <span class="font-semibold">+</span>
                 Add contact
               {/if}
             </button>
