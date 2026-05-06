@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-03 (URLhaus malicious-URL feed via abuse.ch — CC0-1.0, no Rust/JS dependency added; the data itself is fetched at runtime from `urlhaus.abuse.ch/downloads/csv_recent/` and stored locally in the encrypted SQLCipher cache).
+Last manual reconciliation: 2026-05-06 (CodeMirror 6 + `marked` added for the Notes UI overhaul, #138 — both MIT, no licence pressure).
 
 ---
 
@@ -197,6 +197,8 @@ us, that's GPL-3.0 via `rrule`.
 | `@tiptap/pm` | MIT | ProseMirror runtime bundled by Tiptap. |
 | `@tiptap/starter-kit` | MIT | Default Tiptap node bundle. |
 | `@tiptap/suggestion` | MIT | Mention / autocomplete plugin. |
+| `codemirror` and `@codemirror/*` | MIT | Notes markdown editor (#138) — meta package + grammar / state / view / autocomplete sub-packages. |
+| `marked` | MIT | Markdown → HTML renderer for the Notes preview pane (#138). |
 | `dompurify` | MPL-2.0 OR Apache-2.0 | HTML sanitiser for inbound mail bodies. We can pick MPL or Apache; either way no licence pressure on our app. |
 | `emoji-picker-element` | MIT | Emoji picker web component. |
 | `svelte-tiptap` | MIT | Svelte wrapper around Tiptap. |
