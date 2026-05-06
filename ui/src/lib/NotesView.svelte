@@ -100,6 +100,24 @@
   let newFolderName = $state('')
   let newFolderInput: HTMLInputElement | undefined = $state()
 
+  /** Per-folder action menu state — populated by both the
+   *  three-dot trigger and the right-click handler so the two
+   *  surfaces share one menu component (CLAUDE.md #UI
+   *  conventions). */
+  let folderMenu = $state<{ path: string; x: number; y: number } | null>(null)
+  /** Confirmation modal for "Remove folder X (N notes will be
+   *  uncategorized)".  Pending-only folders skip this and just
+   *  drop out of localStorage; only server-real folders surface
+   *  it because that's the destructive case. */
+  let folderDeleteConfirm = $state<{
+    path: string
+    affectedCount: number
+  } | null>(null)
+  /** Disables the menu items while a remove-folder request is
+   *  in flight to stop double-clicks from spawning parallel
+   *  PUTs that race each other on the etag. */
+  let folderOpBusy = $state(false)
+
   /** Currently selected note id, or `null` for the empty-state pane. */
   let selectedId = $state<number | null>(null)
   /** Working copy of the selected note's editable fields. */
@@ -410,6 +428,110 @@
     newFolderName = ''
   }
 
+  /** Notes that live in `path` or any of its sub-folders. */
+  function notesInFolderTree(path: string): Note[] {
+    return notes.filter(
+      (n) => n.category === path || n.category.startsWith(path + '/'),
+    )
+  }
+
+  /** Open the folder action menu — used by both the three-dot
+   *  trigger (positions to the right of the button) and the
+   *  right-click handler (positions at the cursor). */
+  function openFolderMenu(path: string, x: number, y: number) {
+    folderMenu = { path, x, y }
+  }
+
+  function startRemoveFolder(path: string) {
+    folderMenu = null
+    const affected = notesInFolderTree(path)
+    if (affected.length === 0) {
+      // Pending-only or otherwise empty — just drop the folder
+      // from the in-memory pending set.  Nothing destructive,
+      // no confirm.
+      if (pendingFolders.has(path)) {
+        const next = new Set(pendingFolders)
+        next.delete(path)
+        pendingFolders = next
+        savePendingFolders()
+      }
+      if (
+        selection.kind === 'category'
+        && (selection.path === path || selection.path.startsWith(path + '/'))
+      ) {
+        selection = { kind: 'all' }
+      }
+      return
+    }
+    folderDeleteConfirm = { path, affectedCount: affected.length }
+  }
+
+  async function confirmRemoveFolder() {
+    if (!folderDeleteConfirm || !accountId) return
+    const path = folderDeleteConfirm.path
+    folderOpBusy = true
+    try {
+      // Walk affected notes once (caching from the closure
+      // doesn't help — the list mutates as we update each one).
+      const targets = notesInFolderTree(path)
+      for (const n of targets) {
+        const updated = await invoke<Note>('update_nextcloud_note', {
+          ncId: accountId,
+          noteId: n.id,
+          etag: n.etag,
+          title: null,
+          content: null,
+          category: '',
+          favorite: null,
+        })
+        const rest = notes.filter((x) => x.id !== updated.id)
+        notes = [updated, ...rest].sort((a, b) => b.modified - a.modified)
+      }
+      if (pendingFolders.has(path)) {
+        const next = new Set(pendingFolders)
+        next.delete(path)
+        pendingFolders = next
+        savePendingFolders()
+      }
+      if (
+        selection.kind === 'category'
+        && (selection.path === path || selection.path.startsWith(path + '/'))
+      ) {
+        selection = { kind: 'all' }
+      }
+      folderDeleteConfirm = null
+    } catch (e) {
+      error = formatError(e) || 'Failed to remove folder'
+    } finally {
+      folderOpBusy = false
+    }
+  }
+
+  function cancelRemoveFolder() {
+    folderDeleteConfirm = null
+  }
+
+  // Outside-click + Escape dismissal for the folder action menu.
+  // setTimeout(..., 0) so the click that *opened* the menu doesn't
+  // immediately close it (the document mousedown listener fires
+  // *before* the click on the trigger settles).
+  $effect(() => {
+    if (!folderMenu) return
+    const onMouseDown = () => (folderMenu = null)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') folderMenu = null
+    }
+    const t = setTimeout(() => {
+      document.addEventListener('mousedown', onMouseDown)
+      document.addEventListener('keydown', onKey)
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  })
+
   // Auto-focus the inline draft input the moment the row mounts.
   // The effect re-runs when `creatingFolder` flips on; the
   // bind:this is populated by the time the effect commits.
@@ -666,7 +788,18 @@
           {@const isCollapsed = collapsedFolders.has(node.path)}
           {@const hasChildren = node.children.length > 0}
           {@const isSelected = selectionMatches(selection, { kind: 'category', path: node.path })}
-          <div class="notes-side-row {isSelected ? 'is-active' : ''}" style="padding-left: {0.5 + depth * 0.75}rem">
+          {@const menuOpen = folderMenu?.path === node.path}
+          <div
+            class="notes-side-row group {isSelected ? 'is-active' : ''}"
+            style="padding-left: {0.5 + depth * 0.75}rem"
+            role="treeitem"
+            tabindex="-1"
+            aria-selected={isSelected}
+            oncontextmenu={(e) => {
+              e.preventDefault()
+              openFolderMenu(node.path, e.clientX, e.clientY)
+            }}
+          >
             {#if hasChildren}
               <button
                 type="button"
@@ -690,9 +823,24 @@
               <span class="notes-side-icon"><Icon name="files" size={16} /></span>
               <span class="truncate">{node.name}</span>
             </button>
-            {#if node.descendantCount > 0}
-              <span class="notes-side-count">{node.descendantCount}</span>
+            {#if node.descendantCount > 0 && !menuOpen}
+              <span class="notes-side-count group-hover:hidden">{node.descendantCount}</span>
             {/if}
+            <!-- Three-dot trigger.  Mirrors the right-click menu so
+                 trackpad / touchscreen users get the same actions
+                 (CLAUDE.md: "Three-dot button signals 'this row has
+                 actions' / Right-click does the same thing"). -->
+            <button
+              type="button"
+              class="notes-side-more {menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}"
+              title="Folder actions"
+              aria-label="Folder actions"
+              onclick={(e) => {
+                e.stopPropagation()
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                openFolderMenu(node.path, r.right + 4, r.top)
+              }}
+            >⋯</button>
           </div>
           {#if hasChildren && !isCollapsed}
             {#each node.children as child (child.path)}
@@ -940,6 +1088,68 @@
   {/if}
 </div>
 
+<!-- Folder action menu — shared between the three-dot trigger
+     and right-click.  `position: fixed` so it floats above the
+     sidebar's overflow:auto without getting clipped. -->
+{#if folderMenu}
+  <div
+    class="fixed z-60 min-w-44 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    style="left: {Math.min(folderMenu.x, window.innerWidth - 200)}px; top: {Math.min(folderMenu.y, window.innerHeight - 80)}px;"
+    role="menu"
+    tabindex="-1"
+    onmousedown={(e) => e.stopPropagation()}
+  >
+    <button
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+      disabled={folderOpBusy}
+      onclick={() => startRemoveFolder(folderMenu!.path)}
+    >
+      <Icon name="delete-folder" size={16} />
+      <span>Remove folder</span>
+    </button>
+  </div>
+{/if}
+
+<!-- Confirmation modal for destructive folder removal.  Pending
+     folders skip this — they have no notes attached, so dropping
+     them is a no-op the user shouldn't have to confirm. -->
+{#if folderDeleteConfirm}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => {
+      if (e.target === e.currentTarget) cancelRemoveFolder()
+    }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-md shadow-xl p-5 max-w-md w-full mx-4 border border-surface-200 dark:border-surface-700">
+      <h2 class="text-base font-semibold mb-2">
+        Remove folder "{folderDeleteConfirm.path}"?
+      </h2>
+      <p class="text-sm text-surface-600 dark:text-surface-300 mb-4">
+        {folderDeleteConfirm.affectedCount}
+        {folderDeleteConfirm.affectedCount === 1 ? 'note' : 'notes'}
+        in this folder (and any sub-folders) will be moved to
+        <strong>Uncategorized</strong>.  The notes themselves
+        aren't deleted.
+      </p>
+      <div class="flex items-center justify-end gap-2">
+        <button
+          class="btn btn-sm preset-tonal"
+          onclick={cancelRemoveFolder}
+          disabled={folderOpBusy}
+        >Cancel</button>
+        <button
+          class="btn btn-sm preset-filled-error-500"
+          onclick={confirmRemoveFolder}
+          disabled={folderOpBusy}
+        >{folderOpBusy ? 'Removing…' : 'Remove'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   /* Sidebar row affordance — flat, hover-tinted, primary-flagged
      on the active selection.  No box around individual rows; the
@@ -995,6 +1205,27 @@
     width: 1rem;
     flex-shrink: 0;
   }
+  :global(.notes-side-more) {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex-shrink: 0;
+    border-radius: 0.25rem;
+    color: var(--color-surface-500);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    line-height: 1;
+    font-size: 0.875rem;
+    margin-left: 0.25rem;
+    transition: opacity 80ms ease;
+  }
+  :global(.notes-side-more:hover) {
+    background: var(--color-surface-200);
+  }
+  :global([data-mode='dark'] .notes-side-more:hover) {
+    background: var(--color-surface-700);
+  }
+
   :global(.notes-side-draft-input) {
     flex: 1;
     min-width: 0;
