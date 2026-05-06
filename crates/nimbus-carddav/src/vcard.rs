@@ -186,9 +186,23 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     let mut keys: Vec<String> = Vec::new();
 
     for prop in &card.properties {
-        let name = prop.name.to_ascii_uppercase();
+        let upper = prop.name.to_ascii_uppercase();
+        // Strip the optional group qualifier per RFC 6350 §3.3:
+        // properties may be written as `<group>.<PROPERTY>` (Apple-
+        // style `item1.ADR`, `item2.EMAIL`, etc.) to link related
+        // properties — typically an ADR or TEL with a sibling
+        // X-ABLABEL that gives it a custom label.  The qualifier
+        // is just a free-form group name; it doesn't change how
+        // the property value is interpreted, so dispatch on the
+        // unqualified name.  Without this stripping every Apple-
+        // exported (or just relabelled-in-NC-Contacts) ADR / TEL /
+        // EMAIL would silently fall through the match and disappear.
+        let name = upper
+            .rsplit_once('.')
+            .map(|(_, n)| n)
+            .unwrap_or(upper.as_str());
         let Some(value) = &prop.value else { continue };
-        match name.as_str() {
+        match name {
             "UID" => uid = Some(value.clone()),
             "FN" => formatted_name = value.clone(),
             "N" => {
@@ -991,6 +1005,34 @@ mod tests {
         assert_eq!(p.addresses[0].street, "Hauptstr. 1");
         assert_eq!(p.addresses[0].locality, "Berlin");
         assert_eq!(p.addresses[1].kind, "home");
+    }
+
+    /// Regression: Apple-style group-qualified property names
+    /// (`item1.ADR`, `item2.TEL`, …) were silently dropped because
+    /// the dispatch matched the literal property name and couldn't
+    /// see past the `<group>.` prefix.  Strip it before the match.
+    #[test]
+    fn parses_apple_group_qualified_properties() {
+        let raw = "BEGIN:VCARD\r\n\
+                   VERSION:3.0\r\n\
+                   UID:grp-1\r\n\
+                   FN:Test User\r\n\
+                   item1.ADR;type=HOME;type=pref:;;Teststraße 6;Nenningen;;;Deutschland\r\n\
+                   item2.TEL;type=CELL:+49 555 0100\r\n\
+                   item3.EMAIL;type=INTERNET:user@example.com\r\n\
+                   item4.URL:https://example.com\r\n\
+                   END:VCARD\r\n";
+        let p = parse_vcard(raw).unwrap();
+        assert_eq!(p.addresses.len(), 1, "ADR should parse despite group prefix");
+        assert_eq!(p.addresses[0].street, "Teststraße 6");
+        assert_eq!(p.addresses[0].locality, "Nenningen");
+        assert_eq!(p.addresses[0].country, "Deutschland");
+        assert_eq!(p.addresses[0].kind, "home");
+        assert_eq!(p.phones.len(), 1, "TEL should parse despite group prefix");
+        assert_eq!(p.phones[0].value, "+49 555 0100");
+        assert_eq!(p.emails.len(), 1, "EMAIL should parse despite group prefix");
+        assert_eq!(p.emails[0].value, "user@example.com");
+        assert_eq!(p.urls.len(), 1, "URL should parse despite group prefix");
     }
 
     #[test]
