@@ -12,6 +12,7 @@
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { formatError } from './errors'
+  import { m } from '../paraglide/messages'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
 
@@ -1885,8 +1886,8 @@
             type="button"
             onclick={() => void pickPhoto()}
             class="relative group w-20 h-20 rounded-full overflow-hidden bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-2xl font-semibold cursor-pointer hover:ring-2 hover:ring-primary-500/50 transition"
-            title="Click to upload a photo"
-            aria-label="Change contact photo"
+            title={m.contact_form_avatar_title()}
+            aria-label={m.contact_form_avatar_aria()}
           >
             {#if formAvatarSrc()}
               <img src={formAvatarSrc()} alt="" class="w-full h-full object-cover" />
@@ -1894,18 +1895,18 @@
               <span>{(formName || formGiven || '?').slice(0, 1).toUpperCase()}</span>
             {/if}
             <span class="absolute inset-0 flex items-center justify-center bg-black/40 text-white text-xs opacity-0 group-hover:opacity-100 transition">
-              Upload
+              {m.contact_form_avatar_overlay()}
             </span>
           </button>
           <div class="flex flex-col flex-1 min-w-0">
             <h3 class="text-lg font-semibold truncate">
               {selectedId === 'new'
-                ? 'New contact'
-                : formName || `${formGiven} ${formFamily}`.trim() || '(no name)'}
+                ? m.contact_form_new_heading()
+                : formName || `${formGiven} ${formFamily}`.trim() || m.contact_form_no_name()}
             </h3>
             {#if selectedContact}
               <span class="text-xs text-surface-500 truncate">
-                From {accountLabel(selectedContact.nextcloud_account_id)}
+                {m.contact_form_from_account({ account: accountLabel(selectedContact.nextcloud_account_id) })}
               </span>
             {/if}
             {#if selectedPhotoBytes}
@@ -1916,81 +1917,81 @@
                   selectedPhotoBytes = null
                   formPhotoMime = null
                 }}
-              >Remove photo</button>
+              >{m.contact_form_remove_photo()}</button>
             {/if}
           </div>
         </div>
 
         <!-- ── Personal ──────────────────────────────────────── -->
         <details class="contact-section" open>
-          <summary class="contact-section-summary">Personal</summary>
+          <summary class="contact-section-summary">{m.contact_form_section_personal()}</summary>
           <div class="contact-section-body">
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
-                <span>Prefix</span>
+                <span>{m.contact_form_label_prefix()}</span>
                 <input class="input" bind:value={formPrefix} placeholder="Dr." />
               </label>
               <label class="label">
-                <span>Suffix</span>
+                <span>{m.contact_form_label_suffix()}</span>
                 <input class="input" bind:value={formSuffix} placeholder="Jr." />
               </label>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
-                <span>Given name</span>
+                <span>{m.contact_form_label_given_name()}</span>
                 <input class="input" bind:value={formGiven} placeholder="Jane" />
               </label>
               <label class="label">
-                <span>Family name</span>
+                <span>{m.contact_form_label_family_name()}</span>
                 <input class="input" bind:value={formFamily} placeholder="Doe" />
               </label>
             </div>
             <label class="label">
-              <span>Additional names</span>
-              <input class="input" bind:value={formAdditional} placeholder="Middle name(s)" />
+              <span>{m.contact_form_label_additional_names()}</span>
+              <input class="input" bind:value={formAdditional} placeholder={m.contact_form_hint_additional_names()} />
             </label>
             <label class="label">
-              <span>Display name <span class="text-surface-500">(auto-derived if blank)</span></span>
+              <span>{m.contact_form_label_display_name()} <span class="text-surface-500">({m.contact_form_hint_display_name_auto()})</span></span>
               <input class="input" bind:value={formName} placeholder="Jane Doe" />
             </label>
             <label class="label">
-              <span>Nickname</span>
+              <span>{m.contact_form_label_nickname()}</span>
               <input class="input" bind:value={formNickname} placeholder="JD" />
             </label>
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
-                <span>Birthday</span>
+                <span>{m.contact_form_label_birthday()}</span>
                 <input class="input" bind:value={formBirthday} placeholder="1985-10-31" />
               </label>
               <label class="label">
-                <span>Anniversary</span>
+                <span>{m.contact_form_label_anniversary()}</span>
                 <input class="input" bind:value={formAnniversary} placeholder="2018-06-15" />
               </label>
             </div>
             <label class="label">
-              <span>Gender</span>
-              <input class="input" bind:value={formGender} placeholder="Free-form (M / F / non-binary / …)" />
+              <span>{m.contact_form_label_gender()}</span>
+              <input class="input" bind:value={formGender} placeholder={m.contact_form_placeholder_gender()} />
             </label>
           </div>
         </details>
 
         <!-- ── Communication ─────────────────────────────────── -->
         <details class="contact-section" open>
-          <summary class="contact-section-summary">Communication</summary>
+          <summary class="contact-section-summary">{m.contact_form_section_communication()}</summary>
           <div class="contact-section-body">
             <div class="space-y-2">
               <div class="flex items-center justify-between">
-                <span class="text-sm font-medium">Email addresses</span>
+                <span class="text-sm font-medium">{m.contact_form_label_emails()}</span>
                 <button type="button" class="btn btn-sm preset-tonal" onclick={addEmail}>
-                  + Add email
+                  {m.contact_form_button_add_email()}
                 </button>
               </div>
               {#each formEmails as email, i (i)}
                 <div class="flex items-center gap-2">
                   <select class="select w-28" bind:value={email.kind}>
-                    <option value="home">Home</option>
-                    <option value="work">Work</option>
-                    <option value="other">Other</option>
+                    <option value="home">{m.contact_form_kind_home()}</option>
+                    <option value="work">{m.contact_form_kind_work()}</option>
+                    <option value="other">{m.contact_form_kind_other()}</option>
                   </select>
                   <input
                     class="input flex-1"
@@ -2002,26 +2003,26 @@
                     type="button"
                     class="text-xs text-error-500 hover:underline"
                     onclick={() => removeEmail(i)}
-                  >Remove</button>
+                  >{m.contact_form_button_remove()}</button>
                 </div>
               {/each}
             </div>
 
             <div class="space-y-2">
               <div class="flex items-center justify-between">
-                <span class="text-sm font-medium">Phone numbers</span>
+                <span class="text-sm font-medium">{m.contact_form_label_phones()}</span>
                 <button type="button" class="btn btn-sm preset-tonal" onclick={addPhone}>
-                  + Add phone
+                  {m.contact_form_button_add_phone()}
                 </button>
               </div>
               {#each formPhones as phone, i (i)}
                 <div class="flex items-center gap-2">
                   <select class="select w-28" bind:value={phone.kind}>
-                    <option value="cell">Mobile</option>
-                    <option value="work">Work</option>
-                    <option value="home">Home</option>
-                    <option value="fax">Fax</option>
-                    <option value="other">Other</option>
+                    <option value="cell">{m.contact_form_kind_mobile()}</option>
+                    <option value="work">{m.contact_form_kind_work()}</option>
+                    <option value="home">{m.contact_form_kind_home()}</option>
+                    <option value="fax">{m.contact_form_kind_fax()}</option>
+                    <option value="other">{m.contact_form_kind_other()}</option>
                   </select>
                   <input
                     class="input flex-1"
@@ -2032,39 +2033,39 @@
                     type="button"
                     class="text-xs text-error-500 hover:underline"
                     onclick={() => removePhone(i)}
-                  >Remove</button>
+                  >{m.contact_form_button_remove()}</button>
                 </div>
               {/each}
             </div>
 
             <div class="space-y-2">
               <div class="flex items-center justify-between">
-                <span class="text-sm font-medium">Instant messaging</span>
+                <span class="text-sm font-medium">{m.contact_form_label_impp()}</span>
                 <button type="button" class="btn btn-sm preset-tonal" onclick={addImpp}>
-                  + Add IM
+                  {m.contact_form_button_add_impp()}
                 </button>
               </div>
               {#each formImpp as im, i (i)}
                 <div class="flex items-center gap-2">
                   <select class="select w-32" bind:value={im.kind}>
-                    <option value="matrix">Matrix</option>
-                    <option value="xmpp">XMPP</option>
-                    <option value="telegram">Telegram</option>
-                    <option value="signal">Signal</option>
-                    <option value="skype">Skype</option>
-                    <option value="whatsapp">WhatsApp</option>
-                    <option value="other">Other</option>
+                    <option value="matrix">{m.contact_form_kind_matrix()}</option>
+                    <option value="xmpp">{m.contact_form_kind_xmpp()}</option>
+                    <option value="telegram">{m.contact_form_kind_telegram()}</option>
+                    <option value="signal">{m.contact_form_kind_signal()}</option>
+                    <option value="skype">{m.contact_form_kind_skype()}</option>
+                    <option value="whatsapp">{m.contact_form_kind_whatsapp()}</option>
+                    <option value="other">{m.contact_form_kind_other()}</option>
                   </select>
                   <input
                     class="input flex-1"
                     bind:value={im.value}
-                    placeholder="@user:server"
+                    placeholder={m.contact_form_placeholder_impp()}
                   />
                   <button
                     type="button"
                     class="text-xs text-error-500 hover:underline"
                     onclick={() => removeImpp(i)}
-                  >Remove</button>
+                  >{m.contact_form_button_remove()}</button>
                 </div>
               {/each}
             </div>
@@ -2073,24 +2074,24 @@
 
         <!-- ── Work ─────────────────────────────────────────── -->
         <details class="contact-section">
-          <summary class="contact-section-summary">Work</summary>
+          <summary class="contact-section-summary">{m.contact_form_section_work()}</summary>
           <div class="contact-section-body">
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
-                <span>Organization</span>
+                <span>{m.contact_form_label_organization()}</span>
                 <input class="input" bind:value={formOrg} placeholder="Example Corp" />
               </label>
               <label class="label">
-                <span>Job title</span>
+                <span>{m.contact_form_label_job_title()}</span>
                 <input class="input" bind:value={formTitle} placeholder="Product Manager" />
               </label>
             </div>
             <label class="label">
-              <span>Role <span class="text-surface-500">(function within the org)</span></span>
+              <span>{m.contact_form_label_role()} <span class="text-surface-500">({m.contact_form_hint_role()})</span></span>
               <input class="input" bind:value={formRole} placeholder="Project Lead" />
             </label>
             <div>
-              <span class="text-sm font-medium mb-1 block">Categories</span>
+              <span class="text-sm font-medium mb-1 block">{m.contact_form_label_categories()}</span>
               <div class="flex flex-wrap gap-1.5 mb-2">
                 {#each formCategories as cat, i (cat)}
                   <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 text-xs">
@@ -2106,7 +2107,7 @@
               <input
                 class="input"
                 bind:value={formCategoryDraft}
-                placeholder="Type and press Enter…"
+                placeholder={m.contact_form_placeholder_chip()}
                 onkeydown={(e) => {
                   if (e.key === 'Enter' || e.key === ',') {
                     e.preventDefault()
@@ -2123,44 +2124,44 @@
 
         <!-- ── Address & Web ────────────────────────────────── -->
         <details class="contact-section">
-          <summary class="contact-section-summary">Address &amp; Web</summary>
+          <summary class="contact-section-summary">{m.contact_form_section_address_web()}</summary>
           <div class="contact-section-body">
             <div class="space-y-2">
               <div class="flex items-center justify-between">
-                <span class="text-sm font-medium">Addresses</span>
+                <span class="text-sm font-medium">{m.contact_form_label_addresses()}</span>
                 <button type="button" class="btn btn-sm preset-tonal" onclick={addAddress}>
-                  + Add address
+                  {m.contact_form_button_add_address()}
                 </button>
               </div>
               {#each formAddresses as addr, i (i)}
                 <div class="card p-3 bg-surface-50 dark:bg-surface-900/50 rounded-md space-y-2">
                   <div class="flex items-center gap-2">
                     <select class="select w-32" bind:value={addr.kind}>
-                      <option value="home">Home</option>
-                      <option value="work">Work</option>
-                      <option value="other">Other</option>
+                      <option value="home">{m.contact_form_kind_home()}</option>
+                      <option value="work">{m.contact_form_kind_work()}</option>
+                      <option value="other">{m.contact_form_kind_other()}</option>
                     </select>
                     <button
                       type="button"
                       class="ml-auto text-xs text-error-500 hover:underline"
                       onclick={() => removeAddress(i)}
-                    >Remove</button>
+                    >{m.contact_form_button_remove()}</button>
                   </div>
-                  <input class="input" bind:value={addr.street} placeholder="Street" />
+                  <input class="input" bind:value={addr.street} placeholder={m.contact_form_placeholder_street()} />
                   <div class="grid grid-cols-2 gap-2">
-                    <input class="input" bind:value={addr.locality} placeholder="City" />
-                    <input class="input" bind:value={addr.region} placeholder="Region / State" />
+                    <input class="input" bind:value={addr.locality} placeholder={m.contact_form_placeholder_city()} />
+                    <input class="input" bind:value={addr.region} placeholder={m.contact_form_placeholder_region()} />
                   </div>
                   <div class="grid grid-cols-2 gap-2">
-                    <input class="input" bind:value={addr.postal_code} placeholder="Postal code" />
-                    <input class="input" bind:value={addr.country} placeholder="Country" />
+                    <input class="input" bind:value={addr.postal_code} placeholder={m.contact_form_placeholder_postal()} />
+                    <input class="input" bind:value={addr.country} placeholder={m.contact_form_placeholder_country()} />
                   </div>
                 </div>
               {/each}
             </div>
 
             <label class="label">
-              <span>Websites <span class="text-surface-500">(one per line)</span></span>
+              <span>{m.contact_form_label_websites()} <span class="text-surface-500">({m.contact_form_hint_websites_one_per_line()})</span></span>
               <textarea
                 class="textarea"
                 rows="2"
@@ -2170,7 +2171,7 @@
             </label>
 
             <label class="label">
-              <span>Living location <span class="text-surface-500">(GEO)</span></span>
+              <span>{m.contact_form_label_geo()} <span class="text-surface-500">({m.contact_form_hint_geo()})</span></span>
               <input
                 class="input"
                 bind:value={formGeo}
@@ -2182,10 +2183,10 @@
 
         <!-- ── Other ────────────────────────────────────────── -->
         <details class="contact-section">
-          <summary class="contact-section-summary">Other</summary>
+          <summary class="contact-section-summary">{m.contact_form_section_other()}</summary>
           <div class="contact-section-body">
             <div>
-              <span class="text-sm font-medium mb-1 block">Languages</span>
+              <span class="text-sm font-medium mb-1 block">{m.contact_form_label_languages()}</span>
               <div class="flex flex-wrap gap-1.5 mb-2">
                 {#each formLanguages as lang, i (lang)}
                   <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700 text-xs">
@@ -2201,7 +2202,7 @@
               <input
                 class="input"
                 bind:value={formLanguageDraft}
-                placeholder="en-US, de, fr… (Enter to add)"
+                placeholder={m.contact_form_placeholder_languages()}
                 onkeydown={(e) => {
                   if (e.key === 'Enter' || e.key === ',') {
                     e.preventDefault()
@@ -2214,20 +2215,20 @@
               />
             </div>
             <label class="label">
-              <span>Timezone</span>
+              <span>{m.contact_form_label_timezone()}</span>
               <input
                 class="input"
                 bind:value={formTimezone}
-                placeholder="Europe/Berlin or +02:00"
+                placeholder={m.contact_form_placeholder_timezone()}
               />
             </label>
             <label class="label">
-              <span>Notes</span>
+              <span>{m.contact_form_label_notes()}</span>
               <textarea
                 class="textarea"
                 rows="3"
                 bind:value={formNote}
-                placeholder="Anything you want to remember about this contact"
+                placeholder={m.contact_form_placeholder_notes()}
               ></textarea>
             </label>
           </div>
