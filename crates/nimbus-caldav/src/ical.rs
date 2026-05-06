@@ -747,12 +747,22 @@ pub fn surgical_set_partstat(
     user_email: &str,
     partstat: &str,
     force_send_reply: bool,
+    comment: Option<&str>,
 ) -> String {
     // Unfold first — RFC 5545 wraps long lines with `CRLF` plus
     // one whitespace character.  We need logical lines to find
     // the user's ATTENDEE row reliably.
     let unfolded = unfold(ics);
     let user_lc = user_email.trim().to_ascii_lowercase();
+    // Normalise the comment: trim, drop any embedded line breaks
+    // (we'd rather emit a single COMMENT and let `fold_line`
+    // handle wrapping than risk ICS confusing newlines with
+    // logical-line breaks).  A blank or whitespace-only string
+    // counts as "no comment" so the caller doesn't have to
+    // sanitise.
+    let normalised_comment: Option<String> = comment
+        .map(|s| s.trim().replace(['\r', '\n'], " "))
+        .filter(|s| !s.is_empty());
 
     // Carry CRLF semantics through: the input may have either
     // `\r\n` (RFC) or `\n` line endings; we normalise to LF
@@ -770,51 +780,94 @@ pub fn surgical_set_partstat(
     //   identifies as Nimbus rather than the originating
     //   client.  Cosmetic but matches what every CalDAV
     //   client does.
+    //
+    // Inside the VEVENT block we also drop any pre-existing
+    // top-level `COMMENT:` so a re-RSVP doesn't accumulate
+    // every previous note (#148).  The fresh COMMENT (if any)
+    // is then injected just before `END:VEVENT` so it lands
+    // inside the same VEVENT as the user's PARTSTAT change —
+    // RFC 5546 expects COMMENT at the component level, not on
+    // the ATTENDEE line.
     let mut matched = false;
     let mut emitted_prodid = false;
-    let edited: Vec<String> = unfolded
-        .lines()
-        .filter_map(|line| {
-            if line.starts_with(' ') || line.starts_with('\t') {
-                // Stray continuation post-unfold (shouldn't
-                // happen, but be safe).
-                return Some(line.to_string());
+    let mut in_vevent = false;
+    let mut edited: Vec<String> = Vec::with_capacity(unfolded.lines().count() + 1);
+    for raw_line in unfolded.lines() {
+        let line = raw_line;
+        if line.starts_with(' ') || line.starts_with('\t') {
+            // Stray continuation post-unfold (shouldn't happen,
+            // but be safe).
+            edited.push(line.to_string());
+            continue;
+        }
+        if line.starts_with("BEGIN:VEVENT") {
+            in_vevent = true;
+            edited.push(line.to_string());
+            continue;
+        }
+        if line.starts_with("END:VEVENT") {
+            // Inject our fresh COMMENT right before END:VEVENT
+            // so it lives inside the component the iTIP broker
+            // is processing.  Skipped when no comment was
+            // supplied — the function is a pure no-op for
+            // existing call sites that pass `None`.
+            if let Some(c) = normalised_comment.as_deref() {
+                edited.push(format!("COMMENT:{}", escape_text(c)));
             }
-            if line.starts_with("METHOD:") || line.starts_with("METHOD;") {
-                // Storage-illegal — drop entirely.
-                return None;
+            in_vevent = false;
+            edited.push(line.to_string());
+            continue;
+        }
+        if line.starts_with("METHOD:") || line.starts_with("METHOD;") {
+            // Storage-illegal — drop entirely.
+            continue;
+        }
+        if line.starts_with("PRODID:") || line.starts_with("PRODID;") {
+            if emitted_prodid {
+                continue;
             }
-            if line.starts_with("PRODID:") || line.starts_with("PRODID;") {
-                if emitted_prodid {
-                    return None;
-                }
-                emitted_prodid = true;
-                return Some(format!(
-                    "PRODID:-//Nimbus Mail//CalDAV {}//EN",
-                    env!("CARGO_PKG_VERSION")
-                ));
+            emitted_prodid = true;
+            edited.push(format!(
+                "PRODID:-//Nimbus Mail//CalDAV {}//EN",
+                env!("CARGO_PKG_VERSION")
+            ));
+            continue;
+        }
+        // Drop any pre-existing top-level COMMENT inside the
+        // VEVENT block so a re-RSVP replaces rather than
+        // appends.  Only when the caller is supplying a fresh
+        // comment; otherwise we preserve whatever was there.
+        if in_vevent
+            && normalised_comment.is_some()
+            && (line.starts_with("COMMENT:") || line.starts_with("COMMENT;"))
+        {
+            continue;
+        }
+        if !line.starts_with("ATTENDEE") {
+            edited.push(line.to_string());
+            continue;
+        }
+        let (head, tail) = match split_property_head(line) {
+            Some(pair) => pair,
+            None => {
+                edited.push(line.to_string());
+                continue;
             }
-            if !line.starts_with("ATTENDEE") {
-                return Some(line.to_string());
-            }
-            let (head, tail) = match split_property_head(line) {
-                Some(pair) => pair,
-                None => return Some(line.to_string()),
-            };
-            let addr = tail
-                .strip_prefix("mailto:")
-                .or_else(|| tail.strip_prefix("MAILTO:"))
-                .unwrap_or(&tail)
-                .trim()
-                .to_ascii_lowercase();
-            if addr != user_lc {
-                return Some(line.to_string());
-            }
-            matched = true;
-            let new_head = rewrite_attendee_params(&head, partstat, force_send_reply);
-            Some(format!("{new_head}:{tail}"))
-        })
-        .collect();
+        };
+        let addr = tail
+            .strip_prefix("mailto:")
+            .or_else(|| tail.strip_prefix("MAILTO:"))
+            .unwrap_or(&tail)
+            .trim()
+            .to_ascii_lowercase();
+        if addr != user_lc {
+            edited.push(line.to_string());
+            continue;
+        }
+        matched = true;
+        let new_head = rewrite_attendee_params(&head, partstat, force_send_reply);
+        edited.push(format!("{new_head}:{tail}"));
+    }
     let _ = matched;
 
     let folded: Vec<String> = edited.iter().map(|l| fold_line(l)).collect();

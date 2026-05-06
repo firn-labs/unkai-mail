@@ -71,5 +71,8 @@
 
   "compose_attachment_warning_title": "You mentioned an attachment but didn't attach a file.",
   "compose_attachment_warning_body": "Add a file before sending, or dismiss this warning if it's a false alarm.",
-  "compose_attachment_warning_dismiss": "Dismiss"
+  "compose_attachment_warning_dismiss": "Dismiss",
+
+  "calendar_invite_rsvp_comment_label": "Add a note (optional)",
+  "calendar_invite_rsvp_comment_placeholder": "Send the organizer a short message along with your response…"
 }

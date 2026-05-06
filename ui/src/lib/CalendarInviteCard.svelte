@@ -17,6 +17,7 @@
   import { invoke, convertFileSrc } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import Icon, { type IconName } from './Icon.svelte'
+  import { m } from '../paraglide/messages'
 
   /** Mirrors the Rust `EventAttendee` struct.  Optional fields
    *  are `null` over IPC; we treat them as missing. */
@@ -549,6 +550,11 @@
 
   type Partstat = 'ACCEPTED' | 'DECLINED' | 'TENTATIVE'
   let busy = $state<Partstat | null>(null)
+  /** #148 — free-form note the user can type alongside the
+   *  RSVP.  Stripped of leading/trailing whitespace before
+   *  going to the backend; an empty value skips the COMMENT
+   *  property entirely so the bare-RSVP path is unchanged. */
+  let rsvpComment = $state('')
   let respondedAs = $state<Partstat | null>(null)
   let error = $state('')
   /** True until the partstat lookup for the *current* invite
@@ -815,6 +821,11 @@
         rawIcs: invite.rawIcs,
         partstat,
         attendeeHint,
+        // #148 — free-form note the user typed in the box
+        // below the buttons.  Empty / whitespace-only is fine;
+        // the backend treats it as no-comment and the
+        // pre-#148 surgical-edit behaviour applies.
+        comment: rsvpComment.trim() || null,
       })
       respondedAs = partstat
       onresponded?.(partstat)
@@ -1035,6 +1046,30 @@
         {/if}
       </button>
     </div>
+
+    <!-- #148 — Optional free-form note the user can attach to
+         their RSVP.  Goes into the iTIP REPLY's VEVENT COMMENT
+         property and shows up in the organiser's notification
+         email.  Auto-grows downward as the user types via CSS
+         `field-sizing: content` (single-property modern
+         approach, supported in every Tauri webview engine we
+         target).  Leaving it blank skips the COMMENT entirely
+         — the bare-RSVP path is unchanged. -->
+    <label class="block mt-3 text-xs text-surface-500" for="rsvp-comment">
+      {m.calendar_invite_rsvp_comment_label()}
+    </label>
+    <textarea
+      id="rsvp-comment"
+      class="mt-1 w-full rounded-md border border-surface-300 dark:border-surface-700
+             bg-surface-50 dark:bg-surface-900 text-sm px-3 py-2
+             placeholder:text-surface-400 dark:placeholder:text-surface-600
+             focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500
+             transition-shadow rsvp-comment-textarea"
+      rows="2"
+      placeholder={m.calendar_invite_rsvp_comment_placeholder()}
+      bind:value={rsvpComment}
+      disabled={busy !== null}
+    ></textarea>
   {/if}
 
   <!-- "More info" toggle.  Cheap to render closed — the
@@ -1282,4 +1317,23 @@
 
 </div>
 {/if}
+
+<style>
+  /* #148 — auto-grow the RSVP comment box as the user types.
+     `field-sizing: content` is the modern single-property
+     replacement for the JS-driven scrollHeight dance every
+     legacy auto-resize textarea relied on; supported in every
+     Tauri webview engine we target (Edge / WKWebView /
+     WebKitGTK on current versions).  Capped via `max-height`
+     so a runaway paste doesn't push the rest of the message
+     body off-screen — past the cap the textarea falls back
+     to its native scrollbar. */
+  .rsvp-comment-textarea {
+    resize: none;
+    field-sizing: content;
+    min-height: 2.5rem;
+    max-height: 14rem;
+    line-height: 1.4;
+  }
+</style>
 

@@ -71,5 +71,8 @@
 
   "compose_attachment_warning_title": "Sie haben einen Anhang erwähnt, aber keine Datei angehängt.",
   "compose_attachment_warning_body": "Fügen Sie vor dem Senden eine Datei hinzu oder schließen Sie diese Warnung, falls es ein Fehlalarm ist.",
-  "compose_attachment_warning_dismiss": "Schließen"
+  "compose_attachment_warning_dismiss": "Schließen",
+
+  "calendar_invite_rsvp_comment_label": "Notiz hinzufügen (optional)",
+  "calendar_invite_rsvp_comment_placeholder": "Senden Sie dem Organisator eine kurze Nachricht zusammen mit Ihrer Antwort…"
 }

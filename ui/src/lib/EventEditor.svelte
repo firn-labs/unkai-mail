@@ -1272,6 +1272,12 @@
             eventId: event.id,
             partstat: newPartstat,
             attendeeHint: myAttendee?.email ?? null,
+            // #148 — EventEditor doesn't expose a comment input
+            // surface (yet); the RSVP-comment feature lives on
+            // the inbox-side CalendarInviteCard.  Pass null so
+            // the new arg is satisfied without changing the
+            // editor's behaviour.
+            comment: null,
           })
           // Pin the new baseline so a subsequent save in the same
           // session doesn't try to fire another surgical RSVP for

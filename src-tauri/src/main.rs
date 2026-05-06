@@ -1363,12 +1363,22 @@ async fn rsvp_existing_event(
     event_id: String,
     partstat: String,
     attendee_hint: Option<String>,
+    // #148 — optional comment that travels with the iTIP REPLY.
+    comment: Option<String>,
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let calendar_id = handle.calendar_id.clone();
     let raw_ics = handle.ics_raw.clone();
-    respond_to_invite(calendar_id, raw_ics, partstat, attendee_hint, cache).await
+    respond_to_invite(
+        calendar_id,
+        raw_ics,
+        partstat,
+        attendee_hint,
+        comment,
+        cache,
+    )
+    .await
 }
 
 /// Toggle a Talk room's public/private visibility.  Used by
@@ -4149,6 +4159,14 @@ async fn respond_to_invite(
     raw_ics: String,
     partstat: String,
     attendee_hint: Option<String>,
+    // Optional free-form note the user typed alongside the
+    // RSVP (#148).  Goes into the VEVENT's `COMMENT:` property
+    // in the surgical edit and rides along with the iTIP REPLY
+    // — the organiser's mail client surfaces it as part of the
+    // REPLY email body.  `None` / empty / whitespace-only
+    // preserves the pre-#148 behaviour (no COMMENT emitted,
+    // any existing COMMENT in the cached body is left alone).
+    comment: Option<String>,
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
     // Resolve the chosen calendar's location on the server.
@@ -4360,6 +4378,7 @@ async fn respond_to_invite(
                 &attendee_email,
                 &partstat,
                 true,
+                comment.as_deref(),
             );
             let (out, _) = update_event_with_etag_retry(&cache, &existing_id, &surgical).await?;
             body_put = surgical;
@@ -4369,12 +4388,16 @@ async fn respond_to_invite(
             // Step 1 with surgical edit on the inbound ICS so
             // the body Sabre stores as the "before" state is a
             // minimal mutation of the original — Sabre's iTIP
-            // restrictions accept it cleanly.
+            // restrictions accept it cleanly.  No COMMENT here:
+            // we want Sabre's "before" body to be just the
+            // PARTSTAT change, not also include a comment that
+            // would then look like "no diff" against step 2.
             let step1_body = nimbus_caldav::ical::surgical_set_partstat(
                 &raw_ics,
                 &attendee_email,
                 "NEEDS-ACTION",
                 false,
+                None,
             );
             let first = caldav_create_event(
                 &account.server_url,
@@ -4387,14 +4410,17 @@ async fn respond_to_invite(
             .await?;
 
             // Step 2 — update keyed on the etag we just got, with
-            // the user's chosen PARTSTAT + SCHEDULE-FORCE-SEND.
-            // Sabre sees a clean PARTSTAT-only diff against
-            // step 1's stored body and dispatches the REPLY iMIP.
+            // the user's chosen PARTSTAT + SCHEDULE-FORCE-SEND
+            // and the user-supplied COMMENT (#148).  Sabre sees
+            // a clean PARTSTAT-only diff against step 1's stored
+            // body (plus the new COMMENT property) and
+            // dispatches the REPLY iMIP carrying the comment.
             let step2_body = nimbus_caldav::ical::surgical_set_partstat(
                 &raw_ics,
                 &attendee_email,
                 &partstat,
                 true,
+                comment.as_deref(),
             );
             let out = caldav_update_event(
                 &first.href,
