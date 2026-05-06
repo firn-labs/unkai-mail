@@ -77,7 +77,6 @@
   let accountId = $state('')
   let notes = $state<Note[]>([])
   let loading = $state(false)
-  let syncing = $state(false)
   let error = $state('')
 
   /** Folders the user has explicitly created via "+ Add folder"
@@ -137,7 +136,7 @@
         loadPendingFolders()
         await loadFromCache()
         startPolling()
-        void syncNow({ silent: true })
+        void syncNow()
       }
     } catch (e) {
       error = formatError(e) || 'Failed to load Nextcloud accounts'
@@ -153,13 +152,13 @@
     loadPendingFolders()
     await loadFromCache()
     startPolling()
-    void syncNow({ silent: true })
+    void syncNow()
   }
 
   function startPolling() {
     if (pollTimer !== null) window.clearInterval(pollTimer)
     pollTimer = window.setInterval(() => {
-      void syncNow({ silent: true })
+      void syncNow()
     }, REFRESH_INTERVAL_MS)
   }
 
@@ -182,13 +181,15 @@
     }
   }
 
-  /** Network refresh — pulls every note from NC, applies the delta
-   *  to the cache, then refreshes our in-memory list.  `silent`
-   *  hides the spinner so the polling timer doesn't flicker the
-   *  UI for a no-op delta. */
-  async function syncNow(opts: { silent?: boolean } = {}) {
+  /** Network refresh — pulls every note from NC, applies the
+   *  delta to the cache, then refreshes our in-memory list.
+   *  Always silent now: there's no user-facing refresh button,
+   *  so this only runs from the boot path and the 120 s polling
+   *  timer.  We do still surface errors via the existing `error`
+   *  string when the cache happens to be empty so the user
+   *  understands why their list is blank. */
+  async function syncNow() {
     if (!accountId) return
-    if (!opts.silent) syncing = true
     try {
       const list = await invoke<Note[]>('sync_nextcloud_notes', { ncId: accountId })
       notes = list
@@ -219,9 +220,14 @@
         selectedId = null
       }
     } catch (e) {
-      if (!opts.silent) error = formatError(e) || 'Failed to sync notes'
-    } finally {
-      if (!opts.silent) syncing = false
+      // Surface only when the user has nothing else to look at —
+      // background polling errors (we have a populated cache) are
+      // noise that don't help the user.
+      if (notes.length === 0) {
+        error = formatError(e) || 'Failed to sync notes'
+      } else {
+        console.warn('background notes sync failed', e)
+      }
     }
   }
 
@@ -730,10 +736,48 @@
          note list.  Account picker only shows when more than one
          NC account is connected; refresh is always there. -->
     <div class="w-72 shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col">
-      <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
-        {#if accounts.length > 1}
+      <!-- Search bar — same shape as `SearchBar.svelte` in the
+           mail view: pill `.input` field with the magnifier
+           icon as a left adornment and a clear-X on the right
+           when there's a query.  Background sync still runs on
+           the polling timer + after every cache load, so an
+           explicit refresh button isn't worth its own affordance.
+           Filter is layered on top of the sidebar folder filter
+           so search works "within Joplin" / "within Favorites"
+           / "across all notes" depending on the sidebar pick. -->
+      <div class="border-b border-surface-200 dark:border-surface-700 p-2">
+        <div class="relative w-full">
+          <span
+            class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
+            aria-hidden="true"
+          >
+            <Icon name="search" size={14} />
+          </span>
+          <input
+            type="text"
+            class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
+            placeholder="Search notes"
+            bind:value={searchQuery}
+            aria-label="Search notes"
+          />
+          {#if searchQuery}
+            <button
+              type="button"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
+              onclick={() => (searchQuery = '')}
+              title="Clear search"
+              aria-label="Clear search"
+            >
+              &#x2715;
+            </button>
+          {/if}
+        </div>
+      </div>
+
+      {#if accounts.length > 1}
+        <div class="px-3 py-1.5 border-b border-surface-200 dark:border-surface-700">
           <select
-            class="select text-xs py-1 px-2 rounded-md flex-1 min-w-0"
+            class="select text-xs py-1 px-2 rounded-md w-full"
             value={accountId}
             onchange={(e) => selectAccount((e.currentTarget as HTMLSelectElement).value)}
           >
@@ -741,44 +785,8 @@
               <option value={a.id}>{a.display_name || a.username}</option>
             {/each}
           </select>
-        {:else}
-          <span class="flex-1"></span>
-        {/if}
-        <button
-          class="text-surface-500 hover:bg-primary-500/10 rounded-md p-1 inline-flex items-center justify-center"
-          onclick={() => syncNow()}
-          disabled={syncing || !accountId}
-          title="Refresh from Nextcloud"
-          aria-label="Refresh from Nextcloud"
-        >
-          <Icon name="refresh" size={16} class={syncing ? 'animate-spin' : ''} />
-        </button>
-      </div>
-
-      <!-- Search bar — filters the list below by title / content /
-           category, case-insensitive.  Independent of the sidebar
-           selection so the user can search "within Joplin" or
-           "across all notes" without changing folders. -->
-      <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
-        <Icon name="search" size={14} class="text-surface-500 shrink-0" />
-        <input
-          type="search"
-          class="flex-1 bg-transparent outline-none text-sm py-0.5 placeholder:text-surface-400"
-          placeholder="Search notes…"
-          bind:value={searchQuery}
-          aria-label="Search notes"
-        />
-        {#if searchQuery}
-          <button
-            class="text-surface-500 hover:text-error-500 hover:bg-error-500/10 rounded-md p-0.5 inline-flex items-center justify-center"
-            onclick={() => (searchQuery = '')}
-            title="Clear search"
-            aria-label="Clear search"
-          >
-            <Icon name="close" size={12} />
-          </button>
-        {/if}
-      </div>
+        </div>
+      {/if}
 
       <div class="flex-1 min-h-0 overflow-y-auto">
         {#if loading && notes.length === 0}
