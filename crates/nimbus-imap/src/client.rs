@@ -27,8 +27,44 @@ type ImapSession = Session<Compat<TlsStream<TcpStream>>>;
 /// `SELECT` / `EXAMINE` / `STATUS` / `APPEND` etc. expect on the wire.
 /// Pure ASCII names round-trip unchanged so this is a no-op for the
 /// common case (`INBOX`, `Sent`, `Drafts`, …).
+///
+/// **Quoting.**  RFC 3501 §9 requires mailbox names containing any
+/// "atom-special" character (space, `(`, `)`, `{`, `*`, `%`, `\`,
+/// `"`, control bytes) to be sent as a quoted string instead of a
+/// bare atom — otherwise the server treats the run up to the first
+/// such char as the mailbox and the rest as syntax junk.  Folder
+/// names like `"Audi TT"` were tripping this when used as the
+/// destination of `UID COPY` because the underlying `async-imap`
+/// crate does not auto-quote the mailbox argument.  We wrap the
+/// mUTF-7 output in `"..."` whenever it contains any atom-special
+/// char (escaping `\` and `"` along the way).  Over-quoting is safe
+/// — a quoted string is accepted everywhere a mailbox name is
+/// allowed, and pure-ASCII names without specials still round-trip
+/// unquoted so this stays a no-op for the common case.
 fn to_wire(name: &str) -> String {
-    mutf7::encode(name)
+    let encoded = mutf7::encode(name);
+    let needs_quoting = encoded.bytes().any(|b| {
+        matches!(
+            b,
+            b' ' | b'(' | b')' | b'{' | b'*' | b'%' | b'\\' | b'"' | 0x00..=0x1f | 0x7f
+        )
+    });
+    if !needs_quoting {
+        return encoded;
+    }
+    let mut out = String::with_capacity(encoded.len() + 2);
+    out.push('"');
+    for c in encoded.chars() {
+        match c {
+            '\\' | '"' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Open a TCP+TLS connection to the IMAP server, returning a stream
@@ -1635,5 +1671,55 @@ fn parse_rfc2822(s: &str) -> Option<DateTime<Utc>> {
             warn!("Failed to parse date '{s}': {e}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_wire;
+
+    #[test]
+    fn to_wire_passes_simple_atoms_unquoted() {
+        assert_eq!(to_wire("INBOX"), "INBOX");
+        assert_eq!(to_wire("Sent"), "Sent");
+        assert_eq!(to_wire("Drafts"), "Drafts");
+        // Hierarchical names with `/` or `.` separators are still
+        // atoms — those characters aren't atom-specials in IMAP.
+        assert_eq!(to_wire("INBOX/Projects"), "INBOX/Projects");
+        assert_eq!(to_wire("Foo.Bar"), "Foo.Bar");
+    }
+
+    #[test]
+    fn to_wire_quotes_names_with_spaces() {
+        // Regression: names like "Audi TT" used to be sent as a
+        // bare atom, and the IMAP server interpreted everything
+        // before the first space as the mailbox.
+        assert_eq!(to_wire("Audi TT"), "\"Audi TT\"");
+        assert_eq!(to_wire("Sent Items"), "\"Sent Items\"");
+    }
+
+    #[test]
+    fn to_wire_quotes_names_with_other_atom_specials() {
+        // RFC 3501 atom-specials beyond just space.
+        assert_eq!(to_wire("(work)"), "\"(work)\"");
+        assert_eq!(to_wire("a*b"), "\"a*b\"");
+        assert_eq!(to_wire("100%"), "\"100%\"");
+    }
+
+    #[test]
+    fn to_wire_escapes_quote_and_backslash_inside_quoted_form() {
+        // The two characters that need escaping inside a quoted
+        // string per RFC 3501 §4.3.
+        assert_eq!(to_wire("She said \"hi\""), "\"She said \\\"hi\\\"\"");
+        assert_eq!(to_wire("path\\to"), "\"path\\\\to\"");
+    }
+
+    #[test]
+    fn to_wire_handles_non_ascii_via_mutf7() {
+        // mUTF-7 escapes non-ASCII chars to ASCII; the result has
+        // no atom-specials so it stays unquoted.
+        let encoded = to_wire("Bücher");
+        assert!(!encoded.starts_with('"'), "got: {encoded}");
+        assert!(encoded.is_ascii());
     }
 }
