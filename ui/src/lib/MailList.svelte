@@ -310,13 +310,16 @@
     // badge inside the bitmap, because the OS rendering applies
     // its own opacity to whatever's in the drag image and that
     // would also fade the badge.  Instead the badge floats as a
-    // separate live DOM element that tracks the cursor (see
-    // `attachFloatingBadge` below) and stays at 100% opacity.
+    // separate live DOM element pinned to the bottom-right
+    // corner of the drag image (see `attachFloatingBadge`) and
+    // stays at 100% opacity.
+    const rect = rowEl.getBoundingClientRect()
     const preview = buildRowDragImage(rowEl)
+    const dragAnchor = 16 // matches the (16, 16) offset passed to setDragImage
     if (preview) {
-      e.dataTransfer.setDragImage(preview, 16, 16)
+      e.dataTransfer.setDragImage(preview, dragAnchor, dragAnchor)
     }
-    attachFloatingBadge(group.length)
+    attachFloatingBadge(group.length, rect.width, rect.height, dragAnchor)
   }
 
   /** Clone the source row off-screen at full opacity for use as
@@ -361,7 +364,12 @@
    *  drag is removed before we attach a new one. */
   let floatingBadgeEl: HTMLElement | null = null
   let floatingBadgeCleanup: (() => void) | null = null
-  function attachFloatingBadge(count: number) {
+  function attachFloatingBadge(
+    count: number,
+    rowWidth: number,
+    rowHeight: number,
+    dragAnchor: number,
+  ) {
     detachFloatingBadge()
     const themed = getComputedStyle(document.documentElement)
       .getPropertyValue('--color-primary-500')
@@ -411,19 +419,35 @@
     document.body.appendChild(wrap)
     floatingBadgeEl = wrap
 
-    // Track the cursor.  The badge sits slightly below-right of
-    // the cursor tip so it lands roughly where the bottom-right
-    // of the OS drag image would be — gives the visual impression
-    // that the badge is glued to the dragged item even though
-    // they're rendered by separate compositors.
+    // Capture the badge's intrinsic dimensions once it's been
+    // appended to the live DOM — needed below to anchor its
+    // bottom-right edge precisely at the drag image's
+    // bottom-right corner.  Falls back to a sensible default if
+    // the layout query somehow returns 0 (it shouldn't, but the
+    // pin should still produce a non-broken result).
+    const badgeRect = wrap.getBoundingClientRect()
+    const badgeW = badgeRect.width || 56
+    const badgeH = badgeRect.height || 22
+
+    // Pin the badge to the bottom-right of the drag image.  The
+    // OS draws the drag image with its top-left at
+    //   `cursor - (dragAnchor, dragAnchor)`,
+    // so its bottom-right corner sits at
+    //   `cursor + (rowWidth - dragAnchor, rowHeight - dragAnchor)`.
+    // We then offset the badge so its OWN bottom-right edge
+    // lands there (with a 6px inset so the badge doesn't
+    // overhang the row clone's rounded corner).
+    const inset = 6
     const onDocDragOver = (ev: DragEvent) => {
       if (!floatingBadgeEl) return
       // Some engines fire dragover with (0, 0) coordinates when
       // the cursor leaves the window briefly; ignore those so
       // the badge doesn't snap to the corner.
       if (ev.clientX === 0 && ev.clientY === 0) return
-      floatingBadgeEl.style.left = `${ev.clientX + 16}px`
-      floatingBadgeEl.style.top = `${ev.clientY + 16}px`
+      const dragImageRight = ev.clientX + (rowWidth - dragAnchor)
+      const dragImageBottom = ev.clientY + (rowHeight - dragAnchor)
+      floatingBadgeEl.style.left = `${dragImageRight - badgeW - inset}px`
+      floatingBadgeEl.style.top = `${dragImageBottom - badgeH - inset}px`
     }
     const onEnd = () => detachFloatingBadge()
     document.addEventListener('dragover', onDocDragOver, true)
