@@ -343,39 +343,47 @@
 
       // Clone the row's rendered DOM so the preview matches the
       // exact row the user grabbed (including read/unread tint,
-      // selection chrome, etc.).  `cloneNode(true)` carries the
-      // computed inline style + class names through; the row's
-      // own classes hit the live stylesheet so it renders
-      // identically.
+      // selection chrome, etc.).  We fade the clone to 0.45 so
+      // the badge — at full opacity in the same bitmap — visibly
+      // pops against it.  The OS applies its own drag-image
+      // opacity on top (~0.6 in Edge WebView2), so the effective
+      // values land around 0.27 for the row vs 0.6 for the badge,
+      // which is enough contrast for the count to read clearly.
+      // We can't increase the badge above 1.0, but we can fade
+      // the row to compensate — same trick most native drag
+      // affordances use.
       const clone = rowEl.cloneNode(true) as HTMLElement
       clone.style.width = `${rect.width}px`
       clone.style.background = getComputedStyle(rowEl).backgroundColor
+      clone.style.opacity = '0.45'
       wrapper.appendChild(clone)
 
       // Badge overlay — circle with a `+` glyph plus the count
       // tucked beside it.  Anchored to the bottom-right corner
       // of the row clone via absolute positioning relative to
-      // the wrapper.
+      // the wrapper.  Smaller / denser proportions than v1 for
+      // a cleaner, modern look.
       const badge = document.createElement('div')
       badge.style.position = 'absolute'
-      badge.style.right = '8px'
-      badge.style.bottom = '8px'
+      badge.style.right = '6px'
+      badge.style.bottom = '6px'
       badge.style.display = 'inline-flex'
       badge.style.alignItems = 'center'
-      badge.style.gap = '6px'
+      badge.style.gap = '4px'
       badge.style.pointerEvents = 'none'
 
       const circle = document.createElement('span')
-      circle.style.width = '28px'
-      circle.style.height = '28px'
+      circle.style.width = '20px'
+      circle.style.height = '20px'
       circle.style.borderRadius = '999px'
       circle.style.display = 'inline-flex'
       circle.style.alignItems = 'center'
       circle.style.justifyContent = 'center'
       circle.style.color = 'white'
       circle.style.fontWeight = '700'
-      circle.style.fontSize = '18px'
+      circle.style.fontSize = '14px'
       circle.style.lineHeight = '1'
+      circle.style.boxShadow = '0 2px 6px rgb(0 0 0 / 0.25)'
       // Sample the live theme's primary tone so the badge
       // matches the rest of the chrome regardless of which
       // Skeleton theme the user picked.
@@ -387,12 +395,12 @@
 
       const num = document.createElement('span')
       num.style.fontWeight = '700'
-      num.style.fontSize = '14px'
-      num.style.padding = '2px 8px'
+      num.style.fontSize = '12px'
+      num.style.padding = '1px 6px'
       num.style.borderRadius = '999px'
       num.style.background = 'white'
       num.style.color = themed || '#3b82f6'
-      num.style.boxShadow = '0 1px 4px rgb(0 0 0 / 0.2)'
+      num.style.boxShadow = '0 2px 6px rgb(0 0 0 / 0.25)'
       num.textContent = String(count)
 
       badge.appendChild(circle)
