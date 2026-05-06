@@ -1464,7 +1464,7 @@
        sidebar stays mounted on the Mailing lists tab so the
        tab strip + heading don't move; only the navigation
        sections collapse. ───────────────────────────────────── -->
-  <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 flex flex-col">
+  <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
     <!-- Primary action — same shape + filled-primary preset as
          the mail Compose CTA / Notes' "New note" button.  Back
          navigation lives in the app-wide IconRail; the per-tab
@@ -1857,7 +1857,7 @@
   <!-- ── Middle column: contact list / mailing-list catalogue.
        The shell heading + tab strip moved into the sidebar
        above, so this column's job is just the list itself. ─ -->
-  <aside class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
+  <aside class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col">
     {#if activeTab === 'contacts'}
     <!-- Search bar — same shape as `SearchBar.svelte` in the mail
          view + the Notes UI: pill `.input` field with a magnifier
