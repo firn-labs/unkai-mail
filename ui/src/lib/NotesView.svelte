@@ -652,7 +652,7 @@
           class="notes-side-row {selectionMatches(selection, { kind: 'uncategorized' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'uncategorized' })}
         >
-          <span class="notes-side-icon"><Icon name="drafts" size={16} /></span>
+          <span class="notes-side-icon"><Icon name="help" size={16} /></span>
           <span class="flex-1 truncate text-left">Uncategorized</span>
           <span class="notes-side-count">{uncategorizedCount}</span>
         </button>
