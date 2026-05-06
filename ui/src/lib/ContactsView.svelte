@@ -1978,13 +1978,14 @@
             {ml.members.filter((m) => m.email).length} / {ml.members.length}
           </span>
         </div>
-        <!-- Search bar — same shape as the Contacts tab + Notes
-             search row (pill `.input` with magnifier + `×` clear).
-             `pickerOpen` swaps the bound query so the same input
-             alternates between filtering members and filtering the
-             contact-picker pool. -->
-        <div class="border-b border-surface-200 dark:border-surface-700 p-2 flex flex-col">
-          <div class="relative w-full">
+        <!-- Search bar — same pill shape as the Contacts tab +
+             Notes search row.  `pickerOpen` swaps the bound query
+             so the same input alternates between filtering members
+             and filtering the contact-picker pool.  The compact
+             "+ Add contact" / "Done" toggle sits to the right of
+             the search input — same row, smaller weight. -->
+        <div class="border-b border-surface-200 dark:border-surface-700 p-2 flex items-center gap-2">
+          <div class="relative flex-1 min-w-0">
             <span
               class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
               aria-hidden="true"
@@ -2031,10 +2032,10 @@
             <!-- Compact "+ Add contact" / "Done" toggle — same
                  shape as NC Files' "+ New folder" affordance:
                  primary-text, no border, subtle primary halo on
-                 hover.  Sits below the search bar so it doesn't
-                 fight the search input for visual weight. -->
+                 hover.  Anchored right of the search input so the
+                 row reads "search [a thing] / add a thing". -->
             <button
-              class="self-start mt-2 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-md px-2 py-1"
+              class="shrink-0 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-md px-2 py-1"
               onclick={() => {
                 pickerOpen = !pickerOpen
                 pickerQuery = ''
@@ -2086,7 +2087,35 @@
             {#each filteredMembers as m, i (`${m.email}::${i}`)}
               {@const linkedContact = m.email ? contactByEmail.get(m.email.toLowerCase()) : undefined}
               {@const memberPhoto = linkedContact ? photoSrc(linkedContact) : null}
-              <div class="group flex items-center gap-2 px-3 py-2 text-sm transition-colors border-b border-surface-100 dark:border-surface-800 hover:bg-surface-100 dark:hover:bg-surface-800">
+              {@const isOpenable = !!linkedContact}
+              <!-- Members that resolve to an in-cache contact open
+                   the right pane on click — same affordance as
+                   selecting from the Contacts tab.  Members that
+                   are just an email (no contact card) stay
+                   non-clickable so the cursor doesn't lie about
+                   what's interactive.  Wrapper stays a `<div>`
+                   because it nests the Remove `<button>` and we
+                   can't put `<button>` inside `<button>`. -->
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+              <div
+                class="group flex items-center gap-2 px-3 py-2 text-sm transition-colors border-b border-surface-100 dark:border-surface-800 {isOpenable
+                  ? 'cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800'
+                  : ''} {linkedContact && selectedId === linkedContact.id
+                  ? 'bg-primary-500/10 text-primary-500 font-medium'
+                  : ''}"
+                role={isOpenable ? 'button' : undefined}
+                tabindex={isOpenable ? 0 : undefined}
+                onclick={() => {
+                  if (linkedContact) selectContact(linkedContact.id)
+                }}
+                onkeydown={(e) => {
+                  if (!linkedContact) return
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    selectContact(linkedContact.id)
+                  }
+                }}
+              >
                 {#if memberPhoto}
                   <img
                     src={memberPhoto}
@@ -2110,7 +2139,10 @@
                     class="opacity-0 group-hover:opacity-100 transition-opacity w-7 h-7 rounded-md text-surface-500 hover:bg-error-500/15 hover:text-error-500 leading-none shrink-0"
                     title="Remove from list"
                     aria-label="Remove from list"
-                    onclick={() => void removeContactFromSelectedList(m.email)}
+                    onclick={(e) => {
+                      e.stopPropagation()
+                      void removeContactFromSelectedList(m.email)
+                    }}
                   >×</button>
                 {/if}
               </div>
