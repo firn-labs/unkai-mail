@@ -2045,9 +2045,12 @@
           </div>
           <div class="flex items-center gap-2 shrink-0">
             <button
-              class="btn btn-sm preset-filled-primary-500"
+              class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
               onclick={startEdit}
-            >{m.contact_view_button_edit()}</button>
+            >
+              <Icon name="compose" size={16} />
+              <span>{m.contact_view_button_edit()}</span>
+            </button>
             {#if deleteConfirm}
               <span class="text-xs text-surface-500">Really delete?</span>
               <button
@@ -2062,9 +2065,12 @@
               >Keep</button>
             {:else}
               <button
-                class="btn btn-sm preset-tonal text-red-500"
+                class="btn btn-sm preset-tonal text-red-500 inline-flex items-center gap-1.5"
                 onclick={() => (deleteConfirm = true)}
-              >{m.contact_view_button_delete()}</button>
+              >
+                <Icon name="trash" size={16} />
+                <span>{m.contact_view_button_delete()}</span>
+              </button>
             {/if}
           </div>
         </div>
