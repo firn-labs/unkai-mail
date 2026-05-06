@@ -636,7 +636,15 @@
           class="notes-side-row {selectionMatches(selection, { kind: 'favorites' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'favorites' })}
         >
-          <span class="notes-side-icon"><Icon name="star" size={16} /></span>
+          <!-- Star is warning-yellow when the row is inactive so
+               the Favorites virtual stays semantically obvious in
+               the sidebar.  When selected, it inherits the row's
+               primary colour like every other tab. -->
+          <span
+            class="notes-side-icon {selectionMatches(selection, { kind: 'favorites' })
+              ? ''
+              : 'text-warning-500'}"
+          ><Icon name="star" size={16} /></span>
           <span class="flex-1 truncate text-left">Favorites</span>
           <span class="notes-side-count">{favoriteCount}</span>
         </button>
