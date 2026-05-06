@@ -397,8 +397,7 @@ impl Cache {
             let Some(addresses) = parse(&raw) else {
                 continue;
             };
-            let addresses_json =
-                serde_json::to_string(&addresses).unwrap_or_else(|_| "[]".into());
+            let addresses_json = serde_json::to_string(&addresses).unwrap_or_else(|_| "[]".into());
             // Skip when the parsed result matches what's already
             // stored.  Cheap string compare; serde's output is
             // deterministic for a given input shape so this

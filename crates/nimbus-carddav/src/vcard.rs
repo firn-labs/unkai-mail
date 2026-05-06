@@ -1023,7 +1023,11 @@ mod tests {
                    item4.URL:https://example.com\r\n\
                    END:VCARD\r\n";
         let p = parse_vcard(raw).unwrap();
-        assert_eq!(p.addresses.len(), 1, "ADR should parse despite group prefix");
+        assert_eq!(
+            p.addresses.len(),
+            1,
+            "ADR should parse despite group prefix"
+        );
         assert_eq!(p.addresses[0].street, "Teststraße 6");
         assert_eq!(p.addresses[0].locality, "Nenningen");
         assert_eq!(p.addresses[0].country, "Deutschland");
