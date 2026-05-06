@@ -149,6 +149,7 @@
     notes = []
     selectedId = null
     selection = { kind: 'all' }
+    searchQuery = ''
     loadPendingFolders()
     await loadFromCache()
     startPolling()
@@ -310,10 +311,17 @@
     notes.filter((n) => !n.category.trim()).length,
   )
 
+  /** Search query for the list pane.  Matches against title /
+   *  content / category, case-insensitive.  Independent of the
+   *  sidebar selection so a user can search "within Joplin" or
+   *  "within all notes" without switching folders.  Clears on
+   *  account switch (we set it explicitly in `selectAccount`). */
+  let searchQuery = $state('')
+
   /** Notes shown in the middle pane based on the sidebar
-   *  selection.  Always sorted by `modified` desc — the cache
-   *  already returns rows that way but sorting here keeps the
-   *  contract local. */
+   *  selection AND the search query.  Always sorted by
+   *  `modified` desc — the cache already returns rows that way
+   *  but sorting here keeps the contract local. */
   const filteredNotes = $derived.by((): Note[] => {
     let list: Note[]
     switch (selection.kind) {
@@ -334,6 +342,15 @@
       case 'all':
       default:
         list = [...notes]
+    }
+    const q = searchQuery.trim().toLowerCase()
+    if (q) {
+      list = list.filter(
+        (n) =>
+          n.title.toLowerCase().includes(q) ||
+          n.content.toLowerCase().includes(q) ||
+          n.category.toLowerCase().includes(q),
+      )
     }
     return list.sort((a, b) => b.modified - a.modified)
   })
@@ -737,6 +754,32 @@
           <Icon name="refresh" size={16} class={syncing ? 'animate-spin' : ''} />
         </button>
       </div>
+
+      <!-- Search bar — filters the list below by title / content /
+           category, case-insensitive.  Independent of the sidebar
+           selection so the user can search "within Joplin" or
+           "across all notes" without changing folders. -->
+      <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
+        <Icon name="search" size={14} class="text-surface-500 shrink-0" />
+        <input
+          type="search"
+          class="flex-1 bg-transparent outline-none text-sm py-0.5 placeholder:text-surface-400"
+          placeholder="Search notes…"
+          bind:value={searchQuery}
+          aria-label="Search notes"
+        />
+        {#if searchQuery}
+          <button
+            class="text-surface-500 hover:text-error-500 hover:bg-error-500/10 rounded-md p-0.5 inline-flex items-center justify-center"
+            onclick={() => (searchQuery = '')}
+            title="Clear search"
+            aria-label="Clear search"
+          >
+            <Icon name="close" size={12} />
+          </button>
+        {/if}
+      </div>
+
       <div class="flex-1 min-h-0 overflow-y-auto">
         {#if loading && notes.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">Loading…</div>
@@ -744,7 +787,9 @@
           <div class="p-4 text-sm text-red-500">{error}</div>
         {:else if filteredNotes.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">
-            {#if selection.kind === 'all'}
+            {#if searchQuery.trim()}
+              No notes match <strong>"{searchQuery.trim()}"</strong>.
+            {:else if selection.kind === 'all'}
               No notes yet. Click <strong>New note</strong> to create one.
             {:else}
               No notes in this folder.
