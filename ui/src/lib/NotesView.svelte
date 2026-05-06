@@ -548,13 +548,18 @@
     }
   }
 
-  /** "Send as email" — opens Compose with the note as the seed. */
-  function sendAsEmail() {
+  /** "Send as mail" — opens Compose with the note as the seed.
+   *  `bodyAboveSignature` lands the markdown body where the
+   *  user would normally be typing, with their signature below
+   *  it; without it the recipient gets "(blank) → signature →
+   *  note content" which reads as a forwarded artefact. */
+  function sendAsMail() {
     const note = notes.find((n) => n.id === selectedId)
     if (!note) return
     oncompose({
       subject: note.title || '(untitled note)',
       body: note.content,
+      bodyAboveSignature: true,
     })
   }
 
@@ -878,11 +883,11 @@
               >{showPreview ? 'Source' : 'Preview'}</button>
               <button
                 class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
-                onclick={sendAsEmail}
+                onclick={sendAsMail}
                 title="Open Compose with this note as the message body"
               >
                 <Icon name="email-envelope" size={14} />
-                <span>Send as email</span>
+                <span>Send as mail</span>
               </button>
               <button
                 class="btn btn-sm preset-outlined-error-500"
