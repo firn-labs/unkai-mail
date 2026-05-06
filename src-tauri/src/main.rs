@@ -9375,6 +9375,35 @@ fn main() {
         }
     }
 
+    // One-time backfill for `addresses_json`.  The column was
+    // added via ALTER TABLE with default `'[]'`; CardDAV's
+    // delta-sync only re-pulls contacts that have changed in NC
+    // since the last sync token, so unchanged ones kept the empty
+    // default forever — even though their cached `vcard_raw` still
+    // had the original ADR property.  Re-parse the body once to
+    // recover the addresses.  Self-narrowing: a fixed row's
+    // SELECT condition no longer matches on subsequent boots.
+    match cache.backfill_addresses(|raw| {
+        let p = nimbus_carddav::parse_vcard(raw).ok()?;
+        Some(
+            p.addresses
+                .into_iter()
+                .map(|a| nimbus_core::models::ContactAddress {
+                    kind: a.kind,
+                    street: a.street,
+                    locality: a.locality,
+                    region: a.region,
+                    postal_code: a.postal_code,
+                    country: a.country,
+                })
+                .collect(),
+        )
+    }) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("contact backfill: rewrote addresses_json on {n} rows"),
+        Err(e) => tracing::warn!("contact backfill failed: {e}"),
+    }
+
     // App-wide preferences (Issue #16). A missing file is fine on first
     // run — `load_settings` returns defaults. We wrap in Arc<RwLock<..>>
     // so the background sync loop can re-snapshot per tick while the

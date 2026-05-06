@@ -343,6 +343,78 @@ impl Cache {
         }))
     }
 
+    /// Re-parse `vcard_raw` for every contact and rewrite
+    /// `addresses_json` when the freshly-parsed result differs
+    /// from what's stored.
+    ///
+    /// Why so aggressive: two stale-data sources accumulate over
+    /// time —
+    ///   1. The `ALTER TABLE` migration that added `addresses_json`
+    ///      defaulted it to `'[]'` for every existing row.  CardDAV
+    ///      delta-sync only re-pulls contacts that have changed in
+    ///      NC since the last token, so unchanged rows kept the
+    ///      empty default forever even though their cached body
+    ///      held the original `ADR`.
+    ///   2. Bugs in the vCard parser (e.g. a missed group prefix
+    ///      like `item1.ADR`) caused the parser to silently drop
+    ///      the address at sync time, again writing `'[]'` (or a
+    ///      stub) to the column.  The contact's `vcard_raw` still
+    ///      has the address, but every subsequent list-render
+    ///      reads the empty cached value.
+    ///
+    /// Walking every row and re-parsing fixes both classes in one
+    /// pass: when the parser is later corrected, the next boot
+    /// rewrites the affected rows; once corrected, the comparison
+    /// short-circuits and the loop is a no-op.
+    ///
+    /// `parse` is injected so this crate stays a dep leaf and
+    /// doesn't grow a `nimbus-carddav` dependency.  Returns the
+    /// number of rows actually rewritten.
+    pub fn backfill_addresses<F>(&self, parse: F) -> Result<usize, CacheError>
+    where
+        F: Fn(&str) -> Option<Vec<ContactAddress>>,
+    {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, vcard_raw, addresses_json
+             FROM contacts
+             WHERE vcard_raw IS NOT NULL AND vcard_raw != ''",
+        )?;
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let mut updated = 0usize;
+        for (id, raw, current_json) in rows {
+            let Some(addresses) = parse(&raw) else {
+                continue;
+            };
+            let addresses_json =
+                serde_json::to_string(&addresses).unwrap_or_else(|_| "[]".into());
+            // Skip when the parsed result matches what's already
+            // stored.  Cheap string compare; serde's output is
+            // deterministic for a given input shape so this
+            // catches every steady-state row.
+            if addresses_json == current_json {
+                continue;
+            }
+            conn.execute(
+                "UPDATE contacts SET addresses_json = ?2 WHERE id = ?1",
+                params![id, addresses_json],
+            )?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
     /// Substring search over name + email for autocomplete.
     ///
     /// Matches `display_name` OR any email containing `query` (case
