@@ -91,6 +91,16 @@
   let collapsedFolders = $state<Set<string>>(new Set())
   let selection = $state<Selection>({ kind: 'all' })
 
+  /** Inline "+ Add folder" draft state.  When `creatingFolder` is
+   *  true the sidebar renders an extra row at the end of the
+   *  folder list with an `<input>` instead of a label — the user
+   *  types directly into the row, Enter / blur commits, Escape
+   *  cancels.  Matches the rename-style convention from
+   *  CLAUDE.md (#UI conventions → "Inline edits over modals"). */
+  let creatingFolder = $state(false)
+  let newFolderName = $state('')
+  let newFolderInput: HTMLInputElement | undefined = $state()
+
   /** Currently selected note id, or `null` for the empty-state pane. */
   let selectedId = $state<number | null>(null)
   /** Working copy of the selected note's editable fields. */
@@ -352,21 +362,40 @@
     }
   }
 
-  function addFolder() {
-    const raw = window.prompt(
-      "New folder name (use '/' for nested folders, e.g. 'Work/Project A')",
-    )
-    if (raw == null) return
-    const path = raw
+  function startAddFolder() {
+    creatingFolder = true
+    newFolderName = ''
+  }
+  function commitAddFolder() {
+    if (!creatingFolder) return
+    const path = newFolderName
       .split('/')
       .map((s) => s.trim())
       .filter((s) => s.length > 0)
       .join('/')
+    creatingFolder = false
+    newFolderName = ''
+    // Empty input cancels — matches what blur-on-empty would
+    // expect a user to feel.
     if (!path) return
     pendingFolders = new Set(pendingFolders).add(path)
     savePendingFolders()
     selection = { kind: 'category', path }
   }
+  function cancelAddFolder() {
+    creatingFolder = false
+    newFolderName = ''
+  }
+
+  // Auto-focus the inline draft input the moment the row mounts.
+  // The effect re-runs when `creatingFolder` flips on; the
+  // bind:this is populated by the time the effect commits.
+  $effect(() => {
+    if (creatingFolder && newFolderInput) {
+      newFolderInput.focus()
+      newFolderInput.select()
+    }
+  })
 
   // ── Note CRUD wired to the new write-through commands ───────
   function openNote(note: Note) {
@@ -661,11 +690,39 @@
           {@render folder(root, 0)}
         {/each}
 
+        {#if creatingFolder}
+          <!-- Draft row: matches the regular folder-row layout so
+               the new folder feels like it's already in the tree
+               while the user names it.  Enter / blur commits,
+               Escape cancels (CLAUDE.md inline-rename convention). -->
+          <div class="notes-side-row" style="padding-left: 0.5rem">
+            <span class="notes-side-caret-spacer"></span>
+            <span class="notes-side-icon"><Icon name="files" size={16} /></span>
+            <input
+              bind:this={newFolderInput}
+              bind:value={newFolderName}
+              type="text"
+              class="notes-side-draft-input"
+              placeholder="New folder (use / for nested)"
+              onkeydown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commitAddFolder()
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  cancelAddFolder()
+                }
+              }}
+              onblur={commitAddFolder}
+            />
+          </div>
+        {/if}
+
         <button
           type="button"
           class="notes-side-add inline-flex items-center justify-center gap-1.5"
-          onclick={addFolder}
-          disabled={!accountId}
+          onclick={startAddFolder}
+          disabled={!accountId || creatingFolder}
         >
           <Icon name="add-folder" size={14} />
           <span>Add folder</span>
@@ -860,6 +917,20 @@
   :global(.notes-side-caret-spacer) {
     width: 1rem;
     flex-shrink: 0;
+  }
+  :global(.notes-side-draft-input) {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    outline: none;
+    font-size: 0.8125rem;
+    color: inherit;
+    padding: 0;
+  }
+  :global(.notes-side-draft-input::placeholder) {
+    color: var(--color-surface-400);
+    font-style: italic;
   }
   :global(.notes-side-add) {
     width: calc(100% - 1rem);
