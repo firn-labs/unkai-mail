@@ -1339,6 +1339,29 @@
     return { x: r.left, y: r.bottom + 4 }
   }
 
+  /** Document-level Escape dismissal for the three toolbar
+   *  popovers.  The popovers' inline `onkeydown={...Escape...}`
+   *  handlers only fire when focus is inside the popover; with
+   *  `position: fixed` (and most pickers having no auto-focused
+   *  input) focus tends to stay on the trigger button, so the
+   *  inline handler never sees the keystroke.  Subscribing at
+   *  the document level catches Escape from anywhere in the
+   *  Compose window. */
+  $effect(() => {
+    if (!showFontPicker && !showTablePicker && !showEmojiPicker) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (showFontPicker) {
+        showFontPicker = false
+        fontPickerQuery = ''
+      }
+      if (showTablePicker) showTablePicker = false
+      if (showEmojiPicker) showEmojiPicker = false
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  })
+
   function insertEmoji(e: string | null) {
     if (!e) return
     cmd().insertContent(e).run()
