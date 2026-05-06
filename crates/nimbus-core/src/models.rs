@@ -719,6 +719,119 @@ pub struct Contact {
     /// the live "groups" list (#133 redesign).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
+
+    // ── #143: vCard 4 fields surfaced in the contact form ──────
+    //
+    // Every new field below carries `#[serde(default)]` so a
+    // contact row written before the field existed continues to
+    // deserialise — the missing slot lands on its type's zero
+    // value (None / "" / Vec::new()).  The vCard
+    // parser/serialiser in `nimbus-carddav` rounds these through
+    // their RFC 6350 properties; UI surfaces them as part of
+    // the redesigned form.
+    /// `N` structured name (RFC 6350 §6.2.2) — the breakdown of
+    /// the formatted name into family / given / additional /
+    /// prefixes / suffixes pieces.  When the user fills these
+    /// in, `display_name` (the vCard FN) is auto-derived from
+    /// "{prefixes} {given} {additional} {family} {suffixes}" at
+    /// save time.  Optional: a contact created with only FN
+    /// keeps an empty StructuredName and the form falls back to
+    /// editing FN directly.
+    #[serde(default, skip_serializing_if = "StructuredName::is_empty")]
+    pub structured_name: StructuredName,
+    /// `NICKNAME` (RFC 6350 §6.2.3) — friendly handle.  Single
+    /// value; the vCard property allows comma-separated lists,
+    /// but in practice every client treats it as one nickname.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    /// `ANNIVERSARY` (RFC 6350 §6.2.6) — same wire format as
+    /// `BDAY`, kept as raw text for the same reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anniversary: Option<String>,
+    /// `GENDER` (RFC 6350 §6.2.7).  Standardly one of `M`/`F`/`O`/
+    /// `N`/`U` plus an optional free-form identity component
+    /// after a `;` separator.  We keep the raw vCard string so
+    /// the user can write "non-binary" or whatever they want
+    /// without us imposing an enum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gender: Option<String>,
+    /// `IMPP` (RFC 6350 §6.4.3) — instant-messaging URIs (Matrix,
+    /// XMPP, Telegram, Signal, …).  Each entry carries a kind
+    /// hint (matrix / xmpp / telegram / signal / other) so the
+    /// UI can group them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub impp: Vec<ContactImpp>,
+    /// `ROLE` (RFC 6350 §6.6.2) — function the contact performs
+    /// inside the org, distinct from `TITLE` which is the job
+    /// title.  E.g. ROLE="Project Lead", TITLE="Senior Engineer".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// `LANG` (RFC 6350 §6.4.4) — preferred languages, in
+    /// preference order, as RFC 5646 BCP-47 tags (`en-US`,
+    /// `de`, …).  Multiple entries allowed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
+    /// `GEO` (RFC 6350 §6.5.2) — living-location coordinates as
+    /// the vCard wire form `geo:<lat>,<lon>`.  We keep it as
+    /// the raw URI so the UI can render a map link directly
+    /// without re-encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo: Option<String>,
+    /// `TZ` (RFC 6350 §6.5.1) — timezone, either an IANA tag
+    /// (`Europe/Berlin`) or a UTC offset (`+02:00`).  Free-form
+    /// string; the form uses an autocomplete against the IANA
+    /// list but accepts any value the user types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    /// `KEY` (RFC 6350 §6.8.1) — public-key material (PGP, X.509)
+    /// either inline (`data:application/pgp-keys;base64,...`) or
+    /// referenced by URL.  Round-tripped through the parser /
+    /// serialiser today; the form UI is deliberately deferred
+    /// to a later issue dedicated to key management.  Multiple
+    /// keys allowed (one per format).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+}
+
+/// Structured name parts (vCard `N`, RFC 6350 §6.2.2).  A non-
+/// empty StructuredName takes priority over `display_name` for
+/// the FN derivation at save time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StructuredName {
+    #[serde(default)]
+    pub family: String,
+    #[serde(default)]
+    pub given: String,
+    #[serde(default)]
+    pub additional: String,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub suffix: String,
+}
+
+impl StructuredName {
+    /// `true` when no field has any non-whitespace content.
+    /// Drives the `skip_serializing_if` filter on the contact
+    /// row so an empty N doesn't pollute the JSON wire payload.
+    pub fn is_empty(&self) -> bool {
+        self.family.trim().is_empty()
+            && self.given.trim().is_empty()
+            && self.additional.trim().is_empty()
+            && self.prefix.trim().is_empty()
+            && self.suffix.trim().is_empty()
+    }
+}
+
+/// One IMPP (instant-messaging) entry.  `kind` is a tag the UI
+/// uses to group rows ("matrix" / "xmpp" / "telegram" / "signal"
+/// / "other"); `value` is the platform-native URI
+/// (`matrix:@user:server` / `xmpp:user@server` / `tg://...`
+/// / `https://signal.me/#p/...`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContactImpp {
+    pub kind: String,
+    pub value: String,
 }
 
 /// One contact group / mailing list (vCard `KIND:group`,

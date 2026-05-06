@@ -1998,6 +1998,35 @@ struct ContactInput {
     addresses: Option<Vec<nimbus_core::models::ContactAddress>>,
     #[serde(default)]
     urls: Option<Vec<String>>,
+    // ── #143: vCard 4 fields surfaced in the redesigned form ─────
+    #[serde(default)]
+    structured_name: Option<nimbus_core::models::StructuredName>,
+    #[serde(default)]
+    nickname: Option<String>,
+    #[serde(default)]
+    anniversary: Option<String>,
+    #[serde(default)]
+    gender: Option<String>,
+    #[serde(default)]
+    impp: Option<Vec<nimbus_core::models::ContactImpp>>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    languages: Option<Vec<String>>,
+    #[serde(default)]
+    geo: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
+    /// Round-tripped through the vCard's `KEY` property today;
+    /// no form UI yet (deferred to a dedicated PGP / X.509 issue).
+    #[serde(default)]
+    keys: Option<Vec<String>>,
+    /// Categories — already stored on Contact / ContactRow but
+    /// the form couldn't edit them before #143.  Optional so
+    /// callers that don't include the field leave the existing
+    /// list intact via the merge logic in `update_contact`.
+    #[serde(default)]
+    categories: Option<Vec<String>>,
 }
 
 /// Create a new contact on Nextcloud and cache it locally.
@@ -2120,6 +2149,61 @@ async fn update_contact(
     }
     if let Some(urls) = &input.urls {
         parsed.urls = urls.clone();
+    }
+    // ── #143: vCard 4 fields ─────────────────────────────────
+    // Same merge pattern as the older fields: a `Some` value
+    // replaces what's cached (with empty-string clearing the
+    // slot for scalar Options), `None` leaves the cached value
+    // intact so a UI that doesn't surface the field can still
+    // round-trip it.
+    if let Some(sn) = &input.structured_name {
+        parsed.structured_name = nimbus_carddav::VcardStructuredName {
+            family: sn.family.clone(),
+            given: sn.given.clone(),
+            additional: sn.additional.clone(),
+            prefix: sn.prefix.clone(),
+            suffix: sn.suffix.clone(),
+        };
+    }
+    if let Some(n) = &input.nickname {
+        parsed.nickname = if n.is_empty() { None } else { Some(n.clone()) };
+    }
+    if let Some(a) = &input.anniversary {
+        parsed.anniversary = if a.is_empty() { None } else { Some(a.clone()) };
+    }
+    if let Some(g) = &input.gender {
+        parsed.gender = if g.is_empty() { None } else { Some(g.clone()) };
+    }
+    if let Some(impp) = &input.impp {
+        parsed.impp = impp
+            .iter()
+            .map(|i| nimbus_carddav::VcardImpp {
+                kind: i.kind.clone(),
+                value: i.value.clone(),
+            })
+            .collect();
+    }
+    if let Some(r) = &input.role {
+        parsed.role = if r.is_empty() { None } else { Some(r.clone()) };
+    }
+    if let Some(langs) = &input.languages {
+        parsed.languages = langs.clone();
+    }
+    if let Some(g) = &input.geo {
+        parsed.geo = if g.is_empty() { None } else { Some(g.clone()) };
+    }
+    if let Some(tz) = &input.timezone {
+        parsed.timezone = if tz.is_empty() {
+            None
+        } else {
+            Some(tz.clone())
+        };
+    }
+    if let Some(ks) = &input.keys {
+        parsed.keys = ks.clone();
+    }
+    if let Some(cats) = &input.categories {
+        parsed.categories = cats.clone();
     }
     let vcard = build_vcard(&parsed);
 
@@ -4702,9 +4786,40 @@ fn raw_event_to_rows(raw: &RawEvent) -> Vec<CalendarEventRow> {
 /// vs. update) source it differently — a fresh UUID vs. the cached
 /// one.
 fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
+    // Auto-derive FN from the structured-name parts when the
+    // user filled them in but left `display_name` blank — same
+    // convention every desktop contacts app uses (RFC 6350 §6.2.1
+    // requires FN, but the form lets users type only the broken-
+    // out pieces).  When both are present, `display_name` from
+    // the form wins so an explicit override is honoured.
+    let derived_fn = input
+        .structured_name
+        .as_ref()
+        .map(|n| {
+            [
+                n.prefix.trim(),
+                n.given.trim(),
+                n.additional.trim(),
+                n.family.trim(),
+                n.suffix.trim(),
+            ]
+            .iter()
+            .filter(|p| !p.is_empty())
+            .copied()
+            .collect::<Vec<&str>>()
+            .join(" ")
+        })
+        .unwrap_or_default();
+    let fn_value = if !input.display_name.trim().is_empty() {
+        input.display_name.clone()
+    } else if !derived_fn.is_empty() {
+        derived_fn
+    } else {
+        String::new()
+    };
     ParsedVcard {
         uid: uid.to_string(),
-        display_name: input.display_name.clone(),
+        display_name: fn_value,
         emails: input
             .emails
             .iter()
@@ -4746,7 +4861,39 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
         urls: input.urls.clone().unwrap_or_default(),
         kind: String::new(),
         members: Vec::new(),
-        categories: Vec::new(),
+        categories: input.categories.clone().unwrap_or_default(),
+        // ── #143 ─────────────────────────────────────────────
+        structured_name: input
+            .structured_name
+            .as_ref()
+            .map(|n| nimbus_carddav::VcardStructuredName {
+                family: n.family.clone(),
+                given: n.given.clone(),
+                additional: n.additional.clone(),
+                prefix: n.prefix.clone(),
+                suffix: n.suffix.clone(),
+            })
+            .unwrap_or_default(),
+        nickname: input.nickname.clone(),
+        anniversary: input.anniversary.clone(),
+        gender: input.gender.clone(),
+        impp: input
+            .impp
+            .as_ref()
+            .map(|list| {
+                list.iter()
+                    .map(|i| nimbus_carddav::VcardImpp {
+                        kind: i.kind.clone(),
+                        value: i.value.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        role: input.role.clone(),
+        languages: input.languages.clone().unwrap_or_default(),
+        geo: input.geo.clone(),
+        timezone: input.timezone.clone(),
+        keys: input.keys.clone().unwrap_or_default(),
     }
 }
 
@@ -4812,6 +4959,50 @@ fn parsed_to_row(
 /// uses internally (`{nc_account_id}::{vcard_uid}`) so the next
 /// `get_contacts` call returns the same record.
 fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) -> Contact {
+    // #143: re-parse `vcard_raw` to recover the extended vCard 4
+    // fields the cache schema doesn't store as dedicated columns
+    // (structured-name parts, nickname, anniversary, gender, impp,
+    // role, languages, geo, timezone, keys).  Round-tripping
+    // through the cached body avoids a schema migration; cost is
+    // one parse per contact returned to the UI, which is
+    // negligible (the parser is microseconds for a typical
+    // vCard).  When parsing fails — corrupt cached body, malformed
+    // server data, etc. — we fall back to defaults so the rest of
+    // the contact still renders.
+    let extra = nimbus_carddav::parse_vcard(&row.vcard_raw).ok();
+    let structured_name = extra
+        .as_ref()
+        .map(|p| nimbus_core::models::StructuredName {
+            family: p.structured_name.family.clone(),
+            given: p.structured_name.given.clone(),
+            additional: p.structured_name.additional.clone(),
+            prefix: p.structured_name.prefix.clone(),
+            suffix: p.structured_name.suffix.clone(),
+        })
+        .unwrap_or_default();
+    let nickname = extra.as_ref().and_then(|p| p.nickname.clone());
+    let anniversary = extra.as_ref().and_then(|p| p.anniversary.clone());
+    let gender = extra.as_ref().and_then(|p| p.gender.clone());
+    let impp: Vec<nimbus_core::models::ContactImpp> = extra
+        .as_ref()
+        .map(|p| {
+            p.impp
+                .iter()
+                .map(|i| nimbus_core::models::ContactImpp {
+                    kind: i.kind.clone(),
+                    value: i.value.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let role = extra.as_ref().and_then(|p| p.role.clone());
+    let languages = extra
+        .as_ref()
+        .map(|p| p.languages.clone())
+        .unwrap_or_default();
+    let geo = extra.as_ref().and_then(|p| p.geo.clone());
+    let timezone = extra.as_ref().and_then(|p| p.timezone.clone());
+    let keys = extra.as_ref().map(|p| p.keys.clone()).unwrap_or_default();
     Contact {
         id: format!("{nc_account_id}::{}", row.vcard_uid),
         nextcloud_account_id: nc_account_id.to_string(),
@@ -4829,6 +5020,16 @@ fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) -> C
         urls: row.urls.clone(),
         kind: row.kind.clone(),
         categories: row.categories.clone(),
+        structured_name,
+        nickname,
+        anniversary,
+        gender,
+        impp,
+        role,
+        languages,
+        geo,
+        timezone,
+        keys,
     }
 }
 
