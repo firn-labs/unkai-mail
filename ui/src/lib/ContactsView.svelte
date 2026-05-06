@@ -213,6 +213,18 @@
   let saving = $state(false)
   let formError = $state('')
   let deleteConfirm = $state(false)
+  /** #143 follow-up: tri-state mode for the right pane.
+   *
+   *   - `selectedId === null`              → empty state
+   *   - `selectedId === 'new'`             → creation form
+   *   - `selectedId` set + `editing=false` → read-only view
+   *   - `selectedId` set + `editing=true`  → edit form
+   *
+   *  The flag is reset to `false` whenever the user picks a
+   *  different contact so navigation always lands in the
+   *  read-only view first; the Edit button toggles it back on.
+   */
+  let editing = $state(false)
 
   // Cache per-account addressbooks so switching the "save to" account
   // in the new-contact form doesn't re-hit the server.
@@ -847,6 +859,9 @@
     selectedId = id
     deleteConfirm = false
     formError = ''
+    // Always land in read-only view when the user picks a
+    // contact — explicit click on Edit toggles into the form.
+    editing = false
     const c = contacts.find((x) => x.id === id)
     if (!c) return
     formName = c.display_name
@@ -886,6 +901,8 @@
     selectedId = 'new'
     deleteConfirm = false
     formError = ''
+    // Creation always opens the editable form.
+    editing = true
     formName = ''
     formEmails = []
     formPhones = []
@@ -962,10 +979,34 @@
   }
 
   function cancelEdit() {
-    selectedId = null
     formError = ''
     deleteConfirm = false
     selectedPhotoBytes = null
+    if (selectedId === 'new') {
+      // Creation cancel — drop back to the empty state.
+      selectedId = null
+      editing = false
+    } else if (selectedId) {
+      // Editing an existing contact — flip back to view mode
+      // and re-hydrate the form fields from the cached row so
+      // any in-progress (now-discarded) changes don't bleed
+      // into the next edit.
+      const id = selectedId
+      editing = false
+      selectContact(id)
+    } else {
+      editing = false
+    }
+  }
+
+  /** Switch from view mode into the edit form for the
+   *  currently-selected contact.  Wired to the Edit button in
+   *  the read-only view's top-right corner. */
+  function startEdit() {
+    if (!selectedId || selectedId === 'new') return
+    editing = true
+    formError = ''
+    deleteConfirm = false
   }
 
   /**
@@ -1197,6 +1238,94 @@
     formImpp = formImpp.filter((_, i) => i !== idx)
   }
 
+  /** Human-readable label for a kind tag (`home`, `work`,
+   *  `cell`, etc.).  Used by the read-only view to render
+   *  per-row prefixes like "Home: jane@example.com".
+   *  Falls back to a capitalised version of the raw tag for
+   *  values we don't have a localised string for. */
+  function kindLabel(kind: string): string {
+    switch ((kind ?? '').toLowerCase()) {
+      case 'home':
+        return m.contact_form_kind_home()
+      case 'work':
+        return m.contact_form_kind_work()
+      case 'other':
+        return m.contact_form_kind_other()
+      case 'cell':
+      case 'mobile':
+        return m.contact_form_kind_mobile()
+      case 'fax':
+        return m.contact_form_kind_fax()
+      case 'matrix':
+        return m.contact_form_kind_matrix()
+      case 'xmpp':
+        return m.contact_form_kind_xmpp()
+      case 'telegram':
+        return m.contact_form_kind_telegram()
+      case 'signal':
+        return m.contact_form_kind_signal()
+      case 'skype':
+        return m.contact_form_kind_skype()
+      case 'whatsapp':
+        return m.contact_form_kind_whatsapp()
+      default:
+        return kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : ''
+    }
+  }
+  /** Build the same family / given / etc.-joined string the
+   *  Rust side derives at save time so view mode shows the
+   *  exact heading the saved card carries.  When the contact
+   *  has only `display_name` (no structured-name parts), this
+   *  returns empty and callers fall back to `display_name`. */
+  function structuredFullName(c: Contact): string {
+    const sn = c.structured_name
+    if (!sn) return ''
+    const parts = [sn.prefix, sn.given, sn.additional, sn.family, sn.suffix]
+      .map((p) => (p ?? '').trim())
+      .filter((p) => p.length > 0)
+    return parts.join(' ')
+  }
+  /** True when none of the fields in a logical "section"
+   *  carry any value — used to skip empty sections in view
+   *  mode so the layout stays tight. */
+  function hasPersonalDetails(c: Contact): boolean {
+    return !!(
+      c.nickname?.trim()
+      || c.birthday?.trim()
+      || c.anniversary?.trim()
+      || c.gender?.trim()
+    )
+  }
+  function hasCommunicationDetails(c: Contact): boolean {
+    return (
+      (c.email?.length ?? 0) > 0
+      || (c.phone?.length ?? 0) > 0
+      || (c.impp?.length ?? 0) > 0
+    )
+  }
+  function hasWorkDetails(c: Contact): boolean {
+    return !!(
+      c.organization?.trim()
+      || c.title?.trim()
+      || c.role?.trim()
+      || (c.categories?.length ?? 0) > 0
+    )
+  }
+  function hasAddressWebDetails(c: Contact): boolean {
+    return (
+      (c.addresses?.length ?? 0) > 0
+      || (c.urls?.length ?? 0) > 0
+      || !!c.geo?.trim()
+    )
+  }
+  function hasOtherDetails(c: Contact): boolean {
+    return !!(
+      (c.languages?.length ?? 0) > 0
+      || c.timezone?.trim()
+      || c.note?.trim()
+    )
+  }
+
   async function saveContact() {
     formError = ''
     const input = buildInput()
@@ -1219,14 +1348,19 @@
           input,
         })
         await reloadContacts()
-        selectedId = created.id
+        // Land on the freshly-created contact in view mode so
+        // the user can immediately see the saved record without
+        // a stray editable form sticking around.
+        selectContact(created.id)
       } else if (selectedId) {
         const updated = await invoke<Contact>('update_contact', {
           contactId: selectedId,
           input,
         })
         await reloadContacts()
-        selectedId = updated.id
+        // Re-select to refresh the view-mode display from the
+        // cached row, then flip out of edit mode.
+        selectContact(updated.id)
       }
     } catch (e) {
       formError = formatError(e) || 'Failed to save contact'
@@ -1878,6 +2012,233 @@
       <div class="flex-1 flex items-center justify-center text-surface-500 text-sm">
         Pick a contact on the left, or click “New contact”.
       </div>
+    {:else if !editing && selectedId !== 'new' && selectedContact}
+      <!-- ── Read-only view mode (#143 follow-up) ─────────────
+           Default landing for any selected contact.  Renders the
+           saved card as labels + values, omitting any field that
+           has no content so the layout stays tight.  Edit / Delete
+           live in the top-right corner; clicking Edit toggles the
+           `editing` flag and the form template below takes over. -->
+      <div class="max-w-2xl w-full mx-auto p-6 flex flex-col gap-5">
+        <div class="flex items-start gap-4">
+          {#if photoSrc(selectedContact)}
+            <img
+              src={photoSrc(selectedContact)}
+              alt=""
+              class="w-20 h-20 rounded-full object-cover bg-surface-300 dark:bg-surface-700"
+            />
+          {:else}
+            <div class="w-20 h-20 rounded-full bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-2xl font-semibold">
+              {(selectedContact.display_name || '?').slice(0, 1).toUpperCase()}
+            </div>
+          {/if}
+          <div class="flex flex-col flex-1 min-w-0">
+            <h3 class="text-xl font-semibold truncate">
+              {structuredFullName(selectedContact) || selectedContact.display_name || m.contact_form_no_name()}
+            </h3>
+            {#if selectedContact.nickname}
+              <span class="text-sm text-surface-500 truncate">"{selectedContact.nickname}"</span>
+            {/if}
+            <span class="text-xs text-surface-500 truncate mt-1">
+              {m.contact_form_from_account({ account: accountLabel(selectedContact.nextcloud_account_id) })}
+            </span>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button
+              class="btn btn-sm preset-filled-primary-500"
+              onclick={startEdit}
+            >{m.contact_view_button_edit()}</button>
+            {#if deleteConfirm}
+              <span class="text-xs text-surface-500">Really delete?</span>
+              <button
+                class="btn btn-sm preset-filled-error-500"
+                onclick={deleteSelected}
+                disabled={saving}
+              >Confirm</button>
+              <button
+                class="btn btn-sm preset-tonal"
+                onclick={() => (deleteConfirm = false)}
+                disabled={saving}
+              >Keep</button>
+            {:else}
+              <button
+                class="btn btn-sm preset-tonal text-red-500"
+                onclick={() => (deleteConfirm = true)}
+              >{m.contact_view_button_delete()}</button>
+            {/if}
+          </div>
+        </div>
+
+        {#if formError}
+          <p class="text-sm text-red-500">{formError}</p>
+        {/if}
+
+        {#if hasPersonalDetails(selectedContact)}
+          <section class="contact-view-section">
+            <h4 class="contact-view-section-title">{m.contact_form_section_personal()}</h4>
+            <dl class="contact-view-grid">
+              {#if selectedContact.nickname}
+                <dt>{m.contact_form_label_nickname()}</dt><dd>{selectedContact.nickname}</dd>
+              {/if}
+              {#if selectedContact.birthday}
+                <dt>{m.contact_form_label_birthday()}</dt><dd>{selectedContact.birthday}</dd>
+              {/if}
+              {#if selectedContact.anniversary}
+                <dt>{m.contact_form_label_anniversary()}</dt><dd>{selectedContact.anniversary}</dd>
+              {/if}
+              {#if selectedContact.gender}
+                <dt>{m.contact_form_label_gender()}</dt><dd>{selectedContact.gender}</dd>
+              {/if}
+            </dl>
+          </section>
+        {/if}
+
+        {#if hasCommunicationDetails(selectedContact)}
+          <section class="contact-view-section">
+            <h4 class="contact-view-section-title">{m.contact_form_section_communication()}</h4>
+            {#if (selectedContact.email?.length ?? 0) > 0}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_emails()}</span>
+                {#each selectedContact.email as e (e.value)}
+                  <div class="contact-view-row">
+                    <span class="contact-view-row-kind">{kindLabel(e.kind)}</span>
+                    <a class="contact-view-row-value text-primary-600 dark:text-primary-300 hover:underline truncate" href="mailto:{e.value}">{e.value}</a>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+            {#if (selectedContact.phone?.length ?? 0) > 0}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_phones()}</span>
+                {#each selectedContact.phone as p (p.value)}
+                  <div class="contact-view-row">
+                    <span class="contact-view-row-kind">{kindLabel(p.kind)}</span>
+                    <span class="contact-view-row-value">{p.value}</span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+            {#if (selectedContact.impp?.length ?? 0) > 0}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_impp()}</span>
+                {#each selectedContact.impp ?? [] as im (im.value)}
+                  <div class="contact-view-row">
+                    <span class="contact-view-row-kind">{kindLabel(im.kind)}</span>
+                    <span class="contact-view-row-value truncate">{im.value}</span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        {#if hasWorkDetails(selectedContact)}
+          <section class="contact-view-section">
+            <h4 class="contact-view-section-title">{m.contact_form_section_work()}</h4>
+            <dl class="contact-view-grid">
+              {#if selectedContact.organization}
+                <dt>{m.contact_form_label_organization()}</dt><dd>{selectedContact.organization}</dd>
+              {/if}
+              {#if selectedContact.title}
+                <dt>{m.contact_form_label_job_title()}</dt><dd>{selectedContact.title}</dd>
+              {/if}
+              {#if selectedContact.role}
+                <dt>{m.contact_form_label_role()}</dt><dd>{selectedContact.role}</dd>
+              {/if}
+            </dl>
+            {#if (selectedContact.categories?.length ?? 0) > 0}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_categories()}</span>
+                <div class="flex flex-wrap gap-1.5">
+                  {#each selectedContact.categories ?? [] as cat (cat)}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 text-xs">
+                      {cat}
+                    </span>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        {#if hasAddressWebDetails(selectedContact)}
+          <section class="contact-view-section">
+            <h4 class="contact-view-section-title">{m.contact_form_section_address_web()}</h4>
+            {#if (selectedContact.addresses?.length ?? 0) > 0}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_addresses()}</span>
+                {#each selectedContact.addresses ?? [] as a, i (i)}
+                  <div class="contact-view-address">
+                    <span class="contact-view-row-kind">{kindLabel(a.kind)}</span>
+                    <div class="contact-view-address-lines">
+                      {#if a.street}<div>{a.street}</div>{/if}
+                      {#if a.locality || a.region || a.postal_code}
+                        <div>{[a.postal_code, a.locality, a.region].filter((s) => s?.trim()).join(' ')}</div>
+                      {/if}
+                      {#if a.country}<div>{a.country}</div>{/if}
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+            {#if (selectedContact.urls?.length ?? 0) > 0}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_websites()}</span>
+                {#each selectedContact.urls ?? [] as url (url)}
+                  <div class="contact-view-row">
+                    <a class="contact-view-row-value text-primary-600 dark:text-primary-300 hover:underline truncate" href={url} target="_blank" rel="noopener noreferrer">{url}</a>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+            {#if selectedContact.geo}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_geo()}</span>
+                <span class="contact-view-row-value font-mono text-xs">{selectedContact.geo}</span>
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        {#if hasOtherDetails(selectedContact)}
+          <section class="contact-view-section">
+            <h4 class="contact-view-section-title">{m.contact_form_section_other()}</h4>
+            {#if (selectedContact.languages?.length ?? 0) > 0}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_languages()}</span>
+                <div class="flex flex-wrap gap-1.5">
+                  {#each selectedContact.languages ?? [] as lang (lang)}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700 text-xs">
+                      {lang}
+                    </span>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            <dl class="contact-view-grid">
+              {#if selectedContact.timezone}
+                <dt>{m.contact_form_label_timezone()}</dt><dd>{selectedContact.timezone}</dd>
+              {/if}
+            </dl>
+            {#if selectedContact.note}
+              <div class="contact-view-block">
+                <span class="contact-view-block-label">{m.contact_form_label_notes()}</span>
+                <p class="whitespace-pre-wrap text-sm">{selectedContact.note}</p>
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        {#if !hasPersonalDetails(selectedContact)
+          && !hasCommunicationDetails(selectedContact)
+          && !hasWorkDetails(selectedContact)
+          && !hasAddressWebDetails(selectedContact)
+          && !hasOtherDetails(selectedContact)}
+          <p class="text-sm text-surface-500 italic">
+            {m.contact_view_empty_state()}
+          </p>
+        {/if}
+      </div>
     {:else}
       <div class="max-w-2xl w-full mx-auto p-6 flex flex-col gap-4">
         <!-- ── #143: avatar banner (click to upload) ─────────── -->
@@ -2263,6 +2624,10 @@
           <p class="text-sm text-red-500">{formError}</p>
         {/if}
 
+        <!-- Edit / create form action row.  Delete moved to the
+             read-only view mode (top-right corner of that
+             screen) so the editing path stays focused on
+             "commit or discard the in-flight changes". -->
         <div class="flex items-center gap-2 pt-2">
           <button
             class="btn preset-filled-primary-500"
@@ -2274,34 +2639,6 @@
           <button class="btn preset-tonal" disabled={saving} onclick={cancelEdit}>
             Cancel
           </button>
-          {#if selectedId !== 'new'}
-            <div class="flex-1"></div>
-            {#if deleteConfirm}
-              <span class="text-xs text-surface-500">Really delete?</span>
-              <button
-                class="btn preset-filled-error-500"
-                disabled={saving}
-                onclick={deleteSelected}
-              >
-                Confirm delete
-              </button>
-              <button
-                class="btn preset-tonal"
-                disabled={saving}
-                onclick={() => (deleteConfirm = false)}
-              >
-                Keep
-              </button>
-            {:else}
-              <button
-                class="btn preset-tonal text-red-500"
-                disabled={saving}
-                onclick={() => (deleteConfirm = true)}
-              >
-                Delete
-              </button>
-            {/if}
-          {/if}
         </div>
       </div>
     {/if}
@@ -2419,5 +2756,86 @@
   }
   :global([data-mode='dark'] .contact-section-body) {
     border-top-color: var(--color-surface-700);
+  }
+
+  /* #143 follow-up: read-only view-mode chrome.  No card
+     borders here — the right pane is already a panel; we use
+     just typography + spacing to separate sections.  Section
+     titles get a thin underline so the eye picks out the
+     boundaries without heavy chrome. */
+  :global(.contact-view-section) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+  }
+  :global(.contact-view-section-title) {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-surface-500);
+    border-bottom: 1px solid var(--color-surface-200);
+    padding-bottom: 0.25rem;
+    margin: 0;
+  }
+  :global([data-mode='dark'] .contact-view-section-title) {
+    border-bottom-color: var(--color-surface-700);
+  }
+  /* Two-column dl: label on the left, value on the right.
+     Label width is just generous enough for the longer
+     translations (Anniversary / Geburtstag / etc.) without
+     pushing the value column too far. */
+  :global(.contact-view-grid) {
+    display: grid;
+    grid-template-columns: minmax(8rem, max-content) 1fr;
+    gap: 0.375rem 1rem;
+    margin: 0;
+  }
+  :global(.contact-view-grid > dt) {
+    font-size: 0.75rem;
+    color: var(--color-surface-500);
+    align-self: center;
+  }
+  :global(.contact-view-grid > dd) {
+    font-size: 0.875rem;
+    margin: 0;
+  }
+  /* For multi-row groupings (emails / phones / addresses /
+     etc.) we use a labeled block instead of dl — the label
+     sits above the rows and each row carries its own kind
+     prefix. */
+  :global(.contact-view-block) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  :global(.contact-view-block-label) {
+    font-size: 0.75rem;
+    color: var(--color-surface-500);
+  }
+  :global(.contact-view-row) {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+  }
+  :global(.contact-view-row-kind) {
+    font-size: 0.75rem;
+    color: var(--color-surface-500);
+    min-width: 4.5rem;
+  }
+  :global(.contact-view-row-value) {
+    flex: 1;
+    min-width: 0;
+  }
+  :global(.contact-view-address) {
+    display: grid;
+    grid-template-columns: 4.5rem 1fr;
+    gap: 0.25rem 0.5rem;
+    margin-bottom: 0.375rem;
+    font-size: 0.875rem;
+  }
+  :global(.contact-view-address-lines > div) {
+    line-height: 1.4;
   }
 </style>

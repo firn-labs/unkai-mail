@@ -145,5 +145,9 @@
   "contact_form_label_timezone": "Zeitzone",
   "contact_form_placeholder_timezone": "Europe/Berlin oder +02:00",
   "contact_form_label_notes": "Notizen",
-  "contact_form_placeholder_notes": "Was Sie sich über diesen Kontakt merken möchten"
+  "contact_form_placeholder_notes": "Was Sie sich über diesen Kontakt merken möchten",
+
+  "contact_view_button_edit": "Bearbeiten",
+  "contact_view_button_delete": "Löschen",
+  "contact_view_empty_state": "Noch keine Details für diesen Kontakt."
 }
