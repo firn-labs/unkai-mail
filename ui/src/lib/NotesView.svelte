@@ -882,17 +882,21 @@
                 aria-pressed={showPreview}
               >{showPreview ? 'Source' : 'Preview'}</button>
               <button
-                class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
+                class="btn btn-sm preset-outlined-primary-500 inline-flex items-center justify-center"
                 onclick={sendAsMail}
-                title="Open Compose with this note as the message body"
+                title="Send as mail"
+                aria-label="Open Compose with this note as the message body"
               >
-                <Icon name="email-envelope" size={14} />
-                <span>Send as mail</span>
+                <Icon name="email-envelope" size={16} />
               </button>
               <button
-                class="btn btn-sm preset-outlined-error-500"
+                class="text-error-500 hover:bg-red-500/20 rounded-md p-1.5 inline-flex items-center justify-center"
                 onclick={deleteSelected}
-              >Delete</button>
+                title="Delete note"
+                aria-label="Delete note"
+              >
+                <Icon name="trash" size={16} />
+              </button>
             </div>
 
             <!-- Category picker — small unobtrusive row above the
