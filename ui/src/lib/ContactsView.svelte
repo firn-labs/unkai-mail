@@ -1982,10 +1982,10 @@
              Notes search row.  `pickerOpen` swaps the bound query
              so the same input alternates between filtering members
              and filtering the contact-picker pool.  The compact
-             "+ Add contact" / "Done" toggle sits to the right of
-             the search input — same row, smaller weight. -->
-        <div class="border-b border-surface-200 dark:border-surface-700 p-2 flex items-center gap-2">
-          <div class="relative flex-1 min-w-0">
+             "+ Add contact" / "Done" toggle sits below the search
+             on its own row, anchored right via `self-end`. -->
+        <div class="border-b border-surface-200 dark:border-surface-700 p-2 flex flex-col">
+          <div class="relative w-full">
             <span
               class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
               aria-hidden="true"
@@ -2032,10 +2032,9 @@
             <!-- Compact "+ Add contact" / "Done" toggle — same
                  shape as NC Files' "+ New folder" affordance:
                  primary-text, no border, subtle primary halo on
-                 hover.  Anchored right of the search input so the
-                 row reads "search [a thing] / add a thing". -->
+                 hover.  Sits below the search bar, anchored right. -->
             <button
-              class="shrink-0 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-md px-2 py-1"
+              class="self-end mt-2 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-md px-2 py-1"
               onclick={() => {
                 pickerOpen = !pickerOpen
                 pickerQuery = ''
