@@ -396,13 +396,20 @@
     circle.style.display = 'inline-flex'
     circle.style.alignItems = 'center'
     circle.style.justifyContent = 'center'
-    circle.style.color = 'white'
-    circle.style.fontWeight = '700'
-    circle.style.fontSize = '14px'
-    circle.style.lineHeight = '1'
     circle.style.background = accent
     circle.style.boxShadow = '0 2px 6px rgb(0 0 0 / 0.25)'
-    circle.textContent = '+'
+    circle.style.opacity = '0.8'
+    // Render the `+` as inline SVG instead of a text glyph.
+    // Text-rendered `+` characters carry the host font's
+    // baseline / cap-height bias and end up visually off-centre
+    // inside the circle even with flex alignment.  An SVG with
+    // explicitly-positioned strokes lands perfectly centred
+    // regardless of font.
+    circle.innerHTML =
+      '<svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">' +
+      '<line x1="6" y1="2" x2="6" y2="10"/>' +
+      '<line x1="2" y1="6" x2="10" y2="6"/>' +
+      '</svg>'
 
     const num = document.createElement('span')
     num.style.fontWeight = '700'
@@ -412,6 +419,7 @@
     num.style.background = 'white'
     num.style.color = accent
     num.style.boxShadow = '0 2px 6px rgb(0 0 0 / 0.25)'
+    num.style.opacity = '0.8'
     num.textContent = String(count)
 
     wrap.appendChild(circle)
