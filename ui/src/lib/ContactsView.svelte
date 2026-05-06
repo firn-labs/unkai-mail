@@ -1465,17 +1465,27 @@
        tab strip + heading don't move; only the navigation
        sections collapse. ───────────────────────────────────── -->
   <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 flex flex-col">
-    <div class="p-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
-      <button
-        class="btn-icon btn-icon-sm preset-tonal"
-        aria-label="Back"
-        onclick={onclose}
-      >&larr;</button>
-      <h2 class="text-base font-semibold flex-1 truncate">
-        {activeTab === 'contacts' ? 'Contacts' : 'Mailing lists'}
-      </h2>
-      {#if syncing}
-        <span class="text-[10px] text-surface-500">Syncing…</span>
+    <!-- Primary action — same shape + filled-primary preset as
+         the mail Compose CTA / Notes' "New note" button.  Back
+         navigation lives in the app-wide IconRail; the per-tab
+         title was redundant with the active tab strip below. -->
+    <div class="p-3">
+      {#if activeTab === 'contacts'}
+        <button
+          class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
+          onclick={startNew}
+        >
+          <span class="text-lg font-semibold leading-none">+</span>
+          New contact
+        </button>
+      {:else}
+        <button
+          class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
+          onclick={openNewMailingListForm}
+        >
+          <span class="text-lg font-semibold leading-none">+</span>
+          New list
+        </button>
       {/if}
     </div>
     <!-- Tab strip.  Buttons explicitly stop propagation +
@@ -1849,21 +1859,38 @@
        above, so this column's job is just the list itself. ─ -->
   <aside class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
     {#if activeTab === 'contacts'}
-    <div class="p-3 flex flex-col gap-2">
-      <div class="relative">
-        <span class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
+    <!-- Search bar — same shape as `SearchBar.svelte` in the mail
+         view + the Notes UI: pill `.input` field with a magnifier
+         left adornment and an `×` clear button on the right when
+         there's a query.  "+ New contact" moved to the sidebar's
+         CTA slot so this row is search-only. -->
+    <div class="border-b border-surface-200 dark:border-surface-700 p-2">
+      <div class="relative w-full">
+        <span
+          class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
+          aria-hidden="true"
+        >
           <Icon name="search" size={14} />
         </span>
         <input
-          type="search"
-          class="input pl-7"
-          placeholder="Search"
+          type="text"
+          class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
+          placeholder="Search contacts"
           bind:value={query}
+          aria-label="Search contacts"
         />
+        {#if query}
+          <button
+            type="button"
+            class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
+            onclick={() => (query = '')}
+            title="Clear search"
+            aria-label="Clear search"
+          >
+            &#x2715;
+          </button>
+        {/if}
       </div>
-      <button class="btn preset-filled-primary-500" onclick={startNew}>
-        + New contact
-      </button>
     </div>
 
     <div class="flex-1 overflow-y-auto px-2 pb-3">
