@@ -34,6 +34,7 @@
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
   import type { ComposeInitial } from './Compose.svelte'
+  import NotesMarkdownEditor from './NotesMarkdownEditor.svelte'
 
   interface NextcloudAccount {
     id: string
@@ -99,6 +100,10 @@
    *  the server can reject (412) if a concurrent edit landed. */
   let draftEtag = $state('')
   let saveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
+  /** Show the markdown preview pane alongside the editor.  Off by
+   *  default — the source-only view is what most users want most
+   *  of the time, the toggle is for double-checking rendering. */
+  let showPreview = $state(false)
 
   const REFRESH_INTERVAL_MS = 120_000
   let pollTimer: number | null = null
@@ -732,6 +737,12 @@
                 title={open.favorite ? 'Unstar' : 'Star'}
               >{open.favorite ? '★' : '☆'}</button>
               <button
+                class="btn btn-sm preset-outlined-surface-500"
+                onclick={() => (showPreview = !showPreview)}
+                title={showPreview ? 'Hide preview' : 'Show preview'}
+                aria-pressed={showPreview}
+              >{showPreview ? '◨' : '◧'}</button>
+              <button
                 class="btn btn-sm preset-outlined-primary-500"
                 onclick={sendAsEmail}
                 title="Open Compose with this note as the message body"
@@ -764,12 +775,11 @@
               </datalist>
             </div>
 
-            <textarea
-              class="flex-1 resize-none p-5 bg-surface-50 dark:bg-surface-900 outline-none font-mono text-sm leading-relaxed"
-              placeholder="Start writing — markdown is preserved on the server."
+            <NotesMarkdownEditor
               bind:value={draftContent}
-              oninput={scheduleSave}
-            ></textarea>
+              onchange={() => scheduleSave()}
+              {showPreview}
+            />
           {/if}
         {/if}
       </div>

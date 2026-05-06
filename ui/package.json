@@ -27,6 +27,12 @@
     "vite": "^8.0.4"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.2",
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.42.0",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
@@ -50,8 +56,10 @@
     "@tiptap/pm": "^3.22.3",
     "@tiptap/starter-kit": "^3.22.3",
     "@tiptap/suggestion": "^3.22.4",
+    "codemirror": "^6.0.2",
     "dompurify": "^3.4.2",
     "emoji-picker-element": "^1.29.1",
+    "marked": "^18.0.3",
     "svelte-tiptap": "^3.0.1"
   }
 }
