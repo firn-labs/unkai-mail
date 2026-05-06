@@ -118,10 +118,24 @@
    *  PUTs that race each other on the etag. */
   let folderOpBusy = $state(false)
 
-  /** Open "move to folder" popover anchored to a note's quick-
-   *  action button.  Picks an existing folder (or "Uncategorized")
-   *  and re-categorizes the note via `update_nextcloud_note`. */
-  let movingNote = $state<{ note: Note; x: number; y: number } | null>(null)
+  /** Open the centered "Move note to folder" modal.  Mirrors the
+   *  shape of `MoveFolderPicker.svelte` from the mail UI — same
+   *  backdrop / panel / filter input — adapted for notes (folder
+   *  paths instead of IMAP folder names). */
+  let movingNote = $state<Note | null>(null)
+  /** Filter input inside the move modal.  Kept here so it doesn't
+   *  reset every time the modal re-renders. */
+  let moveFilter = $state('')
+
+  /** DnD: which folder path is currently the drop target.  Drives
+   *  a primary-tinted ring on the hovered sidebar row, same idiom
+   *  as `Sidebar.svelte`'s `dragOverFolder` for mail.  `''`
+   *  represents the Uncategorized virtual. */
+  let dragOverFolder = $state<string | null>(null)
+  /** MIME type for our private drag payload — kept distinct from
+   *  the mail one so a stray drop between views never tries to
+   *  re-categorise as if it were a mail UID. */
+  const NOTE_DND_MIME = 'application/x-nimbus-note'
 
   /** Currently selected note id, or `null` for the empty-state pane. */
   let selectedId = $state<number | null>(null)
@@ -528,14 +542,17 @@
     return [...set].sort((a, b) => a.localeCompare(b))
   })
 
-  function startMoveNote(note: Note, x: number, y: number) {
-    movingNote = { note, x, y }
+  function startMoveNote(note: Note) {
+    movingNote = note
+    moveFilter = ''
   }
 
-  async function moveNoteTo(path: string) {
-    if (!movingNote || !accountId) return
-    const note = movingNote.note
-    movingNote = null
+  /** Centralised re-categorise.  Used by both the move modal and
+   *  the drag-and-drop drop handler so the success path (cache
+   *  splice + pending-folder promotion + etag refresh) lives in
+   *  one place. */
+  async function moveNoteToCategory(note: Note, path: string) {
+    if (!accountId) return
     if (note.category === path) return
     try {
       const updated = await invoke<Note>('update_nextcloud_note', {
@@ -550,7 +567,7 @@
       const rest = notes.filter((x) => x.id !== updated.id)
       notes = [updated, ...rest].sort((a, b) => b.modified - a.modified)
       if (selectedId === updated.id) draftEtag = updated.etag
-      // Promoting a pending folder to real once a note actually
+      // Promote a pending folder to real once a note actually
       // lives in it.
       if (path && pendingFolders.has(path)) {
         const next = new Set(pendingFolders)
@@ -561,6 +578,65 @@
     } catch (e) {
       error = formatError(e) || 'Failed to move note'
     }
+  }
+
+  async function pickMoveTarget(path: string) {
+    const note = movingNote
+    movingNote = null
+    if (!note) return
+    await moveNoteToCategory(note, path)
+  }
+
+  // ── Drag and drop ────────────────────────────────────────────
+  function onNoteDragStart(e: DragEvent, note: Note) {
+    if (!e.dataTransfer) return
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData(
+      NOTE_DND_MIME,
+      JSON.stringify({ accountId: note.nextcloud_account_id, noteId: note.id }),
+    )
+    // Some browsers want a `text/plain` fallback for the drag
+    // image / outside-app drag preview.
+    e.dataTransfer.setData('text/plain', note.title || '(untitled)')
+  }
+
+  function isNoteDrag(e: DragEvent): boolean {
+    const types = Array.from(e.dataTransfer?.types ?? [])
+    return types.includes(NOTE_DND_MIME)
+  }
+
+  function onFolderDragOver(e: DragEvent, target: string) {
+    // Always preventDefault — Webview engines may hide custom
+    // MIME types during dragover (privacy feature), and gating
+    // this on `isNoteDrag` would forbid the drop.  The drop
+    // handler revalidates via getData.
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    if (isNoteDrag(e)) dragOverFolder = target
+  }
+
+  function onFolderDragLeave(target: string) {
+    if (dragOverFolder === target) dragOverFolder = null
+  }
+
+  async function onFolderDrop(e: DragEvent, target: string) {
+    e.preventDefault()
+    dragOverFolder = null
+    const raw = e.dataTransfer?.getData(NOTE_DND_MIME)
+    if (!raw) return
+    let payload: { accountId: string; noteId: number }
+    try {
+      payload = JSON.parse(raw)
+    } catch {
+      return
+    }
+    // Only honour drops for notes belonging to the current
+    // account — cross-account moves aren't meaningful for the
+    // Notes API (each NC server has its own id space).
+    if (payload.accountId !== accountId) return
+    const note = notes.find((n) => n.id === payload.noteId)
+    if (!note) return
+    await moveNoteToCategory(note, target)
   }
 
   /** Quick-action delete — same behaviour as `deleteSelected`
@@ -582,22 +658,16 @@
     }
   }
 
-  // Outside-click + Escape dismissal for the move-to-folder popover.
+  // Escape dismissal for the move-to-folder modal.  Backdrop
+  // click is handled by the modal itself; this is just for
+  // keyboard.
   $effect(() => {
     if (!movingNote) return
-    const onMouseDown = () => (movingNote = null)
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') movingNote = null
     }
-    const t = setTimeout(() => {
-      document.addEventListener('mousedown', onMouseDown)
-      document.addEventListener('keydown', onKey)
-    }, 0)
-    return () => {
-      clearTimeout(t)
-      document.removeEventListener('mousedown', onMouseDown)
-      document.removeEventListener('keydown', onKey)
-    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   })
 
   // Outside-click + Escape dismissal for the folder action menu.
@@ -860,8 +930,11 @@
           <span class="notes-side-count">{favoriteCount}</span>
         </button>
         <button
-          class="notes-side-row {selectionMatches(selection, { kind: 'uncategorized' }) ? 'is-active' : ''}"
+          class="notes-side-row {selectionMatches(selection, { kind: 'uncategorized' }) ? 'is-active' : ''} {dragOverFolder === '' ? 'is-drop-target' : ''}"
           onclick={() => (selection = { kind: 'uncategorized' })}
+          ondragover={(e) => onFolderDragOver(e, '')}
+          ondragleave={() => onFolderDragLeave('')}
+          ondrop={(e) => void onFolderDrop(e, '')}
         >
           <span class="notes-side-icon text-base font-semibold leading-none">?</span>
           <span class="flex-1 truncate text-left">Uncategorized</span>
@@ -879,7 +952,7 @@
           {@const isSelected = selectionMatches(selection, { kind: 'category', path: node.path })}
           {@const menuOpen = folderMenu?.path === node.path}
           <div
-            class="notes-side-row group {isSelected ? 'is-active' : ''}"
+            class="notes-side-row group {isSelected ? 'is-active' : ''} {dragOverFolder === node.path ? 'is-drop-target' : ''}"
             style="padding-left: {0.5 + depth * 0.75}rem"
             role="treeitem"
             tabindex="-1"
@@ -888,6 +961,9 @@
               e.preventDefault()
               openFolderMenu(node.path, e.clientX, e.clientY)
             }}
+            ondragover={(e) => onFolderDragOver(e, node.path)}
+            ondragleave={() => onFolderDragLeave(node.path)}
+            ondrop={(e) => void onFolderDrop(e, node.path)}
           >
             {#if hasChildren}
               <button
@@ -1055,7 +1131,12 @@
           </div>
         {:else}
           {#each filteredNotes as n (n.id)}
-            <div class="relative group border-b border-surface-100 dark:border-surface-800">
+            <div
+              class="relative group border-b border-surface-100 dark:border-surface-800"
+              draggable="true"
+              role="listitem"
+              ondragstart={(e) => onNoteDragStart(e, n)}
+            >
               <button
                 class="w-full text-left px-4 py-3 transition-colors
                   {selectedId === n.id
@@ -1100,8 +1181,7 @@
                   aria-label="Move to folder"
                   onclick={(e) => {
                     e.stopPropagation()
-                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                    startMoveNote(n, r.left, r.bottom + 4)
+                    startMoveNote(n)
                   }}
                 >
                   <Icon name="move-to-folder" size={16} />
@@ -1217,41 +1297,94 @@
   {/if}
 </div>
 
-<!-- Move-to-folder popover for the per-note quick action.
-     Positioned at the cursor's quick-action button; clicking
-     a folder updates the note's category and dismisses. -->
+<!-- Move-to-folder modal — same shape as `MoveFolderPicker.svelte`
+     in the mail UI: centered backdrop dialog with a filter input
+     and a scrollable folder list.  An "Uncategorized" entry sits
+     at the top so the user can clear a category in one click. -->
 {#if movingNote}
+  {@const currentCat = movingNote.category}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
-    class="fixed z-60 min-w-52 max-h-72 overflow-y-auto rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
-    style="left: {Math.min(movingNote.x, window.innerWidth - 240)}px; top: {Math.min(movingNote.y, window.innerHeight - 240)}px;"
-    role="menu"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Move note to folder"
     tabindex="-1"
-    onmousedown={(e) => e.stopPropagation()}
+    onclick={(e) => {
+      if (e.target === e.currentTarget) movingNote = null
+    }}
   >
-    <div class="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wide text-surface-500">
-      Move to
-    </div>
-    <button
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50"
-      disabled={!movingNote.note.category}
-      onclick={() => moveNoteTo('')}
-    >
-      <span class="text-base font-semibold leading-none w-4 text-center">?</span>
-      <span class="flex-1">Uncategorized</span>
-    </button>
-    {#if allFolderPaths.length > 0}
-      <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
-      {#each allFolderPaths as path (path)}
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col w-[420px] max-w-[90vw] max-h-[80vh]">
+      <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
+        <h2 class="text-base font-semibold">Move to folder</h2>
         <button
-          class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50"
-          disabled={movingNote.note.category === path}
-          onclick={() => moveNoteTo(path)}
-        >
-          <Icon name="files" size={14} class="shrink-0" />
-          <span class="flex-1 truncate">{path}</span>
-        </button>
-      {/each}
-    {/if}
+          class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
+          onclick={() => (movingNote = null)}
+          aria-label="Close"
+        >✕</button>
+      </header>
+
+      <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700">
+        <input
+          type="text"
+          class="input w-full text-sm px-2 py-1 rounded-md"
+          placeholder="Filter folders…"
+          bind:value={moveFilter}
+        />
+      </div>
+
+      <div class="flex-1 overflow-y-auto px-2 py-2">
+        {#if allFolderPaths.length === 0 && currentCat === ''}
+          <p class="px-3 py-2 text-xs text-surface-500">
+            No folders yet. Create one with "+ Add folder" in the
+            sidebar.
+          </p>
+        {:else}
+          <!-- Uncategorized first; disabled when the note is
+               already there so the user can't move-to-self. -->
+          <button
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
+              {currentCat === ''
+                ? 'bg-surface-200/50 dark:bg-surface-700/50'
+                : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            disabled={currentCat === ''}
+            onclick={() => pickMoveTarget('')}
+            title={currentCat === '' ? 'Already uncategorized' : 'Move to Uncategorized'}
+          >
+            <span class="text-base font-semibold leading-none w-4 text-center">?</span>
+            <span class="flex-1">Uncategorized</span>
+          </button>
+
+          {@const filteredPaths = (() => {
+            const q = moveFilter.trim().toLowerCase()
+            return q
+              ? allFolderPaths.filter((p) => p.toLowerCase().includes(q))
+              : allFolderPaths
+          })()}
+
+          {#if filteredPaths.length > 0}
+            <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+            {#each filteredPaths as path (path)}
+              {@const isCurrent = path === currentCat}
+              <button
+                class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
+                  {isCurrent
+                    ? 'bg-surface-200/50 dark:bg-surface-700/50'
+                    : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                disabled={isCurrent}
+                onclick={() => pickMoveTarget(path)}
+                title={isCurrent ? 'Already in this folder' : `Move to ${path}`}
+              >
+                <Icon name="files" size={16} class="shrink-0" />
+                <span class="flex-1 truncate">{path}</span>
+              </button>
+            {/each}
+          {:else if moveFilter.trim()}
+            <p class="px-3 py-2 text-xs text-surface-500">No folders match.</p>
+          {/if}
+        {/if}
+      </div>
+    </div>
   </div>
 {/if}
 
@@ -1338,6 +1471,11 @@
   }
   :global([data-mode='dark'] .notes-side-row:hover) {
     background: var(--color-surface-800);
+  }
+  :global(.notes-side-row.is-drop-target) {
+    background: rgba(var(--color-primary-500) r g b / 0.2);
+    box-shadow: inset 0 0 0 2px var(--color-primary-500);
+    border-radius: 0.375rem;
   }
   :global(.notes-side-row.is-active) {
     background: rgba(var(--color-primary-500) r g b / 0.15);
