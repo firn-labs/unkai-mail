@@ -1984,41 +1984,73 @@
             {ml.members.filter((m) => m.email).length} / {ml.members.length}
           </span>
         </div>
-        <!-- Search + Add Contact row.  Search filters the
-             member list inline.  + Add Contact flips the
-             column into a contact-picker that lists every
-             contact NOT already in the list. -->
-        <!-- Search field + Add Contact button stack — same
-             vertical layout the Contacts tab middle column
-             uses (search on top, primary action below) for
-             visual consistency. -->
-        <div class="p-3 flex flex-col gap-2 border-b border-surface-200 dark:border-surface-700">
-          {#if pickerOpen}
-            <input
-              type="search"
-              class="input"
-              placeholder="Search contacts to add"
-              bind:value={pickerQuery}
-            />
-          {:else}
-            <input
-              type="search"
-              class="input"
-              placeholder="Search members"
-              bind:value={memberQuery}
-            />
-          {/if}
+        <!-- Search bar — same shape as the Contacts tab + Notes
+             search row (pill `.input` with magnifier + `×` clear).
+             `pickerOpen` swaps the bound query so the same input
+             alternates between filtering members and filtering the
+             contact-picker pool. -->
+        <div class="border-b border-surface-200 dark:border-surface-700 p-2">
+          <div class="relative w-full">
+            <span
+              class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
+              aria-hidden="true"
+            >
+              <Icon name="search" size={14} />
+            </span>
+            {#if pickerOpen}
+              <input
+                type="text"
+                class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
+                placeholder="Search contacts to add"
+                bind:value={pickerQuery}
+                aria-label="Search contacts to add"
+              />
+              {#if pickerQuery}
+                <button
+                  type="button"
+                  class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
+                  onclick={() => (pickerQuery = '')}
+                  title="Clear search"
+                  aria-label="Clear search"
+                >&#x2715;</button>
+              {/if}
+            {:else}
+              <input
+                type="text"
+                class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
+                placeholder="Search members"
+                bind:value={memberQuery}
+                aria-label="Search members"
+              />
+              {#if memberQuery}
+                <button
+                  type="button"
+                  class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
+                  onclick={() => (memberQuery = '')}
+                  title="Clear search"
+                  aria-label="Clear search"
+                >&#x2715;</button>
+              {/if}
+            {/if}
+          </div>
           {#if editable}
             <button
-              class="btn preset-filled-primary-500"
+              class="btn preset-filled-primary-500 w-full mt-2 inline-flex items-center justify-center gap-1.5"
               onclick={() => {
                 pickerOpen = !pickerOpen
                 pickerQuery = ''
               }}
-            >{pickerOpen ? 'Done' : '+ Add contact'}</button>
+            >
+              {#if pickerOpen}
+                Done
+              {:else}
+                <span class="text-lg font-semibold leading-none">+</span>
+                Add contact
+              {/if}
+            </button>
           {/if}
         </div>
-        <div class="flex-1 overflow-y-auto p-3 space-y-1">
+        <div class="flex-1 overflow-y-auto pb-3">
           {#if pickerOpen}
             {#if pickableContacts.length === 0}
               <p class="px-3 py-2 text-xs text-surface-500 italic">
@@ -2029,7 +2061,7 @@
             {/if}
             {#each pickableContacts as c (c.id)}
               <button
-                class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left hover:bg-surface-200 dark:hover:bg-surface-700"
+                class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors border-b border-surface-100 dark:border-surface-800 hover:bg-surface-100 dark:hover:bg-surface-800"
                 onclick={() => void addContactToSelectedList(c.id)}
               >
                 <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
@@ -2055,7 +2087,7 @@
             {#each filteredMembers as m, i (`${m.email}::${i}`)}
               {@const linkedContact = m.email ? contactByEmail.get(m.email.toLowerCase()) : undefined}
               {@const memberPhoto = linkedContact ? photoSrc(linkedContact) : null}
-              <div class="group flex items-center gap-2 px-3 py-2 rounded-md bg-surface-200/40 dark:bg-surface-700/40">
+              <div class="group flex items-center gap-2 px-3 py-2 text-sm transition-colors border-b border-surface-100 dark:border-surface-800 hover:bg-surface-100 dark:hover:bg-surface-800">
                 {#if memberPhoto}
                   <img
                     src={memberPhoto}
