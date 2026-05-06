@@ -136,10 +136,7 @@
   "contact_form_placeholder_postal": "Postleitzahl",
   "contact_form_placeholder_country": "Land",
   "contact_form_label_websites": "Webseiten",
-  "contact_form_hint_websites_one_per_line": "eine pro Zeile",
-  "contact_form_label_geo": "Wohnort",
-  "contact_form_hint_geo": "GEO",
-
+  "contact_form_button_add_website": "+ Webseite hinzufügen",
   "contact_form_label_languages": "Sprachen",
   "contact_form_placeholder_languages": "en-US, de, fr… (Eingabetaste zum Hinzufügen)",
   "contact_form_label_timezone": "Zeitzone",

@@ -15,6 +15,8 @@
   import { m } from '../paraglide/messages'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import Select from './Select.svelte'
+  import DateField from './DateField.svelte'
 
   interface Props {
     onclose: () => void
@@ -159,7 +161,6 @@
   let formAnniversary = $state('')
   let formGender = $state('')
   let formRole = $state('')
-  let formGeo = $state('')
   let formTimezone = $state('')
   /** IMPP rows — same shape as phone / email but with a wider
    *  kind set (matrix / xmpp / telegram / signal / skype / whatsapp
@@ -194,7 +195,10 @@
   let formTitle = $state('')
   let formBirthday = $state('')
   let formNote = $state('')
-  let formUrls = $state('') // newline-separated
+  /** Websites — one row per URL, mirroring the phone / email
+   *  per-row pattern so the user can add and remove entries
+   *  without juggling a multi-line textarea. */
+  let formWebsites = $state<{ value: string }[]>([])
   // Addresses are an array of records, edited in place. We model a
   // single concatenated free-text field per address keeping
   // street/locality/region/postal/country on separate lines so the
@@ -776,6 +780,7 @@
     void init()
   })
 
+
   async function init() {
     loading = true
     error = ''
@@ -871,7 +876,7 @@
     formTitle = c.title ?? ''
     formBirthday = c.birthday ?? ''
     formNote = c.note ?? ''
-    formUrls = (c.urls ?? []).join('\n')
+    formWebsites = (c.urls ?? []).map((u) => ({ value: u }))
     formAddresses = (c.addresses ?? []).map((a) => ({ ...a }))
     selectedPhotoBytes = null
     formPhotoMime = c.photo_mime ?? null
@@ -888,7 +893,6 @@
     formAnniversary = c.anniversary ?? ''
     formGender = c.gender ?? ''
     formRole = c.role ?? ''
-    formGeo = c.geo ?? ''
     formTimezone = c.timezone ?? ''
     formImpp = (c.impp ?? []).map((i) => ({ ...i }))
     formLanguages = [...(c.languages ?? [])]
@@ -910,7 +914,7 @@
     formTitle = ''
     formBirthday = ''
     formNote = ''
-    formUrls = ''
+    formWebsites = []
     formAddresses = []
     selectedPhotoBytes = null
     formPhotoMime = null
@@ -924,7 +928,6 @@
     formAnniversary = ''
     formGender = ''
     formRole = ''
-    formGeo = ''
     formTimezone = ''
     formImpp = []
     formLanguages = []
@@ -1068,22 +1071,11 @@
     void loadAddressbooksFor(formAccountId)
   }
 
-  function onAddressbookChange(e: Event) {
-    const sel = e.target as HTMLSelectElement
+  function onAddressbookChange(value: string) {
     const books = addressbooksByAccount[formAccountId] ?? []
-    const picked = books.find((b) => b.path === sel.value)
-    formAddressbookUrl = sel.value
+    const picked = books.find((b) => b.path === value)
+    formAddressbookUrl = value
     formAddressbookName = picked?.name ?? ''
-  }
-
-  // Split a textarea's contents into trimmed non-empty lines. vCard
-  // emits one EMAIL / TEL per value, so the form's newline separation
-  // maps 1:1 onto the backend shape.
-  function splitLines(s: string): string[] {
-    return s
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0)
   }
 
   function buildInput(): ContactInput {
@@ -1111,7 +1103,9 @@
       title: formTitle.trim() || null,
       birthday: formBirthday.trim() || null,
       note: formNote.trim() || null,
-      urls: splitLines(formUrls),
+      urls: formWebsites
+        .map((w) => w.value.trim())
+        .filter((u) => u.length > 0),
       // Strip empty rows so the user can't end up with a phantom
       // address from forgetting to fill in the slots they added.
       addresses: formAddresses.filter(
@@ -1134,7 +1128,6 @@
       anniversary: formAnniversary.trim() || null,
       gender: formGender.trim() || null,
       role: formRole.trim() || null,
-      geo: formGeo.trim() || null,
       timezone: formTimezone.trim() || null,
       impp: formImpp
         .filter((i) => i.value.trim())
@@ -1231,12 +1224,78 @@
   function removeChip(list: string[], idx: number, set: (next: string[]) => void) {
     set(list.filter((_, i) => i !== idx))
   }
+  /** Category suggestion popover (#143 follow-up): clicking the
+   *  category input shows the categories already in use across the
+   *  user's other contacts, filtered as they type, so the user
+   *  doesn't have to remember the exact spelling. */
+  let categoryFieldFocused = $state(false)
+  /** All distinct categories currently in use across the loaded
+   *  contacts.  Sorted alphabetically for a stable suggestion
+   *  list. */
+  const allKnownCategories = $derived.by(() => {
+    const set = new Set<string>()
+    for (const c of contacts) {
+      for (const cat of c.categories ?? []) {
+        if (cat) set.add(cat)
+      }
+    }
+    return [...set].sort((a, b) => a.localeCompare(b))
+  })
+  /** Subset of `allKnownCategories` shown in the popover: drops
+   *  ones already attached to this contact, then case-insensitive-
+   *  filters by whatever the user has typed in the chip draft. */
+  const filteredCategorySuggestions = $derived.by(() => {
+    const draft = formCategoryDraft.trim().toLowerCase()
+    const taken = new Set(formCategories.map((c) => c.toLowerCase()))
+    return allKnownCategories.filter(
+      (cat) =>
+        !taken.has(cat.toLowerCase()) &&
+        (!draft || cat.toLowerCase().includes(draft)),
+    )
+  })
+
   function addImpp() {
     formImpp = [...formImpp, { kind: 'matrix', value: '' }]
   }
   function removeImpp(idx: number) {
     formImpp = formImpp.filter((_, i) => i !== idx)
   }
+  function addWebsite() {
+    formWebsites = [...formWebsites, { value: '' }]
+  }
+  function removeWebsite(idx: number) {
+    formWebsites = formWebsites.filter((_, i) => i !== idx)
+  }
+
+  // Shared option lists for the modern <Select> popover (#143).
+  // Derived getters so paraglide-localised labels track the active
+  // locale at render time.
+  const emailKindOptions = $derived([
+    { value: 'home', label: m.contact_form_kind_home() },
+    { value: 'work', label: m.contact_form_kind_work() },
+    { value: 'other', label: m.contact_form_kind_other() },
+  ])
+  const phoneKindOptions = $derived([
+    { value: 'cell', label: m.contact_form_kind_mobile() },
+    { value: 'work', label: m.contact_form_kind_work() },
+    { value: 'home', label: m.contact_form_kind_home() },
+    { value: 'fax', label: m.contact_form_kind_fax() },
+    { value: 'other', label: m.contact_form_kind_other() },
+  ])
+  const imppKindOptions = $derived([
+    { value: 'matrix', label: m.contact_form_kind_matrix() },
+    { value: 'xmpp', label: m.contact_form_kind_xmpp() },
+    { value: 'telegram', label: m.contact_form_kind_telegram() },
+    { value: 'signal', label: m.contact_form_kind_signal() },
+    { value: 'skype', label: m.contact_form_kind_skype() },
+    { value: 'whatsapp', label: m.contact_form_kind_whatsapp() },
+    { value: 'other', label: m.contact_form_kind_other() },
+  ])
+  const addressKindOptions = $derived([
+    { value: 'home', label: m.contact_form_kind_home() },
+    { value: 'work', label: m.contact_form_kind_work() },
+    { value: 'other', label: m.contact_form_kind_other() },
+  ])
 
   /** Human-readable label for a kind tag (`home`, `work`,
    *  `cell`, etc.).  Used by the read-only view to render
@@ -1315,7 +1374,6 @@
     return (
       (c.addresses?.length ?? 0) > 0
       || (c.urls?.length ?? 0) > 0
-      || !!c.geo?.trim()
     )
   }
   function hasOtherDetails(c: Contact): boolean {
@@ -2197,12 +2255,6 @@
                 {/each}
               </div>
             {/if}
-            {#if selectedContact.geo}
-              <div class="contact-view-block">
-                <span class="contact-view-block-label">{m.contact_form_label_geo()}</span>
-                <span class="contact-view-row-value font-mono text-xs">{selectedContact.geo}</span>
-              </div>
-            {/if}
           </section>
         {/if}
 
@@ -2279,7 +2331,7 @@
             {#if selectedPhotoBytes}
               <button
                 type="button"
-                class="text-xs text-error-500 hover:underline self-start mt-1"
+                class="text-xs text-error-500 hover:bg-red-500/20 rounded-md px-2 py-1 self-start mt-1"
                 onclick={() => {
                   selectedPhotoBytes = null
                   formPhotoMime = null
@@ -2290,268 +2342,320 @@
         </div>
 
         <!-- ── Personal ──────────────────────────────────────── -->
-        <details class="contact-section" open>
-          <summary class="contact-section-summary">{m.contact_form_section_personal()}</summary>
-          <div class="contact-section-body">
+        <details class="contact-form-section" open>
+          <summary class="contact-form-section-title">{m.contact_form_section_personal()}</summary>
+          <div class="contact-form-section-body">
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_prefix()}</span>
-                <input class="input" bind:value={formPrefix} placeholder="Dr." />
+                <input class="input rounded-md" bind:value={formPrefix} placeholder="Dr." />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_suffix()}</span>
-                <input class="input" bind:value={formSuffix} placeholder="Jr." />
+                <input class="input rounded-md" bind:value={formSuffix} placeholder="Jr." />
               </label>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_given_name()}</span>
-                <input class="input" bind:value={formGiven} placeholder="Jane" />
+                <input class="input rounded-md" bind:value={formGiven} placeholder="Jane" />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_family_name()}</span>
-                <input class="input" bind:value={formFamily} placeholder="Doe" />
+                <input class="input rounded-md" bind:value={formFamily} placeholder="Doe" />
               </label>
             </div>
             <label class="label">
               <span>{m.contact_form_label_additional_names()}</span>
-              <input class="input" bind:value={formAdditional} placeholder={m.contact_form_hint_additional_names()} />
+              <input class="input rounded-md" bind:value={formAdditional} placeholder={m.contact_form_hint_additional_names()} />
             </label>
             <label class="label">
               <span>{m.contact_form_label_display_name()} <span class="text-surface-500">({m.contact_form_hint_display_name_auto()})</span></span>
-              <input class="input" bind:value={formName} placeholder="Jane Doe" />
+              <input class="input rounded-md" bind:value={formName} placeholder="Jane Doe" />
             </label>
             <label class="label">
               <span>{m.contact_form_label_nickname()}</span>
-              <input class="input" bind:value={formNickname} placeholder="JD" />
+              <input class="input rounded-md" bind:value={formNickname} placeholder="JD" />
             </label>
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_birthday()}</span>
-                <input class="input" bind:value={formBirthday} placeholder="1985-10-31" />
+                <DateField
+                  ariaLabel={m.contact_form_label_birthday()}
+                  bind:value={formBirthday}
+                />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_anniversary()}</span>
-                <input class="input" bind:value={formAnniversary} placeholder="2018-06-15" />
+                <DateField
+                  ariaLabel={m.contact_form_label_anniversary()}
+                  bind:value={formAnniversary}
+                />
               </label>
             </div>
             <label class="label">
               <span>{m.contact_form_label_gender()}</span>
-              <input class="input" bind:value={formGender} placeholder={m.contact_form_placeholder_gender()} />
+              <input class="input rounded-md" bind:value={formGender} placeholder={m.contact_form_placeholder_gender()} />
             </label>
           </div>
         </details>
 
         <!-- ── Communication ─────────────────────────────────── -->
-        <details class="contact-section" open>
-          <summary class="contact-section-summary">{m.contact_form_section_communication()}</summary>
-          <div class="contact-section-body">
+        <details class="contact-form-section" open>
+          <summary class="contact-form-section-title">{m.contact_form_section_communication()}</summary>
+          <div class="contact-form-section-body">
             <div class="space-y-2">
-              <div class="flex items-center justify-between">
-                <span class="text-sm font-medium">{m.contact_form_label_emails()}</span>
-                <button type="button" class="btn btn-sm preset-tonal" onclick={addEmail}>
-                  {m.contact_form_button_add_email()}
-                </button>
-              </div>
+              <span class="text-sm font-medium block">{m.contact_form_label_emails()}</span>
               {#each formEmails as email, i (i)}
                 <div class="flex items-center gap-2">
-                  <select class="select w-28" bind:value={email.kind}>
-                    <option value="home">{m.contact_form_kind_home()}</option>
-                    <option value="work">{m.contact_form_kind_work()}</option>
-                    <option value="other">{m.contact_form_kind_other()}</option>
-                  </select>
+                  <div class="w-28 shrink-0">
+                    <Select bind:value={email.kind} options={emailKindOptions} />
+                  </div>
                   <input
-                    class="input flex-1"
+                    class="input flex-1 rounded-md"
                     type="email"
                     bind:value={email.value}
                     placeholder="jane@example.com"
                   />
                   <button
                     type="button"
-                    class="text-xs text-error-500 hover:underline"
+                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    aria-label={m.contact_form_button_remove()}
+                    title={m.contact_form_button_remove()}
                     onclick={() => removeEmail(i)}
-                  >{m.contact_form_button_remove()}</button>
+                  ><Icon name="trash" size={14} /></button>
                 </div>
               {/each}
+              <button
+                type="button"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                aria-label={m.contact_form_button_add_email()}
+                title={m.contact_form_button_add_email()}
+                onclick={addEmail}
+              >+</button>
             </div>
 
             <div class="space-y-2">
-              <div class="flex items-center justify-between">
-                <span class="text-sm font-medium">{m.contact_form_label_phones()}</span>
-                <button type="button" class="btn btn-sm preset-tonal" onclick={addPhone}>
-                  {m.contact_form_button_add_phone()}
-                </button>
-              </div>
+              <span class="text-sm font-medium block">{m.contact_form_label_phones()}</span>
               {#each formPhones as phone, i (i)}
                 <div class="flex items-center gap-2">
-                  <select class="select w-28" bind:value={phone.kind}>
-                    <option value="cell">{m.contact_form_kind_mobile()}</option>
-                    <option value="work">{m.contact_form_kind_work()}</option>
-                    <option value="home">{m.contact_form_kind_home()}</option>
-                    <option value="fax">{m.contact_form_kind_fax()}</option>
-                    <option value="other">{m.contact_form_kind_other()}</option>
-                  </select>
+                  <div class="w-28 shrink-0">
+                    <Select bind:value={phone.kind} options={phoneKindOptions} />
+                  </div>
                   <input
-                    class="input flex-1"
+                    class="input flex-1 rounded-md"
                     bind:value={phone.value}
                     placeholder="+1 555 0100"
                   />
                   <button
                     type="button"
-                    class="text-xs text-error-500 hover:underline"
+                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    aria-label={m.contact_form_button_remove()}
+                    title={m.contact_form_button_remove()}
                     onclick={() => removePhone(i)}
-                  >{m.contact_form_button_remove()}</button>
+                  ><Icon name="trash" size={14} /></button>
                 </div>
               {/each}
+              <button
+                type="button"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                aria-label={m.contact_form_button_add_phone()}
+                title={m.contact_form_button_add_phone()}
+                onclick={addPhone}
+              >+</button>
             </div>
 
             <div class="space-y-2">
-              <div class="flex items-center justify-between">
-                <span class="text-sm font-medium">{m.contact_form_label_impp()}</span>
-                <button type="button" class="btn btn-sm preset-tonal" onclick={addImpp}>
-                  {m.contact_form_button_add_impp()}
-                </button>
-              </div>
+              <span class="text-sm font-medium block">{m.contact_form_label_impp()}</span>
               {#each formImpp as im, i (i)}
                 <div class="flex items-center gap-2">
-                  <select class="select w-32" bind:value={im.kind}>
-                    <option value="matrix">{m.contact_form_kind_matrix()}</option>
-                    <option value="xmpp">{m.contact_form_kind_xmpp()}</option>
-                    <option value="telegram">{m.contact_form_kind_telegram()}</option>
-                    <option value="signal">{m.contact_form_kind_signal()}</option>
-                    <option value="skype">{m.contact_form_kind_skype()}</option>
-                    <option value="whatsapp">{m.contact_form_kind_whatsapp()}</option>
-                    <option value="other">{m.contact_form_kind_other()}</option>
-                  </select>
+                  <div class="w-32 shrink-0">
+                    <Select bind:value={im.kind} options={imppKindOptions} />
+                  </div>
                   <input
-                    class="input flex-1"
+                    class="input flex-1 rounded-md"
                     bind:value={im.value}
                     placeholder={m.contact_form_placeholder_impp()}
                   />
                   <button
                     type="button"
-                    class="text-xs text-error-500 hover:underline"
+                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    aria-label={m.contact_form_button_remove()}
+                    title={m.contact_form_button_remove()}
                     onclick={() => removeImpp(i)}
-                  >{m.contact_form_button_remove()}</button>
+                  ><Icon name="trash" size={14} /></button>
                 </div>
               {/each}
+              <button
+                type="button"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                aria-label={m.contact_form_button_add_impp()}
+                title={m.contact_form_button_add_impp()}
+                onclick={addImpp}
+              >+</button>
             </div>
           </div>
         </details>
 
         <!-- ── Work ─────────────────────────────────────────── -->
-        <details class="contact-section">
-          <summary class="contact-section-summary">{m.contact_form_section_work()}</summary>
-          <div class="contact-section-body">
+        <details class="contact-form-section" open>
+          <summary class="contact-form-section-title">{m.contact_form_section_work()}</summary>
+          <div class="contact-form-section-body">
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_organization()}</span>
-                <input class="input" bind:value={formOrg} placeholder="Example Corp" />
+                <input class="input rounded-md" bind:value={formOrg} placeholder="Example Corp" />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_job_title()}</span>
-                <input class="input" bind:value={formTitle} placeholder="Product Manager" />
+                <input class="input rounded-md" bind:value={formTitle} placeholder="Product Manager" />
               </label>
             </div>
             <label class="label">
               <span>{m.contact_form_label_role()} <span class="text-surface-500">({m.contact_form_hint_role()})</span></span>
-              <input class="input" bind:value={formRole} placeholder="Project Lead" />
+              <input class="input rounded-md" bind:value={formRole} placeholder="Project Lead" />
             </label>
             <div>
               <span class="text-sm font-medium mb-1 block">{m.contact_form_label_categories()}</span>
-              <div class="flex flex-wrap gap-1.5 mb-2">
-                {#each formCategories as cat, i (cat)}
-                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 text-xs">
-                    {cat}
-                    <button
-                      type="button"
-                      class="hover:text-error-500 leading-none"
-                      onclick={() => removeChip(formCategories, i, (next) => (formCategories = next))}
-                    >×</button>
-                  </span>
-                {/each}
+              {#if formCategories.length > 0}
+                <ul class="contact-form-line-list mb-2">
+                  {#each formCategories as cat, i (cat)}
+                    <li class="contact-form-line-row">
+                      <span class="text-sm">{cat}</span>
+                      <button
+                        type="button"
+                        class="ml-auto text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                        aria-label={m.contact_form_button_remove()}
+                        title={m.contact_form_button_remove()}
+                        onclick={() => removeChip(formCategories, i, (next) => (formCategories = next))}
+                      ><Icon name="trash" size={14} /></button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+              <div class="relative">
+                <input
+                  class="input rounded-md w-full"
+                  bind:value={formCategoryDraft}
+                  placeholder={m.contact_form_placeholder_chip()}
+                  onfocus={() => (categoryFieldFocused = true)}
+                  onblur={() => {
+                    // Defer the close so a click on a suggestion fires
+                    // before the input loses focus and removes it.
+                    setTimeout(() => (categoryFieldFocused = false), 120)
+                  }}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' || e.key === ',') {
+                      e.preventDefault()
+                      commitChipDraft(formCategories, formCategoryDraft, (next, draft) => {
+                        formCategories = next
+                        formCategoryDraft = draft
+                      })
+                    } else if (e.key === 'Escape') {
+                      categoryFieldFocused = false
+                    }
+                  }}
+                />
+                {#if categoryFieldFocused && filteredCategorySuggestions.length > 0}
+                  <ul
+                    class="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg"
+                    role="listbox"
+                  >
+                    {#each filteredCategorySuggestions as suggestion (suggestion)}
+                      <li
+                        role="option"
+                        aria-selected="false"
+                        class="px-3 py-1.5 text-sm cursor-pointer hover:bg-primary-500/15"
+                        onmousedown={(e) => {
+                          // mousedown beats blur — if we waited for click
+                          // the input would have already closed the popover.
+                          e.preventDefault()
+                          formCategories = [...formCategories, suggestion]
+                          formCategoryDraft = ''
+                        }}
+                      >{suggestion}</li>
+                    {/each}
+                  </ul>
+                {/if}
               </div>
-              <input
-                class="input"
-                bind:value={formCategoryDraft}
-                placeholder={m.contact_form_placeholder_chip()}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === ',') {
-                    e.preventDefault()
-                    commitChipDraft(formCategories, formCategoryDraft, (next, draft) => {
-                      formCategories = next
-                      formCategoryDraft = draft
-                    })
-                  }
-                }}
-              />
             </div>
           </div>
         </details>
 
         <!-- ── Address & Web ────────────────────────────────── -->
-        <details class="contact-section">
-          <summary class="contact-section-summary">{m.contact_form_section_address_web()}</summary>
-          <div class="contact-section-body">
+        <details class="contact-form-section" open>
+          <summary class="contact-form-section-title">{m.contact_form_section_address_web()}</summary>
+          <div class="contact-form-section-body">
             <div class="space-y-2">
-              <div class="flex items-center justify-between">
-                <span class="text-sm font-medium">{m.contact_form_label_addresses()}</span>
-                <button type="button" class="btn btn-sm preset-tonal" onclick={addAddress}>
-                  {m.contact_form_button_add_address()}
-                </button>
-              </div>
+              <span class="text-sm font-medium block">{m.contact_form_label_addresses()}</span>
               {#each formAddresses as addr, i (i)}
                 <div class="card p-3 bg-surface-50 dark:bg-surface-900/50 rounded-md space-y-2">
                   <div class="flex items-center gap-2">
-                    <select class="select w-32" bind:value={addr.kind}>
-                      <option value="home">{m.contact_form_kind_home()}</option>
-                      <option value="work">{m.contact_form_kind_work()}</option>
-                      <option value="other">{m.contact_form_kind_other()}</option>
-                    </select>
+                    <div class="w-32 shrink-0">
+                      <Select bind:value={addr.kind} options={addressKindOptions} />
+                    </div>
                     <button
                       type="button"
-                      class="ml-auto text-xs text-error-500 hover:underline"
+                      class="ml-auto text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                      aria-label={m.contact_form_button_remove()}
+                      title={m.contact_form_button_remove()}
                       onclick={() => removeAddress(i)}
-                    >{m.contact_form_button_remove()}</button>
+                    ><Icon name="trash" size={14} /></button>
                   </div>
-                  <input class="input" bind:value={addr.street} placeholder={m.contact_form_placeholder_street()} />
+                  <input class="input rounded-md" bind:value={addr.street} placeholder={m.contact_form_placeholder_street()} />
                   <div class="grid grid-cols-2 gap-2">
-                    <input class="input" bind:value={addr.locality} placeholder={m.contact_form_placeholder_city()} />
-                    <input class="input" bind:value={addr.region} placeholder={m.contact_form_placeholder_region()} />
+                    <input class="input rounded-md" bind:value={addr.locality} placeholder={m.contact_form_placeholder_city()} />
+                    <input class="input rounded-md" bind:value={addr.region} placeholder={m.contact_form_placeholder_region()} />
                   </div>
                   <div class="grid grid-cols-2 gap-2">
-                    <input class="input" bind:value={addr.postal_code} placeholder={m.contact_form_placeholder_postal()} />
-                    <input class="input" bind:value={addr.country} placeholder={m.contact_form_placeholder_country()} />
+                    <input class="input rounded-md" bind:value={addr.postal_code} placeholder={m.contact_form_placeholder_postal()} />
+                    <input class="input rounded-md" bind:value={addr.country} placeholder={m.contact_form_placeholder_country()} />
                   </div>
                 </div>
               {/each}
+              <button
+                type="button"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                aria-label={m.contact_form_button_add_address()}
+                title={m.contact_form_button_add_address()}
+                onclick={addAddress}
+              >+</button>
             </div>
 
-            <label class="label">
-              <span>{m.contact_form_label_websites()} <span class="text-surface-500">({m.contact_form_hint_websites_one_per_line()})</span></span>
-              <textarea
-                class="textarea"
-                rows="2"
-                bind:value={formUrls}
-                placeholder="https://example.com"
-              ></textarea>
-            </label>
-
-            <label class="label">
-              <span>{m.contact_form_label_geo()} <span class="text-surface-500">({m.contact_form_hint_geo()})</span></span>
-              <input
-                class="input"
-                bind:value={formGeo}
-                placeholder="geo:48.198634,16.371648"
-              />
-            </label>
+            <div class="space-y-2">
+              <span class="text-sm font-medium block">{m.contact_form_label_websites()}</span>
+              {#each formWebsites as site, i (i)}
+                <div class="flex items-center gap-2">
+                  <input
+                    class="input flex-1 rounded-md"
+                    type="url"
+                    bind:value={site.value}
+                    placeholder="https://example.com"
+                  />
+                  <button
+                    type="button"
+                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    aria-label={m.contact_form_button_remove()}
+                    title={m.contact_form_button_remove()}
+                    onclick={() => removeWebsite(i)}
+                  ><Icon name="trash" size={14} /></button>
+                </div>
+              {/each}
+              <button
+                type="button"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                aria-label={m.contact_form_button_add_website()}
+                title={m.contact_form_button_add_website()}
+                onclick={addWebsite}
+              >+</button>
+            </div>
           </div>
         </details>
 
         <!-- ── Other ────────────────────────────────────────── -->
-        <details class="contact-section">
-          <summary class="contact-section-summary">{m.contact_form_section_other()}</summary>
-          <div class="contact-section-body">
+        <details class="contact-form-section" open>
+          <summary class="contact-form-section-title">{m.contact_form_section_other()}</summary>
+          <div class="contact-form-section-body">
             <div>
               <span class="text-sm font-medium mb-1 block">{m.contact_form_label_languages()}</span>
               <div class="flex flex-wrap gap-1.5 mb-2">
@@ -2567,7 +2671,7 @@
                 {/each}
               </div>
               <input
-                class="input"
+                class="input rounded-md"
                 bind:value={formLanguageDraft}
                 placeholder={m.contact_form_placeholder_languages()}
                 onkeydown={(e) => {
@@ -2584,7 +2688,7 @@
             <label class="label">
               <span>{m.contact_form_label_timezone()}</span>
               <input
-                class="input"
+                class="input rounded-md"
                 bind:value={formTimezone}
                 placeholder={m.contact_form_placeholder_timezone()}
               />
@@ -2592,7 +2696,7 @@
             <label class="label">
               <span>{m.contact_form_label_notes()}</span>
               <textarea
-                class="textarea"
+                class="textarea rounded-md"
                 rows="3"
                 bind:value={formNote}
                 placeholder={m.contact_form_placeholder_notes()}
@@ -2605,23 +2709,25 @@
           <div class="grid grid-cols-2 gap-3">
             <label class="label">
               <span>Nextcloud account</span>
-              <select class="select" bind:value={formAccountId} onchange={onAccountChange}>
-                {#each accounts as a (a.id)}
-                  <option value={a.id}>{a.display_name ?? a.username}</option>
-                {/each}
-              </select>
+              <Select
+                bind:value={formAccountId}
+                options={accounts.map((a) => ({
+                  value: a.id,
+                  label: a.display_name ?? a.username,
+                }))}
+                onchange={() => onAccountChange()}
+              />
             </label>
             <label class="label">
               <span>Addressbook</span>
-              <select
-                class="select"
+              <Select
                 value={formAddressbookUrl}
-                onchange={onAddressbookChange}
-              >
-                {#each addressbooksByAccount[formAccountId] ?? [] as b (b.path)}
-                  <option value={b.path}>{b.display_name ?? b.name}</option>
-                {/each}
-              </select>
+                options={(addressbooksByAccount[formAccountId] ?? []).map((b) => ({
+                  value: b.path,
+                  label: b.display_name ?? b.name,
+                }))}
+                onchange={(v) => onAddressbookChange(v)}
+              />
             </label>
           </div>
         {/if}
@@ -2715,53 +2821,65 @@
 {/if}
 
 <style>
-  /* #143 — collapsible section in the contact form.  Default
-     `<details>` chrome is browser-painted and inconsistent
-     across engines; we replace it with a chevron-prefixed
-     summary that flips on open + a card-styled body. */
-  :global(.contact-section) {
-    border: 1px solid var(--color-surface-200);
-    border-radius: 0.5rem;
-    background: var(--color-surface-50);
-    overflow: hidden;
+  /* #143 — flat collapsible section header.  No card chrome /
+     background; just a clickable title with a chevron and an
+     underline so groups are visually separated without the
+     surrounding box clipping any popovers (DateField / Select)
+     that grow outside the section. */
+  :global(.contact-form-section) {
+    display: block;
   }
-  :global([data-mode='dark'] .contact-section) {
-    border-color: var(--color-surface-700);
-    background: var(--color-surface-900);
-  }
-  :global(.contact-section-summary) {
+  :global(.contact-form-section-title) {
     cursor: pointer;
-    padding: 0.625rem 0.875rem;
-    font-weight: 600;
-    font-size: 0.875rem;
+    user-select: none;
     list-style: none;
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    user-select: none;
+    font-weight: 600;
+    font-size: 0.875rem;
+    padding-bottom: 0.375rem;
+    margin: 0;
+    border-bottom: 1px solid var(--color-surface-300);
   }
-  :global(.contact-section-summary::-webkit-details-marker) {
+  :global([data-mode='dark'] .contact-form-section-title) {
+    border-bottom-color: var(--color-surface-700);
+  }
+  :global(.contact-form-section-title::-webkit-details-marker) {
     display: none;
   }
-  :global(.contact-section-summary::before) {
+  :global(.contact-form-section-title::before) {
     content: '▸';
-    display: inline-block;
-    transition: transform 120ms ease;
     color: var(--color-surface-500);
     font-size: 0.75rem;
+    transition: transform 120ms ease;
   }
-  :global(.contact-section[open] > .contact-section-summary::before) {
+  :global(.contact-form-section[open] > .contact-form-section-title::before) {
     transform: rotate(90deg);
   }
-  :global(.contact-section-body) {
-    padding: 0.75rem 0.875rem 1rem;
+  :global(.contact-form-section-body) {
     display: flex;
     flex-direction: column;
     gap: 0.875rem;
-    border-top: 1px solid var(--color-surface-200);
+    padding-top: 0.875rem;
   }
-  :global([data-mode='dark'] .contact-section-body) {
-    border-top-color: var(--color-surface-700);
+
+  /* Categories list — flat rows with a coloured left bar instead
+     of pill chips, per the cleaner look the user asked for. */
+  :global(.contact-form-line-list) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  :global(.contact-form-line-row) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.5rem 0.25rem 0.625rem;
+    border-left: 3px solid var(--color-primary-500);
   }
 
   /* #143 follow-up: read-only view-mode chrome.  No card

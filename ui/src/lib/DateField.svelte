@@ -106,12 +106,6 @@
     value = formatISO(d)
     open = false
   }
-  function prevMonth() {
-    view = new Date(view.getFullYear(), view.getMonth() - 1, 1)
-  }
-  function nextMonth() {
-    view = new Date(view.getFullYear(), view.getMonth() + 1, 1)
-  }
   function goToday() {
     pick(new Date())
   }
@@ -123,7 +117,12 @@
       if (!open) return
       if (e.key === 'Escape') {
         open = false
-      } else if (e.key === 'ArrowLeft') {
+        return
+      }
+      // Day-by-day arrow nav only makes sense in days mode — in
+      // months / years grids the user picks with the mouse.
+      if (mode !== 'days') return
+      if (e.key === 'ArrowLeft') {
         e.preventDefault()
         const d = new Date(selected)
         d.setDate(d.getDate() - 1)
@@ -159,11 +158,70 @@
     }
   })
 
-  // Locale-aware month + weekday labels.  Computed once per
-  // view change so we don't reformat on every grid cell.
-  let monthLabel = $derived(
-    view.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+  // Picker mode — clicking the month or year label in the header
+  // drills up into a coarser grid (12-month picker / 12-year
+  // picker), matching the standard calendar-popover UX.  Resets
+  // to 'days' whenever the popover closes so reopening always
+  // shows the day grid.
+  type Mode = 'days' | 'months' | 'years'
+  let mode = $state<Mode>('days')
+  $effect(() => {
+    if (!open) mode = 'days'
+  })
+
+  // Locale-aware labels.  Split into month-only and year-only so
+  // the header can render them as two independently-clickable
+  // buttons (drill into months grid / years grid respectively).
+  let monthLabelOnly = $derived(
+    view.toLocaleDateString(undefined, { month: 'long' }),
   )
+  let yearLabelOnly = $derived(view.getFullYear())
+
+  // 12-cell month grid.  Labels respect the user's locale via
+  // toLocaleDateString — same approach we use for weekdays.
+  let monthCells = $derived.by(() => {
+    const out: { idx: number; label: string }[] = []
+    for (let m = 0; m < 12; m++) {
+      const ref = new Date(view.getFullYear(), m, 1)
+      out.push({
+        idx: m,
+        label: ref.toLocaleDateString(undefined, { month: 'short' }),
+      })
+    }
+    return out
+  })
+
+  // 12-year block — anchored on a multiple of 12 so the same
+  // year always lives in the same cell when navigating between
+  // adjacent decades.
+  let yearBlockStart = $derived(Math.floor(view.getFullYear() / 12) * 12)
+  let yearCells = $derived.by(() => {
+    const out: number[] = []
+    for (let i = 0; i < 12; i++) out.push(yearBlockStart + i)
+    return out
+  })
+
+  function pickMonth(monthIdx: number) {
+    view = new Date(view.getFullYear(), monthIdx, 1)
+    mode = 'days'
+  }
+  function pickYear(year: number) {
+    view = new Date(year, view.getMonth(), 1)
+    mode = 'months'
+  }
+  /** Step the header back / forward.  In days mode that's one
+   *  month, in months mode one year, in years mode one 12-year
+   *  block — matching what the user is currently looking at. */
+  function stepHeader(direction: -1 | 1) {
+    if (mode === 'days') {
+      view = new Date(view.getFullYear(), view.getMonth() + direction, 1)
+    } else if (mode === 'months') {
+      view = new Date(view.getFullYear() + direction, view.getMonth(), 1)
+    } else {
+      view = new Date(view.getFullYear() + direction * 12, view.getMonth(), 1)
+    }
+  }
+
   // Mon … Sun — generated from a fixed reference week so the
   // labels match whatever the browser's locale renders.
   let weekdayLabels = $derived.by(() => {
@@ -214,55 +272,132 @@
       role="dialog"
       aria-label="Pick a date"
     >
-      <!-- Header: prev | month-year label | next -->
+      <!-- Header: prev | month / year label(s) | next.  The
+           label area renders one or two clickable buttons that
+           drill into the months / years grids — same UX as
+           Material's date picker.  In days mode both labels are
+           clickable; in months mode only the year is; in years
+           mode the label collapses to a static decade range. -->
       <div class="flex items-center justify-between mb-2">
         <button
           type="button"
           class="btn btn-sm preset-tonal-surface w-8 h-8 p-0"
-          aria-label="Previous month"
-          onclick={prevMonth}
+          aria-label="Previous"
+          onclick={() => stepHeader(-1)}
         >‹</button>
-        <span class="text-sm font-medium">{monthLabel}</span>
+        <div class="flex items-center gap-1">
+          {#if mode === 'days'}
+            <button
+              type="button"
+              class="px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
+              onclick={() => (mode = 'months')}
+              aria-label="Pick month"
+            >{monthLabelOnly}</button>
+            <button
+              type="button"
+              class="px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
+              onclick={() => (mode = 'years')}
+              aria-label="Pick year"
+            >{yearLabelOnly}</button>
+          {:else if mode === 'months'}
+            <button
+              type="button"
+              class="px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
+              onclick={() => (mode = 'years')}
+              aria-label="Pick year"
+            >{yearLabelOnly}</button>
+          {:else}
+            <span class="px-2 py-1 text-sm font-medium">
+              {yearBlockStart} – {yearBlockStart + 11}
+            </span>
+          {/if}
+        </div>
         <button
           type="button"
           class="btn btn-sm preset-tonal-surface w-8 h-8 p-0"
-          aria-label="Next month"
-          onclick={nextMonth}
+          aria-label="Next"
+          onclick={() => stepHeader(1)}
         >›</button>
       </div>
 
-      <!-- Weekday header row (Mon-first). -->
-      <div class="grid grid-cols-7 gap-0.5 mb-1">
-        {#each weekdayLabels as wd (wd)}
-          <div class="text-[10px] uppercase tracking-wide text-surface-500 text-center py-1">
-            {wd}
-          </div>
-        {/each}
-      </div>
+      {#if mode === 'days'}
+        <!-- Weekday header row (Mon-first). -->
+        <div class="grid grid-cols-7 gap-0.5 mb-1">
+          {#each weekdayLabels as wd (wd)}
+            <div class="text-[10px] uppercase tracking-wide text-surface-500 text-center py-1">
+              {wd}
+            </div>
+          {/each}
+        </div>
 
-      <!-- 6×7 grid.  Out-of-month days stay clickable but
-           dimmed so the user can drag selection across month
-           boundaries without breaking flow. -->
-      <div class="grid grid-cols-7 gap-0.5">
-        {#each grid as d (d.getTime())}
-          {@const inMonth = d.getMonth() === view.getMonth()}
-          {@const isToday = sameDay(d, today)}
-          {@const isSelected = sameDay(d, selected)}
-          <button
-            type="button"
-            class="text-sm h-8 rounded-md flex items-center justify-center {isSelected
-              ? 'bg-primary-500 text-white font-semibold'
-              : isToday
-                ? 'border border-primary-500 text-primary-500'
-                : inMonth
-                  ? 'hover:bg-surface-200 dark:hover:bg-surface-800'
-                  : 'text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-800'}"
-            onclick={() => pick(d)}
-          >
-            {d.getDate()}
-          </button>
-        {/each}
-      </div>
+        <!-- 6×7 grid.  Out-of-month days stay clickable but
+             dimmed so the user can drag selection across month
+             boundaries without breaking flow. -->
+        <div class="grid grid-cols-7 gap-0.5">
+          {#each grid as d (d.getTime())}
+            {@const inMonth = d.getMonth() === view.getMonth()}
+            {@const isToday = sameDay(d, today)}
+            {@const isSelected = sameDay(d, selected)}
+            <button
+              type="button"
+              class="text-sm h-8 rounded-md flex items-center justify-center {isSelected
+                ? 'bg-primary-500 text-white font-semibold'
+                : isToday
+                  ? 'border border-primary-500 text-primary-500'
+                  : inMonth
+                    ? 'hover:bg-surface-200 dark:hover:bg-surface-800'
+                    : 'text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-800'}"
+              onclick={() => pick(d)}
+            >
+              {d.getDate()}
+            </button>
+          {/each}
+        </div>
+      {:else if mode === 'months'}
+        <!-- 4×3 month grid.  Selected highlight only fires when
+             the displayed year matches the selected date's year,
+             so jumping into a different year shows a clean grid. -->
+        <div class="grid grid-cols-3 gap-1">
+          {#each monthCells as cell (cell.idx)}
+            {@const isToday =
+              cell.idx === today.getMonth() &&
+              view.getFullYear() === today.getFullYear()}
+            {@const isSelected =
+              cell.idx === selected.getMonth() &&
+              view.getFullYear() === selected.getFullYear()}
+            <button
+              type="button"
+              class="text-sm h-10 rounded-md flex items-center justify-center {isSelected
+                ? 'bg-primary-500 text-white font-semibold'
+                : isToday
+                  ? 'border border-primary-500 text-primary-500'
+                  : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+              onclick={() => pickMonth(cell.idx)}
+            >
+              {cell.label}
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <!-- 4×3 year grid spanning the current 12-year block. -->
+        <div class="grid grid-cols-3 gap-1">
+          {#each yearCells as y (y)}
+            {@const isToday = y === today.getFullYear()}
+            {@const isSelected = y === selected.getFullYear()}
+            <button
+              type="button"
+              class="text-sm h-10 rounded-md flex items-center justify-center {isSelected
+                ? 'bg-primary-500 text-white font-semibold'
+                : isToday
+                  ? 'border border-primary-500 text-primary-500'
+                  : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+              onclick={() => pickYear(y)}
+            >
+              {y}
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       <!-- Footer: Today shortcut.  Clear button is
            deliberately omitted — the field is required for
