@@ -580,14 +580,16 @@
          tree below) so the two views feel coherent. -->
     <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col text-sm">
       <!-- Primary action — same shape + filled-primary preset as
-           the mail Compose CTA. -->
+           the mail Compose CTA.  Plus glyph matches the per-row
+           "+ Add …" pattern used elsewhere in the app (no
+           standalone plus icon in the registry). -->
       <div class="p-3">
         <button
           class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
           onclick={newNote}
           disabled={!accountId}
         >
-          <Icon name="notes" size={16} />
+          <span class="text-lg font-semibold leading-none">+</span>
           New note
         </button>
       </div>
