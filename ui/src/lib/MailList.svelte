@@ -306,32 +306,26 @@
     if (group.length <= 1) return
     const rowEl = e.currentTarget as HTMLElement | null
     if (!rowEl) return
-    const preview = buildMultiDragPreview(rowEl, group.length)
-    if (!preview) return
-    // Anchor the drag image so the cursor sits roughly where the
-    // user grabbed the row — 16px from the top-left corner reads
-    // as "I'm holding it from up here" rather than a cluster
-    // glued to the cursor tip.
-    e.dataTransfer.setDragImage(preview, 16, 16)
+    // The drag image — a clone of the row at full opacity.  No
+    // badge inside the bitmap, because the OS rendering applies
+    // its own opacity to whatever's in the drag image and that
+    // would also fade the badge.  Instead the badge floats as a
+    // separate live DOM element that tracks the cursor (see
+    // `attachFloatingBadge` below) and stays at 100% opacity.
+    const preview = buildRowDragImage(rowEl)
+    if (preview) {
+      e.dataTransfer.setDragImage(preview, 16, 16)
+    }
+    attachFloatingBadge(group.length)
   }
 
-  /** Build a transient drag-preview node that mirrors the
-   *  triggering row's dimensions + content and overlays a badge
-   *  with [+] and the count in the bottom-right corner.  The
-   *  returned node is appended to the document body off-screen
-   *  so the browser's drag-image snapshot can find it; we
-   *  schedule removal in a microtask so it doesn't linger after
-   *  the snapshot is taken.  Returns `null` if cloning fails for
-   *  any reason — the caller falls back to the default drag
-   *  image. */
-  function buildMultiDragPreview(rowEl: HTMLElement, count: number): HTMLElement | null {
+  /** Clone the source row off-screen at full opacity for use as
+   *  the OS-level drag image.  No badge — the badge is rendered
+   *  separately, see `attachFloatingBadge`. */
+  function buildRowDragImage(rowEl: HTMLElement): HTMLElement | null {
     try {
       const rect = rowEl.getBoundingClientRect()
       const wrapper = document.createElement('div')
-      // Off-screen anchor — the engine still snapshots from it
-      // because the node IS rendered, just not where the user
-      // can see.  Width matches the source row so the clone
-      // doesn't visually drift.
       wrapper.style.position = 'fixed'
       wrapper.style.top = '-9999px'
       wrapper.style.left = '-9999px'
@@ -339,86 +333,116 @@
       wrapper.style.pointerEvents = 'none'
       wrapper.style.boxShadow = '0 8px 20px rgb(0 0 0 / 0.18)'
       wrapper.style.borderRadius = '6px'
-      wrapper.style.overflow = 'visible'
-
-      // Clone the row's rendered DOM so the preview matches the
-      // exact row the user grabbed (including read/unread tint,
-      // selection chrome, etc.).  We fade the clone to 0.45 so
-      // the badge — at full opacity in the same bitmap — visibly
-      // pops against it.  The OS applies its own drag-image
-      // opacity on top (~0.6 in Edge WebView2), so the effective
-      // values land around 0.27 for the row vs 0.6 for the badge,
-      // which is enough contrast for the count to read clearly.
-      // We can't increase the badge above 1.0, but we can fade
-      // the row to compensate — same trick most native drag
-      // affordances use.
+      wrapper.style.overflow = 'hidden'
       const clone = rowEl.cloneNode(true) as HTMLElement
       clone.style.width = `${rect.width}px`
       clone.style.background = getComputedStyle(rowEl).backgroundColor
-      clone.style.opacity = '0.45'
       wrapper.appendChild(clone)
-
-      // Badge overlay — circle with a `+` glyph plus the count
-      // tucked beside it.  Anchored to the bottom-right corner
-      // of the row clone via absolute positioning relative to
-      // the wrapper.  Smaller / denser proportions than v1 for
-      // a cleaner, modern look.
-      const badge = document.createElement('div')
-      badge.style.position = 'absolute'
-      badge.style.right = '6px'
-      badge.style.bottom = '6px'
-      badge.style.display = 'inline-flex'
-      badge.style.alignItems = 'center'
-      badge.style.gap = '4px'
-      badge.style.pointerEvents = 'none'
-
-      const circle = document.createElement('span')
-      circle.style.width = '20px'
-      circle.style.height = '20px'
-      circle.style.borderRadius = '999px'
-      circle.style.display = 'inline-flex'
-      circle.style.alignItems = 'center'
-      circle.style.justifyContent = 'center'
-      circle.style.color = 'white'
-      circle.style.fontWeight = '700'
-      circle.style.fontSize = '14px'
-      circle.style.lineHeight = '1'
-      circle.style.boxShadow = '0 2px 6px rgb(0 0 0 / 0.25)'
-      // Sample the live theme's primary tone so the badge
-      // matches the rest of the chrome regardless of which
-      // Skeleton theme the user picked.
-      const themed = getComputedStyle(document.documentElement)
-        .getPropertyValue('--color-primary-500')
-        .trim()
-      circle.style.background = themed || '#3b82f6'
-      circle.textContent = '+'
-
-      const num = document.createElement('span')
-      num.style.fontWeight = '700'
-      num.style.fontSize = '12px'
-      num.style.padding = '1px 6px'
-      num.style.borderRadius = '999px'
-      num.style.background = 'white'
-      num.style.color = themed || '#3b82f6'
-      num.style.boxShadow = '0 2px 6px rgb(0 0 0 / 0.25)'
-      num.textContent = String(count)
-
-      badge.appendChild(circle)
-      badge.appendChild(num)
-      wrapper.appendChild(badge)
-
       document.body.appendChild(wrapper)
-      // Tear down on the next macrotask — by then the browser
-      // has captured its drag-image bitmap from the live node.
-      // Using `setTimeout(..., 0)` rather than rAF because some
-      // engines (Edge WebView2) snapshot synchronously inside
-      // dragstart's microtask checkpoint, so a slightly-later
-      // cleanup is the safer choice.
+      // Tear down after the browser has snapshotted the bitmap.
+      // `setTimeout(..., 0)` lands the cleanup on the next
+      // macrotask, after dragstart's microtask checkpoint where
+      // Edge WebView2 takes its snapshot.
       setTimeout(() => wrapper.remove(), 0)
       return wrapper
     } catch (e) {
-      console.warn('multi-drag preview build failed:', e)
+      console.warn('drag-image clone failed:', e)
       return null
+    }
+  }
+
+  /** Float a "[+] N" badge that tracks the cursor during a
+   *  multi-drag.  Lives in the live DOM (not in the OS drag
+   *  bitmap) so the OS' uniform drag-image opacity doesn't
+   *  affect it — the badge renders at 100% opacity throughout
+   *  the drag.  We listen for `dragover` on the document to
+   *  update the badge's position and tear down on `dragend` /
+   *  `drop`.  Idempotent: a previous badge from an aborted
+   *  drag is removed before we attach a new one. */
+  let floatingBadgeEl: HTMLElement | null = null
+  let floatingBadgeCleanup: (() => void) | null = null
+  function attachFloatingBadge(count: number) {
+    detachFloatingBadge()
+    const themed = getComputedStyle(document.documentElement)
+      .getPropertyValue('--color-primary-500')
+      .trim()
+    const accent = themed || '#3b82f6'
+
+    const wrap = document.createElement('div')
+    wrap.style.position = 'fixed'
+    wrap.style.zIndex = '999999'
+    wrap.style.pointerEvents = 'none'
+    wrap.style.display = 'inline-flex'
+    wrap.style.alignItems = 'center'
+    wrap.style.gap = '4px'
+    // Position at -9999 initially so the badge doesn't flash at
+    // (0,0) in the upper-left between dragstart and the first
+    // dragover event.
+    wrap.style.top = '-9999px'
+    wrap.style.left = '-9999px'
+
+    const circle = document.createElement('span')
+    circle.style.width = '20px'
+    circle.style.height = '20px'
+    circle.style.borderRadius = '999px'
+    circle.style.display = 'inline-flex'
+    circle.style.alignItems = 'center'
+    circle.style.justifyContent = 'center'
+    circle.style.color = 'white'
+    circle.style.fontWeight = '700'
+    circle.style.fontSize = '14px'
+    circle.style.lineHeight = '1'
+    circle.style.background = accent
+    circle.style.boxShadow = '0 2px 6px rgb(0 0 0 / 0.25)'
+    circle.textContent = '+'
+
+    const num = document.createElement('span')
+    num.style.fontWeight = '700'
+    num.style.fontSize = '12px'
+    num.style.padding = '1px 6px'
+    num.style.borderRadius = '999px'
+    num.style.background = 'white'
+    num.style.color = accent
+    num.style.boxShadow = '0 2px 6px rgb(0 0 0 / 0.25)'
+    num.textContent = String(count)
+
+    wrap.appendChild(circle)
+    wrap.appendChild(num)
+    document.body.appendChild(wrap)
+    floatingBadgeEl = wrap
+
+    // Track the cursor.  The badge sits slightly below-right of
+    // the cursor tip so it lands roughly where the bottom-right
+    // of the OS drag image would be — gives the visual impression
+    // that the badge is glued to the dragged item even though
+    // they're rendered by separate compositors.
+    const onDocDragOver = (ev: DragEvent) => {
+      if (!floatingBadgeEl) return
+      // Some engines fire dragover with (0, 0) coordinates when
+      // the cursor leaves the window briefly; ignore those so
+      // the badge doesn't snap to the corner.
+      if (ev.clientX === 0 && ev.clientY === 0) return
+      floatingBadgeEl.style.left = `${ev.clientX + 16}px`
+      floatingBadgeEl.style.top = `${ev.clientY + 16}px`
+    }
+    const onEnd = () => detachFloatingBadge()
+    document.addEventListener('dragover', onDocDragOver, true)
+    document.addEventListener('dragend', onEnd, true)
+    document.addEventListener('drop', onEnd, true)
+    floatingBadgeCleanup = () => {
+      document.removeEventListener('dragover', onDocDragOver, true)
+      document.removeEventListener('dragend', onEnd, true)
+      document.removeEventListener('drop', onEnd, true)
+    }
+  }
+  function detachFloatingBadge() {
+    if (floatingBadgeEl) {
+      floatingBadgeEl.remove()
+      floatingBadgeEl = null
+    }
+    if (floatingBadgeCleanup) {
+      floatingBadgeCleanup()
+      floatingBadgeCleanup = null
     }
   }
 
