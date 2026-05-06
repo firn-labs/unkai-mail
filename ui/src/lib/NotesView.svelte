@@ -569,53 +569,30 @@
   }
 </script>
 
-<div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
-  <!-- Header -->
-  <header class="px-4 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-3">
-    <h1 class="text-lg font-semibold flex-1">Notes</h1>
-
-    {#if accounts.length > 1}
-      <select
-        class="select text-sm py-1 px-2 rounded-md"
-        value={accountId}
-        onchange={(e) => selectAccount((e.currentTarget as HTMLSelectElement).value)}
-      >
-        {#each accounts as a (a.id)}
-          <option value={a.id}>{a.display_name || a.username}</option>
-        {/each}
-      </select>
-    {/if}
-
-    <button
-      class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
-      onclick={() => syncNow()}
-      disabled={syncing || !accountId}
-      title="Refresh from Nextcloud"
-      aria-label="Refresh from Nextcloud"
-    >
-      <Icon name="refresh" size={16} class={syncing ? 'animate-spin' : ''} />
-    </button>
-    <button
-      class="btn btn-sm preset-filled-primary-500"
-      onclick={newNote}
-      disabled={!accountId}
-    >
-      + New note
-    </button>
-    <button class="btn btn-sm preset-outlined-surface-500" onclick={onclose}>
-      Back
-    </button>
-  </header>
-
-  <!-- Body: sidebar | list | editor -->
-  <div class="flex-1 min-h-0 flex">
-    {#if accounts.length === 0 && !loading}
-      <div class="flex-1 flex items-center justify-center text-sm text-surface-500 p-8 text-center">
-        Connect a Nextcloud account first (Settings → Nextcloud) to use Notes.
+<div class="h-full flex bg-surface-50 dark:bg-surface-900">
+  {#if accounts.length === 0 && !loading}
+    <div class="flex-1 flex items-center justify-center text-sm text-surface-500 p-8 text-center">
+      Connect a Nextcloud account first (Settings → Nextcloud) to use Notes.
+    </div>
+  {:else}
+    <!-- Sidebar: New-note CTA + virtuals + folder tree + add-folder.
+         Layout mirrors the mail Sidebar (Compose at top, navigation
+         tree below) so the two views feel coherent. -->
+    <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col text-sm">
+      <!-- Primary action — same shape + filled-primary preset as
+           the mail Compose CTA. -->
+      <div class="p-3">
+        <button
+          class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
+          onclick={newNote}
+          disabled={!accountId}
+        >
+          <Icon name="notes" size={16} />
+          New note
+        </button>
       </div>
-    {:else}
-      <!-- Sidebar: virtuals + folder tree + add-folder -->
-      <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 overflow-y-auto py-2 text-sm">
+
+      <div class="flex-1 min-h-0 overflow-y-auto pb-2">
         <!-- Virtuals -->
         <button
           class="notes-side-row {selectionMatches(selection, { kind: 'all' }) ? 'is-active' : ''}"
@@ -727,10 +704,38 @@
           <Icon name="add-folder" size={14} />
           <span>Add folder</span>
         </button>
-      </aside>
+      </div>
+    </aside>
 
-      <!-- List pane -->
-      <div class="w-72 shrink-0 border-r border-surface-200 dark:border-surface-700 overflow-y-auto">
+    <!-- List pane: account picker + refresh strip + scrollable
+         note list.  Account picker only shows when more than one
+         NC account is connected; refresh is always there. -->
+    <div class="w-72 shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col">
+      <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
+        {#if accounts.length > 1}
+          <select
+            class="select text-xs py-1 px-2 rounded-md flex-1 min-w-0"
+            value={accountId}
+            onchange={(e) => selectAccount((e.currentTarget as HTMLSelectElement).value)}
+          >
+            {#each accounts as a (a.id)}
+              <option value={a.id}>{a.display_name || a.username}</option>
+            {/each}
+          </select>
+        {:else}
+          <span class="flex-1"></span>
+        {/if}
+        <button
+          class="text-surface-500 hover:bg-primary-500/10 rounded-md p-1 inline-flex items-center justify-center"
+          onclick={() => syncNow()}
+          disabled={syncing || !accountId}
+          title="Refresh from Nextcloud"
+          aria-label="Refresh from Nextcloud"
+        >
+          <Icon name="refresh" size={16} class={syncing ? 'animate-spin' : ''} />
+        </button>
+      </div>
+      <div class="flex-1 min-h-0 overflow-y-auto">
         {#if loading && notes.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">Loading…</div>
         {:else if error && notes.length === 0}
@@ -738,7 +743,7 @@
         {:else if filteredNotes.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">
             {#if selection.kind === 'all'}
-              No notes yet. Click <strong>+ New note</strong> to create one.
+              No notes yet. Click <strong>New note</strong> to create one.
             {:else}
               No notes in this folder.
             {/if}
@@ -773,9 +778,10 @@
           {/each}
         {/if}
       </div>
+    </div>
 
-      <!-- Editor pane -->
-      <div class="flex-1 min-w-0 flex flex-col">
+    <!-- Editor pane -->
+    <div class="flex-1 min-w-0 flex flex-col">
         {#if selectedId == null}
           <div class="flex-1 flex items-center justify-center text-sm text-surface-500">
             Select a note from the list, or create a new one.
@@ -858,9 +864,8 @@
             />
           {/if}
         {/if}
-      </div>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
 
 <style>
