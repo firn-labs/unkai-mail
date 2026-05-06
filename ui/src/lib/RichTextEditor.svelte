@@ -1316,6 +1316,29 @@
 
   let showEmojiPicker = $state(false)
 
+  /** Toolbar dropdown anchor coordinates (#267).  The toolbar panel
+   *  uses `overflow-x: auto` for narrow-width horizontal scrolling,
+   *  which per CSS spec also forces `overflow-y` to `auto` and clips
+   *  vertically.  An `position: absolute` popover inside that
+   *  container therefore disappears below the editor area + the
+   *  horizontal scrollbar.  We dodge the clip by `position: fixed`-ing
+   *  the popovers and stashing the trigger's `getBoundingClientRect()`
+   *  on open so the menu still lands directly under its button.
+   *  Same shape Notes uses for its folder action menu. */
+  let fontPickerPos = $state<{ x: number; y: number }>({ x: 0, y: 0 })
+  let tablePickerPos = $state<{ x: number; y: number }>({ x: 0, y: 0 })
+  let emojiPickerPos = $state<{ x: number; y: number }>({ x: 0, y: 0 })
+
+  /** Stash the trigger's screen-space rect so the matching popover
+   *  can render at `position: fixed` above any clipping ancestor.
+   *  Distinct from the `anchorBelow(rect)` helper above — that one
+   *  takes a Tiptap-suggestion DOMRect; this one reads from a
+   *  click event's currentTarget. */
+  function anchorPopover(e: MouseEvent): { x: number; y: number } {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    return { x: r.left, y: r.bottom + 4 }
+  }
+
   function insertEmoji(e: string | null) {
     if (!e) return
     cmd().insertContent(e).run()
@@ -1700,19 +1723,23 @@
     <div class="rt-tab-panel flex flex-nowrap items-center gap-0.5 px-2 py-1.5 min-h-12 overflow-x-auto">
       {#if activeTab === 'format'}
         <!-- Font family — wider trigger, dropdown menu. -->
-        <div class="relative inline-block">
+        <div class="inline-block">
           <button
             type="button"
             class="rt-btn rt-btn-wide"
             title="Font family"
-            onclick={() => (showFontPicker = !showFontPicker)}
+            onclick={(e) => {
+              if (!showFontPicker) fontPickerPos = anchorPopover(e)
+              showFontPicker = !showFontPicker
+            }}
           >
             <span class="rt-btn-icon" aria-hidden="true">𝐀</span>
             <span class="rt-btn-label">{currentFontLabel()} ▾</span>
           </button>
           {#if showFontPicker}
             <div
-              class="absolute z-20 mt-1 w-64 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1 flex flex-col"
+              class="fixed z-60 mt-0 w-64 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1 flex flex-col"
+              style="left: {Math.min(fontPickerPos.x, window.innerWidth - 272)}px; top: {fontPickerPos.y}px;"
               role="menu"
               tabindex="-1"
               onclick={(e) => e.stopPropagation()}
@@ -1828,15 +1855,23 @@
         <span class="rt-divider"></span>
 
         <!-- Table picker -->
-        <div class="relative inline-block" bind:this={tablePickerAnchor}>
-          <button class="rt-btn" title="Insert table at cursor" onclick={openTablePicker}>
+        <div class="inline-block" bind:this={tablePickerAnchor}>
+          <button
+            class="rt-btn"
+            title="Insert table at cursor"
+            onclick={(e) => {
+              if (!showTablePicker) tablePickerPos = anchorPopover(e)
+              openTablePicker()
+            }}
+          >
             <span class="rt-btn-icon"><Icon name="table" size={20} /></span>
             <span class="rt-btn-label">Table</span>
           </button>
           {#if showTablePicker}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="absolute left-0 top-full mt-1 z-50 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg"
+              class="fixed z-60 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg"
+              style="left: {Math.min(tablePickerPos.x, window.innerWidth - 200)}px; top: {tablePickerPos.y}px;"
               onmouseleave={() => { tableHoverRows = 0; tableHoverCols = 0 }}
               onkeydown={(e) => e.key === 'Escape' && (showTablePicker = false)}
             >
@@ -1873,14 +1908,22 @@
 
         <!-- Emoji picker — popup grid of curated emojis (#103
              follow-up).  Click outside or pick an emoji to dismiss. -->
-        <div class="relative inline-block">
-          <button class="rt-btn" title="Insert emoji" onclick={() => (showEmojiPicker = !showEmojiPicker)}>
+        <div class="inline-block">
+          <button
+            class="rt-btn"
+            title="Insert emoji"
+            onclick={(e) => {
+              if (!showEmojiPicker) emojiPickerPos = anchorPopover(e)
+              showEmojiPicker = !showEmojiPicker
+            }}
+          >
             <span class="rt-btn-icon"><Icon name="emoji" size={20} /></span>
             <span class="rt-btn-label">Emoji</span>
           </button>
           {#if showEmojiPicker}
             <div
-              class="absolute left-0 top-full mt-1 z-50"
+              class="fixed z-60"
+              style="left: {Math.min(emojiPickerPos.x, window.innerWidth - 360)}px; top: {emojiPickerPos.y}px;"
               role="menu"
               tabindex="-1"
               onclick={(e) => e.stopPropagation()}
