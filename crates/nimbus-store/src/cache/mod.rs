@@ -31,6 +31,7 @@
 pub mod calendars;
 pub mod contacts;
 pub mod key;
+pub mod notes;
 pub mod pool;
 pub mod schema;
 pub mod search;
@@ -40,6 +41,7 @@ pub use calendars::{
     ExpansionInput,
 };
 pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
+pub use notes::NotesSyncState;
 pub use search::{SearchFilters, SearchHit, SearchScope};
 
 use std::path::{Path, PathBuf};
