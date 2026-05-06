@@ -890,7 +890,7 @@
                 <Icon name="email-envelope" size={16} />
               </button>
               <button
-                class="text-error-500 hover:bg-red-500/20 rounded-md p-1.5 inline-flex items-center justify-center"
+                class="btn btn-sm preset-outlined-error-500 inline-flex items-center justify-center"
                 onclick={deleteSelected}
                 title="Delete note"
                 aria-label="Delete note"
