@@ -293,6 +293,125 @@
       JSON.stringify(payload),
     )
     e.dataTransfer.effectAllowed = 'move'
+
+    // Multi-drag preview: clone the row that triggered the drag
+    // and stamp a "[+] N" badge in its bottom-right corner so the
+    // user can see how many messages are moving.  Single-drag
+    // keeps the default browser drag image — there's no count to
+    // show and the row's own visual already conveys what's
+    // moving.  The clone is appended offscreen and scheduled for
+    // removal after the next frame (setDragImage needs the node
+    // to be in the live DOM at the moment the browser snapshots
+    // it; removing immediately would beat that snapshot).
+    if (group.length <= 1) return
+    const rowEl = e.currentTarget as HTMLElement | null
+    if (!rowEl) return
+    const preview = buildMultiDragPreview(rowEl, group.length)
+    if (!preview) return
+    // Anchor the drag image so the cursor sits roughly where the
+    // user grabbed the row — 16px from the top-left corner reads
+    // as "I'm holding it from up here" rather than a cluster
+    // glued to the cursor tip.
+    e.dataTransfer.setDragImage(preview, 16, 16)
+  }
+
+  /** Build a transient drag-preview node that mirrors the
+   *  triggering row's dimensions + content and overlays a badge
+   *  with [+] and the count in the bottom-right corner.  The
+   *  returned node is appended to the document body off-screen
+   *  so the browser's drag-image snapshot can find it; we
+   *  schedule removal in a microtask so it doesn't linger after
+   *  the snapshot is taken.  Returns `null` if cloning fails for
+   *  any reason — the caller falls back to the default drag
+   *  image. */
+  function buildMultiDragPreview(rowEl: HTMLElement, count: number): HTMLElement | null {
+    try {
+      const rect = rowEl.getBoundingClientRect()
+      const wrapper = document.createElement('div')
+      // Off-screen anchor — the engine still snapshots from it
+      // because the node IS rendered, just not where the user
+      // can see.  Width matches the source row so the clone
+      // doesn't visually drift.
+      wrapper.style.position = 'fixed'
+      wrapper.style.top = '-9999px'
+      wrapper.style.left = '-9999px'
+      wrapper.style.width = `${rect.width}px`
+      wrapper.style.pointerEvents = 'none'
+      wrapper.style.boxShadow = '0 8px 20px rgb(0 0 0 / 0.18)'
+      wrapper.style.borderRadius = '6px'
+      wrapper.style.overflow = 'visible'
+
+      // Clone the row's rendered DOM so the preview matches the
+      // exact row the user grabbed (including read/unread tint,
+      // selection chrome, etc.).  `cloneNode(true)` carries the
+      // computed inline style + class names through; the row's
+      // own classes hit the live stylesheet so it renders
+      // identically.
+      const clone = rowEl.cloneNode(true) as HTMLElement
+      clone.style.width = `${rect.width}px`
+      clone.style.background = getComputedStyle(rowEl).backgroundColor
+      wrapper.appendChild(clone)
+
+      // Badge overlay — circle with a `+` glyph plus the count
+      // tucked beside it.  Anchored to the bottom-right corner
+      // of the row clone via absolute positioning relative to
+      // the wrapper.
+      const badge = document.createElement('div')
+      badge.style.position = 'absolute'
+      badge.style.right = '8px'
+      badge.style.bottom = '8px'
+      badge.style.display = 'inline-flex'
+      badge.style.alignItems = 'center'
+      badge.style.gap = '6px'
+      badge.style.pointerEvents = 'none'
+
+      const circle = document.createElement('span')
+      circle.style.width = '28px'
+      circle.style.height = '28px'
+      circle.style.borderRadius = '999px'
+      circle.style.display = 'inline-flex'
+      circle.style.alignItems = 'center'
+      circle.style.justifyContent = 'center'
+      circle.style.color = 'white'
+      circle.style.fontWeight = '700'
+      circle.style.fontSize = '18px'
+      circle.style.lineHeight = '1'
+      // Sample the live theme's primary tone so the badge
+      // matches the rest of the chrome regardless of which
+      // Skeleton theme the user picked.
+      const themed = getComputedStyle(document.documentElement)
+        .getPropertyValue('--color-primary-500')
+        .trim()
+      circle.style.background = themed || '#3b82f6'
+      circle.textContent = '+'
+
+      const num = document.createElement('span')
+      num.style.fontWeight = '700'
+      num.style.fontSize = '14px'
+      num.style.padding = '2px 8px'
+      num.style.borderRadius = '999px'
+      num.style.background = 'white'
+      num.style.color = themed || '#3b82f6'
+      num.style.boxShadow = '0 1px 4px rgb(0 0 0 / 0.2)'
+      num.textContent = String(count)
+
+      badge.appendChild(circle)
+      badge.appendChild(num)
+      wrapper.appendChild(badge)
+
+      document.body.appendChild(wrapper)
+      // Tear down on the next macrotask — by then the browser
+      // has captured its drag-image bitmap from the live node.
+      // Using `setTimeout(..., 0)` rather than rAF because some
+      // engines (Edge WebView2) snapshot synchronously inside
+      // dragstart's microtask checkpoint, so a slightly-later
+      // cleanup is the safer choice.
+      setTimeout(() => wrapper.remove(), 0)
+      return wrapper
+    } catch (e) {
+      console.warn('multi-drag preview build failed:', e)
+      return null
+    }
   }
 
   // Infinite-scroll pagination state (#194). Each (account, folder)
