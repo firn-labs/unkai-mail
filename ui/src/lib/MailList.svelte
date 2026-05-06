@@ -704,8 +704,20 @@
              The row is wrapped in a `group` so the inline quick-
              action icons (#98) reveal on row hover. -->
         <div class="group relative">
-          <button
-            class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors
+          <!-- Row is a `<div role="button">` rather than a real
+               `<button>` because several webview engines (notably
+               Edge WebView2 on Windows) refuse to fire
+               `dragstart` on a `<button>` element regardless of
+               `draggable="true"` — drag-to-folder silently fails
+               for those users.  We replicate the button-shaped
+               affordance with role + tabindex + Enter/Space
+               keyboard handling so accessibility is preserved.
+               (#89 / drag-drop bugfix.) -->
+          <div
+            role="button"
+            tabindex="0"
+            aria-pressed={selected}
+            class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
               {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
               {selected
                 ? 'bg-primary-500/10'
@@ -723,6 +735,12 @@
                 folder,
                 env.uid,
               )}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onRowClick(e as unknown as MouseEvent, env)
+              }
+            }}
             oncontextmenu={(e) => openContextMenu(e, env)}
           >
             <div class="flex items-center justify-between mb-1">
@@ -739,11 +757,11 @@
                 {accountLabel(env.account_id)}
               </p>
             {/if}
-          </button>
+          </div>
           <!-- Hover-revealed quick actions (#98).  Anchored to the
                BOTTOM-right corner of the row so the cluster never
                overlaps the date in the top-right.  Sibling of the
-               row button (HTML forbids nested buttons).
+               row.
                `pointer-events-none` on the wrapper while hidden
                keeps the layer click-through so the row's drag /
                click still work in the gap. -->
