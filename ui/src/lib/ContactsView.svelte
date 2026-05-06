@@ -2032,9 +2032,9 @@
             <!-- Compact "+ Add contact" / "Done" toggle — same
                  shape as NC Files' "+ New folder" affordance:
                  primary-text, no border, subtle primary halo on
-                 hover.  Sits below the search bar, anchored right. -->
+                 hover.  Sits below the search bar, anchored left. -->
             <button
-              class="self-end mt-2 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-md px-2 py-1"
+              class="self-start mt-2 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-md px-2 py-1"
               onclick={() => {
                 pickerOpen = !pickerOpen
                 pickerQuery = ''
