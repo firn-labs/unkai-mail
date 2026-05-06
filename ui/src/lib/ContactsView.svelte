@@ -10,6 +10,7 @@
    */
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { formatError } from './errors'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
@@ -46,6 +47,19 @@
     kind: string
     value: string
   }
+  /** Mirrors `nimbus_core::models::StructuredName`. */
+  interface StructuredName {
+    family: string
+    given: string
+    additional: string
+    prefix: string
+    suffix: string
+  }
+  /** Mirrors `nimbus_core::models::ContactImpp`. */
+  interface ContactImpp143 {
+    kind: string
+    value: string
+  }
   interface Contact {
     id: string
     nextcloud_account_id: string
@@ -67,6 +81,18 @@
     categories?: string[]
     /** CardDAV addressbook path the contact lives in. */
     addressbook?: string
+    // ── #143 vCard 4 fields ────────────────────────────────
+    structured_name?: StructuredName
+    nickname?: string | null
+    anniversary?: string | null
+    gender?: string | null
+    impp?: ContactImpp143[]
+    role?: string | null
+    languages?: string[]
+    geo?: string | null
+    timezone?: string | null
+    /** PGP / X.509 keys (round-tripped today; no form UI yet). */
+    keys?: string[]
   }
   interface ContactInput {
     display_name: string
@@ -83,6 +109,17 @@
     note?: string | null
     addresses?: ContactAddress[]
     urls?: string[]
+    // ── #143 vCard 4 fields ────────────────────────────────
+    structured_name?: StructuredName
+    nickname?: string | null
+    anniversary?: string | null
+    gender?: string | null
+    impp?: ContactImpp143[]
+    role?: string | null
+    languages?: string[]
+    geo?: string | null
+    timezone?: string | null
+    categories?: string[]
   }
   interface AddressbookSummary {
     path: string
@@ -106,6 +143,44 @@
   // copy the matching contact's fields into these so edits don't
   // mutate the cached row until the user saves.
   let formName = $state('')
+  // ── #143: extended vCard 4 fields ────────────────────────────
+  // `display_name` (formerly the only name field) is auto-derived
+  // from the structured-name parts at save time when the user
+  // fills those in but leaves `formName` blank.  When both are
+  // filled, the explicit `formName` wins so users can override
+  // the derivation (e.g. "Jane S." instead of "Jane Smith").
+  let formFamily = $state('')
+  let formGiven = $state('')
+  let formAdditional = $state('')
+  let formPrefix = $state('')
+  let formSuffix = $state('')
+  let formNickname = $state('')
+  let formAnniversary = $state('')
+  let formGender = $state('')
+  let formRole = $state('')
+  let formGeo = $state('')
+  let formTimezone = $state('')
+  /** IMPP rows — same shape as phone / email but with a wider
+   *  kind set (matrix / xmpp / telegram / signal / skype / whatsapp
+   *  / other) so the user can group platform-by-platform. */
+  interface ContactImpp {
+    kind: string
+    value: string
+  }
+  let formImpp = $state<ContactImpp[]>([])
+  /** Languages typed as a chip list, comma- or newline-separated
+   *  on input.  Kept as a Vec on the wire (RFC 6350 LANG is one
+   *  property per language). */
+  let formLanguages = $state<string[]>([])
+  let formLanguageDraft = $state('')
+  /** Categories chip list — same UX as languages. */
+  let formCategories = $state<string[]>([])
+  let formCategoryDraft = $state('')
+  /** MIME of a freshly-uploaded photo.  Pairs with
+   *  `selectedPhotoBytes`; we keep them as separate cells so the
+   *  upload pipeline can update them in lockstep without having
+   *  to round-trip through the cached contact. */
+  let formPhotoMime = $state<string | null>(null)
   // Same per-row treatment as phones — each email carries a kind
   // picker (Home / Work / Other) so the vCard `EMAIL;TYPE=…`
   // round-trips and Nextcloud Contacts groups identically.
@@ -783,9 +858,27 @@
     formUrls = (c.urls ?? []).join('\n')
     formAddresses = (c.addresses ?? []).map((a) => ({ ...a }))
     selectedPhotoBytes = null
+    formPhotoMime = c.photo_mime ?? null
     // We still need the bytes (not just a URL) so save can re-emit
     // them in the vCard — without this, an edit drops the avatar.
     if (c.photo_mime) void loadSelectedPhotoBytes(id)
+    // ── #143 ───────────────────────────────────────────────
+    formFamily = c.structured_name?.family ?? ''
+    formGiven = c.structured_name?.given ?? ''
+    formAdditional = c.structured_name?.additional ?? ''
+    formPrefix = c.structured_name?.prefix ?? ''
+    formSuffix = c.structured_name?.suffix ?? ''
+    formNickname = c.nickname ?? ''
+    formAnniversary = c.anniversary ?? ''
+    formGender = c.gender ?? ''
+    formRole = c.role ?? ''
+    formGeo = c.geo ?? ''
+    formTimezone = c.timezone ?? ''
+    formImpp = (c.impp ?? []).map((i) => ({ ...i }))
+    formLanguages = [...(c.languages ?? [])]
+    formCategories = [...(c.categories ?? [])]
+    formLanguageDraft = ''
+    formCategoryDraft = ''
   }
 
   function startNew() {
@@ -802,6 +895,24 @@
     formUrls = ''
     formAddresses = []
     selectedPhotoBytes = null
+    formPhotoMime = null
+    // ── #143 ───────────────────────────────────────────────
+    formFamily = ''
+    formGiven = ''
+    formAdditional = ''
+    formPrefix = ''
+    formSuffix = ''
+    formNickname = ''
+    formAnniversary = ''
+    formGender = ''
+    formRole = ''
+    formGeo = ''
+    formTimezone = ''
+    formImpp = []
+    formLanguages = []
+    formLanguageDraft = ''
+    formCategories = []
+    formCategoryDraft = ''
     if (!formAccountId && accounts.length > 0) {
       formAccountId = accounts[0].id
     }
@@ -934,14 +1045,12 @@
   }
 
   function buildInput(): ContactInput {
-    // Photo editing isn't in v1 — round-trip whatever the server
-    // already has so saving the form doesn't wipe the avatar. The
-    // bytes were lazy-loaded into `selectedPhotoBytes` when the
-    // contact was opened (see `loadSelectedPhoto`).
-    const existingMime =
-      selectedId && selectedId !== 'new'
-        ? (contacts.find((c) => c.id === selectedId)?.photo_mime ?? null)
-        : null
+    // The form now owns the photo MIME via `formPhotoMime`, which
+    // is loaded from the cached contact on open (#143) and
+    // overwritten by the click-to-upload pipeline.  Combined with
+    // `selectedPhotoBytes`, that gives us a complete photo
+    // payload regardless of whether the avatar came from the
+    // server or from a fresh upload.
     return {
       display_name: formName.trim(),
       // Drop empty-value rows the same way phones do — an unfilled
@@ -955,8 +1064,8 @@
         .filter((p) => p.value.trim())
         .map((p) => ({ kind: p.kind, value: p.value.trim() })),
       organization: formOrg.trim() || null,
-      photo_mime: existingMime,
-      photo_data: existingMime ? selectedPhotoBytes : null,
+      photo_mime: formPhotoMime,
+      photo_data: formPhotoMime ? selectedPhotoBytes : null,
       title: formTitle.trim() || null,
       birthday: formBirthday.trim() || null,
       note: formNote.trim() || null,
@@ -971,7 +1080,120 @@
           a.postal_code.trim() ||
           a.country.trim(),
       ),
+      // ── #143 ─────────────────────────────────────────────
+      structured_name: {
+        family: formFamily.trim(),
+        given: formGiven.trim(),
+        additional: formAdditional.trim(),
+        prefix: formPrefix.trim(),
+        suffix: formSuffix.trim(),
+      },
+      nickname: formNickname.trim() || null,
+      anniversary: formAnniversary.trim() || null,
+      gender: formGender.trim() || null,
+      role: formRole.trim() || null,
+      geo: formGeo.trim() || null,
+      timezone: formTimezone.trim() || null,
+      impp: formImpp
+        .filter((i) => i.value.trim())
+        .map((i) => ({ kind: i.kind, value: i.value.trim() })),
+      languages: [...formLanguages],
+      categories: [...formCategories],
     }
+  }
+
+  // ── #143: photo upload + chip-input helpers ─────────────────
+
+  /** Click-to-upload pipeline.  Opens the OS file picker via
+   *  `plugin-dialog`, reads the chosen image as bytes through
+   *  `read_text_from_path`'s sibling Rust command for binary
+   *  files (here we use the dialog filter to constrain to images
+   *  and the FileReader API for the byte read).  Drops the bytes
+   *  into `selectedPhotoBytes` and the MIME into `formPhotoMime`
+   *  so the next save re-emits the avatar with the new image. */
+  async function pickPhoto() {
+    try {
+      const picked = await openFileDialog({
+        multiple: false,
+        directory: false,
+        filters: [
+          {
+            name: 'Image',
+            extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'],
+          },
+        ],
+      })
+      if (!picked || Array.isArray(picked)) return
+      // `picked` is the absolute path on disk.  We use the same
+      // `save_bytes_to_path` sibling helper used elsewhere — but
+      // for reading we go through `read_text_from_path`?  No —
+      // that's text-only.  We need binary read; the simplest
+      // path is to fetch via `convertFileSrc` and a fetch call.
+      const url = convertFileSrc(picked)
+      const resp = await fetch(url)
+      const bytes = new Uint8Array(await resp.arrayBuffer())
+      // Sniff the MIME from the file extension since the
+      // response Content-Type may not be set on the asset
+      // protocol.  Defaults to JPEG which is the safest fallback
+      // for NC's contact UI.
+      const ext = picked.split('.').pop()?.toLowerCase() ?? 'jpg'
+      const mime =
+        ext === 'png'
+          ? 'image/png'
+          : ext === 'gif'
+            ? 'image/gif'
+            : ext === 'webp'
+              ? 'image/webp'
+              : 'image/jpeg'
+      selectedPhotoBytes = Array.from(bytes)
+      formPhotoMime = mime
+    } catch (e) {
+      console.warn('pickPhoto failed', e)
+    }
+  }
+
+  /** Data URL for the freshly-picked photo, used by the form's
+   *  avatar `<img>` so the user sees the new picture before
+   *  save.  Falls back to the existing photoSrc when no fresh
+   *  upload has happened yet. */
+  function formAvatarSrc(): string | null {
+    if (selectedPhotoBytes && formPhotoMime) {
+      // Build a data URL from the in-memory bytes.  Small enough
+      // for typical avatars (a few hundred KB) that the base64
+      // round-trip cost is negligible.
+      const bin = new Uint8Array(selectedPhotoBytes)
+      let s = ''
+      for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin[i])
+      return `data:${formPhotoMime};base64,${btoa(s)}`
+    }
+    if (selectedContact && photoSrc(selectedContact)) return photoSrc(selectedContact)
+    return null
+  }
+
+  function commitChipDraft(
+    list: string[],
+    draft: string,
+    onChange: (next: string[], nextDraft: string) => void,
+  ) {
+    const t = draft.trim()
+    if (!t) {
+      onChange(list, '')
+      return
+    }
+    if (list.some((x) => x.toLowerCase() === t.toLowerCase())) {
+      onChange(list, '')
+      return
+    }
+    onChange([...list, t], '')
+  }
+  function removeChip(list: string[], idx: number, set: (next: string[]) => void) {
+    set(list.filter((_, i) => i !== idx))
+  }
+  function addImpp() {
+    formImpp = [...formImpp, { kind: 'matrix', value: '' }]
+  }
+  function removeImpp(idx: number) {
+    formImpp = formImpp.filter((_, i) => i !== idx)
   }
 
   async function saveContact() {
@@ -1657,179 +1879,359 @@
       </div>
     {:else}
       <div class="max-w-2xl w-full mx-auto p-6 flex flex-col gap-4">
-        <div class="flex items-center gap-3">
-          {#if selectedContact && photoSrc(selectedContact)}
-            <img
-              src={photoSrc(selectedContact)}
-              alt=""
-              class="w-16 h-16 rounded-full object-cover"
-            />
-          {:else}
-            <div class="w-16 h-16 rounded-full bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-xl font-semibold">
-              {(formName || '?').slice(0, 1).toUpperCase()}
-            </div>
-          {/if}
-          <div class="flex flex-col">
-            <h3 class="text-lg font-semibold">
-              {selectedId === 'new' ? 'New contact' : formName || '(no name)'}
+        <!-- ── #143: avatar banner (click to upload) ─────────── -->
+        <div class="flex items-center gap-4">
+          <button
+            type="button"
+            onclick={() => void pickPhoto()}
+            class="relative group w-20 h-20 rounded-full overflow-hidden bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-2xl font-semibold cursor-pointer hover:ring-2 hover:ring-primary-500/50 transition"
+            title="Click to upload a photo"
+            aria-label="Change contact photo"
+          >
+            {#if formAvatarSrc()}
+              <img src={formAvatarSrc()} alt="" class="w-full h-full object-cover" />
+            {:else}
+              <span>{(formName || formGiven || '?').slice(0, 1).toUpperCase()}</span>
+            {/if}
+            <span class="absolute inset-0 flex items-center justify-center bg-black/40 text-white text-xs opacity-0 group-hover:opacity-100 transition">
+              Upload
+            </span>
+          </button>
+          <div class="flex flex-col flex-1 min-w-0">
+            <h3 class="text-lg font-semibold truncate">
+              {selectedId === 'new'
+                ? 'New contact'
+                : formName || `${formGiven} ${formFamily}`.trim() || '(no name)'}
             </h3>
             {#if selectedContact}
-              <span class="text-xs text-surface-500">
+              <span class="text-xs text-surface-500 truncate">
                 From {accountLabel(selectedContact.nextcloud_account_id)}
               </span>
+            {/if}
+            {#if selectedPhotoBytes}
+              <button
+                type="button"
+                class="text-xs text-error-500 hover:underline self-start mt-1"
+                onclick={() => {
+                  selectedPhotoBytes = null
+                  formPhotoMime = null
+                }}
+              >Remove photo</button>
             {/if}
           </div>
         </div>
 
-        <label class="label">
-          <span>Name</span>
-          <input class="input" bind:value={formName} placeholder="Jane Doe" />
-        </label>
-
-        <!-- Email addresses — same per-row treatment as phones so
-             each carries a Home / Work / Other picker. The kind
-             round-trips to the vCard `EMAIL;TYPE=…` parameter. -->
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-medium">Email addresses</span>
-            <button type="button" class="btn btn-sm preset-tonal" onclick={addEmail}>
-              + Add email
-            </button>
+        <!-- ── Personal ──────────────────────────────────────── -->
+        <details class="contact-section" open>
+          <summary class="contact-section-summary">Personal</summary>
+          <div class="contact-section-body">
+            <div class="grid grid-cols-2 gap-3">
+              <label class="label">
+                <span>Prefix</span>
+                <input class="input" bind:value={formPrefix} placeholder="Dr." />
+              </label>
+              <label class="label">
+                <span>Suffix</span>
+                <input class="input" bind:value={formSuffix} placeholder="Jr." />
+              </label>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="label">
+                <span>Given name</span>
+                <input class="input" bind:value={formGiven} placeholder="Jane" />
+              </label>
+              <label class="label">
+                <span>Family name</span>
+                <input class="input" bind:value={formFamily} placeholder="Doe" />
+              </label>
+            </div>
+            <label class="label">
+              <span>Additional names</span>
+              <input class="input" bind:value={formAdditional} placeholder="Middle name(s)" />
+            </label>
+            <label class="label">
+              <span>Display name <span class="text-surface-500">(auto-derived if blank)</span></span>
+              <input class="input" bind:value={formName} placeholder="Jane Doe" />
+            </label>
+            <label class="label">
+              <span>Nickname</span>
+              <input class="input" bind:value={formNickname} placeholder="JD" />
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="label">
+                <span>Birthday</span>
+                <input class="input" bind:value={formBirthday} placeholder="1985-10-31" />
+              </label>
+              <label class="label">
+                <span>Anniversary</span>
+                <input class="input" bind:value={formAnniversary} placeholder="2018-06-15" />
+              </label>
+            </div>
+            <label class="label">
+              <span>Gender</span>
+              <input class="input" bind:value={formGender} placeholder="Free-form (M / F / non-binary / …)" />
+            </label>
           </div>
-          {#each formEmails as email, i (i)}
-            <div class="flex items-center gap-2">
-              <select class="select w-28" bind:value={email.kind}>
-                <option value="home">Home</option>
-                <option value="work">Work</option>
-                <option value="other">Other</option>
-              </select>
+        </details>
+
+        <!-- ── Communication ─────────────────────────────────── -->
+        <details class="contact-section" open>
+          <summary class="contact-section-summary">Communication</summary>
+          <div class="contact-section-body">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium">Email addresses</span>
+                <button type="button" class="btn btn-sm preset-tonal" onclick={addEmail}>
+                  + Add email
+                </button>
+              </div>
+              {#each formEmails as email, i (i)}
+                <div class="flex items-center gap-2">
+                  <select class="select w-28" bind:value={email.kind}>
+                    <option value="home">Home</option>
+                    <option value="work">Work</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <input
+                    class="input flex-1"
+                    type="email"
+                    bind:value={email.value}
+                    placeholder="jane@example.com"
+                  />
+                  <button
+                    type="button"
+                    class="text-xs text-error-500 hover:underline"
+                    onclick={() => removeEmail(i)}
+                  >Remove</button>
+                </div>
+              {/each}
+            </div>
+
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium">Phone numbers</span>
+                <button type="button" class="btn btn-sm preset-tonal" onclick={addPhone}>
+                  + Add phone
+                </button>
+              </div>
+              {#each formPhones as phone, i (i)}
+                <div class="flex items-center gap-2">
+                  <select class="select w-28" bind:value={phone.kind}>
+                    <option value="cell">Mobile</option>
+                    <option value="work">Work</option>
+                    <option value="home">Home</option>
+                    <option value="fax">Fax</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <input
+                    class="input flex-1"
+                    bind:value={phone.value}
+                    placeholder="+1 555 0100"
+                  />
+                  <button
+                    type="button"
+                    class="text-xs text-error-500 hover:underline"
+                    onclick={() => removePhone(i)}
+                  >Remove</button>
+                </div>
+              {/each}
+            </div>
+
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium">Instant messaging</span>
+                <button type="button" class="btn btn-sm preset-tonal" onclick={addImpp}>
+                  + Add IM
+                </button>
+              </div>
+              {#each formImpp as im, i (i)}
+                <div class="flex items-center gap-2">
+                  <select class="select w-32" bind:value={im.kind}>
+                    <option value="matrix">Matrix</option>
+                    <option value="xmpp">XMPP</option>
+                    <option value="telegram">Telegram</option>
+                    <option value="signal">Signal</option>
+                    <option value="skype">Skype</option>
+                    <option value="whatsapp">WhatsApp</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <input
+                    class="input flex-1"
+                    bind:value={im.value}
+                    placeholder="@user:server"
+                  />
+                  <button
+                    type="button"
+                    class="text-xs text-error-500 hover:underline"
+                    onclick={() => removeImpp(i)}
+                  >Remove</button>
+                </div>
+              {/each}
+            </div>
+          </div>
+        </details>
+
+        <!-- ── Work ─────────────────────────────────────────── -->
+        <details class="contact-section">
+          <summary class="contact-section-summary">Work</summary>
+          <div class="contact-section-body">
+            <div class="grid grid-cols-2 gap-3">
+              <label class="label">
+                <span>Organization</span>
+                <input class="input" bind:value={formOrg} placeholder="Example Corp" />
+              </label>
+              <label class="label">
+                <span>Job title</span>
+                <input class="input" bind:value={formTitle} placeholder="Product Manager" />
+              </label>
+            </div>
+            <label class="label">
+              <span>Role <span class="text-surface-500">(function within the org)</span></span>
+              <input class="input" bind:value={formRole} placeholder="Project Lead" />
+            </label>
+            <div>
+              <span class="text-sm font-medium mb-1 block">Categories</span>
+              <div class="flex flex-wrap gap-1.5 mb-2">
+                {#each formCategories as cat, i (cat)}
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 text-xs">
+                    {cat}
+                    <button
+                      type="button"
+                      class="hover:text-error-500 leading-none"
+                      onclick={() => removeChip(formCategories, i, (next) => (formCategories = next))}
+                    >×</button>
+                  </span>
+                {/each}
+              </div>
               <input
-                class="input flex-1"
-                type="email"
-                bind:value={email.value}
-                placeholder="jane@example.com"
+                class="input"
+                bind:value={formCategoryDraft}
+                placeholder="Type and press Enter…"
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ',') {
+                    e.preventDefault()
+                    commitChipDraft(formCategories, formCategoryDraft, (next, draft) => {
+                      formCategories = next
+                      formCategoryDraft = draft
+                    })
+                  }
+                }}
               />
-              <button
-                type="button"
-                class="text-xs text-error-500 hover:underline"
-                onclick={() => removeEmail(i)}
-              >Remove</button>
             </div>
-          {/each}
-        </div>
-
-        <!-- Phone numbers — per-row so each carries a kind picker
-             (mobile / work / home / fax / other) and Nextcloud
-             Contacts groups identically on its side. Same shape as
-             the addresses block below. -->
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-medium">Phone numbers</span>
-            <button type="button" class="btn btn-sm preset-tonal" onclick={addPhone}>
-              + Add phone
-            </button>
           </div>
-          {#each formPhones as phone, i (i)}
-            <div class="flex items-center gap-2">
-              <select class="select w-28" bind:value={phone.kind}>
-                <option value="cell">Mobile</option>
-                <option value="work">Work</option>
-                <option value="home">Home</option>
-                <option value="fax">Fax</option>
-                <option value="other">Other</option>
-              </select>
+        </details>
+
+        <!-- ── Address & Web ────────────────────────────────── -->
+        <details class="contact-section">
+          <summary class="contact-section-summary">Address &amp; Web</summary>
+          <div class="contact-section-body">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium">Addresses</span>
+                <button type="button" class="btn btn-sm preset-tonal" onclick={addAddress}>
+                  + Add address
+                </button>
+              </div>
+              {#each formAddresses as addr, i (i)}
+                <div class="card p-3 bg-surface-50 dark:bg-surface-900/50 rounded-md space-y-2">
+                  <div class="flex items-center gap-2">
+                    <select class="select w-32" bind:value={addr.kind}>
+                      <option value="home">Home</option>
+                      <option value="work">Work</option>
+                      <option value="other">Other</option>
+                    </select>
+                    <button
+                      type="button"
+                      class="ml-auto text-xs text-error-500 hover:underline"
+                      onclick={() => removeAddress(i)}
+                    >Remove</button>
+                  </div>
+                  <input class="input" bind:value={addr.street} placeholder="Street" />
+                  <div class="grid grid-cols-2 gap-2">
+                    <input class="input" bind:value={addr.locality} placeholder="City" />
+                    <input class="input" bind:value={addr.region} placeholder="Region / State" />
+                  </div>
+                  <div class="grid grid-cols-2 gap-2">
+                    <input class="input" bind:value={addr.postal_code} placeholder="Postal code" />
+                    <input class="input" bind:value={addr.country} placeholder="Country" />
+                  </div>
+                </div>
+              {/each}
+            </div>
+
+            <label class="label">
+              <span>Websites <span class="text-surface-500">(one per line)</span></span>
+              <textarea
+                class="textarea"
+                rows="2"
+                bind:value={formUrls}
+                placeholder="https://example.com"
+              ></textarea>
+            </label>
+
+            <label class="label">
+              <span>Living location <span class="text-surface-500">(GEO)</span></span>
               <input
-                class="input flex-1"
-                bind:value={phone.value}
-                placeholder="+1 555 0100"
+                class="input"
+                bind:value={formGeo}
+                placeholder="geo:48.198634,16.371648"
               />
-              <button
-                type="button"
-                class="text-xs text-error-500 hover:underline"
-                onclick={() => removePhone(i)}
-              >Remove</button>
-            </div>
-          {/each}
-        </div>
-
-        <div class="grid grid-cols-2 gap-3">
-          <label class="label">
-            <span>Organization</span>
-            <input class="input" bind:value={formOrg} placeholder="Example Corp" />
-          </label>
-          <label class="label">
-            <span>Job title</span>
-            <input class="input" bind:value={formTitle} placeholder="Product Manager" />
-          </label>
-        </div>
-
-        <label class="label">
-          <span>Birthday</span>
-          <input
-            class="input"
-            bind:value={formBirthday}
-            placeholder="1985-10-31"
-          />
-        </label>
-
-        <label class="label">
-          <span>Websites <span class="text-surface-500">(one per line)</span></span>
-          <textarea
-            class="textarea"
-            rows="2"
-            bind:value={formUrls}
-            placeholder="https://example.com"
-          ></textarea>
-        </label>
-
-        <!-- Postal addresses. Variable-length so we render with an
-             explicit add/remove instead of a free-text textarea —
-             matches the Nextcloud Contacts UI's per-address card and
-             keeps street/city/region/postal/country round-tripping
-             cleanly through the vCard ADR field. -->
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-medium">Addresses</span>
-            <button type="button" class="btn btn-sm preset-tonal" onclick={addAddress}>
-              + Add address
-            </button>
+            </label>
           </div>
-          {#each formAddresses as addr, i (i)}
-            <div class="card p-3 bg-surface-50 dark:bg-surface-900/50 rounded-md space-y-2">
-              <div class="flex items-center gap-2">
-                <select class="select w-32" bind:value={addr.kind}>
-                  <option value="home">Home</option>
-                  <option value="work">Work</option>
-                  <option value="other">Other</option>
-                </select>
-                <button
-                  type="button"
-                  class="ml-auto text-xs text-error-500 hover:underline"
-                  onclick={() => removeAddress(i)}
-                >Remove</button>
-              </div>
-              <input class="input" bind:value={addr.street} placeholder="Street" />
-              <div class="grid grid-cols-2 gap-2">
-                <input class="input" bind:value={addr.locality} placeholder="City" />
-                <input class="input" bind:value={addr.region} placeholder="Region / State" />
-              </div>
-              <div class="grid grid-cols-2 gap-2">
-                <input class="input" bind:value={addr.postal_code} placeholder="Postal code" />
-                <input class="input" bind:value={addr.country} placeholder="Country" />
-              </div>
-            </div>
-          {/each}
-        </div>
+        </details>
 
-        <label class="label">
-          <span>Notes</span>
-          <textarea
-            class="textarea"
-            rows="3"
-            bind:value={formNote}
-            placeholder="Anything you want to remember about this contact"
-          ></textarea>
-        </label>
+        <!-- ── Other ────────────────────────────────────────── -->
+        <details class="contact-section">
+          <summary class="contact-section-summary">Other</summary>
+          <div class="contact-section-body">
+            <div>
+              <span class="text-sm font-medium mb-1 block">Languages</span>
+              <div class="flex flex-wrap gap-1.5 mb-2">
+                {#each formLanguages as lang, i (lang)}
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700 text-xs">
+                    {lang}
+                    <button
+                      type="button"
+                      class="hover:text-error-500 leading-none"
+                      onclick={() => removeChip(formLanguages, i, (next) => (formLanguages = next))}
+                    >×</button>
+                  </span>
+                {/each}
+              </div>
+              <input
+                class="input"
+                bind:value={formLanguageDraft}
+                placeholder="en-US, de, fr… (Enter to add)"
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ',') {
+                    e.preventDefault()
+                    commitChipDraft(formLanguages, formLanguageDraft, (next, draft) => {
+                      formLanguages = next
+                      formLanguageDraft = draft
+                    })
+                  }
+                }}
+              />
+            </div>
+            <label class="label">
+              <span>Timezone</span>
+              <input
+                class="input"
+                bind:value={formTimezone}
+                placeholder="Europe/Berlin or +02:00"
+              />
+            </label>
+            <label class="label">
+              <span>Notes</span>
+              <textarea
+                class="textarea"
+                rows="3"
+                bind:value={formNote}
+                placeholder="Anything you want to remember about this contact"
+              ></textarea>
+            </label>
+          </div>
+        </details>
 
         {#if selectedId === 'new'}
           <div class="grid grid-cols-2 gap-3">
@@ -1967,3 +2369,54 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* #143 — collapsible section in the contact form.  Default
+     `<details>` chrome is browser-painted and inconsistent
+     across engines; we replace it with a chevron-prefixed
+     summary that flips on open + a card-styled body. */
+  :global(.contact-section) {
+    border: 1px solid var(--color-surface-200);
+    border-radius: 0.5rem;
+    background: var(--color-surface-50);
+    overflow: hidden;
+  }
+  :global([data-mode='dark'] .contact-section) {
+    border-color: var(--color-surface-700);
+    background: var(--color-surface-900);
+  }
+  :global(.contact-section-summary) {
+    cursor: pointer;
+    padding: 0.625rem 0.875rem;
+    font-weight: 600;
+    font-size: 0.875rem;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    user-select: none;
+  }
+  :global(.contact-section-summary::-webkit-details-marker) {
+    display: none;
+  }
+  :global(.contact-section-summary::before) {
+    content: '▸';
+    display: inline-block;
+    transition: transform 120ms ease;
+    color: var(--color-surface-500);
+    font-size: 0.75rem;
+  }
+  :global(.contact-section[open] > .contact-section-summary::before) {
+    transform: rotate(90deg);
+  }
+  :global(.contact-section-body) {
+    padding: 0.75rem 0.875rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.875rem;
+    border-top: 1px solid var(--color-surface-200);
+  }
+  :global([data-mode='dark'] .contact-section-body) {
+    border-top-color: var(--color-surface-700);
+  }
+</style>

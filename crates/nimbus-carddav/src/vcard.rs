@@ -54,6 +54,64 @@ pub struct ParsedVcard {
     /// as a Vec so callers can mutate individual tags without
     /// re-parsing.  Empty when the vCard has no CATEGORIES.
     pub categories: Vec<String>,
+    // ── #143: vCard 4 fields surfaced in the contact form ──────
+    /// `N` structured name parts (family / given / additional /
+    /// prefix / suffix).  Empty when the card only carried FN.
+    pub structured_name: VcardStructuredName,
+    /// `NICKNAME` — single value (we collapse comma-separated
+    /// lists into the first entry, matching how every client
+    /// renders them).
+    pub nickname: Option<String>,
+    /// `ANNIVERSARY` — same wire shape as BDAY.
+    pub anniversary: Option<String>,
+    /// `GENDER` — raw vCard string per RFC 6350 §6.2.7.
+    pub gender: Option<String>,
+    /// `IMPP` — instant-messaging URIs with kind hints.
+    pub impp: Vec<VcardImpp>,
+    /// `ROLE` — function within the organisation, distinct from
+    /// TITLE.
+    pub role: Option<String>,
+    /// `LANG` — BCP-47 language tags in preference order.
+    pub languages: Vec<String>,
+    /// `GEO` — vCard `geo:<lat>,<lon>` URI, kept raw.
+    pub geo: Option<String>,
+    /// `TZ` — IANA tag or UTC offset, kept raw.
+    pub timezone: Option<String>,
+    /// `KEY` — public-key material (PGP / X.509) either inline
+    /// or by URL.  Round-tripped today; UI surface deferred to
+    /// a future key-management issue.
+    pub keys: Vec<String>,
+}
+
+/// One vCard `N` structured-name property.  Mirrors
+/// `nimbus_core::models::StructuredName` so the carddav crate can
+/// stay free of the core models dependency.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VcardStructuredName {
+    pub family: String,
+    pub given: String,
+    pub additional: String,
+    pub prefix: String,
+    pub suffix: String,
+}
+
+impl VcardStructuredName {
+    pub fn is_empty(&self) -> bool {
+        self.family.trim().is_empty()
+            && self.given.trim().is_empty()
+            && self.additional.trim().is_empty()
+            && self.prefix.trim().is_empty()
+            && self.suffix.trim().is_empty()
+    }
+}
+
+/// One vCard `IMPP` property — IM URI plus a kind hint pulled
+/// from `TYPE=` or inferred from the URI scheme.  Mirrors
+/// `nimbus_core::models::ContactImpp`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VcardImpp {
+    pub kind: String,
+    pub value: String,
 }
 
 /// One vCard `ADR` property. Mirrors `nimbus_core::models::ContactAddress`
@@ -101,7 +159,8 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
 
     let mut uid: Option<String> = None;
     let mut formatted_name = String::new();
-    let mut structured_name = String::new();
+    let mut structured_display_name = String::new();
+    let mut structured_name = VcardStructuredName::default();
     let mut emails: Vec<VcardEmail> = Vec::new();
     let mut phones: Vec<VcardPhone> = Vec::new();
     let mut organization: Option<String> = None;
@@ -115,6 +174,16 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     let mut kind: String = String::new();
     let mut members: Vec<String> = Vec::new();
     let mut categories: Vec<String> = Vec::new();
+    // #143 — additional vCard fields surfaced in the form.
+    let mut nickname: Option<String> = None;
+    let mut anniversary: Option<String> = None;
+    let mut gender: Option<String> = None;
+    let mut impp: Vec<VcardImpp> = Vec::new();
+    let mut role: Option<String> = None;
+    let mut languages: Vec<String> = Vec::new();
+    let mut geo: Option<String> = None;
+    let mut timezone: Option<String> = None;
+    let mut keys: Vec<String> = Vec::new();
 
     for prop in &card.properties {
         let name = prop.name.to_ascii_uppercase();
@@ -123,11 +192,24 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
             "UID" => uid = Some(value.clone()),
             "FN" => formatted_name = value.clone(),
             "N" => {
-                // N is Family;Given;Additional;Prefix;Suffix
+                // N is Family;Given;Additional;Prefix;Suffix per
+                // RFC 6350 §6.2.2.  We capture each piece for
+                // the contact form (#143) and also keep a flat
+                // "given family" string as the FN-fallback.
                 let parts: Vec<&str> = value.split(';').collect();
-                let given = parts.get(1).copied().unwrap_or("").trim();
-                let family = parts.first().copied().unwrap_or("").trim();
-                structured_name = format!("{given} {family}").trim().to_string();
+                let family = parts.first().copied().unwrap_or("").trim().to_string();
+                let given = parts.get(1).copied().unwrap_or("").trim().to_string();
+                let additional = parts.get(2).copied().unwrap_or("").trim().to_string();
+                let prefix = parts.get(3).copied().unwrap_or("").trim().to_string();
+                let suffix = parts.get(4).copied().unwrap_or("").trim().to_string();
+                structured_display_name = format!("{given} {family}").trim().to_string();
+                structured_name = VcardStructuredName {
+                    family,
+                    given,
+                    additional,
+                    prefix,
+                    suffix,
+                };
             }
             "EMAIL" => {
                 let v = value.trim().to_string();
@@ -246,6 +328,74 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
                     }
                 }
             }
+            // ── #143: vCard 4 fields ─────────────────────────────
+            "NICKNAME" => {
+                // RFC 6350 §6.2.3 allows a comma-separated list,
+                // but every client we've seen treats the field
+                // as a single nickname.  Take the first non-empty
+                // entry and ignore the rest.
+                let v = value
+                    .split(',')
+                    .map(str::trim)
+                    .find(|s| !s.is_empty())
+                    .unwrap_or("")
+                    .to_string();
+                if !v.is_empty() {
+                    nickname = Some(v);
+                }
+            }
+            "ANNIVERSARY" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    anniversary = Some(v);
+                }
+            }
+            "GENDER" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    gender = Some(v);
+                }
+            }
+            "IMPP" => {
+                let v = value.trim().to_string();
+                if v.is_empty() {
+                    continue;
+                }
+                let kind = impp_kind(prop, &v);
+                if !impp.iter().any(|i| i.value == v) {
+                    impp.push(VcardImpp { kind, value: v });
+                }
+            }
+            "ROLE" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    role = Some(v);
+                }
+            }
+            "LANG" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() && !languages.contains(&v) {
+                    languages.push(v);
+                }
+            }
+            "GEO" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    geo = Some(v);
+                }
+            }
+            "TZ" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    timezone = Some(v);
+                }
+            }
+            "KEY" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() && !keys.contains(&v) {
+                    keys.push(v);
+                }
+            }
             _ => {}
         }
     }
@@ -254,8 +404,8 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     // should display. Fall back to N → first email → "(unnamed)".
     let display_name = if !formatted_name.is_empty() {
         formatted_name
-    } else if !structured_name.is_empty() {
-        structured_name
+    } else if !structured_display_name.is_empty() {
+        structured_display_name
     } else if let Some(first) = emails.first() {
         first.value.clone()
     } else {
@@ -280,7 +430,59 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
         kind,
         members,
         categories,
+        structured_name,
+        nickname,
+        anniversary,
+        gender,
+        impp,
+        role,
+        languages,
+        geo,
+        timezone,
+        keys,
     })
+}
+
+/// Pull a kind hint for an `IMPP` property — TYPE param wins,
+/// otherwise we infer from the URI scheme so a card written by a
+/// minimal client (no TYPE) still groups correctly in the form.
+fn impp_kind(prop: &Property, value: &str) -> String {
+    // Explicit TYPE takes priority.
+    if let Some(params) = &prop.params {
+        for (key, vals) in params {
+            if !key.eq_ignore_ascii_case("TYPE") {
+                continue;
+            }
+            for v in vals {
+                for piece in v.split(',') {
+                    let lower = piece.trim().to_ascii_lowercase();
+                    if matches!(
+                        lower.as_str(),
+                        "matrix" | "xmpp" | "telegram" | "signal" | "skype" | "whatsapp"
+                    ) {
+                        return lower;
+                    }
+                }
+            }
+        }
+    }
+    // Fall back to URI-scheme inference.
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("matrix:") {
+        "matrix".into()
+    } else if lower.starts_with("xmpp:") {
+        "xmpp".into()
+    } else if lower.starts_with("tg://") || lower.contains("t.me/") {
+        "telegram".into()
+    } else if lower.contains("signal.me") {
+        "signal".into()
+    } else if lower.starts_with("skype:") {
+        "skype".into()
+    } else if lower.contains("wa.me/") || lower.contains("whatsapp.com") {
+        "whatsapp".into()
+    } else {
+        "other".into()
+    }
 }
 
 /// Pull a "home" / "work" / "other" hint from a vCard property's
@@ -408,14 +610,35 @@ pub fn build_vcard(card: &ParsedVcard) -> String {
         &mut out,
         &format!("FN:{}", escape_value(&card.display_name)),
     );
-    // N is required by RFC 6350. We don't carry structured-name
-    // pieces in `ParsedVcard`, so emit the FN as the family slot
-    // and leave the others empty — round-trips fine and most clients
-    // (NC included) display FN anyway.
-    push_line(
-        &mut out,
-        &format!("N:{};;;;", escape_value(&card.display_name)),
-    );
+    // N is required by RFC 6350.  When the card carries
+    // structured-name pieces (set via the redesigned form in
+    // #143), emit them in the proper Family;Given;Additional;
+    // Prefix;Suffix order; otherwise fall back to stuffing FN
+    // into the family slot — that round-trips through every
+    // client we've tested.
+    if card.structured_name.is_empty() {
+        push_line(
+            &mut out,
+            &format!("N:{};;;;", escape_value(&card.display_name)),
+        );
+    } else {
+        push_line(
+            &mut out,
+            &format!(
+                "N:{};{};{};{};{}",
+                escape_value(&card.structured_name.family),
+                escape_value(&card.structured_name.given),
+                escape_value(&card.structured_name.additional),
+                escape_value(&card.structured_name.prefix),
+                escape_value(&card.structured_name.suffix),
+            ),
+        );
+    }
+    if let Some(n) = &card.nickname
+        && !n.trim().is_empty()
+    {
+        push_line(&mut out, &format!("NICKNAME:{}", escape_value(n)));
+    }
     for email in &card.emails {
         // Same `;TYPE=…` round-trip as TEL — empty kind drops the
         // param (servers don't all accept `TYPE=` with no value).
@@ -471,6 +694,49 @@ pub fn build_vcard(card: &ParsedVcard) -> String {
     }
     if let Some(b) = &card.birthday {
         push_line(&mut out, &format!("BDAY:{}", escape_value(b)));
+    }
+    if let Some(a) = &card.anniversary
+        && !a.trim().is_empty()
+    {
+        push_line(&mut out, &format!("ANNIVERSARY:{}", escape_value(a)));
+    }
+    if let Some(g) = &card.gender
+        && !g.trim().is_empty()
+    {
+        push_line(&mut out, &format!("GENDER:{}", escape_value(g)));
+    }
+    if let Some(r) = &card.role
+        && !r.trim().is_empty()
+    {
+        push_line(&mut out, &format!("ROLE:{}", escape_value(r)));
+    }
+    for ent in &card.impp {
+        let typ = if ent.kind.is_empty() {
+            String::new()
+        } else {
+            format!(";TYPE={}", ent.kind)
+        };
+        push_line(&mut out, &format!("IMPP{typ}:{}", escape_value(&ent.value)));
+    }
+    for lang in &card.languages {
+        if !lang.trim().is_empty() {
+            push_line(&mut out, &format!("LANG:{}", escape_value(lang)));
+        }
+    }
+    if let Some(g) = &card.geo
+        && !g.trim().is_empty()
+    {
+        push_line(&mut out, &format!("GEO:{}", escape_value(g)));
+    }
+    if let Some(tz) = &card.timezone
+        && !tz.trim().is_empty()
+    {
+        push_line(&mut out, &format!("TZ:{}", escape_value(tz)));
+    }
+    for k in &card.keys {
+        if !k.trim().is_empty() {
+            push_line(&mut out, &format!("KEY:{}", escape_value(k)));
+        }
     }
     for url in &card.urls {
         push_line(&mut out, &format!("URL:{}", escape_value(url)));

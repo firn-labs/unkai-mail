@@ -915,6 +915,22 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         urls: serde_json::from_str(&urls_json).unwrap_or_default(),
         kind: String::new(),
         categories: serde_json::from_str(&categories_json).unwrap_or_default(),
+        // #143 — extended vCard 4 fields aren't materialised in
+        // this cache row.  Callers that surface the contact form
+        // (`row_to_contact` in src-tauri) re-parse `vcard_raw` to
+        // recover them; this lighter list-rendering path leaves
+        // them defaulted because the autocomplete / search /
+        // list-view UIs don't show them.
+        structured_name: nimbus_core::models::StructuredName::default(),
+        nickname: None,
+        anniversary: None,
+        gender: None,
+        impp: Vec::new(),
+        role: None,
+        languages: Vec::new(),
+        geo: None,
+        timezone: None,
+        keys: Vec::new(),
     })
 }
 
