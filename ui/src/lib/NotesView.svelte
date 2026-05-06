@@ -636,7 +636,7 @@
           class="notes-side-row {selectionMatches(selection, { kind: 'favorites' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'favorites' })}
         >
-          <span class="notes-side-icon text-warning-500"><Icon name="star" size={16} /></span>
+          <span class="notes-side-icon"><Icon name="star" size={16} /></span>
           <span class="flex-1 truncate text-left">Favorites</span>
           <span class="notes-side-count">{favoriteCount}</span>
         </button>
@@ -864,7 +864,7 @@
                 <span class="text-xs text-error-500">Save failed</span>
               {/if}
               <button
-                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+                class="btn btn-sm preset-outlined-warning-500 inline-flex items-center justify-center"
                 onclick={toggleFavorite}
                 title={open.favorite ? 'Unstar' : 'Star'}
                 aria-label={open.favorite ? 'Unstar note' : 'Star note'}
