@@ -118,6 +118,11 @@
    *  PUTs that race each other on the etag. */
   let folderOpBusy = $state(false)
 
+  /** Open "move to folder" popover anchored to a note's quick-
+   *  action button.  Picks an existing folder (or "Uncategorized")
+   *  and re-categorizes the note via `update_nextcloud_note`. */
+  let movingNote = $state<{ note: Note; x: number; y: number } | null>(null)
+
   /** Currently selected note id, or `null` for the empty-state pane. */
   let selectedId = $state<number | null>(null)
   /** Working copy of the selected note's editable fields. */
@@ -510,6 +515,90 @@
   function cancelRemoveFolder() {
     folderDeleteConfirm = null
   }
+
+  /** Flat alphabetised list of every category currently in
+   *  use across the loaded notes, plus the user's pending
+   *  folders.  Drives the move-to-folder popover. */
+  const allFolderPaths = $derived.by((): string[] => {
+    const set = new Set<string>()
+    for (const n of notes) {
+      if (n.category.trim()) set.add(n.category)
+    }
+    for (const p of pendingFolders) set.add(p)
+    return [...set].sort((a, b) => a.localeCompare(b))
+  })
+
+  function startMoveNote(note: Note, x: number, y: number) {
+    movingNote = { note, x, y }
+  }
+
+  async function moveNoteTo(path: string) {
+    if (!movingNote || !accountId) return
+    const note = movingNote.note
+    movingNote = null
+    if (note.category === path) return
+    try {
+      const updated = await invoke<Note>('update_nextcloud_note', {
+        ncId: accountId,
+        noteId: note.id,
+        etag: note.etag,
+        title: null,
+        content: null,
+        category: path,
+        favorite: null,
+      })
+      const rest = notes.filter((x) => x.id !== updated.id)
+      notes = [updated, ...rest].sort((a, b) => b.modified - a.modified)
+      if (selectedId === updated.id) draftEtag = updated.etag
+      // Promoting a pending folder to real once a note actually
+      // lives in it.
+      if (path && pendingFolders.has(path)) {
+        const next = new Set(pendingFolders)
+        next.delete(path)
+        pendingFolders = next
+        savePendingFolders()
+      }
+    } catch (e) {
+      error = formatError(e) || 'Failed to move note'
+    }
+  }
+
+  /** Quick-action delete — same behaviour as `deleteSelected`
+   *  but no confirm dialog (matches the mail quick-delete UX:
+   *  the click was deliberate, the recovery path is "create a
+   *  new note" since a quick action shouldn't get in the user's
+   *  way every time). */
+  async function quickDeleteNote(note: Note) {
+    if (!accountId) return
+    try {
+      await invoke('delete_nextcloud_note', { ncId: accountId, noteId: note.id })
+      notes = notes.filter((n) => n.id !== note.id)
+      if (selectedId === note.id) {
+        selectedId = null
+        saveStatus = ''
+      }
+    } catch (e) {
+      error = formatError(e) || 'Failed to delete note'
+    }
+  }
+
+  // Outside-click + Escape dismissal for the move-to-folder popover.
+  $effect(() => {
+    if (!movingNote) return
+    const onMouseDown = () => (movingNote = null)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') movingNote = null
+    }
+    const t = setTimeout(() => {
+      document.addEventListener('mousedown', onMouseDown)
+      document.addEventListener('keydown', onKey)
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  })
 
   // Outside-click + Escape dismissal for the folder action menu.
   // setTimeout(..., 0) so the click that *opened* the menu doesn't
@@ -966,31 +1055,71 @@
           </div>
         {:else}
           {#each filteredNotes as n (n.id)}
-            <button
-              class="w-full text-left px-4 py-3 border-b border-surface-100 dark:border-surface-800 transition-colors
-                {selectedId === n.id
-                  ? 'bg-primary-500/10'
-                  : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
-              onclick={() => openNote(n)}
-            >
-              <div class="flex items-center justify-between mb-1 gap-2">
-                <span class="text-sm font-medium truncate flex-1 inline-flex items-center gap-1">
-                  {#if n.favorite}
-                    <span class="text-warning-500 shrink-0"><Icon name="star" size={12} /></span>
-                  {/if}
-                  <span class="truncate">{n.title || '(untitled)'}</span>
-                </span>
-                <span class="text-xs text-surface-500 shrink-0">{fmtDate(n.modified)}</span>
+            <div class="relative group border-b border-surface-100 dark:border-surface-800">
+              <button
+                class="w-full text-left px-4 py-3 transition-colors
+                  {selectedId === n.id
+                    ? 'bg-primary-500/10'
+                    : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+                onclick={() => openNote(n)}
+              >
+                <div class="flex items-center justify-between mb-1 gap-2">
+                  <span class="text-sm font-medium truncate flex-1 inline-flex items-center gap-1">
+                    {#if n.favorite}
+                      <span class="text-warning-500 shrink-0"><Icon name="star" size={12} /></span>
+                    {/if}
+                    <span class="truncate">{n.title || '(untitled)'}</span>
+                  </span>
+                  <span class="text-xs text-surface-500 shrink-0">{fmtDate(n.modified)}</span>
+                </div>
+                {#if preview(n)}
+                  <p class="text-xs text-surface-500 truncate">{preview(n)}</p>
+                {/if}
+                {#if n.category}
+                  <p class="text-[10px] text-surface-400 mt-1 truncate inline-flex items-center gap-1">
+                    <Icon name="files" size={11} />{n.category}
+                  </p>
+                {/if}
+              </button>
+
+              <!-- Quick actions — same shape and treatment as the
+                   mail-list quick-action cluster (#138 follows the
+                   pattern at MailList.svelte ≈ line 950).  Shown
+                   bottom-right so they don't overlap the modified
+                   timestamp; pointer-events disabled when hidden so
+                   the row's primary click still hits the area. -->
+              <div
+                class="absolute right-1 bottom-2 flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity
+                       group-hover:opacity-100 group-hover:pointer-events-auto
+                       focus-within:opacity-100 focus-within:pointer-events-auto"
+              >
+                <button
+                  type="button"
+                  class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
+                  title="Move to folder"
+                  aria-label="Move to folder"
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                    startMoveNote(n, r.left, r.bottom + 4)
+                  }}
+                >
+                  <Icon name="move-to-folder" size={16} />
+                </button>
+                <button
+                  type="button"
+                  class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+                  title="Delete"
+                  aria-label="Delete"
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    void quickDeleteNote(n)
+                  }}
+                >
+                  <Icon name="trash" size={16} />
+                </button>
               </div>
-              {#if preview(n)}
-                <p class="text-xs text-surface-500 truncate">{preview(n)}</p>
-              {/if}
-              {#if n.category}
-                <p class="text-[10px] text-surface-400 mt-1 truncate inline-flex items-center gap-1">
-                  <Icon name="files" size={11} />{n.category}
-                </p>
-              {/if}
-            </button>
+            </div>
           {/each}
         {/if}
       </div>
@@ -1087,6 +1216,44 @@
     </div>
   {/if}
 </div>
+
+<!-- Move-to-folder popover for the per-note quick action.
+     Positioned at the cursor's quick-action button; clicking
+     a folder updates the note's category and dismisses. -->
+{#if movingNote}
+  <div
+    class="fixed z-60 min-w-52 max-h-72 overflow-y-auto rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    style="left: {Math.min(movingNote.x, window.innerWidth - 240)}px; top: {Math.min(movingNote.y, window.innerHeight - 240)}px;"
+    role="menu"
+    tabindex="-1"
+    onmousedown={(e) => e.stopPropagation()}
+  >
+    <div class="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wide text-surface-500">
+      Move to
+    </div>
+    <button
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50"
+      disabled={!movingNote.note.category}
+      onclick={() => moveNoteTo('')}
+    >
+      <span class="text-base font-semibold leading-none w-4 text-center">?</span>
+      <span class="flex-1">Uncategorized</span>
+    </button>
+    {#if allFolderPaths.length > 0}
+      <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+      {#each allFolderPaths as path (path)}
+        <button
+          class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50"
+          disabled={movingNote.note.category === path}
+          onclick={() => moveNoteTo(path)}
+        >
+          <Icon name="files" size={14} class="shrink-0" />
+          <span class="flex-1 truncate">{path}</span>
+        </button>
+      {/each}
+    {/if}
+  </div>
+{/if}
 
 <!-- Folder action menu — shared between the three-dot trigger
      and right-click.  `position: fixed` so it floats above the
