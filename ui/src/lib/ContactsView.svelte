@@ -1893,7 +1893,7 @@
       </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto px-2 pb-3">
+    <div class="flex-1 overflow-y-auto pb-3">
       {#if loading}
         <p class="px-3 py-2 text-xs text-surface-500">Loading contacts…</p>
       {:else if error}
@@ -1907,10 +1907,10 @@
       {:else}
         {#each filteredContacts as c (c.id)}
           <button
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors
+            class="w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors border-b border-surface-100 dark:border-surface-800
               {selectedId === c.id
                 ? 'bg-primary-500/10 text-primary-500 font-medium'
-                : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
             draggable="true"
             ondragstart={(e) => {
               draggedContactId = c.id
