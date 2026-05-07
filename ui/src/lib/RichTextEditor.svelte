@@ -539,7 +539,18 @@
             }
           }
         },
-      }).configure({ inline: true }),
+      }).configure({
+        inline: true,
+        // #248 — without this, Tiptap's `parseHTML` strips
+        // `<img src="data:…">` on re-mount, so any inline-encoded
+        // image (signature builder, NC files attached as data URLs,
+        // pasted screenshots) vanishes the second time the editor
+        // opens against the same body.  In-memory Compose hides
+        // this because the editor never re-parses its own
+        // `getHTML()`; the signature panel exposes it because the
+        // settings tab unmounts + remounts on every visit.
+        allowBase64: true,
+      }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       // svelte-ignore state_referenced_locally
       Placeholder.configure({ placeholder }),
