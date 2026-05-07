@@ -24,19 +24,35 @@
 //! own auth header — closer to how the underlying HTTP actually works.
 
 use reqwest::Client;
+use std::sync::Arc;
 use std::time::Duration;
 
 use nimbus_core::NimbusError;
+use nimbus_core::models::TrustedCert;
+use nimbus_core::tls::build_client_config;
 
 /// A single shared client is cheap to clone (`Arc` inside) and reuses
 /// the TCP connection pool, so we pay the TLS handshake once per host.
-pub fn build() -> Result<Client, NimbusError> {
+///
+/// `trusted_certs` is the per-account pre-trusted self-signed list.
+/// Empty for the common public-CA case; populated for self-hosted NC
+/// servers whose cert isn't in webpki-roots.  We plug it into the
+/// shared rustls verifier (`nimbus_core::tls::build_client_config`)
+/// so the same fingerprint-fallback path that handles IMAP/SMTP
+/// trust extends to NC HTTPS traffic.
+pub fn build(trusted_certs: &[TrustedCert]) -> Result<Client, NimbusError> {
+    // `use_preconfigured_tls` accepts the rustls config directly.
+    // Unwrap the `Arc` because `use_preconfigured_tls` takes
+    // `Any + Send + Sync` (it stashes the value internally) and
+    // unwrap-or-clone is cheap when nothing else holds the Arc.
+    let rustls_config = Arc::unwrap_or_clone(build_client_config(trusted_certs));
     Client::builder()
         // Timeouts kept generous — Login Flow v2 polling is short but
         // some self-hosted Nextclouds answer slowly on cold starts.
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
         .user_agent(concat!("Nimbus Mail/", env!("CARGO_PKG_VERSION")))
+        .use_preconfigured_tls(rustls_config)
         .build()
         .map_err(|e| NimbusError::Network(format!("failed to build HTTP client: {e}")))
 }

@@ -2,7 +2,7 @@
 //! `sync-collection` REPORT, followed by `calendar-multiget` to fetch
 //! the actual iCalendar bodies for the hrefs that changed.
 //!
-//! The protocol shape is identical to `nimbus-carddav::sync` — we pass
+//! The protocol shape is identical to `nimbus-carddav::sync` â€” we pass
 //! an opaque sync token, the server tells us what changed since, and
 //! we fetch bodies in a second phase. The differences are cosmetic:
 //!
@@ -14,11 +14,11 @@
 //! # What we return
 //!
 //! A `CalendarSyncDelta` with:
-//!   - `upserts` — one `RawEvent` per changed calendar object. Each
+//!   - `upserts` â€” one `RawEvent` per changed calendar object. Each
 //!     may contain zero or more VEVENTs (one object = one file, but a
 //!     recurring series can bundle master + overrides).
-//!   - `deleted_hrefs` — server paths the store should remove.
-//!   - `new_sync_token` — opaque, pass back on the next call.
+//!   - `deleted_hrefs` â€” server paths the store should remove.
+//!   - `new_sync_token` â€” opaque, pass back on the next call.
 //!
 //! Caller responsibility (the Tauri command):
 //!   1. Persist `new_sync_token` alongside the calendar row.
@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use nimbus_core::NimbusError;
 use nimbus_core::models::CalendarEvent;
+use nimbus_core::models::TrustedCert;
 
 use crate::client::{absolute_url, build, normalize_server_url, report};
 use crate::ical::parse_ics;
@@ -45,14 +46,14 @@ pub struct RawEvent {
     /// Absolute URL of the resource (matches `href` in the sync-collection
     /// response, suitable for later PUT/DELETE via `If-Match`).
     pub href: String,
-    /// Server etag for the resource — the key concurrency primitive
+    /// Server etag for the resource â€” the key concurrency primitive
     /// for a future write path.
     pub etag: String,
     /// The parsed VEVENT(s) in this object. Usually one, but
     /// recurring series can bundle the master + RECURRENCE-ID
     /// overrides into a single file.
     pub events: Vec<CalendarEvent>,
-    /// Raw iCalendar text — kept so the store can re-parse later
+    /// Raw iCalendar text â€” kept so the store can re-parse later
     /// without re-syncing, same as `vcard_raw` in carddav.
     pub ics_raw: String,
 }
@@ -76,9 +77,10 @@ pub async fn sync_calendar(
     username: &str,
     app_password: &str,
     prev_sync_token: Option<&str>,
+    trusted_certs: &[TrustedCert],
 ) -> Result<CalendarSyncDelta, NimbusError> {
     let server = normalize_server_url(server_url);
-    let http = build()?;
+    let http = build(trusted_certs)?;
 
     // Phase 1: sync-collection.
     let body = sync_collection_body(prev_sync_token.unwrap_or(""));
@@ -88,12 +90,12 @@ pub async fn sync_calendar(
     );
     let resp = report(&http, calendar_url, username, app_password, &body).await?;
     let status = resp.status();
-    // Some servers refuse sync-collection on certain collections — skip
+    // Some servers refuse sync-collection on certain collections â€” skip
     // quietly instead of failing the whole sync (same belt-and-braces
     // behaviour as carddav).
     if status.as_u16() == 415 {
         tracing::warn!(
-            "sync-collection on {calendar_url} returned 415 — skipping (likely a \
+            "sync-collection on {calendar_url} returned 415 â€” skipping (likely a \
              pseudo-calendar that doesn't support sync-collection)"
         );
         return Ok(CalendarSyncDelta::default());
@@ -233,7 +235,7 @@ async fn fetch_events(
 ) -> Result<Vec<RawEvent>, NimbusError> {
     let mut hrefs_xml = String::new();
     for c in changed {
-        // Convert back to a server-relative path — multiget wants the
+        // Convert back to a server-relative path â€” multiget wants the
         // same form the server originally returned.
         let path = c.href.strip_prefix(server_url).unwrap_or(&c.href);
         hrefs_xml.push_str(&format!("  <d:href>{}</d:href>\n", xml_escape(path)));
@@ -313,7 +315,7 @@ fn parse_multiget_response(
     let etag = etag.trim_matches('"').to_string();
 
     // Skip objects that fail to parse rather than failing the entire
-    // sync — one malformed VEVENT shouldn't break everything else.
+    // sync â€” one malformed VEVENT shouldn't break everything else.
     let events = match parse_ics(&ics_raw) {
         Ok(v) => v,
         Err(e) => {

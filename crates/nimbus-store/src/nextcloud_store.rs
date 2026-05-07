@@ -24,7 +24,8 @@ pub fn load_accounts(cache: &Cache) -> Result<Vec<NextcloudAccount>, NimbusError
         .map_err(|e| NimbusError::Storage(format!("nextcloud load: {e}")))?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, server_url, username, display_name, capabilities_json
+            "SELECT id, server_url, username, display_name, capabilities_json,
+                    trusted_certs_json
              FROM nextcloud_accounts
              ORDER BY rowid",
         )
@@ -35,12 +36,15 @@ pub fn load_accounts(cache: &Cache) -> Result<Vec<NextcloudAccount>, NimbusError
             let capabilities = caps_json
                 .as_deref()
                 .and_then(|s| serde_json::from_str::<NextcloudCapabilities>(s).ok());
+            let trusted_certs_json: String = r.get(5)?;
+            let trusted_certs = serde_json::from_str(&trusted_certs_json).unwrap_or_default();
             Ok(NextcloudAccount {
                 id: r.get(0)?,
                 server_url: r.get(1)?,
                 username: r.get(2)?,
                 display_name: r.get(3)?,
                 capabilities,
+                trusted_certs,
             })
         })
         .map_err(|e| NimbusError::Storage(format!("query nextcloud_accounts: {e}")))?;
@@ -68,21 +72,26 @@ pub fn upsert_account(cache: &Cache, acct: NextcloudAccount) -> Result<(), Nimbu
         ),
         None => None,
     };
+    let trusted_certs_json = serde_json::to_string(&acct.trusted_certs)
+        .map_err(|e| NimbusError::Storage(format!("serialise trusted_certs: {e}")))?;
     conn.execute(
         "INSERT INTO nextcloud_accounts
-            (id, server_url, username, display_name, capabilities_json)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+            (id, server_url, username, display_name, capabilities_json,
+             trusted_certs_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(id) DO UPDATE SET
-            server_url        = excluded.server_url,
-            username          = excluded.username,
-            display_name      = excluded.display_name,
-            capabilities_json = excluded.capabilities_json",
+            server_url         = excluded.server_url,
+            username           = excluded.username,
+            display_name       = excluded.display_name,
+            capabilities_json  = excluded.capabilities_json,
+            trusted_certs_json = excluded.trusted_certs_json",
         params![
             acct.id,
             acct.server_url,
             acct.username,
             acct.display_name,
             caps_json,
+            trusted_certs_json,
         ],
     )
     .map_err(|e| NimbusError::Storage(format!("upsert nextcloud_accounts: {e}")))?;

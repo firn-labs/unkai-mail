@@ -1,9 +1,9 @@
-//! Capability detection — what does this Nextcloud server actually support?
+//! Capability detection â€” what does this Nextcloud server actually support?
 //!
 //! Nextcloud returns a deeply nested capability tree from
 //! `/ocs/v2.php/cloud/capabilities`. The structure changes between
 //! versions and apps, so we parse only the fields we care about and
-//! ignore the rest via `#[serde(default)]` — future NC versions that
+//! ignore the rest via `#[serde(default)]` â€” future NC versions that
 //! move things around won't break auth.
 //!
 //! We detect four apps:
@@ -13,7 +13,7 @@
 //! | `talk`  | `capabilities.spreed` present (Nextcloud Talk's app id)|
 //! | `files` | `capabilities.files` present                           |
 //! | `caldav`| `capabilities.dav.chunking` or `bulkupload` (as proxy) |
-//! | `carddav`| same — CalDAV/CardDAV are both under `dav`            |
+//! | `carddav`| same â€” CalDAV/CardDAV are both under `dav`            |
 //!
 //! The CalDAV/CardDAV detection is a heuristic: `/ocs/v2.php/cloud/capabilities`
 //! doesn't list them explicitly, but they're bundled with Nextcloud core
@@ -25,10 +25,11 @@ use serde::Deserialize;
 
 use nimbus_core::NimbusError;
 use nimbus_core::models::NextcloudCapabilities;
+use nimbus_core::models::TrustedCert;
 
 use crate::client;
 
-// ── Wire format ────────────────────────────────────────────────
+// â”€â”€ Wire format â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // These mirror Nextcloud's JSON literally. Everything is Option so a
 // missing field is just "not supported", never an error.
 
@@ -60,18 +61,18 @@ struct Capabilities {
     spreed: Option<serde_json::Value>,
     /// Files app (usually always present).
     files: Option<serde_json::Value>,
-    /// DAV capabilities — presence implies CalDAV + CardDAV are reachable.
+    /// DAV capabilities â€” presence implies CalDAV + CardDAV are reachable.
     dav: Option<serde_json::Value>,
     /// Nextcloud Office / Collabora exposes its capability block
     /// under the app id `richdocuments`. We don't read any of the
-    /// inner fields — presence alone is the signal that the editor
+    /// inner fields â€” presence alone is the signal that the editor
     /// URL flow (`apps/richdocuments/index.json`) will work.
     richdocuments: Option<serde_json::Value>,
     /// Nextcloud Notes app id.  Presence alone is the signal that
     /// `/index.php/apps/notes/api/v1/notes` is reachable.
     notes: Option<serde_json::Value>,
     /// Nextcloud Tasks app id.  The Tasks app reuses CalDAV (VTODO)
-    /// for storage, so the chip is purely informational — it tells
+    /// for storage, so the chip is purely informational â€” it tells
     /// the user the server has Tasks installed alongside its
     /// calendars.
     tasks: Option<serde_json::Value>,
@@ -85,12 +86,13 @@ pub async fn fetch_capabilities(
     server_url: &str,
     username: &str,
     app_password: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<NextcloudCapabilities, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/cloud/capabilities?format=json");
     tracing::debug!("Fetching Nextcloud capabilities from {url}");
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -118,19 +120,19 @@ pub async fn fetch_capabilities(
         .map_err(|e| NimbusError::Protocol(format!("capabilities bad JSON: {e}")))?;
 
     // Tasks (and older Notes) don't publish capability blocks under
-    // /cloud/capabilities — they only register a navigation entry
+    // /cloud/capabilities â€” they only register a navigation entry
     // and a CalDAV / REST endpoint.  Hit /cloud/navigation/apps as a
     // fallback so the chip flips on for any server where the user
     // can actually open the app.  Best-effort: if the call 404s on
     // an ancient NC version we just leave the navigation set empty
     // and fall back to whatever the capabilities tree already told
     // us.
-    let nav_apps = fetch_navigation_apps(&server, username, app_password)
+    let nav_apps = fetch_navigation_apps(&server, username, app_password, trusted_certs)
         .await
         .unwrap_or_default();
     tracing::debug!("Nextcloud navigation/apps ids: {nav_apps:?}");
     // Match navigation entries case-insensitively and on
-    // substring — the Tasks app has been registered under at
+    // substring â€” the Tasks app has been registered under at
     // least three ids over the years (`tasks`, `tasks-app`, and
     // a versioned id on Nextcloud Hub releases) so a strict
     // equality check misses real installs.
@@ -144,16 +146,16 @@ pub async fn fetch_capabilities(
     // Notes and Tasks expose `/index.php/apps/<id>/` once the
     // app is enabled for the current user, regardless of whether
     // they publish a capability block or a navigation entry.  A
-    // 200 / 302 / 401 means "the route exists" — which is enough
+    // 200 / 302 / 401 means "the route exists" â€” which is enough
     // to claim the chip; 404 is the only definitive negative.
     let notes_present = env.ocs.data.capabilities.notes.is_some()
         || nav_match("notes")
-        || probe_app_route(&server, username, app_password, "notes")
+        || probe_app_route(&server, username, app_password, "notes", trusted_certs)
             .await
             .unwrap_or(false);
     let tasks_present = env.ocs.data.capabilities.tasks.is_some()
         || nav_match("tasks")
-        || probe_app_route(&server, username, app_password, "tasks")
+        || probe_app_route(&server, username, app_password, "tasks", trusted_certs)
             .await
             .unwrap_or(false);
 
@@ -186,15 +188,16 @@ pub async fn fetch_capabilities(
 /// fallback signal for apps that don't publish a `capabilities`
 /// block (notably Tasks, which only registers a CalDAV VTODO
 /// provider + a nav entry).  A 404 / non-success / parse error
-/// resolves to an empty list — the caller treats that as "no
+/// resolves to an empty list â€” the caller treats that as "no
 /// extra signal", not as a hard auth failure.
 async fn fetch_navigation_apps(
     server: &str,
     username: &str,
     app_password: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Vec<String>, NimbusError> {
     let url = format!("{server}/ocs/v2.php/cloud/navigation/apps?format=json");
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -222,7 +225,7 @@ struct NavApp {
 /// Probe `<server>/index.php/apps/<app_id>/` and return `true` when
 /// the response status looks like the route exists.  A 200 / 302 /
 /// 303 means the SPA loaded (or redirected to its login flow); a
-/// 401 means the route is gated by auth (still a positive signal —
+/// 401 means the route is gated by auth (still a positive signal â€”
 /// the app is wired up); only a 404 / network error counts as
 /// "definitely not installed".  Belt-and-suspenders detection for
 /// apps that don't expose a capability block AND aren't in the
@@ -233,9 +236,10 @@ async fn probe_app_route(
     username: &str,
     app_password: &str,
     app_id: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<bool, NimbusError> {
     let url = format!("{server}/index.php/apps/{app_id}/");
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .head(&url)
         .header("OCS-APIRequest", "true")
@@ -247,7 +251,7 @@ async fn probe_app_route(
     Ok(matches!(s, 200 | 302 | 303 | 401))
 }
 
-// ── Tests ──────────────────────────────────────────────────────
+// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod tests {

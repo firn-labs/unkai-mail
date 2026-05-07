@@ -7,17 +7,28 @@
 //! only the default `Content-Type` and user agent change.
 
 use reqwest::{Client, Method, Response};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nimbus_core::NimbusError;
+use nimbus_core::models::TrustedCert;
+use nimbus_core::tls::build_client_config;
 use nimbus_core::url::ensure_https;
 
 /// Build the shared HTTP client.
-pub fn build() -> Result<Client, NimbusError> {
+///
+/// `trusted_certs` is the per-account self-signed-cert trust list
+/// (#253) — empty for the public-CA case, populated for self-hosted
+/// servers whose TLS cert isn't in webpki-roots.  Plumbed through
+/// the same `build_client_config` helper IMAP/SMTP use, so the
+/// fingerprint-fallback verifier covers HTTPS too.
+pub fn build(trusted_certs: &[TrustedCert]) -> Result<Client, NimbusError> {
+    let rustls_config = Arc::unwrap_or_clone(build_client_config(trusted_certs));
     Client::builder()
         .timeout(Duration::from_secs(60))
         .connect_timeout(Duration::from_secs(15))
         .user_agent(concat!("Nimbus Mail CalDAV/", env!("CARGO_PKG_VERSION")))
+        .use_preconfigured_tls(rustls_config)
         .build()
         .map_err(|e| NimbusError::Network(format!("failed to build CalDAV HTTP client: {e}")))
 }

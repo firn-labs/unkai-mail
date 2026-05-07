@@ -603,6 +603,18 @@ pub struct NextcloudAccount {
     pub display_name: Option<String>,
     /// What the server supports, snapshotted at connect time.
     pub capabilities: Option<NextcloudCapabilities>,
+    /// User-trusted self-signed cert fingerprints (#253).  Same
+    /// shape as `Account::trusted_certs` for IMAP/SMTP — every
+    /// reqwest client built for this account (Nextcloud OCS,
+    /// CalDAV, CardDAV, Notes API) plugs these into the rustls
+    /// verifier so traffic to a self-hosted server with a
+    /// non-public CA actually goes through.  Empty for the common
+    /// Let's-Encrypt / public-CA case; populated by the user
+    /// trusting a cert via the setup-time probe prompt.
+    /// `#[serde(default)]` so existing accounts.json files
+    /// without this field deserialise cleanly.
+    #[serde(default)]
+    pub trusted_certs: Vec<TrustedCert>,
 }
 
 /// Boolean flags for which Nextcloud apps the connected server offers.

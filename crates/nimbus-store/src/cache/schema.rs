@@ -863,6 +863,17 @@ const MIGRATIONS: &[&str] = &[
         last_synced_at        INTEGER
     );
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v24 → v25: per-Nextcloud-account self-signed cert trust list
+    // (#253).  Mirrors `accounts.trusted_certs_json` for IMAP/SMTP
+    // — JSON-serialised `Vec<TrustedCert>` so the same fingerprint
+    // verifier in `nimbus-core::tls` covers Nextcloud HTTPS too
+    // (OCS, CalDAV, CardDAV, Notes, Talk, Files).  Defaults to the
+    // empty array so existing accounts deserialise cleanly.
+    r#"
+    ALTER TABLE nextcloud_accounts
+        ADD COLUMN trusted_certs_json TEXT NOT NULL DEFAULT '[]';
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
