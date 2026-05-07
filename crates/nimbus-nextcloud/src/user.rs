@@ -1,14 +1,15 @@
-//! OCS user-info — the authenticated user's profile email.
+//! OCS user-info â€” the authenticated user's profile email.
 //!
 //! Used by the calendar create/update path to put the right
 //! address on `ORGANIZER:mailto:`.  Nextcloud 30+ Mail Provider
 //! matches `ORGANIZER` against the user's Mail-app accounts
-//! character-for-character — get this wrong and iMIP silently
-//! falls back to the system mailer with `From: invitations-noreply@…`.
+//! character-for-character â€” get this wrong and iMIP silently
+//! falls back to the system mailer with `From: invitations-noreply@â€¦`.
 
 use serde::Deserialize;
 
 use nimbus_core::NimbusError;
+use nimbus_core::models::TrustedCert;
 
 use crate::client;
 
@@ -24,12 +25,12 @@ struct OcsBody<T> {
 
 #[derive(Debug, Deserialize)]
 struct UserData {
-    /// Primary email from Personal settings → Personal info → Email.
+    /// Primary email from Personal settings â†’ Personal info â†’ Email.
     /// Often null on freshly-created accounts; callers must handle
     /// the empty case explicitly.
     #[serde(default)]
     email: Option<String>,
-    /// Display name — used for `ORGANIZER;CN=` so the iMIP shows a
+    /// Display name â€” used for `ORGANIZER;CN=` so the iMIP shows a
     /// human label alongside the address.
     #[serde(default)]
     displayname: Option<String>,
@@ -49,10 +50,11 @@ pub async fn fetch_current_user(
     server_url: &str,
     username: &str,
     app_password: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<NextcloudUserProfile, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/cloud/user?format=json");
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -85,13 +87,13 @@ pub async fn fetch_current_user(
     })
 }
 
-// ─── Sharees lookup: "is this email a Nextcloud user?" ──────
+// â”€â”€â”€ Sharees lookup: "is this email a Nextcloud user?" â”€â”€â”€â”€â”€â”€
 
 #[derive(Debug, Deserialize)]
 struct ShareesResponse {
     /// The `users` bucket carries matches that are local NC
     /// principals.  Other buckets (`groups`, `remotes`,
-    /// `emails`) we don't care about — we want the
+    /// `emails`) we don't care about â€” we want the
     /// authoritative-user list.
     #[serde(default)]
     exact: ShareesBuckets,
@@ -109,7 +111,7 @@ struct ShareesBuckets {
 
 #[derive(Debug, Deserialize)]
 struct ShareeMatch {
-    /// Display name on the row — what NC's admin set as the
+    /// Display name on the row â€” what NC's admin set as the
     /// user's full name.
     label: String,
     value: ShareeMatchValue,
@@ -122,7 +124,7 @@ struct ShareeMatchValue {
     share_with: String,
 }
 
-/// Match returned by [`find_user_by_email`] — the user-side
+/// Match returned by [`find_user_by_email`] â€” the user-side
 /// fields we care about for "is this attendee internal?".
 #[derive(Debug, Clone)]
 pub struct NextcloudUserMatch {
@@ -131,7 +133,7 @@ pub struct NextcloudUserMatch {
 }
 
 /// Look up a Nextcloud user by email via the sharees endpoint.
-/// Returns `Ok(None)` when no NC principal owns that address —
+/// Returns `Ok(None)` when no NC principal owns that address â€”
 /// the caller treats that as "external attendee, route through
 /// guest URL / email participant".  Returns `Ok(Some(...))`
 /// when an exact match is found (the user *and* the email are
@@ -147,6 +149,7 @@ pub async fn find_user_by_email(
     username: &str,
     app_password: &str,
     email: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Option<NextcloudUserMatch>, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!(
@@ -154,7 +157,7 @@ pub async fn find_user_by_email(
          ?format=json&itemType=calendar&search={}&shareType[]=0",
         urlencoding(email),
     );
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -181,7 +184,7 @@ pub async fn find_user_by_email(
         .await
         .map_err(|e| NimbusError::Protocol(format!("sharees bad JSON: {e}")))?;
 
-    // Prefer the `exact` bucket — it's what Nextcloud uses to
+    // Prefer the `exact` bucket â€” it's what Nextcloud uses to
     // signal "this is the same address you typed".  Fall back
     // to the partial-match `users` list and pick a row whose
     // userId equals the email's local part as a last resort
@@ -199,17 +202,17 @@ pub async fn find_user_by_email(
     }))
 }
 
-// ─── User groups + Teams (#133) ──────────────────────────────
+// â”€â”€â”€ User groups + Teams (#133) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Nextcloud surfaces three kinds of "group of people" the
 // contacts UI cares about:
 //   - vCard `KIND:group` records (handled in nimbus-carddav)
-//   - OCS user groups — the access-control groups under
-//     Settings → Users → Groups; members are NC user IDs.
-//   - Circles / Teams — the spreed-style team feature backed by
+//   - OCS user groups â€” the access-control groups under
+//     Settings â†’ Users â†’ Groups; members are NC user IDs.
+//   - Circles / Teams â€” the spreed-style team feature backed by
 //     the Circles app; members can be NC users, emails, or
 //     other circles.
-// Both OCS and Circles are read-only from Nimbus's perspective —
+// Both OCS and Circles are read-only from Nimbus's perspective â€”
 // management lives in the Nextcloud admin UI / Files sidebar.
 
 #[derive(Debug, Deserialize)]
@@ -225,18 +228,19 @@ struct GroupMembersData {
 /// Identity / access groups the authenticated user belongs to,
 /// fetched from `/ocs/v2.php/cloud/users/<user>/groups`.  This
 /// endpoint is permitted for the user themselves on every NC
-/// instance — no admin needed.
+/// instance â€” no admin needed.
 pub async fn fetch_my_groups(
     server_url: &str,
     username: &str,
     app_password: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Vec<String>, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!(
         "{server}/ocs/v2.php/cloud/users/{}/groups?format=json",
         urlencoding(username),
     );
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -267,13 +271,14 @@ pub async fn fetch_group_member_ids(
     username: &str,
     app_password: &str,
     group_id: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Vec<String>, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!(
         "{server}/ocs/v2.php/cloud/groups/{}?format=json",
         urlencoding(group_id),
     );
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -284,7 +289,7 @@ pub async fn fetch_group_member_ids(
         .map_err(|e| NimbusError::Network(format!("group-members request failed: {e}")))?;
     let status = resp.status();
     if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
-        // Permission-restricted or missing group — surface as an
+        // Permission-restricted or missing group â€” surface as an
         // empty list, not an error, so the caller can move on.
         return Ok(Vec::new());
     }
@@ -323,13 +328,14 @@ pub async fn fetch_user_profile(
     username: &str,
     app_password: &str,
     target_user_id: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<NextcloudUserSummary, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!(
         "{server}/ocs/v2.php/cloud/users/{}?format=json",
         urlencoding(target_user_id),
     );
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -387,16 +393,17 @@ pub struct NextcloudCircle {
 
 /// Circles / Teams the authenticated user belongs to, via the
 /// Circles app's OCS API.  Returns an empty list (Ok) when the
-/// app isn't installed — the endpoint 404s, and the contacts
+/// app isn't installed â€” the endpoint 404s, and the contacts
 /// UI just doesn't render a Teams section.
 pub async fn fetch_my_circles(
     server_url: &str,
     username: &str,
     app_password: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Vec<NextcloudCircle>, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/apps/circles/circles?format=json");
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -462,13 +469,14 @@ pub async fn fetch_circle_member_ids(
     username: &str,
     app_password: &str,
     circle_id: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Vec<String>, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!(
         "{server}/ocs/v2.php/apps/circles/circles/{}/members?format=json",
         urlencoding(circle_id),
     );
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -501,7 +509,7 @@ pub async fn fetch_circle_member_ids(
 
 /// Minimal percent-encoding for the `search=` query parameter.
 /// We deliberately don't pull in `urlencoding` as a workspace
-/// dep just for one path — emails contain only a small set of
+/// dep just for one path â€” emails contain only a small set of
 /// chars that need escaping (`@`, `+`, `.`, `-`).
 fn urlencoding(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

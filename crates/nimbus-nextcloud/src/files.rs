@@ -1,12 +1,12 @@
-//! Nextcloud Files (WebDAV) integration — browse + download.
+//! Nextcloud Files (WebDAV) integration â€” browse + download.
 //!
 //! # What this module does
 //!
 //! Two operations, enough to power the "attach from Nextcloud" flow:
 //!
-//! - `list_directory` — PROPFIND at depth 1 on a folder, returning a
+//! - `list_directory` â€” PROPFIND at depth 1 on a folder, returning a
 //!   flat listing of its children.
-//! - `download_file` — GET a file's bytes.
+//! - `download_file` â€” GET a file's bytes.
 //!
 //! # Endpoint shape
 //!
@@ -24,7 +24,7 @@
 //!
 //! # Path encoding
 //!
-//! WebDAV URLs are real URLs — spaces and unicode in filenames must be
+//! WebDAV URLs are real URLs â€” spaces and unicode in filenames must be
 //! percent-encoded per segment. We split the user-supplied path on `/`,
 //! encode each segment, and rejoin. Encoding the whole string as one
 //! blob would escape the slashes and break the URL.
@@ -44,6 +44,7 @@ use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 
 use nimbus_core::NimbusError;
+use nimbus_core::models::TrustedCert;
 
 use crate::client;
 
@@ -82,7 +83,7 @@ fn user_dav_base(server_url: &str, username: &str) -> String {
 
 /// Percent-encode a single path segment.
 ///
-/// Nextcloud filenames can contain spaces, `#`, `?`, unicode — anything
+/// Nextcloud filenames can contain spaces, `#`, `?`, unicode â€” anything
 /// not unreserved per RFC 3986 needs escaping. We encode everything
 /// that's not unreserved/sub-delims (minus `/`, since this function
 /// handles a *single* segment). `/` inside a name would be impossible
@@ -113,7 +114,7 @@ fn encode_path(path: &str) -> String {
         .join("/")
 }
 
-/// Reverse of `encode_path_segment` — used when we parse an `<href>` out
+/// Reverse of `encode_path_segment` â€” used when we parse an `<href>` out
 /// of a multistatus response and want the human-readable name back.
 fn decode_path(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -144,7 +145,7 @@ fn hex_val(b: u8) -> Option<u8> {
 }
 
 /// Normalise a caller-supplied path into the `/foo/bar/` form we send
-/// to the server. Accepts `""`, `"/"`, `"Documents"`, `"/Documents/"` —
+/// to the server. Accepts `""`, `"/"`, `"Documents"`, `"/Documents/"` â€”
 /// all end up as valid paths. Trailing slash is *added* for folder
 /// PROPFINDs by the caller, not here.
 fn normalise_input_path(path: &str) -> String {
@@ -156,7 +157,7 @@ fn normalise_input_path(path: &str) -> String {
     }
 }
 
-// ── PROPFIND body ──────────────────────────────────────────────
+// â”€â”€ PROPFIND body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Minimal PROPFIND body asking only for the four props we actually
 /// render. Nextcloud is happy to send more, but we save bandwidth and
@@ -176,7 +177,7 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 ///
 /// `path` is relative to the user's root. An empty string or `/` means
 /// the root folder. The returned list does **not** include the folder
-/// itself — PROPFIND at depth 1 echoes the request target as its first
+/// itself â€” PROPFIND at depth 1 echoes the request target as its first
 /// response, but we filter it out so the caller sees only children.
 ///
 /// # Errors
@@ -188,6 +189,7 @@ pub async fn list_directory(
     username: &str,
     app_password: &str,
     path: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Vec<FileEntry>, NimbusError> {
     let base = user_dav_base(server_url, username);
     let inner = normalise_input_path(path);
@@ -203,7 +205,7 @@ pub async fn list_directory(
 
     tracing::debug!("PROPFIND {url}");
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .request(
             reqwest::Method::from_bytes(b"PROPFIND").expect("PROPFIND is a valid HTTP method"),
@@ -230,7 +232,7 @@ pub async fn list_directory(
         )));
     }
     // 207 Multi-Status is the expected success code; some servers send
-    // 200 on empty collections — accept anything 2xx.
+    // 200 on empty collections â€” accept anything 2xx.
     if !status.is_success() {
         return Err(NimbusError::Nextcloud(format!(
             "PROPFIND returned HTTP {status}"
@@ -257,6 +259,7 @@ pub async fn download_file(
     username: &str,
     app_password: &str,
     path: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Vec<u8>, NimbusError> {
     let base = user_dav_base(server_url, username);
     let inner = normalise_input_path(path);
@@ -264,7 +267,7 @@ pub async fn download_file(
 
     tracing::debug!("GET {url}");
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -298,19 +301,19 @@ pub async fn download_file(
 }
 
 /// Fetch a server-rendered preview thumbnail of a file via
-/// `/index.php/core/preview.png?file=<path>&x=…&y=…`.  Used by
+/// `/index.php/core/preview.png?file=<path>&x=â€¦&y=â€¦`.  Used by
 /// the Nextcloud file picker to render an inline thumbnail on
 /// image and video rows.
 ///
 /// `path` is relative to the user's root (the same form
 /// `download_file` takes).  `size` caps the long edge in pixels;
 /// Nextcloud renders a smaller image to fit and we let the
-/// browser scale it down further.  Returns the raw bytes — the
+/// browser scale it down further.  Returns the raw bytes â€” the
 /// caller decides whether to base64 it for a `data:` URL or
 /// stream it through a custom URI scheme.
 ///
-/// Errors mirror `download_file`: 401 → `Auth`, 404 → `Nextcloud`,
-/// other non-2xx → `Nextcloud`.  Files with no available preview
+/// Errors mirror `download_file`: 401 â†’ `Auth`, 404 â†’ `Nextcloud`,
+/// other non-2xx â†’ `Nextcloud`.  Files with no available preview
 /// (e.g. ones the server hasn't generated thumbnails for yet)
 /// surface as 404 too; the caller treats that as "skip preview,
 /// fall back to the typed icon".
@@ -320,6 +323,7 @@ pub async fn fetch_preview(
     app_password: &str,
     path: &str,
     size: u32,
+    trusted_certs: &[TrustedCert],
 ) -> Result<Vec<u8>, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let inner = normalise_input_path(path);
@@ -329,7 +333,7 @@ pub async fn fetch_preview(
     // the generic mimetype icon, so we know to fall back.
     // `a=1` keeps aspect ratio so portraits don't get cropped.
     // `mimeFallback=false` is explicit insurance against future
-    // NC versions flipping the default — we want a real preview
+    // NC versions flipping the default â€” we want a real preview
     // or a 404, never a mime-typed icon.  `forceIcon=0` belongs
     // to the same family.
     let url = format!(
@@ -339,7 +343,7 @@ pub async fn fetch_preview(
 
     tracing::debug!("GET preview {url}");
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -375,7 +379,7 @@ pub async fn fetch_preview(
 
 /// Upload (or overwrite) a file via WebDAV PUT.
 ///
-/// `path` is the destination, relative to the user's root — e.g.
+/// `path` is the destination, relative to the user's root â€” e.g.
 /// `/Documents/invoice.pdf`. The parent folder must already exist.
 /// `bytes` is the raw file content. `content_type` is advisory: if set
 /// it goes in the request header so Nextcloud records a sensible MIME
@@ -383,12 +387,12 @@ pub async fn fetch_preview(
 ///
 /// On success, returns the full path Nextcloud accepted (same as
 /// `path`). If a file already exists at that path WebDAV PUT overwrites
-/// it — callers that need to avoid clobbering should check first or
+/// it â€” callers that need to avoid clobbering should check first or
 /// append a suffix to the filename.
 ///
 /// # Errors
-/// - `NimbusError::Auth` — app password rejected (401).
-/// - `NimbusError::Nextcloud` — parent folder missing (409), quota
+/// - `NimbusError::Auth` â€” app password rejected (401).
+/// - `NimbusError::Nextcloud` â€” parent folder missing (409), quota
 ///   exceeded (507), or any other non-2xx response.
 pub async fn upload_file(
     server_url: &str,
@@ -397,6 +401,7 @@ pub async fn upload_file(
     path: &str,
     bytes: Vec<u8>,
     content_type: Option<&str>,
+    trusted_certs: &[TrustedCert],
 ) -> Result<String, NimbusError> {
     let base = user_dav_base(server_url, username);
     let inner = normalise_input_path(path);
@@ -409,7 +414,7 @@ pub async fn upload_file(
 
     tracing::debug!("PUT {url} ({} bytes)", bytes.len());
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .put(&url)
         .header("OCS-APIRequest", "true")
@@ -439,7 +444,7 @@ pub async fn upload_file(
     // than "HTTP 507".
     if status == reqwest::StatusCode::INSUFFICIENT_STORAGE {
         return Err(NimbusError::Nextcloud(
-            "Nextcloud quota exceeded — file not saved".into(),
+            "Nextcloud quota exceeded â€” file not saved".into(),
         ));
     }
     if !status.is_success() {
@@ -454,13 +459,13 @@ pub async fn upload_file(
 ///
 /// `path` is the full path of the folder to create, relative to the
 /// user's root (e.g. `/Documents/New Folder`). The parent must already
-/// exist — MKCOL will not create intermediate directories. Trailing
+/// exist â€” MKCOL will not create intermediate directories. Trailing
 /// slash is optional; we add one before sending so Nextcloud unambiguously
 /// treats the target as a collection.
 ///
 /// # Errors
-/// - `NimbusError::Auth` — app password rejected (401).
-/// - `NimbusError::Nextcloud` — folder already exists (405), parent
+/// - `NimbusError::Auth` â€” app password rejected (401).
+/// - `NimbusError::Nextcloud` â€” folder already exists (405), parent
 ///   missing (409), or any other non-2xx response. The HTTP status is
 ///   included so the UI can show something specific.
 pub async fn create_directory(
@@ -468,11 +473,12 @@ pub async fn create_directory(
     username: &str,
     app_password: &str,
     path: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<(), NimbusError> {
     let base = user_dav_base(server_url, username);
     let inner = normalise_input_path(path);
     if inner == "/" {
-        // Refuse to MKCOL the user root — Nextcloud already created it
+        // Refuse to MKCOL the user root â€” Nextcloud already created it
         // at signup, and a 405 here would just be noise.
         return Err(NimbusError::Nextcloud(
             "cannot create the root folder".into(),
@@ -483,7 +489,7 @@ pub async fn create_directory(
 
     tracing::debug!("MKCOL {url}");
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .request(
             reqwest::Method::from_bytes(b"MKCOL").expect("MKCOL is a valid HTTP method"),
@@ -525,7 +531,7 @@ pub async fn create_directory(
     Ok(())
 }
 
-/// DAV DELETE the resource at `path` — works for both files and
+/// DAV DELETE the resource at `path` â€” works for both files and
 /// folders. Used by the Office viewer cleanup flow + the temp-dir
 /// sweeper. Treats 404 as success (already gone), same forgiving
 /// policy `nimbus-caldav::delete_calendar` uses.
@@ -534,6 +540,7 @@ pub async fn delete_path(
     username: &str,
     app_password: &str,
     path: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<(), NimbusError> {
     let base = user_dav_base(server_url, username);
     let inner = normalise_input_path(path);
@@ -545,7 +552,7 @@ pub async fn delete_path(
     let url = format!("{base}{}", encode_path(&inner));
     tracing::debug!("DELETE {url}");
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .delete(&url)
         .header("OCS-APIRequest", "true")
@@ -560,7 +567,7 @@ pub async fn delete_path(
             "Nextcloud rejected app password (revoked or expired)".into(),
         ));
     }
-    // 404 = already gone, 204/200 = success — all fine.
+    // 404 = already gone, 204/200 = success â€” all fine.
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(());
     }
@@ -572,7 +579,7 @@ pub async fn delete_path(
     Ok(())
 }
 
-/// Single-resource PROPFIND that returns the Nextcloud `oc:fileid` —
+/// Single-resource PROPFIND that returns the Nextcloud `oc:fileid` â€”
 /// the stable numeric handle every NC app keys on. Used by the
 /// Office viewer flow to build the `index.php/f/<fileid>` deep-link
 /// URL after a fresh upload (the new file's fileid isn't returned
@@ -582,12 +589,13 @@ pub async fn propfind_fileid(
     username: &str,
     app_password: &str,
     path: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<String, NimbusError> {
     let base = user_dav_base(server_url, username);
     let inner = normalise_input_path(path);
     let url = format!("{base}{}", encode_path(&inner));
 
-    // Depth 0 — we only care about the resource itself, not children.
+    // Depth 0 â€” we only care about the resource itself, not children.
     // The `oc:` namespace is Nextcloud's own; `oc:fileid` is the
     // numeric id Files / Office / Talk all share.
     const BODY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -597,7 +605,7 @@ pub async fn propfind_fileid(
   </d:prop>
 </d:propfind>"#;
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .request(
             reqwest::Method::from_bytes(b"PROPFIND").expect("PROPFIND is a valid HTTP method"),
@@ -629,7 +637,7 @@ pub async fn propfind_fileid(
         .await
         .map_err(|e| NimbusError::Network(format!("PROPFIND body read failed: {e}")))?;
 
-    // Cheap text scan rather than a full quick-xml read — the
+    // Cheap text scan rather than a full quick-xml read â€” the
     // response is ~600 bytes and we only want one element.
     let open = body.find("<oc:fileid>").or_else(|| body.find("<fileid>"));
     let close = body.find("</oc:fileid>").or_else(|| body.find("</fileid>"));
@@ -644,7 +652,7 @@ pub async fn propfind_fileid(
     }
 }
 
-// ── Multistatus parser ─────────────────────────────────────────
+// â”€â”€ Multistatus parser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Parse a WebDAV multistatus response into `FileEntry`s.
 ///
@@ -659,8 +667,8 @@ pub async fn propfind_fileid(
 ///         <d:displayname>Documents</d:displayname>
 ///         <d:resourcetype><d:collection/></d:resourcetype>
 ///         <d:getlastmodified>Tue, 21 Apr 2026 10:00:00 GMT</d:getlastmodified>
-///         <d:getcontentlength>…</d:getcontentlength>  <!-- files only -->
-///         <d:getcontenttype>…</d:getcontenttype>      <!-- files only -->
+///         <d:getcontentlength>â€¦</d:getcontentlength>  <!-- files only -->
+///         <d:getcontenttype>â€¦</d:getcontenttype>      <!-- files only -->
 ///       </d:prop>
 ///       <d:status>HTTP/1.1 200 OK</d:status>
 ///     </d:propstat>
@@ -795,7 +803,7 @@ impl PartialEntry {
         // Trim them down to the portion under the user root.
         let href = self.href.trim();
         let under_user = href.strip_prefix(user_prefix).unwrap_or(href);
-        // The request target echoes itself — skip it.
+        // The request target echoes itself â€” skip it.
         if under_user == request_prefix_encoded
             || under_user.trim_end_matches('/') == request_prefix_encoded.trim_end_matches('/')
         {
@@ -848,7 +856,7 @@ fn resourcetype_is_collection(
     }
 }
 
-// ── Small shared xml helpers (lifted from nimbus-carddav patterns) ─
+// â”€â”€ Small shared xml helpers (lifted from nimbus-carddav patterns) â”€
 
 fn local_name(start: &quick_xml::events::BytesStart<'_>) -> String {
     strip_prefix_lowercase(start.name().as_ref())
@@ -885,7 +893,7 @@ fn read_text_until(
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────
+// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod tests {
@@ -899,15 +907,15 @@ mod tests {
         );
         assert_eq!(encode_path("/"), "/");
         assert_eq!(encode_path(""), "");
-        // Unicode: ä = 0xC3 0xA4
-        assert_eq!(encode_path("/Björk.txt"), "/Bj%C3%B6rk.txt");
+        // Unicode: Ã¤ = 0xC3 0xA4
+        assert_eq!(encode_path("/BjÃ¶rk.txt"), "/Bj%C3%B6rk.txt");
     }
 
     #[test]
     fn decodes_percent_escapes() {
         assert_eq!(decode_path("Q1%20report.pdf"), "Q1 report.pdf");
-        assert_eq!(decode_path("Bj%C3%B6rk.txt"), "Björk.txt");
-        // Malformed escape — leave byte untouched rather than erroring.
+        assert_eq!(decode_path("Bj%C3%B6rk.txt"), "BjÃ¶rk.txt");
+        // Malformed escape â€” leave byte untouched rather than erroring.
         assert_eq!(decode_path("half%2"), "half%2");
     }
 
@@ -921,7 +929,7 @@ mod tests {
     }
 
     /// Realistic Nextcloud 28 PROPFIND response for `/Documents/` with
-    /// one subfolder and one file — enough to exercise the parser.
+    /// one subfolder and one file â€” enough to exercise the parser.
     const PROPFIND_SAMPLE: &str = r#"<?xml version="1.0"?>
 <d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
   <d:response>

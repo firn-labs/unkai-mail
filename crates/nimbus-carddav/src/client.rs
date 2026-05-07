@@ -6,9 +6,12 @@
 //! attach the body / headers ourselves.
 
 use reqwest::{Client, Method, Response};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nimbus_core::NimbusError;
+use nimbus_core::models::TrustedCert;
+use nimbus_core::tls::build_client_config;
 use nimbus_core::url::ensure_https;
 
 /// Build the shared HTTP client.
@@ -16,11 +19,18 @@ use nimbus_core::url::ensure_https;
 /// Same shape as the Nextcloud one — generous timeouts because some
 /// self-hosted servers answer slowly under load, and a recognisable
 /// user agent so server admins can spot us in logs.
-pub fn build() -> Result<Client, NimbusError> {
+///
+/// `trusted_certs` is the per-account self-signed-cert trust list
+/// (#253), plumbed through the shared `build_client_config` helper
+/// so HTTPS to a self-hosted CardDAV server with a non-public CA
+/// goes through the same fingerprint-fallback verifier IMAP/SMTP use.
+pub fn build(trusted_certs: &[TrustedCert]) -> Result<Client, NimbusError> {
+    let rustls_config = Arc::unwrap_or_clone(build_client_config(trusted_certs));
     Client::builder()
         .timeout(Duration::from_secs(60))
         .connect_timeout(Duration::from_secs(15))
         .user_agent(concat!("Nimbus Mail CardDAV/", env!("CARGO_PKG_VERSION")))
+        .use_preconfigured_tls(rustls_config)
         .build()
         .map_err(|e| NimbusError::Network(format!("failed to build CardDAV HTTP client: {e}")))
 }

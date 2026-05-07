@@ -8,7 +8,7 @@
 //!   overwrite an existing UID at our chosen href. Pairs with our
 //!   `{calendar_url}/{uid}.ics` href so two clients picking the same
 //!   UID get a clean 412 instead of silently clobbering each other.
-//! - **Update**: PUT with `If-Match: <etag>` — the server returns 412
+//! - **Update**: PUT with `If-Match: <etag>` â€” the server returns 412
 //!   if the resource changed since our last sync. We surface that as a
 //!   structured error so the caller can re-fetch and merge.
 //! - **Delete**: same `If-Match` story.
@@ -16,16 +16,17 @@
 //! # Choosing the resource path
 //!
 //! For a fresh create, we pick `{calendar_url}/{uid}.ics`. Nextcloud
-//! accepts that and returns the new etag in the response headers — no
+//! accepts that and returns the new etag in the response headers â€” no
 //! follow-up PROPFIND required.
 
 use reqwest::StatusCode;
 
 use nimbus_core::NimbusError;
+use nimbus_core::models::TrustedCert;
 
 use crate::client::{build, delete_resource, normalize_server_url, put_ics};
 
-/// Result of a successful create / update — the canonical href and
+/// Result of a successful create / update â€” the canonical href and
 /// the new etag, both ready to drop into the local cache row.
 #[derive(Debug, Clone)]
 pub struct WriteOutcome {
@@ -44,8 +45,9 @@ pub async fn create_event(
     app_password: &str,
     uid: &str,
     ics: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<WriteOutcome, NimbusError> {
-    let http = build()?;
+    let http = build(trusted_certs)?;
     let href = build_href(calendar_url, uid);
 
     let resp = put_ics(&http, &href, username, app_password, ics, None, true).await?;
@@ -72,7 +74,7 @@ pub async fn create_event(
 ///
 /// `href` should be the absolute href we cached when the event was
 /// first synced. Returns the new etag the server assigned after our
-/// PUT — the caller persists it so the next update keeps the
+/// PUT â€” the caller persists it so the next update keeps the
 /// optimistic-concurrency chain unbroken.
 pub async fn update_event(
     href: &str,
@@ -80,8 +82,9 @@ pub async fn update_event(
     app_password: &str,
     if_match_etag: &str,
     ics: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<WriteOutcome, NimbusError> {
-    let http = build()?;
+    let http = build(trusted_certs)?;
     let resp = put_ics(
         &http,
         href,
@@ -94,7 +97,7 @@ pub async fn update_event(
     .await?;
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
-        // Programmatically-detectable variant — callers (the
+        // Programmatically-detectable variant â€” callers (the
         // calendar-write Tauri commands, the RSVP path) catch
         // `EtagMismatch`, run a single-calendar sync to pull
         // the latest etag, and retry transparently.  The user
@@ -121,14 +124,23 @@ pub async fn delete_event(
     username: &str,
     app_password: &str,
     if_match_etag: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<(), NimbusError> {
-    delete_event_inner(href, username, app_password, if_match_etag, false).await
+    delete_event_inner(
+        href,
+        username,
+        app_password,
+        if_match_etag,
+        false,
+        trusted_certs,
+    )
+    .await
 }
 
 /// `delete_event` variant that suppresses Sabre/DAV's
 /// auto-iTIP via `Schedule-Reply: F`.  Used by the
 /// "Remove from my calendar" flow for a meeting the
-/// organiser already cancelled — without this header Sabre
+/// organiser already cancelled â€” without this header Sabre
 /// would emit a spurious `METHOD:REPLY;PARTSTAT=DECLINED`
 /// iMIP at the organiser when the attendee removes their
 /// local copy.
@@ -137,8 +149,17 @@ pub async fn delete_event_silent(
     username: &str,
     app_password: &str,
     if_match_etag: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<(), NimbusError> {
-    delete_event_inner(href, username, app_password, if_match_etag, true).await
+    delete_event_inner(
+        href,
+        username,
+        app_password,
+        if_match_etag,
+        true,
+        trusted_certs,
+    )
+    .await
 }
 
 async fn delete_event_inner(
@@ -147,8 +168,9 @@ async fn delete_event_inner(
     app_password: &str,
     if_match_etag: &str,
     suppress_itip: bool,
+    trusted_certs: &[TrustedCert],
 ) -> Result<(), NimbusError> {
-    let http = build()?;
+    let http = build(trusted_certs)?;
     let resp = if suppress_itip {
         crate::client::delete_resource_no_itip(
             &http,
@@ -164,10 +186,11 @@ async fn delete_event_inner(
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
         return Err(NimbusError::Nextcloud(
-            "event was modified on the server since last sync — refresh and try again".to_string(),
+            "event was modified on the server since last sync â€” refresh and try again"
+                .to_string(),
         ));
     }
-    // 404 is fine — already gone is the state we wanted.
+    // 404 is fine â€” already gone is the state we wanted.
     if !status.is_success() && status != StatusCode::NOT_FOUND {
         return Err(NimbusError::Nextcloud(format!(
             "DELETE event returned HTTP {status}"
@@ -202,7 +225,7 @@ fn read_etag(resp: &reqwest::Response) -> Option<String> {
 }
 
 /// If `href` is already absolute, return it. Otherwise prepend the
-/// server origin — same semantics as `client::absolute_url`.
+/// server origin â€” same semantics as `client::absolute_url`.
 fn absolute_or_passthrough(server_url: &str, href: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
         href.to_string()

@@ -486,7 +486,10 @@ async fn test_connection(
 /// polling handle the UI should use to drive `poll_nextcloud_login`.
 #[tauri::command]
 async fn start_nextcloud_login(server_url: String) -> Result<LoginFlowInit, NimbusError> {
-    start_login(&server_url).await
+    // Login Flow v2 runs *before* an account exists locally, so we
+    // can't consult a per-account trust list yet.  An empty slice
+    // means standard webpki verification (#253).
+    start_login(&server_url, &[]).await
 }
 
 /// Poll once for Login Flow v2 completion.
@@ -506,7 +509,7 @@ async fn poll_nextcloud_login(
         server,
         login_name,
         app_password,
-    }) = poll_login(&poll_endpoint, &poll_token).await?
+    }) = poll_login(&poll_endpoint, &poll_token, &[]).await?
     else {
         return Ok(None);
     };
@@ -524,7 +527,7 @@ async fn poll_nextcloud_login(
     // Best-effort capability snapshot. A working login with a broken
     // capabilities endpoint shouldn't block saving the account — we
     // can always refetch later.
-    let capabilities = match fetch_capabilities(&server, &login_name, &app_password).await {
+    let capabilities = match fetch_capabilities(&server, &login_name, &app_password, &[]).await {
         Ok(c) => Some(c),
         Err(e) => {
             tracing::warn!("capabilities fetch failed, saving without: {e}");
@@ -538,6 +541,9 @@ async fn poll_nextcloud_login(
         username: login_name,
         display_name: None,
         capabilities,
+        // Empty by default; populated when the user trusts a self-
+        // signed cert via the cert-probe prompt (#253).
+        trusted_certs: Vec::new(),
     };
     nextcloud_store::upsert_account(global_cache()?, account.clone())?;
     Ok(Some(account))
@@ -561,7 +567,14 @@ fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
 async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccount, NimbusError> {
     let mut account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    match fetch_capabilities(&account.server_url, &account.username, &app_password).await {
+    match fetch_capabilities(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await
+    {
         Ok(caps) => {
             account.capabilities = Some(caps);
             nextcloud_store::upsert_account(global_cache()?, account.clone())?;
@@ -591,6 +604,7 @@ async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, Nimbu
         &account.server_url,
         &account.username,
         &app_password,
+        &account.trusted_certs,
     )
     .await
     {
@@ -655,8 +669,14 @@ fn open_url(url: String) -> Result<(), NimbusError> {
 async fn list_nextcloud_files(nc_id: String, path: String) -> Result<Vec<FileEntry>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::list_directory(&account.server_url, &account.username, &app_password, &path)
-        .await
+    nimbus_nextcloud::list_directory(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+        &account.trusted_certs,
+    )
+    .await
 }
 
 /// Download a single file from Nextcloud.
@@ -669,8 +689,14 @@ async fn list_nextcloud_files(nc_id: String, path: String) -> Result<Vec<FileEnt
 async fn download_nextcloud_file(nc_id: String, path: String) -> Result<Vec<u8>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::download_file(&account.server_url, &account.username, &app_password, &path)
-        .await
+    nimbus_nextcloud::download_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+        &account.trusted_certs,
+    )
+    .await
 }
 
 /// Fetch a server-rendered preview thumbnail for a Nextcloud
@@ -694,6 +720,7 @@ async fn nextcloud_file_preview(
         &app_password,
         &path,
         s,
+        &account.trusted_certs,
     )
     .await
     {
@@ -749,6 +776,7 @@ async fn create_nextcloud_share(
         password.as_deref(),
         label.as_deref(),
         permissions.unwrap_or(nimbus_nextcloud::shares::PERM_READ_ONLY),
+        &account.trusted_certs,
     )
     .await?;
     Ok(NextcloudShareResult {
@@ -776,6 +804,7 @@ async fn update_nextcloud_share_label(
         &app_password,
         &share_id,
         &label,
+        &account.trusted_certs,
     )
     .await
 }
@@ -796,6 +825,7 @@ async fn delete_nextcloud_share(nc_id: String, share_id: String) -> Result<(), N
         &account.username,
         &app_password,
         &share_id,
+        &account.trusted_certs,
     )
     .await
 }
@@ -922,6 +952,7 @@ async fn upload_to_nextcloud(
         &path,
         data,
         content_type.as_deref(),
+        &account.trusted_certs,
     )
     .await
 }
@@ -937,8 +968,14 @@ async fn upload_to_nextcloud(
 async fn create_nextcloud_directory(nc_id: String, path: String) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::create_directory(&account.server_url, &account.username, &app_password, &path)
-        .await
+    nimbus_nextcloud::create_directory(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+        &account.trusted_certs,
+    )
+    .await
 }
 
 // ── Office viewer (issue #65) ────────────────────────────────
@@ -996,6 +1033,7 @@ async fn ensure_temp_dir(
             &account.username,
             app_password,
             dir,
+            &account.trusted_certs,
         )
         .await
         {
@@ -1036,6 +1074,7 @@ async fn office_open_attachment(
         &temp_path,
         data,
         content_type.as_deref(),
+        &account.trusted_certs,
     )
     .await?;
 
@@ -1050,6 +1089,7 @@ async fn office_open_attachment(
         &account.username,
         &app_password,
         &temp_path,
+        &account.trusted_certs,
     )
     .await?;
 
@@ -1072,6 +1112,7 @@ async fn office_close_attachment(nc_id: String, temp_path: String) -> Result<(),
         &account.username,
         &app_password,
         &temp_path,
+        &account.trusted_certs,
     )
     .await
 }
@@ -1122,6 +1163,7 @@ async fn pdf_open_attachment(
         &temp_path,
         data,
         content_type.as_deref(),
+        &account.trusted_certs,
     )
     .await?;
 
@@ -1130,6 +1172,7 @@ async fn pdf_open_attachment(
         &account.username,
         &app_password,
         &temp_path,
+        &account.trusted_certs,
     )
     .await?;
     let server = account.server_url.trim_end_matches('/');
@@ -1150,6 +1193,7 @@ async fn pdf_close_attachment(nc_id: String, temp_path: String) -> Result<(), Ni
         &account.username,
         &app_password,
         &temp_path,
+        &account.trusted_certs,
     )
     .await
 }
@@ -1173,6 +1217,7 @@ async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
         &account.username,
         &app_password,
         NIMBUS_TEMP_DIR,
+        &account.trusted_certs,
     )
     .await
     {
@@ -1194,6 +1239,7 @@ async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
             &account.username,
             &app_password,
             &target,
+            &account.trusted_certs,
         )
         .await
         {
@@ -1299,7 +1345,13 @@ async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), Nimbu
 async fn list_talk_rooms(nc_id: String) -> Result<Vec<nimbus_nextcloud::TalkRoom>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::list_rooms(&account.server_url, &account.username, &app_password).await
+    nimbus_nextcloud::list_rooms(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await
 }
 
 /// Create a new group Talk room and invite `participants` to it.
@@ -1344,6 +1396,7 @@ async fn create_talk_room(
             object_type: object_type.as_deref(),
             object_id: object_id.as_deref(),
         },
+        &account.trusted_certs,
     )
     .await
 }
@@ -1394,6 +1447,7 @@ async fn set_talk_room_public(
         &app_password,
         &room_token,
         public,
+        &account.trusted_certs,
     )
     .await
 }
@@ -1424,6 +1478,7 @@ async fn find_nextcloud_user_by_email(
         &account.username,
         &app_password,
         &email,
+        &account.trusted_certs,
     )
     .await?;
     Ok(m.map(|m| NextcloudUserLookup {
@@ -1461,24 +1516,20 @@ async fn promote_email_to_user_if_internal(
     if let Some(hit) = cache.get(&key) {
         return hit.clone();
     }
-    let resolved = match nimbus_nextcloud::find_user_by_email(
-        server_url,
-        username,
-        app_password,
-        addr,
-    )
-    .await
-    {
-        Ok(Some(m)) => ParticipantSource::User(m.user_id),
-        Ok(None) => src.clone(),
-        Err(e) => {
-            tracing::warn!(
-                "talk-invite: NC user lookup failed for {addr}: {e}; \
+    let resolved =
+        match nimbus_nextcloud::find_user_by_email(server_url, username, app_password, addr, &[])
+            .await
+        {
+            Ok(Some(m)) => ParticipantSource::User(m.user_id),
+            Ok(None) => src.clone(),
+            Err(e) => {
+                tracing::warn!(
+                    "talk-invite: NC user lookup failed for {addr}: {e}; \
                  falling back to email guest"
-            );
-            src.clone()
-        }
-    };
+                );
+                src.clone()
+            }
+        };
     cache.insert(key, resolved.clone());
     resolved
 }
@@ -1511,6 +1562,7 @@ async fn add_talk_participant(
         &app_password,
         &room_token,
         &resolved,
+        &account.trusted_certs,
     )
     .await
 }
@@ -1549,6 +1601,7 @@ async fn add_talk_participants(
             &app_password,
             &room_token,
             &resolved,
+            &account.trusted_certs,
         )
         .await?;
     }
@@ -1568,6 +1621,7 @@ async fn delete_talk_room(nc_id: String, room_token: String) -> Result<(), Nimbu
         &account.username,
         &app_password,
         &room_token,
+        &account.trusted_certs,
     )
     .await
 }
@@ -1589,6 +1643,7 @@ async fn rename_talk_room(
         &app_password,
         &room_token,
         &new_name,
+        &account.trusted_certs,
     )
     .await
 }
@@ -1648,8 +1703,13 @@ async fn sync_nextcloud_notes(
 ) -> Result<Vec<nimbus_core::models::Note>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let server =
-        nimbus_nextcloud::list_notes(&account.server_url, &account.username, &app_password).await?;
+    let server = nimbus_nextcloud::list_notes(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     let notes: Vec<nimbus_core::models::Note> = server
         .into_iter()
         .map(|n| nc_note_to_core(&nc_id, n))
@@ -1675,6 +1735,7 @@ async fn get_nextcloud_note(
         &account.username,
         &app_password,
         note_id,
+        &account.trusted_certs,
     )
     .await?;
     let note = nc_note_to_core(&nc_id, server);
@@ -1705,6 +1766,7 @@ async fn create_nextcloud_note(
             content: &content,
             category: &category,
         },
+        &account.trusted_certs,
     )
     .await?;
     let note = nc_note_to_core(&nc_id, server);
@@ -1742,6 +1804,7 @@ async fn update_nextcloud_note(
             category: category.as_deref(),
             favorite,
         },
+        &account.trusted_certs,
     )
     .await?;
     let note = nc_note_to_core(&nc_id, server);
@@ -1765,6 +1828,7 @@ async fn delete_nextcloud_note(
         &account.username,
         &app_password,
         note_id,
+        &account.trusted_certs,
     )
     .await?;
     cache.delete_note(&nc_id, note_id)?;
@@ -1817,7 +1881,13 @@ async fn sync_nextcloud_contacts(
         .ok_or_else(|| NimbusError::Other(format!("no Nextcloud account with id '{nc_id}'")))?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
-    let books = list_addressbooks(&account.server_url, &account.username, &app_password).await?;
+    let books = list_addressbooks(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     tracing::info!(
         "CardDAV: {} addressbook(s) to sync for {}",
         books.len(),
@@ -1847,6 +1917,7 @@ async fn sync_nextcloud_contacts(
             &account.username,
             &app_password,
             prev_token.as_deref(),
+            &account.trusted_certs,
         )
         .await
         {
@@ -2130,6 +2201,7 @@ async fn create_contact(
         &app_password,
         &uid,
         &vcard,
+        &account.trusted_certs,
     )
     .await?;
 
@@ -2283,6 +2355,7 @@ async fn update_contact(
         &app_password,
         &handle.etag,
         &vcard,
+        &account.trusted_certs,
     )
     .await?;
 
@@ -2314,7 +2387,14 @@ async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
-    carddav_delete_contact(&handle.href, &account.username, &app_password, &handle.etag).await?;
+    carddav_delete_contact(
+        &handle.href,
+        &account.username,
+        &app_password,
+        &handle.etag,
+        &account.trusted_certs,
+    )
+    .await?;
 
     cache
         .delete_contact_by_id(&contact_id)
@@ -2557,6 +2637,7 @@ where
         &app_password,
         &handle.etag,
         &vcard,
+        &account.trusted_certs,
     )
     .await?;
     let row = parsed_to_row(
@@ -2920,6 +3001,7 @@ async fn create_contact_group(
         &app_password,
         &uid,
         &vcard,
+        &account.trusted_certs,
     )
     .await?;
     let row = parsed_to_row(&outcome.href, &outcome.etag, &uid, &parsed, vcard);
@@ -2984,6 +3066,7 @@ async fn update_contact_group(
         &app_password,
         &handle.etag,
         &vcard,
+        &account.trusted_certs,
     )
     .await?;
     let row = parsed_to_row(
@@ -3033,7 +3116,14 @@ async fn delete_contact_group(
     let handle = load_contact_handle(&cache, &group_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
-    carddav_delete_contact(&handle.href, &account.username, &app_password, &handle.etag).await?;
+    carddav_delete_contact(
+        &handle.href,
+        &account.username,
+        &app_password,
+        &handle.etag,
+        &account.trusted_certs,
+    )
+    .await?;
     cache
         .delete_contact_by_id(&group_id)
         .map_err(NimbusError::from)?;
@@ -3164,16 +3254,20 @@ async fn list_nextcloud_groups(
             }
         };
         // OCS user groups -------------------------------------------------
-        let group_ids =
-            match nimbus_nextcloud::fetch_my_groups(&acc.server_url, &acc.username, &app_password)
-                .await
-            {
-                Ok(g) => g,
-                Err(e) => {
-                    tracing::warn!("fetch_my_groups failed for {}: {e}", acc.id);
-                    Vec::new()
-                }
-            };
+        let group_ids = match nimbus_nextcloud::fetch_my_groups(
+            &acc.server_url,
+            &acc.username,
+            &app_password,
+            &acc.trusted_certs,
+        )
+        .await
+        {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!("fetch_my_groups failed for {}: {e}", acc.id);
+                Vec::new()
+            }
+        };
         for gid in group_ids {
             let members = collect_group_members(acc, &app_password, &gid, &cache_uid_email).await;
             // OCS groups + Circles both surface as "team" so
@@ -3190,22 +3284,27 @@ async fn list_nextcloud_groups(
             });
         }
         // Circles / Teams ------------------------------------------------
-        let circles =
-            match nimbus_nextcloud::fetch_my_circles(&acc.server_url, &acc.username, &app_password)
-                .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("fetch_my_circles failed for {}: {e}", acc.id);
-                    Vec::new()
-                }
-            };
+        let circles = match nimbus_nextcloud::fetch_my_circles(
+            &acc.server_url,
+            &acc.username,
+            &app_password,
+            &acc.trusted_certs,
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("fetch_my_circles failed for {}: {e}", acc.id);
+                Vec::new()
+            }
+        };
         for c in circles {
             let mids = match nimbus_nextcloud::fetch_circle_member_ids(
                 &acc.server_url,
                 &acc.username,
                 &app_password,
                 &c.id,
+                &acc.trusted_certs,
             )
             .await
             {
@@ -3243,6 +3342,7 @@ async fn collect_group_members(
         &acc.username,
         app_password,
         group_id,
+        &acc.trusted_certs,
     )
     .await
     {
@@ -3271,6 +3371,7 @@ async fn resolve_member_profiles(
             &acc.username,
             app_password,
             &uid,
+            &acc.trusted_certs,
         )
         .await;
         (uid, prof)
@@ -3330,8 +3431,13 @@ async fn list_nextcloud_addressbooks(
 ) -> Result<Vec<AddressbookSummary>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let books: Vec<Addressbook> =
-        list_addressbooks(&account.server_url, &account.username, &app_password).await?;
+    let books: Vec<Addressbook> = list_addressbooks(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     Ok(books
         .into_iter()
         .map(|b| AddressbookSummary {
@@ -3400,8 +3506,13 @@ struct SyncCalendarsReport {
 async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let calendars: Vec<CaldavCalendar> =
-        caldav_list_calendars(&account.server_url, &account.username, &app_password).await?;
+    let calendars: Vec<CaldavCalendar> = caldav_list_calendars(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     Ok(calendars
         .into_iter()
         .map(|c| CalendarSummary {
@@ -3445,8 +3556,13 @@ async fn sync_nextcloud_calendars(
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     // ── Phase 1: discovery + reconcile the calendar list ────────
-    let server_calendars =
-        caldav_list_calendars(&account.server_url, &account.username, &app_password).await?;
+    let server_calendars = caldav_list_calendars(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     tracing::info!(
         "CalDAV: {} calendar(s) discovered for {}",
         server_calendars.len(),
@@ -3496,6 +3612,7 @@ async fn sync_nextcloud_calendars(
             &account.username,
             &app_password,
             prev_token.as_deref(),
+            &account.trusted_certs,
         )
         .await
         {
@@ -3596,6 +3713,7 @@ async fn create_nextcloud_calendar(
         &slug,
         &display_name,
         color.as_deref(),
+        &account.trusted_certs,
     )
     .await?;
 
@@ -3645,6 +3763,7 @@ async fn update_nextcloud_calendar(
         &app_password,
         display_name.as_deref(),
         color.as_deref(),
+        &account.trusted_certs,
     )
     .await?;
 
@@ -3667,7 +3786,13 @@ async fn delete_nextcloud_calendar(
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
-    caldav_delete_calendar(&path, &account.username, &app_password).await?;
+    caldav_delete_calendar(
+        &path,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     cache.remove_calendar(&calendar_id)?;
     Ok(())
 }
@@ -3895,6 +4020,7 @@ async fn resolve_organizer(
         &account.server_url,
         &account.username,
         app_password,
+        &account.trusted_certs,
     )
     .await
     {
@@ -3978,6 +4104,7 @@ async fn create_calendar_event(
         &app_password,
         &uid,
         &ics,
+        &account.trusted_certs,
     )
     .await?;
 
@@ -4047,6 +4174,7 @@ async fn delete_calendar_event(
         &nc_account.username,
         &app_password,
         &handle.etag,
+        &nc_account.trusted_certs,
     )
     .await?;
     cache.delete_event_by_id(&event_id)?;
@@ -4127,6 +4255,7 @@ async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result
         &account.username,
         &app_password,
         &handle.etag,
+        &account.trusted_certs,
     )
     .await?;
     cache.delete_event_by_id(&event_id)?;
@@ -4344,6 +4473,7 @@ async fn respond_to_invite(
         &account.server_url,
         &account.username,
         &app_password,
+        &account.trusted_certs,
     )
     .await
     {
@@ -4537,6 +4667,7 @@ async fn respond_to_invite(
                 &app_password,
                 &event.id,
                 &step1_body,
+                &account.trusted_certs,
             )
             .await?;
 
@@ -4556,6 +4687,7 @@ async fn respond_to_invite(
                 &app_password,
                 &first.etag,
                 &step2_body,
+                &account.trusted_certs,
             )
             .await?;
             body_put = step2_body;
@@ -4667,6 +4799,7 @@ async fn get_event_partstat_for_user(
         &account.server_url,
         &account.username,
         &app_password,
+        &account.trusted_certs,
     )
     .await
         && let Some(email) = profile.email
@@ -4726,6 +4859,7 @@ async fn update_event_with_etag_retry(
         &app_password,
         &handle.etag,
         ics,
+        &account.trusted_certs,
     )
     .await
     {
@@ -4749,6 +4883,7 @@ async fn update_event_with_etag_retry(
                 &app_password,
                 &fresh.etag,
                 ics,
+                &account.trusted_certs,
             )
             .await?;
             Ok((outcome, fresh))
@@ -4793,6 +4928,7 @@ async fn refresh_calendar_cache(
         &account.username,
         &app_password,
         prev_token.as_deref(),
+        &account.trusted_certs,
     )
     .await?;
     let upserts: Vec<CalendarEventRow> = delta.upserts.iter().flat_map(raw_event_to_rows).collect();
@@ -5871,6 +6007,7 @@ async fn delete_message(
                     &nc_account.username,
                     &app_password,
                     &share_id_owned,
+                    &account.trusted_certs,
                 )
                 .await
             })
@@ -8628,6 +8765,7 @@ async fn nc_probe_settings_bundle(
         &account.username,
         &app_password,
         NIMBUS_SETTINGS_FILE,
+        &account.trusted_certs,
     )
     .await
     {
@@ -8662,6 +8800,7 @@ async fn nc_restore_settings_bundle(
         &account.username,
         &app_password,
         NIMBUS_SETTINGS_FILE,
+        &account.trusted_certs,
     )
     .await?;
     let json = String::from_utf8(bytes)
@@ -8703,6 +8842,7 @@ async fn push_settings_to_nc(
             &account.username,
             &app_password,
             dir,
+            &account.trusted_certs,
         )
         .await
         {
@@ -8722,6 +8862,7 @@ async fn push_settings_to_nc(
         NIMBUS_SETTINGS_FILE,
         json.into_bytes(),
         Some("application/json"),
+        &account.trusted_certs,
     )
     .await?;
     Ok(())

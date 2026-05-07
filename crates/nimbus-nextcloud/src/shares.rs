@@ -2,8 +2,8 @@
 //!
 //! # Why a separate module from `files`
 //!
-//! `files.rs` speaks **WebDAV** — a low-level resource protocol on
-//! `/remote.php/dav/...`. Sharing speaks **OCS** — a higher-level JSON
+//! `files.rs` speaks **WebDAV** â€” a low-level resource protocol on
+//! `/remote.php/dav/...`. Sharing speaks **OCS** â€” a higher-level JSON
 //! API on `/ocs/v2.php/apps/files_sharing/...`. Different endpoint,
 //! different content type, different response envelope. Keeping them
 //! apart means each module's auth/error/parsing pattern stays small
@@ -44,7 +44,7 @@
 //!
 //! # MVP scope
 //!
-//! For Phase 2 of issue #12 we create the simplest possible share —
+//! For Phase 2 of issue #12 we create the simplest possible share â€”
 //! read-only, no password, no expiry. Password / expiry / per-share
 //! permissions can each be added as form fields later without breaking
 //! the function signature; we'd just expand `ShareOptions` and pass it
@@ -53,18 +53,19 @@
 use serde::Deserialize;
 
 use nimbus_core::NimbusError;
+use nimbus_core::models::TrustedCert;
 
 use crate::client;
 
 /// Nextcloud share-type discriminator. We only ever create type 3
-/// (public link) here — user/group/team shares are a different feature
+/// (public link) here â€” user/group/team shares are a different feature
 /// and a different UI gesture.
 const SHARE_TYPE_PUBLIC_LINK: u8 = 3;
 
 /// Nextcloud's permission bitfield for shares:
 /// 1=read, 2=update, 4=create, 8=delete, 16=share.  The Tauri layer
 /// passes the chosen value straight through so the UI can mirror
-/// Nextcloud's own "View only / Allow editing / …" picker.
+/// Nextcloud's own "View only / Allow editing / â€¦" picker.
 pub const PERM_READ_ONLY: u8 = 1;
 
 /// What the caller gets back after creating a share.  The `id` is
@@ -79,11 +80,11 @@ pub struct PublicShare {
     pub url: String,
 }
 
-// ── Wire format ────────────────────────────────────────────────
+// â”€â”€ Wire format â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // We can't use a single `OcsEnvelope<ShareData>` like capabilities.rs
 // does, because on failure Nextcloud sends `"data": []` (an array, not
-// the expected object) — strict serde fails on the data field before
+// the expected object) â€” strict serde fails on the data field before
 // we ever get to inspect meta. So we deserialize meta first, then
 // conditionally pull data into the right shape.
 
@@ -104,7 +105,7 @@ struct OcsBodyRaw {
 /// `statuscode` is the OCS-level status (separate from HTTP status).
 /// On a successful share, `status == "ok"` and `statuscode == 200`.
 /// On a denied share (e.g. sharing disabled by admin) Nextcloud may
-/// still return HTTP 200 but `statuscode == 403` — so we have to
+/// still return HTTP 200 but `statuscode == 403` â€” so we have to
 /// inspect this even after a 2xx HTTP response.
 #[derive(Debug, Deserialize)]
 struct OcsMeta {
@@ -117,7 +118,7 @@ struct OcsMeta {
 #[derive(Debug, Deserialize)]
 struct ShareData {
     /// Nextcloud serializes the id as a string ("42") in modern
-    /// versions and as a number in some older releases — accept both
+    /// versions and as a number in some older releases â€” accept both
     /// via `serde_json::Value` and `to_string()` it.
     id: serde_json::Value,
     url: String,
@@ -129,12 +130,12 @@ struct ShareData {
 /// produces. Returns the public URL on success.
 ///
 /// # Errors
-/// - `NimbusError::Auth` — app password rejected (401).
-/// - `NimbusError::Nextcloud` — non-2xx HTTP, or OCS-level failure
+/// - `NimbusError::Auth` â€” app password rejected (401).
+/// - `NimbusError::Nextcloud` â€” non-2xx HTTP, or OCS-level failure
 ///   (e.g. sharing globally disabled, target not found, file not in
 ///   user's scope). The OCS message is included where available so
 ///   the UI can show something specific.
-/// - `NimbusError::Protocol` — JSON didn't match the expected shape.
+/// - `NimbusError::Protocol` â€” JSON didn't match the expected shape.
 pub async fn create_public_share(
     server_url: &str,
     username: &str,
@@ -143,6 +144,7 @@ pub async fn create_public_share(
     password: Option<&str>,
     label: Option<&str>,
     permissions: u8,
+    trusted_certs: &[TrustedCert],
 ) -> Result<PublicShare, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json");
@@ -154,8 +156,8 @@ pub async fn create_public_share(
         permissions
     );
 
-    let http = client::build()?;
-    // Build the form pairs dynamically — `password` and `label` are
+    let http = client::build(trusted_certs)?;
+    // Build the form pairs dynamically â€” `password` and `label` are
     // only added when the caller actually supplied them.  Passing an
     // empty `password=` makes Nextcloud reject the request with
     // "Password too short" on some configurations; an empty `label=`
@@ -201,7 +203,7 @@ pub async fn create_public_share(
     // Read the body up front (success or failure) so a 4xx still
     // surfaces Nextcloud's actual reason. Password-policy rejections
     // come back as HTTP 400 with an OCS envelope whose `meta.message`
-    // says e.g. "Password is too short" — pulling that into the
+    // says e.g. "Password is too short" â€” pulling that into the
     // error makes the bad-password case actionable instead of "share
     // returned HTTP 400".
     let body = resp
@@ -214,11 +216,11 @@ pub async fn create_public_share(
             .map(|m| friendly_share_error(&m))
             .unwrap_or_else(|| {
                 // Truncate so a verbose HTML error page doesn't blow
-                // up the toast — 240 chars is enough to expose the
+                // up the toast â€” 240 chars is enough to expose the
                 // gist.
                 let trimmed = body.trim();
                 if trimmed.len() > 240 {
-                    format!("{}…", &trimmed[..240])
+                    format!("{}â€¦", &trimmed[..240])
                 } else {
                     trimmed.to_string()
                 }
@@ -231,7 +233,7 @@ pub async fn create_public_share(
 
 /// Try to lift the human-readable `meta.message` out of an OCS
 /// response body. Returns `None` if the body isn't OCS-shaped JSON
-/// or doesn't carry a message — caller falls back to the raw body
+/// or doesn't carry a message â€” caller falls back to the raw body
 /// in that case.
 fn ocs_message(body: &str) -> Option<String> {
     let raw: OcsRaw = serde_json::from_str(body).ok()?;
@@ -243,7 +245,7 @@ fn ocs_message(body: &str) -> Option<String> {
 /// strings themselves are technically correct ("Password is among
 /// the 1,000,000 most common passwords", "Password needs to be at
 /// least 10 characters long.") but they read like server
-/// diagnostics — surface them as guidance instead. Anything we
+/// diagnostics â€” surface them as guidance instead. Anything we
 /// don't recognise falls through verbatim so we never hide the
 /// real reason.
 fn friendly_share_error(raw: &str) -> String {
@@ -260,7 +262,7 @@ fn friendly_share_error(raw: &str) -> String {
         return "Password is too short. Try a longer one.".to_string();
     }
 
-    // Common-password blocklist — the policy app rejects the top-N
+    // Common-password blocklist â€” the policy app rejects the top-N
     // breach list.
     if lower.contains("most common passwords") || lower.contains("commonly used password") {
         return "That password is on a public list of common passwords. Pick something less guessable.".to_string();
@@ -282,7 +284,7 @@ fn friendly_share_error(raw: &str) -> String {
         return "Password needs at least one lowercase letter.".to_string();
     }
 
-    // Fallback — keep the server's text but capitalise + add a final
+    // Fallback â€” keep the server's text but capitalise + add a final
     // period so it reads like a sentence rather than a log line.
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -316,7 +318,7 @@ fn parse_share_response(body: &str) -> Result<PublicShare, NimbusError> {
     let raw: OcsRaw = serde_json::from_str(body)
         .map_err(|e| NimbusError::Protocol(format!("share bad JSON: {e}")))?;
 
-    // OCS-level failure even though HTTP was 2xx — surface the server's
+    // OCS-level failure even though HTTP was 2xx â€” surface the server's
     // message so the user sees "Sharing is disabled" rather than a
     // generic error. Check meta first; on failure `data` is an empty
     // array and would never deserialize into ShareData.
@@ -371,6 +373,7 @@ pub async fn update_share_label(
     app_password: &str,
     share_id: &str,
     label: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<(), NimbusError> {
     if share_id.is_empty() {
         return Err(NimbusError::Other("share_id is empty".into()));
@@ -381,7 +384,7 @@ pub async fn update_share_label(
 
     tracing::debug!("PUT {url} for share {share_id} (label len {})", label.len());
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .put(&url)
         .header("OCS-APIRequest", "true")
@@ -428,7 +431,7 @@ pub async fn update_share_label(
 /// Delete an existing public share by id (#193).
 ///
 /// Used by the Compose flow when the user cancels a draft after
-/// having minted share links via the Nextcloud file picker —
+/// having minted share links via the Nextcloud file picker â€”
 /// otherwise those shares dangle in the user's "Shared with
 /// others" list with no associated mail.
 ///
@@ -439,7 +442,7 @@ pub async fn update_share_label(
 /// ```
 ///
 /// The OCS DELETE returns 200 + `meta.statuscode = 200` on
-/// success.  A `meta.statuscode = 404` (share already gone — race
+/// success.  A `meta.statuscode = 404` (share already gone â€” race
 /// with another deleter, manual cleanup, etc.) is treated as a
 /// non-error: the caller wanted the share gone and it is.
 pub async fn delete_share(
@@ -447,6 +450,7 @@ pub async fn delete_share(
     username: &str,
     app_password: &str,
     share_id: &str,
+    trusted_certs: &[TrustedCert],
 ) -> Result<(), NimbusError> {
     if share_id.is_empty() {
         return Err(NimbusError::Other("share_id is empty".into()));
@@ -457,7 +461,7 @@ pub async fn delete_share(
 
     tracing::debug!("DELETE {url} for share {share_id}");
 
-    let http = client::build()?;
+    let http = client::build(trusted_certs)?;
     let resp = http
         .delete(&url)
         .header("OCS-APIRequest", "true")
@@ -500,7 +504,7 @@ pub async fn delete_share(
     Ok(())
 }
 
-// ── Tests ──────────────────────────────────────────────────────
+// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod tests {
@@ -545,7 +549,7 @@ mod tests {
         assert_eq!(share.id, "99");
     }
 
-    /// Sharing globally disabled — Nextcloud returns HTTP 200 but
+    /// Sharing globally disabled â€” Nextcloud returns HTTP 200 but
     /// `statuscode: 403`. We must surface that as a Nextcloud error so
     /// the user sees something actionable.
     #[test]
@@ -570,7 +574,7 @@ mod tests {
         }
     }
 
-    /// Malformed JSON — should land in Protocol, not Network/Nextcloud.
+    /// Malformed JSON â€” should land in Protocol, not Network/Nextcloud.
     #[test]
     fn surfaces_bad_json_as_protocol_error() {
         let err = parse_share_response("not json at all").unwrap_err();
