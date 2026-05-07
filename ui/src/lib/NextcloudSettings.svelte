@@ -17,7 +17,7 @@
   import { formatError } from './errors'
   import SyncStatusRow from './SyncStatusRow.svelte'
   import Toggle from './Toggle.svelte'
-  import { getSyncState, ncProbeBundle, ncRestoreBundle, setSyncTarget } from './settingsBundle'
+  import { ncProbeBundle, ncRestoreBundle } from './settingsBundle'
 
   // ── Types (mirror the Rust models) ──────────────────────────
   interface NextcloudCapabilities {
@@ -122,28 +122,6 @@
   let calendarsList = $state<Record<string, CalendarSummary[]>>({})
 
   // ── Settings backup target (#168) ──────────────────────────
-  // Mirrors the dropdown on the Backup & Sync settings page —
-  // exposed here as a per-row toggle because users naturally
-  // look "next to the NC account" when configuring per-account
-  // behaviour.  Mutually exclusive: turning it on for one row
-  // turns off any other row that was previously the target.
-  let settingsSyncTargetId = $state<string | null>(null)
-  async function loadSettingsSyncTarget() {
-    try {
-      const s = await getSyncState()
-      settingsSyncTargetId = s.targetNcId
-    } catch (e) {
-      console.warn('getSyncState failed', e)
-    }
-  }
-  async function onSettingsSyncToggle(ncId: string, on: boolean) {
-    try {
-      await setSyncTarget(on ? ncId : null)
-      settingsSyncTargetId = on ? ncId : null
-    } catch (e) {
-      console.warn('setSyncTarget failed', e)
-    }
-  }
 
   async function loadCalendarsList(ncId: string) {
     try {
@@ -190,7 +168,6 @@
 
   $effect(() => {
     loadAccounts()
-    loadSettingsSyncTarget()
     // Cleanup: cancel any in-flight polling if the component unmounts.
     return () => stopPolling()
   })
@@ -603,23 +580,6 @@
               >
                 Disconnect
               </button>
-            </div>
-
-            <!-- #168 — designate this NC as the destination for
-                 Nimbus settings backups.  Mutually exclusive
-                 across all NC rows; flipping a different row
-                 silently clears this one's toggle next time the
-                 panel reloads. -->
-            <div class="flex items-center gap-3 pt-1">
-              <Toggle
-                checked={settingsSyncTargetId === acct.id}
-                label="Save Nimbus settings to this Nextcloud"
-                onchange={(v) => void onSettingsSyncToggle(acct.id, v)}
-              />
-              <span class="text-xs text-surface-500">
-                Save Nimbus settings here
-                <span class="text-[10px] text-surface-400">— recovery copy at /Nimbus Mail/settings/</span>
-              </span>
             </div>
 
             <!-- Contacts sync row -->
