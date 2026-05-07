@@ -42,6 +42,26 @@
     username: string
     display_name?: string | null
     capabilities?: NextcloudCapabilities | null
+    /** User-trusted self-signed cert fingerprints (#253).
+     *  Mirrors the Rust `NextcloudAccount::trusted_certs`. */
+    trusted_certs?: TrustedCert[]
+  }
+  /** Mirror of the Rust `TrustedCert` shape — the same struct
+   *  is used by IMAP/SMTP and now Nextcloud HTTPS. */
+  interface TrustedCert {
+    der: number[]
+    sha256: string
+    host: string
+    added_at: number
+  }
+  /** Mirror of `ProbedCert` from the Rust side. */
+  interface ProbedCertEntry {
+    der: number[]
+    sha256: string
+  }
+  interface ProbedCert {
+    chain: ProbedCertEntry[]
+    host: string
   }
   interface LoginFlowInit {
     login_url: string
@@ -157,6 +177,16 @@
   let serverInput = $state('')
   let connecting = $state(false)      // true while a login is in flight
   let pollTimer: number | null = null // setInterval handle, so we can cancel
+
+  // Self-signed cert support (#253).  Mirrors AccountSetup.svelte's
+  // shape: a TLS error during `start_nextcloud_login` triggers
+  // `probe_server_certificate`, the user reviews fingerprints in
+  // a prompt, and on confirm the chain lands in `trustedCerts` and
+  // we re-run the connect.  The same trust list rides through every
+  // subsequent OCS / CalDAV / CardDAV / Notes / Talk / Files call
+  // because it's saved into the persisted account record.
+  let trustedCerts = $state<TrustedCert[]>([])
+  let pendingCert = $state<ProbedCert | null>(null)
 
   $effect(() => {
     loadAccounts()
@@ -292,6 +322,77 @@
     }
   }
 
+  /** Heuristic: does `msg` look like a TLS-trust failure?  Same
+   *  fingerprint-style match `AccountSetup.svelte` uses for IMAP. */
+  function looksLikeCertError(msg: string): boolean {
+    const m = msg.toLowerCase()
+    return (
+      m.includes('certificate') ||
+      m.includes('cert ') ||
+      m.includes('unknownissuer') ||
+      m.includes('untrustedissuer') ||
+      m.includes('badcertificate') ||
+      m.includes('tls handshake') ||
+      m.includes('invalid peer certificate')
+    )
+  }
+
+  /** Pull host (and explicit port if any) out of a server URL so
+   *  we can hand it to `probe_server_certificate`.  Defaults to
+   *  443 — the only port Nextcloud realistically serves on. */
+  function hostPortFromUrl(url: string): { host: string; port: number } | null {
+    try {
+      const u = new URL(url)
+      return {
+        host: u.hostname,
+        port: u.port ? Number.parseInt(u.port, 10) : 443,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  async function handleNcCertError() {
+    pendingCert = null
+    const url = serverInput.trim()
+    const normalised = /^https?:\/\//.test(url) ? url : `https://${url}`
+    const target = hostPortFromUrl(normalised)
+    if (!target) {
+      error = 'Could not parse the server URL.'
+      return
+    }
+    try {
+      const probed = await invoke<ProbedCert>('probe_server_certificate', {
+        host: target.host,
+        port: target.port,
+      })
+      pendingCert = probed
+    } catch (e: any) {
+      error = `Could not retrieve the server certificate: ${formatError(e) || 'unknown error'}`
+    }
+  }
+
+  function trustPendingNcCert() {
+    if (!pendingCert) return
+    const addedAt = Math.floor(Date.now() / 1000)
+    const host = pendingCert.host
+    const additions: TrustedCert[] = pendingCert.chain.map((entry) => ({
+      der: entry.der,
+      sha256: entry.sha256,
+      host,
+      added_at: addedAt,
+    }))
+    trustedCerts = [...trustedCerts, ...additions]
+    pendingCert = null
+    // Retry the connect now that the chain is trusted.  Same idiom
+    // AccountSetup uses after `trustPendingCert`.
+    void startConnect()
+  }
+
+  function dismissPendingNcCert() {
+    pendingCert = null
+  }
+
   async function startConnect() {
     error = ''
     const url = serverInput.trim()
@@ -307,6 +408,10 @@
     try {
       const init = await invoke<LoginFlowInit>('start_nextcloud_login', {
         serverUrl: normalised,
+        // Pass the wizard-time trust list so a self-signed server
+        // gets a clean handshake on the second attempt after the
+        // user trusted the cert via the prompt.
+        trustedCerts: trustedCerts.length > 0 ? trustedCerts : null,
       })
       // Fire-and-forget the browser open — if it fails the user can copy
       // the URL manually from a fallback we'll show below.
@@ -318,7 +423,15 @@
       pendingLoginUrl = init.login_url
       beginPolling(init)
     } catch (e) {
-      error = formatError(e) || 'Failed to start Nextcloud login'
+      const msg = formatError(e) || 'Failed to start Nextcloud login'
+      // TLS trust failure → kick off the probe + cert prompt.
+      // Anything else falls through as a regular error toast.
+      if (looksLikeCertError(msg)) {
+        connecting = false
+        await handleNcCertError()
+        return
+      }
+      error = msg
       connecting = false
     }
   }
@@ -343,6 +456,10 @@
         const result = await invoke<NextcloudAccount | null>('poll_nextcloud_login', {
           pollEndpoint: init.poll_endpoint,
           pollToken: init.poll_token,
+          // Same trust list rides the polling call so the
+          // post-success `fetch_capabilities` probe and the
+          // saved account record both pick it up (#253).
+          trustedCerts: trustedCerts.length > 0 ? trustedCerts : null,
         })
         if (result) {
           stopPolling()
@@ -590,6 +707,65 @@
             Connect
           </button>
         </div>
+
+        <!-- Self-signed cert trust prompt (#253).  Same shape as
+             AccountSetup's IMAP-side prompt: full chain SHA-256
+             fingerprints, "Trust this server" / "Cancel" CTA. -->
+        {#if pendingCert}
+          <div class="mt-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
+            <p class="text-sm font-medium mb-1">
+              The server's TLS certificate isn't trusted by default.
+            </p>
+            <p class="text-xs text-surface-500 mb-3">
+              This is normal for self-hosted Nextcloud servers using a
+              self-signed certificate.  Compare the fingerprint below
+              with the certificate on your server before trusting.
+            </p>
+            <p class="text-xs mb-1">
+              <span class="text-surface-500">Host:</span>
+              <span class="font-mono">{pendingCert.host}</span>
+            </p>
+            <div class="text-xs mb-3">
+              <p class="text-surface-500 mb-1">
+                {#if pendingCert.chain.length === 1}
+                  SHA-256 fingerprint (leaf):
+                {:else}
+                  SHA-256 fingerprints (leaf + {pendingCert.chain.length - 1} intermediate):
+                {/if}
+              </p>
+              <ul class="space-y-1">
+                {#each pendingCert.chain as entry, i (entry.sha256)}
+                  <li class="font-mono break-all">
+                    <span class="text-surface-500">{i === 0 ? 'leaf:' : `int${i}:`}</span>
+                    {entry.sha256}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="btn btn-sm preset-filled-primary-500"
+                onclick={trustPendingNcCert}
+              >Trust this server and continue</button>
+              <button
+                type="button"
+                class="btn btn-sm preset-outlined-surface-500"
+                onclick={dismissPendingNcCert}
+              >Cancel</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if trustedCerts.length > 0 && !pendingCert}
+          <div class="mt-3 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400">
+            {#if trustedCerts.length === 1}
+              Trusting 1 self-signed certificate for this connection.
+            {:else}
+              Trusting {trustedCerts.length} self-signed certificates for this connection.
+            {/if}
+          </div>
+        {/if}
       </div>
     {:else}
       <!-- Waiting for browser auth -->
