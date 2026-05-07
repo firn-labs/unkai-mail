@@ -26,6 +26,7 @@
   import { formatError } from './errors'
   import Toggle from './Toggle.svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import RichTextEditor from './RichTextEditor.svelte'
   import { m } from '../paraglide/messages'
 
   // ── Props ───────────────────────────────────────────────────
@@ -586,12 +587,18 @@
 
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_signature_label()}</span>
-            <textarea
-              bind:value={signature}
-              rows="4"
-              placeholder={`Jane Doe\nProduct Manager · Example Corp\n+1 555 0100`}
-              class="input w-full mt-1 px-3 py-2 rounded-md font-mono text-sm"
-            ></textarea>
+            <!-- #248 — rich-text signature editor.  HTML output rides
+                 through unchanged via `Account.signature`; Compose's
+                 `signatureBlock` detects the HTML shape and passes it
+                 through verbatim (legacy plain-text signatures still
+                 work via the same code path). -->
+            <div class="signature-editor-shell mt-1">
+              <RichTextEditor
+                content={signature}
+                placeholder={`Jane Doe\nProduct Manager · Example Corp\n+1 555 0100`}
+                onchange={(html) => (signature = html)}
+              />
+            </div>
             <span class="block text-xs text-surface-500 mt-1">
               {m.account_setup_signature_hint()}
             </span>
@@ -702,3 +709,21 @@
     </div>
   </div>
 </div>
+
+<style>
+  /* #248 — fixed-height shell so the embedded `RichTextEditor`
+     has bounded vertical room (its scroller is `flex-1 min-h-0`).
+     Same shape as the signature shell in AccountSettings. */
+  :global(.signature-editor-shell) {
+    height: 16rem;
+    min-height: 16rem;
+    border: 1px solid var(--color-surface-300);
+    border-radius: 0.375rem;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  :global([data-mode='dark'] .signature-editor-shell) {
+    border-color: var(--color-surface-700);
+  }
+</style>
