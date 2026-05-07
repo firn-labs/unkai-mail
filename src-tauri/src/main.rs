@@ -485,11 +485,19 @@ async fn test_connection(
 /// Begin Login Flow v2 — returns the URL to open in the browser plus a
 /// polling handle the UI should use to drive `poll_nextcloud_login`.
 #[tauri::command]
-async fn start_nextcloud_login(server_url: String) -> Result<LoginFlowInit, NimbusError> {
-    // Login Flow v2 runs *before* an account exists locally, so we
-    // can't consult a per-account trust list yet.  An empty slice
-    // means standard webpki verification (#253).
-    start_login(&server_url, &[]).await
+async fn start_nextcloud_login(
+    server_url: String,
+    trusted_certs: Option<Vec<nimbus_core::models::TrustedCert>>,
+) -> Result<LoginFlowInit, NimbusError> {
+    // Login Flow v2 runs before an account exists locally, so the
+    // trust list comes from the in-flight setup wizard (#253) rather
+    // than the persisted account record.  Frontend default is an
+    // empty list; if the first attempt fails with a TLS error the
+    // setup wizard pops a cert-probe prompt, the user confirms, and
+    // the wizard re-issues `start_nextcloud_login` with the now-
+    // populated list.  An empty list = standard webpki verification.
+    let certs = trusted_certs.unwrap_or_default();
+    start_login(&server_url, &certs).await
 }
 
 /// Poll once for Login Flow v2 completion.
@@ -504,12 +512,17 @@ async fn start_nextcloud_login(server_url: String) -> Result<LoginFlowInit, Nimb
 async fn poll_nextcloud_login(
     poll_endpoint: String,
     poll_token: String,
+    trusted_certs: Option<Vec<nimbus_core::models::TrustedCert>>,
 ) -> Result<Option<NextcloudAccount>, NimbusError> {
+    // Use the wizard-supplied trust list (#253) for both the polling
+    // call and the post-login capabilities probe.  Saved into the
+    // account record so every subsequent sync uses the same trust.
+    let trust_setup = trusted_certs.unwrap_or_default();
     let Some(LoginFlowResult {
         server,
         login_name,
         app_password,
-    }) = poll_login(&poll_endpoint, &poll_token, &[]).await?
+    }) = poll_login(&poll_endpoint, &poll_token, &trust_setup).await?
     else {
         return Ok(None);
     };
@@ -527,13 +540,14 @@ async fn poll_nextcloud_login(
     // Best-effort capability snapshot. A working login with a broken
     // capabilities endpoint shouldn't block saving the account — we
     // can always refetch later.
-    let capabilities = match fetch_capabilities(&server, &login_name, &app_password, &[]).await {
-        Ok(c) => Some(c),
-        Err(e) => {
-            tracing::warn!("capabilities fetch failed, saving without: {e}");
-            None
-        }
-    };
+    let capabilities =
+        match fetch_capabilities(&server, &login_name, &app_password, &trust_setup).await {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!("capabilities fetch failed, saving without: {e}");
+                None
+            }
+        };
 
     let account = NextcloudAccount {
         id,
@@ -541,9 +555,10 @@ async fn poll_nextcloud_login(
         username: login_name,
         display_name: None,
         capabilities,
-        // Empty by default; populated when the user trusts a self-
-        // signed cert via the cert-probe prompt (#253).
-        trusted_certs: Vec::new(),
+        // Persist the wizard-time trust list so every subsequent
+        // sync hits the server with the same fingerprint pinning.
+        // Empty by default for the public-CA case (#253).
+        trusted_certs: trust_setup,
     };
     nextcloud_store::upsert_account(global_cache()?, account.clone())?;
     Ok(Some(account))
@@ -621,6 +636,30 @@ async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, Nimbu
 /// Does **not** attempt to revoke the app password on the server —
 /// that would require the password itself and we want removal to be
 /// local-only, fast, and offline-safe. Users who want to fully revoke
+/// Replace the per-account TLS trust list (#253).
+///
+/// Used by the AccountSettings panel's "Trusted certificates" section
+/// + the Nextcloud setup wizard's cert-probe prompt: when a TLS
+/// handshake fails because the server is using a self-signed cert,
+/// the UI calls `probe_server_certificate` to capture the chain, asks
+/// the user, and on confirm ships the new fingerprints back through
+/// here.  Subsequent OCS / CalDAV / CardDAV / Notes / Talk / Files
+/// requests pick the new list up automatically — every protocol-crate
+/// API rebuilds its `reqwest::Client` per call from the account's
+/// `trusted_certs`.
+#[tauri::command]
+fn update_nextcloud_account_trusted_certs(
+    nc_id: String,
+    trusted_certs: Vec<nimbus_core::models::TrustedCert>,
+    cache: State<'_, Cache>,
+) -> Result<NextcloudAccount, NimbusError> {
+    let mut account = load_nextcloud_account(&nc_id)?;
+    account.trusted_certs = trusted_certs;
+    nextcloud_store::upsert_account(&cache, account.clone())?;
+    Ok(account)
+}
+
+/// Forget a saved Nextcloud connection. The keychain entry goes too so the user
 /// can delete the app password from their NC security settings.
 ///
 /// Also drops cached contacts, calendars, and their DAV sync state for
@@ -10000,6 +10039,7 @@ fn main() {
             refresh_nextcloud_capabilities,
             get_nextcloud_user_email,
             remove_nextcloud_account,
+            update_nextcloud_account_trusted_certs,
             open_url,
             list_nextcloud_files,
             download_nextcloud_file,
