@@ -643,16 +643,31 @@
   })
 
   /** Render a per-account signature as the standard `-- ` separator
-      followed by the user's lines. Returns `''` when there's no
-      signature configured so callers can append unconditionally. */
+      followed by the user's body. Returns `''` when there's no
+      signature configured so callers can append unconditionally.
+
+      Two storage shapes are supported (#248):
+      - **HTML** — produced by the rich-text signature editor in
+        AccountSettings.  Passes through verbatim with the
+        separator on its own line so the recipient's mail client
+        can collapse the trailing block as a quoted reply.
+      - **Plain text** — the legacy shape from before #248.  We
+        HTML-escape, convert newlines to `<br>`, and prepend the
+        separator.  Detection is a generic `<[a-z]…>` check;
+        any tag-shaped substring picks the HTML branch. */
   function signatureBlock(sig: string | null | undefined): string {
     const text = (sig ?? '').trim()
     if (!text) return ''
+    const looksLikeHtml = /<[a-z][\s\S]*>/i.test(text)
+    if (looksLikeHtml) {
+      // RFC 3676 separator on its own paragraph above the rich
+      // body so it still survives the standard reply-quote
+      // collapse rules.
+      return `<p>-- </p>${text}`
+    }
     const esc = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const lines = text.split('\n').map(esc).join('<br>')
-    // The "-- " (with trailing space) prefix is the RFC 3676 signature
-    // delimiter — well-behaved mail clients hide it from quoted replies.
     return `<p>-- <br>${lines}</p>`
   }
   // svelte-ignore state_referenced_locally

@@ -280,9 +280,19 @@ pub struct Account {
     /// during account setup if the server supports `.well-known/jmap`.
     #[serde(default)]
     pub jmap_url: Option<String>,
-    /// Optional plain-text signature appended below new messages
-    /// composed from this account. Empty/None = no signature. The
-    /// frontend renders the standard `-- ` separator before it.
+    /// Signature appended below new messages composed from this
+    /// account.  Empty/None = no signature.  The frontend renders
+    /// the standard RFC 3676 `-- ` separator before it.
+    ///
+    /// As of #248 this is rich HTML produced by the Tiptap editor in
+    /// AccountSettings — bold / italic / lists / links / inline
+    /// images all round-trip end-to-end.  Legacy plain-text
+    /// signatures saved before #248 still work: Compose's
+    /// `signatureBlock` detects whether the value contains HTML tags
+    /// and either passes it through verbatim or runs the historical
+    /// escape-and-`<br>` path.  No migration is needed; users who
+    /// open the settings panel after the upgrade and save will end
+    /// up with an HTML signature for free.
     #[serde(default)]
     pub signature: Option<String>,
     /// User-defined "folder name contains X → use icon Y" rules.

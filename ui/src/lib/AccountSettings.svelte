@@ -14,6 +14,7 @@
   import SecuritySettings from './SecuritySettings.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import RichTextEditor from './RichTextEditor.svelte'
   import Toggle from './Toggle.svelte'
   import {
     STOCK_THEMES,
@@ -1842,14 +1843,22 @@
                   <span class="text-xs text-error-500">Save failed</span>
                 {/if}
               </div>
-              <textarea
-                id="sig-{account.id}"
-                rows="4"
-                value={account.signature ?? ''}
-                oninput={(e) => onSignatureChange(account, (e.currentTarget as HTMLTextAreaElement).value)}
-                placeholder="Appended to new messages sent from this account."
-                class="input w-full px-3 py-2 rounded-md font-mono text-sm"
-              ></textarea>
+              <!-- #248 — rich-text signature.  Same Tiptap editor
+                   the Compose flow uses, just instantiated in a
+                   fixed-height container so it sits cleanly inside
+                   the settings panel.  The user can author with
+                   bold / italic / lists / images / colours; the
+                   HTML output rides through `update_account` →
+                   `Account.signature` and Compose's `signatureBlock`
+                   passes it through verbatim with the RFC 3676
+                   `-- ` separator above. -->
+              <div class="signature-editor-shell">
+                <RichTextEditor
+                  content={account.signature ?? ''}
+                  placeholder="Appended to new messages sent from this account."
+                  onchange={(html) => onSignatureChange(account, html)}
+                />
+              </div>
             </div>
 
             <!-- Folder icon rules (Issue #63). Match a folder name
@@ -2298,3 +2307,22 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* #248 — fixed-height shell for the signature `RichTextEditor`.
+     Tiptap's editor expects a parent with bounded height (its
+     scroller is `flex-1 min-h-0`); without one the toolbar would
+     stack on top of an unbounded body. */
+  :global(.signature-editor-shell) {
+    height: 18rem;
+    min-height: 18rem;
+    border: 1px solid var(--color-surface-300);
+    border-radius: 0.375rem;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  :global([data-mode='dark'] .signature-editor-shell) {
+    border-color: var(--color-surface-700);
+  }
+</style>
