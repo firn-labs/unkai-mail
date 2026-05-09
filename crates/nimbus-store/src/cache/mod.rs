@@ -768,6 +768,35 @@ impl Cache {
         Ok(uids)
     }
 
+    /// Newest `limit` cached envelope UIDs for a folder, sorted by
+    /// `internal_date DESC` — the same ordering the mail list
+    /// renders.  Used by the flag-refresh path (#255 follow-up) to
+    /// catch up on cross-client `\Seen` / `\Flagged` / `\Answered`
+    /// changes on the visible window without re-pulling the whole
+    /// folder's flag set.
+    pub fn list_recent_envelope_uids(
+        &self,
+        account_id: &str,
+        folder: &str,
+        limit: u32,
+    ) -> Result<Vec<u32>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT uid FROM messages
+             WHERE account_id = ?1 AND folder = ?2
+             ORDER BY internal_date DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
+            r.get::<_, i64>(0)
+        })?;
+        let mut uids = Vec::new();
+        for row in rows {
+            uids.push(row? as u32);
+        }
+        Ok(uids)
+    }
+
     /// Mark a cached envelope as having an in-flight optimistic
     /// action so envelope-list queries hide it instantly (#174).
     /// `action` is a free-form string — `"delete"` for delete /
@@ -915,6 +944,106 @@ impl Cache {
 
         tx.commit()?;
         Ok(())
+    }
+
+    /// Reconcile the cached `is_read` / `is_starred` / `is_answered`
+    /// flags for a batch of envelope rows against fresh server-side
+    /// values (#255 follow-up).
+    ///
+    /// The standard envelope-fetch path is incremental — it never
+    /// re-reads flags on UIDs older than the bookmark.  Without
+    /// this catch-up, marks made from another mail client (read on
+    /// a phone, answered from webmail, starred elsewhere) never
+    /// round-trip into the local cache, and Nimbus's mail list
+    /// drifts out of sync with reality.
+    ///
+    /// `replied_kind` is intentionally not touched — it's
+    /// Nimbus-only metadata about *how* the user replied via
+    /// Compose, and the IMAP `\Answered` bit doesn't carry the
+    /// kind, so leave whatever the send path stamped earlier.
+    /// The `unread_count` on the folder is kept in sync by
+    /// crediting / debiting per-row read-state flips inside the
+    /// same transaction.
+    ///
+    /// Each tuple is `(uid, is_read, is_starred, is_answered)`.
+    /// UIDs that don't exist in the cache are silently skipped —
+    /// they got expunged between fetch and reconcile, and the
+    /// envelope-fetch path will sweep them out on its own
+    /// reconcile pass.
+    pub fn reconcile_envelope_flags(
+        &self,
+        account_id: &str,
+        folder: &str,
+        snapshots: &[(u32, bool, bool, bool)],
+    ) -> Result<u32, CacheError> {
+        if snapshots.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+
+        let mut unread_delta: i64 = 0;
+        let mut changed: u32 = 0;
+        for (uid, is_read, is_starred, is_answered) in snapshots {
+            // Fetch current flags so we know whether to bump the
+            // folder's unread badge.  `query_row` returns
+            // `QueryReturnedNoRows` when the UID isn't cached —
+            // skip those.
+            let prior: Option<(bool, bool, bool)> = tx
+                .query_row(
+                    "SELECT is_read, is_starred, is_answered FROM messages
+                     WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                    params![account_id, folder, *uid as i64],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)? != 0,
+                            r.get::<_, i64>(1)? != 0,
+                            r.get::<_, i64>(2)? != 0,
+                        ))
+                    },
+                )
+                .ok();
+            let Some((was_read, was_starred, was_answered)) = prior else {
+                continue;
+            };
+            if was_read == *is_read && was_starred == *is_starred && was_answered == *is_answered {
+                continue;
+            }
+
+            tx.execute(
+                "UPDATE messages
+                 SET is_read = ?4, is_starred = ?5, is_answered = ?6
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![
+                    account_id,
+                    folder,
+                    *uid as i64,
+                    *is_read as i64,
+                    *is_starred as i64,
+                    *is_answered as i64,
+                ],
+            )?;
+            changed += 1;
+
+            // Bump the unread accumulator: if the flag flipped
+            // unread → read, the folder count drops by one; if it
+            // flipped read → unread, it goes up by one.
+            if was_read != *is_read {
+                unread_delta += if *is_read { -1 } else { 1 };
+            }
+        }
+
+        if unread_delta != 0 {
+            tx.execute(
+                "UPDATE folders
+                 SET unread_count = MAX(COALESCE(unread_count, 0) + ?3, 0)
+                 WHERE account_id = ?1 AND name = ?2",
+                params![account_id, folder, unread_delta],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// Stamp a cached envelope as answered (#255).  Sets both
