@@ -84,13 +84,6 @@
      *  or edited away) and the right pane should drop back to
      *  its empty state. */
     onselect?: (row: OutboxRowDto | null) => void
-    /** Re-open this queued message in Compose for editing.
-     *  App.svelte deserialises the embedded `OutgoingEmail`
-     *  and opens a fresh Compose modal with `outboxSource: {
-     *  id }` set so a successful send replaces the queued
-     *  copy.  Cancelling Compose leaves the original row in
-     *  the queue. */
-    onedit: (row: OutboxRowDto) => void
   }
   let {
     accountId,
@@ -99,13 +92,11 @@
     refreshToken = 0,
     selectedId = null,
     onselect,
-    onedit,
   }: Props = $props()
 
   let rows = $state<OutboxRowDto[]>([])
   let loading = $state(true)
   let error = $state('')
-  let busyId = $state<number | null>(null)
   let unlistenOutbox: UnlistenFn | null = null
 
   async function load() {
@@ -164,45 +155,6 @@
       unlistenOutbox = null
     }
   })
-
-  async function retryRow(row: OutboxRowDto) {
-    if (busyId !== null) return
-    busyId = row.id
-    try {
-      await invoke('retry_outbox_entry', { id: row.id })
-    } catch (e) {
-      error = `${e}`
-    } finally {
-      busyId = null
-    }
-  }
-
-  async function deleteRow(row: OutboxRowDto) {
-    // Cheap confirmation dialog — Outbox deletion drops the
-    // user's mail before SMTP, so a misclick is destructive.
-    const subject = row.subject || m.outbox_no_subject()
-    if (!confirm(m.outbox_confirm_discard({ subject }))) {
-      return
-    }
-    if (busyId !== null) return
-    busyId = row.id
-    try {
-      await invoke('delete_outbox_entry', { id: row.id })
-    } catch (e) {
-      error = `${e}`
-    } finally {
-      busyId = null
-    }
-  }
-
-  function editRow(row: OutboxRowDto) {
-    // The actual `edit_outbox_entry` invoke happens in App.svelte
-    // so it can both remove the row AND re-open Compose with the
-    // returned payload as one atomic gesture.  Passing the row
-    // (with its id) is enough — App.svelte uses the id to call
-    // the backend.
-    onedit(row)
-  }
 
   function formatQueuedAt(ts: number): string {
     const ms = ts * 1000
@@ -266,10 +218,12 @@
           role="button"
           tabindex="0"
           aria-pressed={selectedId === row.id}
-          class="border-b border-surface-100 dark:border-surface-800 px-4 py-3 group cursor-pointer transition-colors
+          class="px-4 py-3 group cursor-pointer transition-colors
+            border-b border-l-[3px] border-surface-100 dark:border-surface-800
+            {row.lastError ? 'border-l-error-500' : 'border-l-transparent'}
             {selectedId === row.id
               ? 'bg-primary-500/10'
-              : 'hover:bg-surface-50 dark:hover:bg-surface-900/40'}"
+              : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
           onclick={() => onselect?.(row)}
           onkeydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
@@ -295,55 +249,13 @@
             </div>
           {/if}
           {#if row.lastError}
-            <div class="mt-2 text-xs text-error-500 wrap-break-word">
+            <!-- Show only the lead of the error inline so the row
+                 stays compact; the full text + retry / edit /
+                 delete actions live in the OutboxView preview. -->
+            <div class="mt-2 text-xs text-error-500 truncate">
               <span class="font-medium">{m.outbox_label_last_error()}</span> {row.lastError}
-              {#if row.attemptCount > 0}
-                <span class="text-surface-500"> · {row.attemptCount === 1
-                  ? m.outbox_label_attempts_singular()
-                  : m.outbox_label_attempts({ count: row.attemptCount })}</span>
-              {/if}
             </div>
           {/if}
-          <div class="mt-2 flex items-center gap-1.5">
-            <button
-              type="button"
-              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
-              disabled={busyId === row.id}
-              onclick={(e) => {
-                e.stopPropagation()
-                void retryRow(row)
-              }}
-              title={m.outbox_button_retry_title()}
-            >
-              <Icon name={busyId === row.id ? 'loading' : 'sync'} size={14} />
-              {m.outbox_button_retry()}
-            </button>
-            <button
-              type="button"
-              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
-              onclick={(e) => {
-                e.stopPropagation()
-                editRow(row)
-              }}
-              title={m.outbox_button_edit_title()}
-            >
-              <Icon name="compose" size={14} />
-              {m.outbox_button_edit()}
-            </button>
-            <button
-              type="button"
-              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5 hover:bg-red-500/15 hover:text-red-500"
-              disabled={busyId === row.id}
-              onclick={(e) => {
-                e.stopPropagation()
-                void deleteRow(row)
-              }}
-              title={m.outbox_button_delete_title()}
-            >
-              <Icon name="trash" size={14} />
-              {m.outbox_button_delete()}
-            </button>
-          </div>
         </div>
       {/each}
     {/if}

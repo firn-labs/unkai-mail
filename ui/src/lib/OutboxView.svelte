@@ -19,6 +19,7 @@
    * keep a malformed local DB from injecting script.
    */
 
+  import { invoke } from '@tauri-apps/api/core'
   import DOMPurify from 'dompurify'
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
@@ -26,8 +27,56 @@
 
   interface Props {
     row: OutboxRowDto
+    /** Re-open this queued message in Compose for editing.  Same
+     *  callback shape OutboxList used to forward; App.svelte
+     *  deserialises the row's `OutgoingEmail`, opens Compose
+     *  with `outboxSource: { id }` set so a successful send
+     *  replaces the queued copy. */
+    onedit: (row: OutboxRowDto) => void
   }
-  let { row }: Props = $props()
+  let { row, onedit }: Props = $props()
+
+  /** True while a retry / delete invoke is in flight against
+   *  this row.  Disables both buttons so a user with a slow
+   *  network can't kick off a flurry of duplicate retries.  */
+  let busy = $state(false)
+  let actionError = $state('')
+
+  async function retry() {
+    if (busy) return
+    busy = true
+    actionError = ''
+    try {
+      await invoke('retry_outbox_entry', { id: row.id })
+    } catch (e) {
+      actionError = `${e}`
+    } finally {
+      busy = false
+    }
+  }
+
+  async function discard() {
+    // Cheap confirm — Outbox deletion drops the user's mail
+    // before SMTP, so a misclick is destructive.
+    const subject = row.subject || m.outbox_no_subject()
+    if (!confirm(m.outbox_confirm_discard({ subject }))) {
+      return
+    }
+    if (busy) return
+    busy = true
+    actionError = ''
+    try {
+      await invoke('delete_outbox_entry', { id: row.id })
+    } catch (e) {
+      actionError = `${e}`
+    } finally {
+      busy = false
+    }
+  }
+
+  function edit() {
+    onedit(row)
+  }
 
   /** Parsed `OutgoingEmail` (the JSON-serialised one stored in
    *  the outbox table).  We re-deserialise on every row change
@@ -125,6 +174,51 @@
             <span class="font-medium">{m.outbox_label_last_error()}</span>
             {row.lastError}
           </div>
+        </div>
+      {/if}
+
+      <!-- Action cluster sits under the error block so the user
+           reads "this couldn't send because X — here's what you
+           can do about it" as one connected thought.  When the
+           row hasn't failed yet (`row.lastError` is null) the
+           cluster sits directly under the metadata grid above —
+           still useful for forcing an early retry or editing a
+           message that's quietly stuck mid-flight. -->
+      <div class="mt-3 flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          disabled={busy}
+          onclick={() => void retry()}
+          title={m.outbox_button_retry_title()}
+        >
+          <Icon name={busy ? 'loading' : 'sync'} size={14} />
+          {m.outbox_button_retry()}
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          onclick={edit}
+          title={m.outbox_button_edit_title()}
+        >
+          <Icon name="compose" size={14} />
+          {m.outbox_button_edit()}
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5 hover:bg-red-500/15 hover:text-red-500"
+          disabled={busy}
+          onclick={() => void discard()}
+          title={m.outbox_button_delete_title()}
+        >
+          <Icon name="trash" size={14} />
+          {m.outbox_button_delete()}
+        </button>
+      </div>
+
+      {#if actionError}
+        <div class="mt-2 text-xs text-error-500 wrap-break-word">
+          {actionError}
         </div>
       {/if}
 
