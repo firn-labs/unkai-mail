@@ -746,9 +746,34 @@
     // contacts so a user who types just the display name and
     // then commits (Enter / comma / blur) without using the
     // dropdown still picks up the matching email automatically.
-    for (const c of contactsByEmail.values()) {
-      if ((c.display_name ?? '').toLowerCase() === trimmed.toLowerCase()) {
-        return { email: primaryEmail(c), common_name: c.display_name, role }
+    //
+    // Guard against the temporal dead zone: this function is
+    // *also* invoked from the initial `$state` seeders for
+    // `requiredAttendees` / `optionalAttendees` / `chairAttendees`
+    // up at the top of the script, which run BEFORE
+    // `contactsByEmail` is declared further down.  Reaching the
+    // for-loop with a bare-email piece (the recipient of an
+    // already-answered thread, for example, where the From header
+    // came back as a plain `user@host`) used to throw
+    // `Cannot access 'contactsByEmail' before initialization` and
+    // crash EventEditor's mount silently.  Skipping the lookup at
+    // init time is harmless: the draft we're seeding from already
+    // carries email addresses, not display names, so the
+    // display-name-to-email match wouldn't help anyway.  User-
+    // typed bare-email pieces (the original use case for this
+    // lookup) reach this function long after init, so the
+    // try/catch falls through to the real Map.
+    let contactsLookup: Map<string, Contact> | null = null
+    try {
+      contactsLookup = contactsByEmail
+    } catch {
+      contactsLookup = null
+    }
+    if (contactsLookup) {
+      for (const c of contactsLookup.values()) {
+        if ((c.display_name ?? '').toLowerCase() === trimmed.toLowerCase()) {
+          return { email: primaryEmail(c), common_name: c.display_name, role }
+        }
       }
     }
     return { email: trimmed, common_name: null, role }
