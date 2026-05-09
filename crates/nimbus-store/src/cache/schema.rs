@@ -898,6 +898,51 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages
         ADD COLUMN replied_kind TEXT;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v26 → v27: local-only Outbox folder (#276).
+    //
+    // Every send routes through this table first.  On a healthy
+    // network the row is created and removed within the same tick
+    // (the send-driven drain task handles it sub-second), so the
+    // user never sees the synthetic "Outbox" folder appear.  When
+    // SMTP fails (offline, timeout, server refusal), the row stays
+    // and the periodic `background_sync_loop` retry sweep keeps
+    // attempting on every sync tick until success or the user
+    // manually deletes / edits.
+    //
+    // Stored fields:
+    //   * `outgoing_json` — full `OutgoingEmail` for both edit
+    //     (re-open in Compose) and retry (rebuild lettre Message).
+    //   * `replied_to_json` — optional `RepliedToRef` so a
+    //     successful retry still flips the IMAP `\Answered` flag
+    //     on the original message (#255 follow-up).
+    //   * `from_header` / `to_display` / `subject` — pre-computed
+    //     display fields so the Outbox list view renders without
+    //     re-parsing the JSON for every row.
+    //   * `attempt_count` / `last_attempt_at` / `last_error` — UI
+    //     status, surfaces "Why is this stuck?" inline on the row.
+    //   * `skip_sent_copy` — preserved through retries so calendar
+    //     machinery (RSVP REPLY, grid invites) still skips the
+    //     IMAP APPEND-to-Sent on success, same as today.
+    r#"
+    CREATE TABLE outbox_messages (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id      TEXT NOT NULL,
+        outgoing_json   TEXT NOT NULL,
+        replied_to_json TEXT,
+        from_header     TEXT NOT NULL DEFAULT '',
+        to_display      TEXT NOT NULL DEFAULT '',
+        subject         TEXT NOT NULL DEFAULT '',
+        queued_at       INTEGER NOT NULL,
+        attempt_count   INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at INTEGER,
+        last_error      TEXT,
+        skip_sent_copy  INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX outbox_by_account
+        ON outbox_messages (account_id, queued_at DESC);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

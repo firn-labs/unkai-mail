@@ -34,6 +34,7 @@
   import CalendarView from './lib/CalendarView.svelte'
   import { openReminderInStandaloneWindow } from './lib/reminderPopupWindow'
   import { openMailFileInStandaloneWindow } from './lib/standaloneMailFileWindow'
+  import OutboxList, { type OutboxRowDto } from './lib/OutboxList.svelte'
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
@@ -212,6 +213,23 @@
   let selectedUid = $state<number | null>(null)
   // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
   let refreshToken = $state(0)
+
+  /** Synthetic local-only Outbox folder name (#276).  Mirror of
+   *  the constant in Sidebar.svelte; same name means selecting
+   *  the synthetic sidebar entry routes through the existing
+   *  `selectedFolder` channel and the template here can branch
+   *  on a string compare. */
+  const OUTBOX_FOLDER = 'Outbox'
+
+  /** Total queued rows in the local Outbox table (#276).  Drives
+   *  the Sidebar's "render the synthetic Outbox folder?"
+   *  decision.  Refreshed via the `outbox-updated` Tauri event
+   *  the backend fires whenever the queue changes shape. */
+  let outboxCount = $state(0)
+  /** Per-component re-fetch nonce for OutboxList — bumped on
+   *  `outbox-updated` so the list reloads even when no other
+   *  state change would have triggered its `$effect`. */
+  let outboxRefreshToken = $state(0)
 
   // Bindable mirror of MailList's currently-rendered envelope rows.
   // Used by the auto-advance-after-delete flow (#99) to pick the
@@ -783,6 +801,7 @@
     let unlistenEditDraftFromMail: UnlistenFn | null = null
     let unlistenMailtoFromMail: UnlistenFn | null = null
     let unlistenMailFlagsUpdated: UnlistenFn | null = null
+    let unlistenOutboxUpdated: UnlistenFn | null = null
     ;(async () => {
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
@@ -799,6 +818,34 @@
           refreshToken++
         },
       )
+      // #276: backend fires `outbox-updated` whenever the queue
+      // changes shape (enqueue / drain success / failure /
+      // delete).  Refresh the count so the Sidebar shows /
+      // hides the synthetic Outbox folder, and bump the
+      // OutboxList's nonce so its rows re-fetch.
+      unlistenOutboxUpdated = await listen<{ total: number }>(
+        'outbox-updated',
+        (e) => {
+          outboxCount = Math.max(0, Math.floor(e.payload.total ?? 0))
+          outboxRefreshToken++
+          // If the user is sitting on the Outbox folder and the
+          // queue just drained empty, route them back to INBOX
+          // — staying on an empty Outbox would just be a blank
+          // surface they have to manually navigate away from.
+          if (outboxCount === 0 && selectedFolder === OUTBOX_FOLDER) {
+            selectedFolder = 'INBOX'
+            selectedUid = null
+          }
+        },
+      )
+      // Seed the count once on startup so a queue carried over
+      // from a previous session is reflected without waiting for
+      // the first poll tick.
+      try {
+        outboxCount = await invoke<number>('count_outbox')
+      } catch (e) {
+        console.warn('count_outbox at startup failed', e)
+      }
       unlistenEventReminder = await listen<EventReminder>(
         'event-reminder',
         (e) => handleEventReminder(e.payload),
@@ -870,6 +917,7 @@
       unlistenEditDraftFromMail?.()
       unlistenMailtoFromMail?.()
       unlistenMailFlagsUpdated?.()
+      unlistenOutboxUpdated?.()
       if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     }
   })
@@ -1130,6 +1178,67 @@
     // previous failed background send (#156).
     composeSendError = ''
     composeInitial = initial
+  }
+
+  /** Re-open a queued Outbox message in Compose for editing
+   *  (#276).  `edit_outbox_entry` atomically removes the row
+   *  from the queue and returns its data; we deserialise the
+   *  embedded `OutgoingEmail` and project it into a
+   *  `ComposeInitial` so the modal opens pre-populated.  After
+   *  the user sends, the new send creates a fresh queued row;
+   *  if they cancel, the original content is gone (the
+   *  `delete` command's confirm-prompt and the explicit Edit
+   *  click both signal user intent to discard the old copy). */
+  async function onEditOutbox(row: OutboxRowDto) {
+    let dto: OutboxRowDto
+    try {
+      dto = await invoke<OutboxRowDto>('edit_outbox_entry', { id: row.id })
+    } catch (e) {
+      alert(`Could not open this message for editing: ${e}`)
+      return
+    }
+    let outgoing: {
+      from: string
+      to: string[]
+      cc: string[]
+      bcc: string[]
+      reply_to: string | null
+      subject: string
+      body_text: string | null
+      body_html: string | null
+      attachments: unknown[]
+    }
+    try {
+      outgoing = JSON.parse(dto.outgoingJson)
+    } catch (e) {
+      alert(`Stored Outbox payload was unreadable: ${e}`)
+      return
+    }
+    let repliedTo: ComposeInitial['repliedTo']
+    if (dto.repliedToJson) {
+      try {
+        const parsed = JSON.parse(dto.repliedToJson)
+        if (parsed && typeof parsed === 'object') {
+          repliedTo = {
+            accountId: row.accountId,
+            folder: parsed.folder,
+            uid: parsed.uid,
+            kind: parsed.kind,
+          }
+        }
+      } catch (e) {
+        console.warn('outbox repliedToJson parse failed', e)
+      }
+    }
+    openCompose({
+      to: outgoing.to.join(', '),
+      cc: outgoing.cc.length > 0 ? outgoing.cc.join(', ') : undefined,
+      bcc: outgoing.bcc.length > 0 ? outgoing.bcc.join(', ') : undefined,
+      subject: outgoing.subject,
+      body: outgoing.body_html || outgoing.body_text || '',
+      attachments: outgoing.attachments as never,
+      repliedTo,
+    })
   }
 
   function closeCompose() {
@@ -1969,6 +2078,7 @@
         selectedFolder={selectedFolder}
         refreshToken={refreshToken}
         unified={unifiedMode}
+        outboxCount={outboxCount}
         onselectfolder={selectFolder}
         oncompose={() => openCompose()}
         onaccountschanged={checkAccounts}
@@ -1982,11 +2092,19 @@
            active account, which is the safer default than silently
            returning nothing. -->
       <div class="flex flex-col w-80 shrink-0 border-r border-surface-200 dark:border-surface-700">
-        <SearchBar
-          accountId={activeAccountId}
-          currentFolder={selectedFolder}
-          onsearch={onSearch}
-        />
+        {#if selectedFolder !== OUTBOX_FOLDER}
+          <!-- Hide the search input when the user is sitting on the
+               local-only Outbox folder (#276) — there's nothing
+               IMAP-side to search there, and the queue's own
+               status banner / row text already reads what the
+               user needs.  Mounting the search bar would just
+               imply a feature that doesn't exist yet. -->
+          <SearchBar
+            accountId={activeAccountId}
+            currentFolder={selectedFolder}
+            onsearch={onSearch}
+          />
+        {/if}
         <div class="flex-1 min-h-0 flex">
           {#if searchActive}
             <SearchResults
@@ -1997,6 +2115,21 @@
               filters={searchFilters}
               selectedUid={selectedUid}
               onselect={onSelectSearchHit}
+            />
+          {:else if selectedFolder === OUTBOX_FOLDER}
+            <!-- #276: Outbox is a local-only folder so we mount a
+                 dedicated component instead of feeding synthetic
+                 envelopes through MailList.  Same column width;
+                 the row template, status banner, and per-row
+                 retry/edit/delete actions all live in
+                 OutboxList.  Selecting any other folder swaps
+                 back to MailList automatically. -->
+            <OutboxList
+              accountId={activeAccountId ?? ''}
+              unified={unifiedMode}
+              accounts={accounts}
+              refreshToken={outboxRefreshToken}
+              onedit={onEditOutbox}
             />
           {:else}
             <MailList

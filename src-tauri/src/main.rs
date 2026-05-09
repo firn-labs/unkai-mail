@@ -6527,7 +6527,11 @@ fn pick_archive_folder(account_id: &str, cache: &Cache) -> Option<String> {
 /// per-kind `replied_kind` into the local cache, which drives the
 /// reply-icon prefix on the mail-list row.  `None` for fresh
 /// composes / forwards / drafts — none of which are "answers".
-#[derive(Debug, Clone, serde::Deserialize)]
+///
+/// `Serialize` so the Outbox (#276) can stash this alongside the
+/// queued `OutgoingEmail` and replay it on a successful drain
+/// retry.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RepliedToRef {
     folder: String,
@@ -6538,22 +6542,34 @@ struct RepliedToRef {
     kind: String,
 }
 
-/// Send an email via the account's configured SMTP server.
+/// Pre-computed display fields for an Outbox row.  Cheap to render
+/// straight onto the row without re-deserialising the full
+/// `OutgoingEmail` JSON for every list refresh.
+fn outbox_display_fields(email: &OutgoingEmail) -> (String, String, String) {
+    let to_display = email.to.join(", ");
+    (email.from.clone(), to_display, email.subject.clone())
+}
+
+/// Send an email via the account's configured SMTP server (#276).
 ///
-/// The frontend builds an `OutgoingEmail` (recipients, subject, body,
-/// attachments) and sends it here. We look up the account to get the
-/// SMTP host/port, retrieve the password from the keychain, and connect.
-/// The `from` field on `email` is authoritative — the UI sets it from
-/// the active account so Compose-from-alias can be added later without
-/// backend changes.
+/// **Always queue first.**  Every send routes through the local
+/// `outbox_messages` table before touching SMTP.  Validation
+/// (build the lettre `Message`) runs synchronously so the user
+/// still gets a Compose-modal error for malformed addresses; the
+/// row is then enqueued and a Tokio task spawned to attempt the
+/// drain.  On a healthy network the drain finishes in the same
+/// tick and the row never paints in the UI; on failure the row
+/// stays for the periodic retry sweep in `background_sync_loop`.
 ///
-/// After SMTP delivery, the message is appended to the IMAP Sent folder
-/// so the user has a visible record. JMAP handles this server-side.
+/// The post-send work that used to live here (Sent APPEND,
+/// answered-flag flip, JMAP send) is factored into
+/// `try_drain_outbox_entry` — the spawned task and the retry
+/// sweep call into the same helper so the success path is
+/// identical regardless of when the drain fires.
 ///
-/// `replied_to` (#255) optionally points at the original message —
-/// when present, after a successful send we set the `\Answered` /
-/// `$answered` flag on the original and stamp `replied_kind` into
-/// the cache so the mail-list row gains its reply icon.
+/// `replied_to` (#255) is preserved through queue + retry so a
+/// reply that takes a few sweeps to land still flips `\Answered`
+/// on the original message.
 #[tauri::command]
 async fn send_email(
     account_id: String,
@@ -6562,25 +6578,169 @@ async fn send_email(
     cache: State<'_, Cache>,
     app: AppHandle,
 ) -> Result<(), NimbusError> {
-    let account = load_account(&cache, &account_id)?;
+    // Validate up-front: building the lettre Message rejects bad
+    // addresses, missing bodies, etc.  Doing it here means
+    // user-facing input errors still surface in Compose's modal
+    // rather than landing silently in the Outbox.  The IMAP /
+    // JMAP routing decision (uses_jmap) doesn't care — both paths
+    // need a valid OutgoingEmail.
+    let _ = build_outgoing_message(&email)?;
 
-    // JMAP handles sending server-side via EmailSubmission and writes
-    // a copy to Sent itself — no separate SMTP/APPEND needed.
-    if uses_jmap(&account) {
-        let client = connect_jmap(&account).await?;
-        client.send_email(&email).await?;
-        if let Some(rt) = replied_to.as_ref() {
-            mark_original_answered_jmap(&account, &cache, &client, rt).await;
-            emit_mail_flags_updated(&app, &account.id, &rt.folder);
+    let (from_header, to_display, subject) = outbox_display_fields(&email);
+    let outgoing_json = serde_json::to_string(&email)
+        .map_err(|e| NimbusError::Other(format!("serialize OutgoingEmail for outbox: {e}")))?;
+    let replied_to_json =
+        match replied_to.as_ref() {
+            Some(rt) => Some(serde_json::to_string(rt).map_err(|e| {
+                NimbusError::Other(format!("serialize RepliedToRef for outbox: {e}"))
+            })?),
+            None => None,
+        };
+
+    let entry_id = cache.enqueue_outbox(&nimbus_store::OutboxEnqueue {
+        account_id: account_id.clone(),
+        outgoing_json,
+        replied_to_json,
+        from_header,
+        to_display,
+        subject,
+        skip_sent_copy: email.skip_sent_copy,
+    })?;
+
+    // Tell the frontend the queue grew so the synthetic Outbox
+    // folder appears in the sidebar (no-op when the drain task
+    // beats us — the row has already been removed by the time the
+    // listener acts).
+    emit_outbox_updated(&app);
+
+    // Kick off the drain attempt immediately on a background
+    // task.  The task captures its own AppHandle clone so it
+    // outlives this command's return.  Cheap: ~tens of
+    // microseconds per spawn.
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let cache = app_clone.state::<Cache>();
+        try_drain_outbox_entry(&app_clone, &cache, entry_id).await;
+    });
+
+    Ok(())
+}
+
+/// Drive one queued outbox row through SMTP / JMAP.  Removes the
+/// row on success, records the error on failure (the row stays
+/// for the next sweep).  Used by:
+///
+///   * the spawned task `send_email` kicks off after enqueue,
+///   * the `retry_outbox_entry` Tauri command (manual retry from
+///     the UI),
+///   * the periodic drain sweep in `background_sync_loop`.
+///
+/// Best-effort by design: any failure in the post-send Sent
+/// APPEND / answered-flag flip is logged and the row is still
+/// removed (the SMTP succeeded, the user's mail is out, the
+/// missing local-side bookkeeping will reconcile on the next
+/// envelope fetch).
+async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
+    let row = match cache.get_outbox(entry_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => return, // Already removed (manual delete, race with another drain).
+        Err(e) => {
+            tracing::warn!("get_outbox({entry_id}) failed: {e}");
+            return;
+        }
+    };
+
+    let email: OutgoingEmail = match serde_json::from_str(&row.outgoing_json) {
+        Ok(e) => e,
+        Err(e) => {
+            // Hard-failed deserialise — almost certainly a schema
+            // change upstream.  Record the error so the user can
+            // see it on the row and decide to delete; don't keep
+            // retrying forever on a malformed row.
+            let msg = format!("malformed outbox payload: {e}");
+            if let Err(c) = cache.record_outbox_failure(entry_id, &msg) {
+                tracing::warn!("record_outbox_failure failed: {c}");
+            }
+            return;
+        }
+    };
+    let replied_to: Option<RepliedToRef> =
+        row.replied_to_json
+            .as_deref()
+            .and_then(|s| match serde_json::from_str(s) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    tracing::warn!("malformed outbox replied_to_json: {e}");
+                    None
+                }
+            });
+
+    let account = match load_account(cache, &row.account_id) {
+        Ok(a) => a,
+        Err(e) => {
+            // Account was removed while a row was queued.  Drop
+            // the row — there's nowhere to send from.
+            tracing::warn!(
+                "outbox drain dropping row {entry_id}: account '{}' missing: {e}",
+                row.account_id
+            );
+            let _ = cache.remove_outbox(entry_id);
+            emit_outbox_updated(app);
+            return;
+        }
+    };
+
+    let send_result: Result<(), NimbusError> =
+        run_send_pipeline(app, cache, &account, &email, replied_to.as_ref()).await;
+
+    match send_result {
+        Ok(()) => {
+            if let Err(e) = cache.remove_outbox(entry_id) {
+                tracing::warn!("remove_outbox after success failed: {e}");
+            }
+            emit_outbox_updated(app);
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            tracing::info!(
+                "outbox drain for entry {entry_id} (account '{}') failed: {msg}",
+                row.account_id
+            );
+            if let Err(c) = cache.record_outbox_failure(entry_id, &msg) {
+                tracing::warn!("record_outbox_failure failed: {c}");
+            }
+            emit_outbox_updated(app);
+        }
+    }
+}
+
+/// Inner send pipeline shared by `try_drain_outbox_entry` (every
+/// outbox attempt) and any future direct-send caller.  Mirrors the
+/// pre-#276 `send_email` body verbatim — JMAP path returns after
+/// `client.send_email`, IMAP path runs SMTP + best-effort Sent
+/// APPEND + best-effort answered-flag flip.
+async fn run_send_pipeline(
+    app: &AppHandle,
+    cache: &Cache,
+    account: &Account,
+    email: &OutgoingEmail,
+    replied_to: Option<&RepliedToRef>,
+) -> Result<(), NimbusError> {
+    if uses_jmap(account) {
+        let client = connect_jmap(account).await?;
+        client.send_email(email).await?;
+        if let Some(rt) = replied_to {
+            mark_original_answered_jmap(account, cache, &client, rt).await;
+            emit_mail_flags_updated(app, &account.id, &rt.folder);
         }
         return Ok(());
     }
 
-    // Build the lettre message once so the same bytes go to both the
-    // SMTP recipients and the IMAP `APPEND` to Sent. Avoids the body
-    // diverging between the two paths if MIME generation ever becomes
-    // non-deterministic.
-    let message = build_outgoing_message(&email)?;
+    // Build the lettre message once so the same bytes go to both
+    // the SMTP recipients and the IMAP `APPEND` to Sent.  Avoids
+    // the body diverging between the two paths if MIME generation
+    // ever becomes non-deterministic.
+    let message = build_outgoing_message(email)?;
     let raw = message.formatted();
 
     let password = credentials::get_imap_password(&account.id)?;
@@ -6592,21 +6752,13 @@ async fn send_email(
         &account.trusted_certs,
     )
     .await?;
-    smtp.send(&email).await?;
+    smtp.send(email).await?;
 
-    // Best-effort APPEND to Sent. SMTP succeeded, so the recipients
-    // already have the mail — failing the whole command because we
-    // couldn't update the local Sent view would be worse UX than a
-    // missing copy. We log and move on; the next folder fetch will
-    // catch up if the server still received the SMTP-side delivery.
-    //
-    // Auto-generated calendar mails (the calendar-grid "send invite"
-    // flow + RSVP REPLY) opt out via `skip_sent_copy`: most mail
-    // clients and calendar apps hide that traffic from the sender's
-    // Sent view too — RSVP responses are conceptually meeting
-    // machinery, not user-authored mail.
+    // Best-effort APPEND to Sent (same behaviour as before #276):
+    // the user's mail is already out, a failure here is logged
+    // but doesn't roll the send back.
     if !email.skip_sent_copy
-        && let Err(e) = append_to_sent(&account, &raw, &cache).await
+        && let Err(e) = append_to_sent(account, &raw, cache).await
     {
         tracing::warn!(
             "Sent OK but failed to append a copy to Sent for account '{}': {e}",
@@ -6614,16 +6766,158 @@ async fn send_email(
         );
     }
 
-    // Same best-effort treatment for the answered-flag flip: SMTP
-    // already succeeded so the user's reply is out the door, and a
-    // missing flag here just means the icon won't appear until the
-    // next IMAP envelope fetch (which sees `\Answered` independently
-    // because the user's other clients also carry it).
-    if let Some(rt) = replied_to.as_ref() {
-        mark_original_answered_imap(&account, &cache, rt).await;
-        emit_mail_flags_updated(&app, &account.id, &rt.folder);
+    if let Some(rt) = replied_to {
+        mark_original_answered_imap(account, cache, rt).await;
+        emit_mail_flags_updated(app, &account.id, &rt.folder);
     }
     Ok(())
+}
+
+/// `outbox-updated` event payload (#276).  Fires whenever the
+/// queue changes shape (enqueue / drain success / drain failure /
+/// manual delete) so the frontend can re-read counts and refresh
+/// the synthetic Outbox folder.
+#[derive(Debug, Clone, serde::Serialize)]
+struct OutboxUpdatedPayload {
+    /// Total queued rows across every account — drives the
+    /// "show / hide synthetic Outbox folder" decision in the
+    /// sidebar.
+    total: u32,
+}
+
+/// Fire `outbox-updated` so the frontend re-reads the queue.
+/// Best-effort — a dropped event just means the user has to wait
+/// for the next sync tick to see the new state.
+fn emit_outbox_updated(app: &AppHandle) {
+    let total = match app.state::<Cache>().count_outbox() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("count_outbox for event payload failed: {e}");
+            return;
+        }
+    };
+    let payload = OutboxUpdatedPayload { total };
+    if let Err(e) = app.emit("outbox-updated", &payload) {
+        tracing::warn!("failed to emit outbox-updated event: {e}");
+    }
+}
+
+/// Frontend-facing shape of one Outbox row (#276).  The serde
+/// rename keeps the JS side reading camelCase fields without
+/// the Rust side caring about the wire format.  `outgoing` is
+/// the full `OutgoingEmail` re-deserialised from
+/// `outgoing_json` so the frontend can hand it straight back to
+/// Compose for the edit flow without parsing.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutboxRowDto {
+    id: i64,
+    account_id: String,
+    from_header: String,
+    to_display: String,
+    subject: String,
+    queued_at: i64,
+    attempt_count: u32,
+    last_attempt_at: Option<i64>,
+    last_error: Option<String>,
+    skip_sent_copy: bool,
+    /// Full `OutgoingEmail` JSON.  Parsed on the frontend by
+    /// `edit_outbox_entry`'s caller; opaque on the list view.
+    outgoing_json: String,
+    replied_to_json: Option<String>,
+}
+
+fn dto_from_row(row: nimbus_store::OutboxRow) -> OutboxRowDto {
+    OutboxRowDto {
+        id: row.id,
+        account_id: row.account_id,
+        from_header: row.from_header,
+        to_display: row.to_display,
+        subject: row.subject,
+        queued_at: row.queued_at,
+        attempt_count: row.attempt_count,
+        last_attempt_at: row.last_attempt_at,
+        last_error: row.last_error,
+        skip_sent_copy: row.skip_sent_copy,
+        outgoing_json: row.outgoing_json,
+        replied_to_json: row.replied_to_json,
+    }
+}
+
+/// Per-account Outbox list (#276).  Used by the Outbox MailList
+/// variant to render the queue.
+#[tauri::command]
+async fn list_outbox(
+    account_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<OutboxRowDto>, NimbusError> {
+    let rows = cache.list_outbox(&account_id)?;
+    Ok(rows.into_iter().map(dto_from_row).collect())
+}
+
+/// Outbox list across every account (#276).  Used by unified-inbox
+/// mode and by anything that needs the global queue (e.g. a tray
+/// "queued mail" indicator).
+#[tauri::command]
+async fn list_all_outbox(cache: State<'_, Cache>) -> Result<Vec<OutboxRowDto>, NimbusError> {
+    let rows = cache.list_all_outbox()?;
+    Ok(rows.into_iter().map(dto_from_row).collect())
+}
+
+/// Total queued rows across every account.  Cheap aggregate
+/// query — used by the Sidebar's "show synthetic Outbox folder?"
+/// decision.
+#[tauri::command]
+async fn count_outbox(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
+    Ok(cache.count_outbox()?)
+}
+
+/// Force a drain attempt on a specific row (#276).  Used by the
+/// "Retry now" button in the Outbox row UI.  Same code path the
+/// background sweep uses — succeeds, fails, or no-ops if the row
+/// vanished.  Doesn't block: the actual SMTP work runs on a
+/// spawned task so the UI returns instantly.
+#[tauri::command]
+async fn retry_outbox_entry(id: i64, app: AppHandle) -> Result<(), NimbusError> {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let cache = app_clone.state::<Cache>();
+        try_drain_outbox_entry(&app_clone, &cache, id).await;
+    });
+    Ok(())
+}
+
+/// Drop a queued row without sending (#276).  Used by the
+/// "Delete" button in the Outbox row UI.  Idempotent — deleting
+/// a row that's already drained is a no-op.
+#[tauri::command]
+async fn delete_outbox_entry(
+    id: i64,
+    cache: State<'_, Cache>,
+    app: AppHandle,
+) -> Result<(), NimbusError> {
+    cache.remove_outbox(id)?;
+    emit_outbox_updated(&app);
+    Ok(())
+}
+
+/// Pull a queued row's `OutgoingEmail` (and replied-to ref) for
+/// re-opening in Compose (#276).  Removes the row from the queue
+/// — the new send Compose triggers will create a fresh row.  If
+/// the user cancels Compose without sending, the original
+/// content is gone; the user can resend manually if needed.
+#[tauri::command]
+async fn edit_outbox_entry(
+    id: i64,
+    cache: State<'_, Cache>,
+    app: AppHandle,
+) -> Result<OutboxRowDto, NimbusError> {
+    let row = cache
+        .get_outbox(id)?
+        .ok_or_else(|| NimbusError::Other(format!("outbox row {id} not found")))?;
+    cache.remove_outbox(id)?;
+    emit_outbox_updated(&app);
+    Ok(dto_from_row(row))
 }
 
 /// Fire the `mail-flags-updated` Tauri event so the frontend
@@ -8176,6 +8470,38 @@ async fn background_sync_loop(app: AppHandle) {
         if let Err(e) = check_event_reminders_inner(&app).await {
             tracing::warn!("background check_event_reminders_inner failed: {e}");
         }
+        // #276: drain the Outbox.  Walks every queued row across
+        // every account and re-attempts the SMTP send.  No-op
+        // when the queue is empty (one COUNT(*) check before any
+        // network work), so a healthy install pays only the cost
+        // of that aggregate per tick.
+        drain_outbox_sweep(&app).await;
+    }
+}
+
+/// Periodic drain pass over `outbox_messages`.  Called from the
+/// `background_sync_loop` on every sync tick.  Each row goes
+/// through `try_drain_outbox_entry` — same code the
+/// `send_email`-spawned task and the manual-retry command use,
+/// so a row eventually drains via whichever path completes
+/// first.  Done sequentially to keep concurrent SMTP connections
+/// to one per account; even a large queue (dozens of rows) is
+/// finished well within a sync interval on a healthy network.
+async fn drain_outbox_sweep(app: &AppHandle) {
+    let cache_state = app.state::<Cache>();
+    let rows = match cache_state.list_all_outbox() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("list_all_outbox during drain sweep failed: {e}");
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+    tracing::info!("outbox drain sweep: {} queued row(s)", rows.len());
+    for row in rows {
+        try_drain_outbox_entry(app, &cache_state, row.id).await;
     }
 }
 
@@ -10379,6 +10705,12 @@ fn main() {
             mark_as_read,
             set_message_read,
             send_email,
+            list_outbox,
+            list_all_outbox,
+            count_outbox,
+            retry_outbox_entry,
+            delete_outbox_entry,
+            edit_outbox_entry,
             save_draft,
             delete_message,
             archive_message,

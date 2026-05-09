@@ -1407,6 +1407,208 @@ impl Cache {
         }
         Ok(out)
     }
+
+    // ── Outbox (#276) ────────────────────────────────────────────
+    //
+    // Local-only "send queue" — every send routes through this
+    // table first, the SMTP send runs in a spawned drain task.
+    // Rows that drain successfully are removed within the same
+    // tick (sub-second on a healthy network); rows that fail
+    // stay queued and the periodic background-sync drain retries
+    // them.  Surfaces in the UI as a synthetic "Outbox" folder
+    // that only appears in the sidebar when the queue is
+    // non-empty.
+
+    /// Push a fresh outgoing message onto the queue.  Returns the
+    /// generated row id so the caller (`send_email`) can hand it
+    /// to the spawned drain task.
+    pub fn enqueue_outbox(&self, input: &OutboxEnqueue) -> Result<i64, CacheError> {
+        let conn = self.conn()?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO outbox_messages
+               (account_id, outgoing_json, replied_to_json,
+                from_header, to_display, subject,
+                queued_at, attempt_count, last_attempt_at, last_error,
+                skip_sent_copy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL, NULL, ?8)",
+            params![
+                input.account_id,
+                input.outgoing_json,
+                input.replied_to_json,
+                input.from_header,
+                input.to_display,
+                input.subject,
+                now,
+                input.skip_sent_copy as i64,
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Snapshot of one queued message.  Returned by `list_outbox`
+    /// (per-account, for the UI list view) and by
+    /// `take_pending_outbox_drain` (for the retry sweep).
+    pub fn list_outbox(&self, account_id: &str) -> Result<Vec<OutboxRow>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, outgoing_json, replied_to_json,
+                    from_header, to_display, subject,
+                    queued_at, attempt_count, last_attempt_at, last_error,
+                    skip_sent_copy
+             FROM outbox_messages
+             WHERE account_id = ?1
+             ORDER BY queued_at DESC",
+        )?;
+        let rows = stmt.query_map(params![account_id], outbox_row_from_sql)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Every queued row across every account, oldest-first so the
+    /// drain sweep retries in the order the user submitted them.
+    /// Used by the `background_sync_loop` retry pass.
+    pub fn list_all_outbox(&self) -> Result<Vec<OutboxRow>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, outgoing_json, replied_to_json,
+                    from_header, to_display, subject,
+                    queued_at, attempt_count, last_attempt_at, last_error,
+                    skip_sent_copy
+             FROM outbox_messages
+             ORDER BY queued_at ASC",
+        )?;
+        let rows = stmt.query_map(params![], outbox_row_from_sql)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Fetch one queued row by id — used by the drain task (when
+    /// the caller knows the row it just enqueued) and by the
+    /// `edit_outbox_entry` Tauri command.
+    pub fn get_outbox(&self, id: i64) -> Result<Option<OutboxRow>, CacheError> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT id, account_id, outgoing_json, replied_to_json,
+                        from_header, to_display, subject,
+                        queued_at, attempt_count, last_attempt_at, last_error,
+                        skip_sent_copy
+                 FROM outbox_messages
+                 WHERE id = ?1",
+                params![id],
+                outbox_row_from_sql,
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Bookkeeping after a drain attempt failed: bump the count,
+    /// stamp the last attempt time, store the human-readable
+    /// error.  Doesn't delete — the row stays for the next sweep.
+    pub fn record_outbox_failure(&self, id: i64, error: &str) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "UPDATE outbox_messages
+             SET attempt_count = attempt_count + 1,
+                 last_attempt_at = ?2,
+                 last_error = ?3
+             WHERE id = ?1",
+            params![id, now, error],
+        )?;
+        Ok(())
+    }
+
+    /// Drop a queued row.  Called by the drain task on success
+    /// (the SMTP send went through) and by the
+    /// `delete_outbox_entry` Tauri command (user dismissed it).
+    pub fn remove_outbox(&self, id: i64) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM outbox_messages WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Total queued rows across every account.  Cheap aggregate
+    /// for the badge count on the synthetic "Outbox" sidebar
+    /// folder.
+    pub fn count_outbox(&self) -> Result<u32, CacheError> {
+        let conn = self.conn()?;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM outbox_messages", params![], |r| {
+            r.get(0)
+        })?;
+        Ok(n.max(0) as u32)
+    }
+
+    /// Per-account count for the per-account sidebar badge.
+    pub fn count_outbox_for_account(&self, account_id: &str) -> Result<u32, CacheError> {
+        let conn = self.conn()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM outbox_messages WHERE account_id = ?1",
+            params![account_id],
+            |r| r.get(0),
+        )?;
+        Ok(n.max(0) as u32)
+    }
+}
+
+/// Row shape inserted into `outbox_messages` by
+/// `Cache::enqueue_outbox`.  Mirrors the columns of the table —
+/// kept as a separate struct so callers don't have to hand-build
+/// a `params![]` tuple at every enqueue site.
+#[derive(Debug, Clone)]
+pub struct OutboxEnqueue {
+    pub account_id: String,
+    pub outgoing_json: String,
+    pub replied_to_json: Option<String>,
+    pub from_header: String,
+    pub to_display: String,
+    pub subject: String,
+    pub skip_sent_copy: bool,
+}
+
+/// One queued message read out of `outbox_messages`.  Returned by
+/// the `list_outbox` / `get_outbox` / `list_all_outbox` paths.
+#[derive(Debug, Clone)]
+pub struct OutboxRow {
+    pub id: i64,
+    pub account_id: String,
+    pub outgoing_json: String,
+    pub replied_to_json: Option<String>,
+    pub from_header: String,
+    pub to_display: String,
+    pub subject: String,
+    pub queued_at: i64,
+    pub attempt_count: u32,
+    pub last_attempt_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub skip_sent_copy: bool,
+}
+
+/// Shared row-mapping helper used by every outbox SELECT.  The
+/// column order must match the `SELECT` clauses in
+/// `list_outbox` / `list_all_outbox` / `get_outbox`.
+fn outbox_row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
+    Ok(OutboxRow {
+        id: r.get(0)?,
+        account_id: r.get(1)?,
+        outgoing_json: r.get(2)?,
+        replied_to_json: r.get(3)?,
+        from_header: r.get(4)?,
+        to_display: r.get(5)?,
+        subject: r.get(6)?,
+        queued_at: r.get(7)?,
+        attempt_count: r.get::<_, i64>(8)?.max(0) as u32,
+        last_attempt_at: r.get(9)?,
+        last_error: r.get(10)?,
+        skip_sent_copy: r.get::<_, i64>(11)? != 0,
+    })
 }
 
 /// One stored attachment thumbnail.  Returned from
@@ -1634,6 +1836,85 @@ mod tests {
         let envs = cache.get_envelopes("acc", "INBOX", 5).unwrap();
         assert_eq!(envs.len(), 1);
         assert_eq!(envs[0].uid, 7);
+    }
+
+    #[test]
+    fn outbox_enqueue_list_count_remove_roundtrip() {
+        let cache = open_test_cache();
+        assert_eq!(cache.count_outbox().unwrap(), 0);
+        assert!(cache.list_outbox("acc-a").unwrap().is_empty());
+
+        let id = cache
+            .enqueue_outbox(&OutboxEnqueue {
+                account_id: "acc-a".into(),
+                outgoing_json: r#"{"from":"a@x","to":["b@x"],"cc":[],"bcc":[],"reply_to":null,"subject":"hi","body_text":"hello","body_html":null,"attachments":[]}"#.into(),
+                replied_to_json: None,
+                from_header: "a@x".into(),
+                to_display: "b@x".into(),
+                subject: "hi".into(),
+                skip_sent_copy: false,
+            })
+            .unwrap();
+        assert!(id > 0);
+        assert_eq!(cache.count_outbox().unwrap(), 1);
+        assert_eq!(cache.count_outbox_for_account("acc-a").unwrap(), 1);
+        assert_eq!(cache.count_outbox_for_account("acc-other").unwrap(), 0);
+
+        let rows = cache.list_outbox("acc-a").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].subject, "hi");
+        assert_eq!(rows[0].attempt_count, 0);
+        assert!(rows[0].last_error.is_none());
+
+        // Failure bookkeeping bumps the count + records the error,
+        // but the row stays for the next sweep.
+        cache
+            .record_outbox_failure(id, "Connection refused")
+            .unwrap();
+        let rows = cache.list_outbox("acc-a").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].attempt_count, 1);
+        assert_eq!(rows[0].last_error.as_deref(), Some("Connection refused"));
+        assert!(rows[0].last_attempt_at.is_some());
+
+        // get_outbox returns the same shape by id.
+        let one = cache.get_outbox(id).unwrap().unwrap();
+        assert_eq!(one.id, id);
+        assert_eq!(one.subject, "hi");
+
+        // Removal drops the row + clears the count.
+        cache.remove_outbox(id).unwrap();
+        assert_eq!(cache.count_outbox().unwrap(), 0);
+        assert!(cache.list_outbox("acc-a").unwrap().is_empty());
+        assert!(cache.get_outbox(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn outbox_list_all_orders_oldest_first() {
+        let cache = open_test_cache();
+        let mk = |account: &str, subj: &str| OutboxEnqueue {
+            account_id: account.into(),
+            outgoing_json: "{}".into(),
+            replied_to_json: None,
+            from_header: "x@x".into(),
+            to_display: "y@y".into(),
+            subject: subj.into(),
+            skip_sent_copy: false,
+        };
+        let a = cache.enqueue_outbox(&mk("acc-a", "first")).unwrap();
+        // Sleep one second so the queued_at timestamps differ —
+        // SQLite's strftime resolution is per-second.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let b = cache.enqueue_outbox(&mk("acc-b", "second")).unwrap();
+
+        let all = cache.list_all_outbox().unwrap();
+        assert_eq!(all.len(), 2);
+        // The drain sweep relies on oldest-first so the user's
+        // earlier sends ship before later ones.
+        assert_eq!(all[0].id, a);
+        assert_eq!(all[0].subject, "first");
+        assert_eq!(all[1].id, b);
+        assert_eq!(all[1].subject, "second");
     }
 
     #[test]
