@@ -38,6 +38,11 @@
     start: string
     end: string
     kind: 'busy' | 'tentative' | 'unavailable' | 'free'
+    /** Source event's title — only populated for periods that
+     *  came from the local-cache scan (the user's own events),
+     *  not for free-busy responses (those don't carry titles
+     *  by design). */
+    summary?: string | null
   }
 
   interface AttendeeAvailability {
@@ -84,13 +89,33 @@
   let loadError = $state<string | null>(null)
 
   /** When non-null, the user is mid-drag on the proposed-slot
-   *  band.  We capture the cursor's initial Y and the
-   *  `pickedStart` at the instant of pointerdown; pointermove
-   *  computes a delta against those.  Cleared on pointerup. */
+   *  band.  Three modes:
+   *
+   *  - `move`        — whole band slides, duration preserved
+   *  - `resize-start`— top edge: start time changes, end stays
+   *  - `resize-end`  — bottom edge: end time changes, start stays
+   *
+   *  We pick the mode from where on the band the pointerdown
+   *  happened (within 6 px of an edge → resize that edge).
+   *  `initialPickedStart / initialPickedEnd` snapshot the slot
+   *  at the start of the drag so pointermove computes deltas
+   *  against a stable baseline. */
   let dragState = $state<null | {
+    mode: 'move' | 'resize-start' | 'resize-end'
     startY: number
     initialPickedStart: Date
+    initialPickedEnd: Date
   }>(null)
+
+  /** Pixel slop for the edge-vs-middle classification when the
+   *  user grabs the proposed-slot band.  Within `RESIZE_EDGE_PX`
+   *  of the top → resize-start; within `RESIZE_EDGE_PX` of the
+   *  bottom → resize-end; everywhere else is a move. */
+  const RESIZE_EDGE_PX = 6
+  /** Floor for the band's height when resizing — keeps the slot
+   *  at least `MIN_DURATION_MIN` minutes long so resizing it
+   *  through itself doesn't produce a zero-length event. */
+  const MIN_DURATION_MIN = 15
 
   $effect.pre(() => {
     focusDay = stripTime(proposedStart)
@@ -207,9 +232,20 @@
     // fire when the user simply taps the band.
     e.stopPropagation()
     e.preventDefault()
+    const band = e.currentTarget as HTMLElement
+    const rect = band.getBoundingClientRect()
+    const offsetY = e.clientY - rect.top
+    let mode: 'move' | 'resize-start' | 'resize-end' = 'move'
+    if (offsetY <= RESIZE_EDGE_PX) {
+      mode = 'resize-start'
+    } else if (offsetY >= rect.height - RESIZE_EDGE_PX) {
+      mode = 'resize-end'
+    }
     dragState = {
+      mode,
       startY: e.clientY,
       initialPickedStart: new Date(pickedStart),
+      initialPickedEnd: new Date(pickedEnd),
     }
   }
 
@@ -234,23 +270,41 @@
   $effect(() => {
     if (!dragState) return
     const initial = dragState
+    const dayStart = stripTime(focusDay).getTime()
+    const dayEnd = dayStart + 24 * 60 * 60 * 1000
     function onMove(ev: PointerEvent) {
       const dy = ev.clientY - initial.startY
       // 60 minutes / HOUR_PX pixels → minutes-per-pixel.  Snap to
       // 15-minute increments so the band lands on the same grid
       // the click-to-relocate path uses.
       const minutesDelta = Math.round((dy / HOUR_PX) * 60 / 15) * 15
-      const candidate = new Date(initial.initialPickedStart)
-      candidate.setMinutes(candidate.getMinutes() + minutesDelta)
-      // Clamp to the focused day so a drag can't push the slot
-      // out of the visible grid.  `dayMaxStart` keeps the slot's
-      // *end* on the same day too, so the band never visually
-      // wraps off the bottom.
-      const dayStart = stripTime(focusDay).getTime()
-      const dayMaxStart = dayStart + 24 * 60 * 60 * 1000 - eventDurationMs
-      const clamped = Math.max(dayStart, Math.min(candidate.getTime(), dayMaxStart))
-      pickedStart = new Date(clamped)
-      pickedEnd = new Date(clamped + eventDurationMs)
+      const minMs = MIN_DURATION_MIN * 60 * 1000
+      if (initial.mode === 'move') {
+        // Whole band slides; duration preserved.
+        const duration = initial.initialPickedEnd.getTime() - initial.initialPickedStart.getTime()
+        const candidate = initial.initialPickedStart.getTime() + minutesDelta * 60 * 1000
+        const clamped = Math.max(dayStart, Math.min(candidate, dayEnd - duration))
+        pickedStart = new Date(clamped)
+        pickedEnd = new Date(clamped + duration)
+        eventDurationMs = duration
+      } else if (initial.mode === 'resize-start') {
+        // Top edge moves: start changes, end stays.  Floor the
+        // start so the slot can't shrink below `MIN_DURATION_MIN`.
+        const candidateStart = initial.initialPickedStart.getTime() + minutesDelta * 60 * 1000
+        const maxStart = initial.initialPickedEnd.getTime() - minMs
+        const clamped = Math.max(dayStart, Math.min(candidateStart, maxStart))
+        pickedStart = new Date(clamped)
+        pickedEnd = new Date(initial.initialPickedEnd)
+        eventDurationMs = pickedEnd.getTime() - pickedStart.getTime()
+      } else {
+        // resize-end: bottom edge moves; start stays.
+        const candidateEnd = initial.initialPickedEnd.getTime() + minutesDelta * 60 * 1000
+        const minEnd = initial.initialPickedStart.getTime() + minMs
+        const clamped = Math.max(minEnd, Math.min(candidateEnd, dayEnd))
+        pickedStart = new Date(initial.initialPickedStart)
+        pickedEnd = new Date(clamped)
+        eventDurationMs = pickedEnd.getTime() - pickedStart.getTime()
+      }
     }
     function onUp() {
       dragState = null
@@ -349,16 +403,18 @@
     return av.displayName?.trim() || av.email
   }
 
-  /** Tooltip for a busy period — only shows the time range, never
-   *  the source event's title (free-busy responses don't carry
-   *  details and the local-cache fallback would leak our own event
-   *  titles otherwise). */
+  /** Tooltip for a busy period — time range, plus the event title
+   *  when we have one.  Free-busy responses don't carry titles by
+   *  design, so `summary` is only set for local-cache periods (the
+   *  user's own events).  Showing those titles is fine because the
+   *  user already owns the event whose title we're surfacing. */
   function periodTooltip(p: AttendeeBusyPeriod): string {
     const fmt = new Intl.DateTimeFormat(undefined, {
       hour: '2-digit',
       minute: '2-digit',
     })
-    return `${fmt.format(new Date(p.start))} – ${fmt.format(new Date(p.end))}`
+    const range = `${fmt.format(new Date(p.start))} – ${fmt.format(new Date(p.end))}`
+    return p.summary ? `${p.summary}\n${range}` : range
   }
 
   function busyClasses(kind: AttendeeBusyPeriod['kind']): string {
@@ -558,14 +614,27 @@
                       style="top: {h * HOUR_PX}px; height: {HOUR_PX}px"
                     ></div>
                   {/each}
-                  <!-- Busy blocks -->
+                  <!-- Busy blocks.  When the source has an event
+                       title (local-cache scan), surface it inside
+                       the block — `truncate` keeps multi-event days
+                       readable in narrow columns and the tooltip
+                       carries the full title for hover detail.
+                       Blocks shorter than ~24 px hide the inline
+                       text so a short slot doesn't overflow its own
+                       border. -->
                   {#each dayPeriods as p, i (i)}
                     {@const off = periodOffsetPx(p, focusDay)}
                     <div
-                      class="absolute left-1 right-1 rounded-sm border {busyClasses(p.kind)}"
+                      class="absolute left-1 right-1 rounded-sm border overflow-hidden {busyClasses(p.kind)}"
                       style="top: {off.top}px; height: {off.height}px"
                       title={periodTooltip(p)}
-                    ></div>
+                    >
+                      {#if p.summary && off.height >= 24}
+                        <span class="block px-1 pt-0.5 text-[10px] leading-tight truncate text-surface-900 dark:text-surface-50">
+                          {p.summary}
+                        </span>
+                      {/if}
+                    </div>
                   {/each}
                 </div>
               </div>
@@ -585,9 +654,11 @@
             {#if pickedSlotBand()}
               {@const band = pickedSlotBand()!}
               <div
-                class="absolute border-2 border-primary-500 bg-primary-500/10 rounded-sm select-none {dragState
-                  ? 'cursor-grabbing'
-                  : 'cursor-grab'}"
+                class="absolute border-2 border-primary-500 bg-primary-500/10 rounded-sm select-none {dragState?.mode === 'resize-start' || dragState?.mode === 'resize-end'
+                  ? 'cursor-ns-resize'
+                  : dragState
+                    ? 'cursor-grabbing'
+                    : 'cursor-grab'}"
                 style="
                   top: {32 + band.top}px;
                   left: {TIME_GUTTER_PX}px;
@@ -600,7 +671,22 @@
                 role="button"
                 tabindex="0"
                 aria-label="{m.event_planner_proposed_label()}: {timeFmt.format(pickedStart)} – {timeFmt.format(pickedEnd)}"
-              ></div>
+              >
+                <!-- Resize-cursor regions at top + bottom edges
+                     so the user discovers the affordance.  The
+                     parent's `bandPointerDown` already detects
+                     these edges via `offsetY` and sets the right
+                     mode — these strips just provide the visual
+                     cue. -->
+                <div
+                  class="absolute left-0 right-0 top-0 cursor-ns-resize"
+                  style="height: {RESIZE_EDGE_PX}px"
+                ></div>
+                <div
+                  class="absolute left-0 right-0 bottom-0 cursor-ns-resize"
+                  style="height: {RESIZE_EDGE_PX}px"
+                ></div>
+              </div>
             {/if}
           </div>
         {/if}
