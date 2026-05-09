@@ -6542,6 +6542,19 @@ struct RepliedToRef {
     kind: String,
 }
 
+/// Source row for the edit-from-outbox flow (#276).  Tells
+/// `send_email` "I'm replacing the queued row with this id" —
+/// the row is removed before the new copy is enqueued so the
+/// queue never holds two versions of the same message during a
+/// resend.  Optional on every send; absent for ordinary sends
+/// (compose / reply / forward) and for retries that re-fire
+/// the existing queued row in place.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutboxSourceRef {
+    id: i64,
+}
+
 /// Pre-computed display fields for an Outbox row.  Cheap to render
 /// straight onto the row without re-deserialising the full
 /// `OutgoingEmail` JSON for every list refresh.
@@ -6570,11 +6583,19 @@ fn outbox_display_fields(email: &OutgoingEmail) -> (String, String, String) {
 /// `replied_to` (#255) is preserved through queue + retry so a
 /// reply that takes a few sweeps to land still flips `\Answered`
 /// on the original message.
+///
+/// `outbox_source` (#276 follow-up) carries the id of a queued
+/// row this send is replacing — the edit-from-outbox path.  When
+/// set, the row is removed before the new copy is enqueued so
+/// the queue never briefly holds both versions.  Cancelling
+/// Compose never reaches this command, so the original row stays
+/// put on cancel.
 #[tauri::command]
 async fn send_email(
     account_id: String,
     email: OutgoingEmail,
     replied_to: Option<RepliedToRef>,
+    outbox_source: Option<OutboxSourceRef>,
     cache: State<'_, Cache>,
     app: AppHandle,
 ) -> Result<(), NimbusError> {
@@ -6596,6 +6617,18 @@ async fn send_email(
             })?),
             None => None,
         };
+
+    // #276 follow-up — drop the source row before enqueueing the
+    // edit so the queue holds at most one copy of this message at
+    // any moment.  Idempotent: a `remove_outbox` for an id that's
+    // already drained / been deleted is a no-op (zero rows
+    // affected, no error).  Done before the new INSERT so a
+    // failure in this branch can't leak a duplicate.
+    if let Some(src) = outbox_source.as_ref() {
+        if let Err(e) = cache.remove_outbox(src.id) {
+            tracing::warn!("remove source outbox row {} failed: {e}", src.id);
+        }
+    }
 
     let entry_id = cache.enqueue_outbox(&nimbus_store::OutboxEnqueue {
         account_id: account_id.clone(),

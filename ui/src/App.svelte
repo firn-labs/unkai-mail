@@ -35,6 +35,7 @@
   import { openReminderInStandaloneWindow } from './lib/reminderPopupWindow'
   import { openMailFileInStandaloneWindow } from './lib/standaloneMailFileWindow'
   import OutboxList, { type OutboxRowDto } from './lib/OutboxList.svelte'
+  import OutboxView from './lib/OutboxView.svelte'
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
@@ -230,6 +231,13 @@
    *  `outbox-updated` so the list reloads even when no other
    *  state change would have triggered its `$effect`. */
   let outboxRefreshToken = $state(0)
+  /** Currently-previewed Outbox row (#276 follow-up).  Carries
+   *  the full row snapshot so the right-pane `OutboxView` can
+   *  render straight from it without a second round-trip to
+   *  the backend; falls back to the latest `list_outbox`
+   *  response if the row is updated by a retry / failure
+   *  recording while the user has it open. */
+  let selectedOutboxRow = $state<OutboxRowDto | null>(null)
 
   // Bindable mirror of MailList's currently-rendered envelope rows.
   // Used by the auto-advance-after-delete flow (#99) to pick the
@@ -835,7 +843,13 @@
           if (outboxCount === 0 && selectedFolder === OUTBOX_FOLDER) {
             selectedFolder = 'INBOX'
             selectedUid = null
+            selectedOutboxRow = null
           }
+          // OutboxList itself re-runs `list_outbox` on this same
+          // event and emits `onselect(updatedRow | null)` —
+          // that's where the preview row gets refreshed (so
+          // attempt counts / last_error stay fresh) or cleared
+          // (when the row drained or got deleted).
         },
       )
       // Seed the count once on startup so a queue carried over
@@ -1085,6 +1099,14 @@
   function selectFolder(name: string) {
     selectedFolder = name
     selectedUid = null
+    // Clear the Outbox preview when switching away — the
+    // right-pane routing is folder-conditional, but the
+    // selectedOutboxRow value would otherwise linger and
+    // re-show the preview the next time the user lands back
+    // on the Outbox folder.
+    if (name !== OUTBOX_FOLDER) {
+      selectedOutboxRow = null
+    }
   }
 
   // MailView fires this after it successfully marks a message \Seen
@@ -1181,22 +1203,16 @@
   }
 
   /** Re-open a queued Outbox message in Compose for editing
-   *  (#276).  `edit_outbox_entry` atomically removes the row
-   *  from the queue and returns its data; we deserialise the
-   *  embedded `OutgoingEmail` and project it into a
-   *  `ComposeInitial` so the modal opens pre-populated.  After
-   *  the user sends, the new send creates a fresh queued row;
-   *  if they cancel, the original content is gone (the
-   *  `delete` command's confirm-prompt and the explicit Edit
-   *  click both signal user intent to discard the old copy). */
-  async function onEditOutbox(row: OutboxRowDto) {
-    let dto: OutboxRowDto
-    try {
-      dto = await invoke<OutboxRowDto>('edit_outbox_entry', { id: row.id })
-    } catch (e) {
-      alert(`Could not open this message for editing: ${e}`)
-      return
-    }
+   *  (#276).  Peeks at the row without removing it: cancelling
+   *  Compose leaves the original queued copy alone, sending
+   *  routes through `send_email` with `outboxSource: { id }` so
+   *  the backend drops the source row atomically with
+   *  enqueueing the edit.
+   *
+   *  `skipSignatureInsert` is true so Compose doesn't stack a
+   *  second signature on top of the one already embedded in
+   *  the queued body. */
+  function onEditOutbox(row: OutboxRowDto) {
     let outgoing: {
       from: string
       to: string[]
@@ -1209,15 +1225,15 @@
       attachments: unknown[]
     }
     try {
-      outgoing = JSON.parse(dto.outgoingJson)
+      outgoing = JSON.parse(row.outgoingJson)
     } catch (e) {
       alert(`Stored Outbox payload was unreadable: ${e}`)
       return
     }
     let repliedTo: ComposeInitial['repliedTo']
-    if (dto.repliedToJson) {
+    if (row.repliedToJson) {
       try {
-        const parsed = JSON.parse(dto.repliedToJson)
+        const parsed = JSON.parse(row.repliedToJson)
         if (parsed && typeof parsed === 'object') {
           repliedTo = {
             accountId: row.accountId,
@@ -1238,6 +1254,8 @@
       body: outgoing.body_html || outgoing.body_text || '',
       attachments: outgoing.attachments as never,
       repliedTo,
+      outboxSource: { id: row.id },
+      skipSignatureInsert: true,
     })
   }
 
@@ -2129,6 +2147,8 @@
               unified={unifiedMode}
               accounts={accounts}
               refreshToken={outboxRefreshToken}
+              selectedId={selectedOutboxRow?.id ?? null}
+              onselect={(row) => (selectedOutboxRow = row)}
               onedit={onEditOutbox}
             />
           {:else}
@@ -2147,26 +2167,38 @@
           {/if}
         </div>
       </div>
-      <MailView
-        accountId={selectedMessageAccountId ?? activeAccountId}
-        folder={selectedFolder}
-        uid={selectedUid}
-        forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
-        autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
-        linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
-        onread={onMessageRead}
-        onreply={onReply}
-        onreplyall={onReplyAll}
-        onforward={onForward}
-        onrespondwithmeeting={onRespondWithMeeting}
-        onsavenote={onSaveMailAsNote}
-        isDraftsFolder={isDraftsFolder}
-        isSentFolder={isSentFolder}
-        oneditdraft={onEditDraft}
-        onmessageremoved={onMessageRemoved}
-        onmailto={(init) => openCompose(init)}
-        bind:refreshing={mailViewRefreshing}
-      />
+      {#if selectedFolder === OUTBOX_FOLDER && selectedOutboxRow !== null}
+        <!-- #276 follow-up: clicking a queued row routes the
+             right pane to OutboxView, which renders the
+             message's headers + sanitised body so the user can
+             see what's about to be sent.  Read-only — the
+             retry / edit / delete actions stay on the row in
+             OutboxList. -->
+        <div class="flex-1 min-w-0">
+          <OutboxView row={selectedOutboxRow} />
+        </div>
+      {:else}
+        <MailView
+          accountId={selectedMessageAccountId ?? activeAccountId}
+          folder={selectedFolder}
+          uid={selectedUid}
+          forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
+          autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
+          linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
+          onread={onMessageRead}
+          onreply={onReply}
+          onreplyall={onReplyAll}
+          onforward={onForward}
+          onrespondwithmeeting={onRespondWithMeeting}
+          onsavenote={onSaveMailAsNote}
+          isDraftsFolder={isDraftsFolder}
+          isSentFolder={isSentFolder}
+          oneditdraft={onEditDraft}
+          onmessageremoved={onMessageRemoved}
+          onmailto={(init) => openCompose(init)}
+          bind:refreshing={mailViewRefreshing}
+        />
+      {/if}
     {/if}
 
     {#if composeInitial !== null}

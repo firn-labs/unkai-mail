@@ -149,6 +149,20 @@
         the outgoing copy is now headed for. Unset for brand-new
         composes and replies/forwards. */
     draftSource?: { accountId: string; folder: string; uid: number }
+    /** When Compose is opened by clicking "Edit" on a queued
+     *  message in the local Outbox (#276 follow-up), this carries
+     *  the source row id.  Sending replaces the source: the
+     *  backend's `send_email` removes the old row atomically
+     *  with enqueueing the edited copy so the queue holds one
+     *  version.  Cancelling Compose leaves the source row
+     *  alone — no send means no replacement. */
+    outboxSource?: { id: number }
+    /** Skip the automatic signature insertion in
+     *  `initialBodyHtml` (#276 follow-up).  Set on the edit-
+     *  from-outbox path because the queued body already carries
+     *  the signature from the original send; without this we'd
+     *  stack a second one and the user would see two. */
+    skipSignatureInsert?: boolean
   }
 
   /** Payload handed back to the parent when a background send
@@ -594,12 +608,26 @@
     // time so replies open with the user's name already attached.
     // If the account list hasn't loaded yet, we skip and let the
     // signature `$effect` append on first frame instead.
-    const initSig = signatureBlock(
-      (accounts.find((a) => a.id === accountId) ?? accounts[0])?.signature,
-    )
-    if (initSig) {
-      lead += initSig
-      insertedSignatureHtml = initSig
+    //
+    // `skipSignatureInsert` (#276) opts out entirely — set on the
+    // edit-from-outbox path because the queued body already
+    // carries the signature from the original send.  We also
+    // pin `insertedSignatureHtml` to the embedded signature so
+    // the late-load `$effect` doesn't try to add a second one
+    // when the accounts list resolves.
+    if (!initial?.skipSignatureInsert) {
+      const initSig = signatureBlock(
+        (accounts.find((a) => a.id === accountId) ?? accounts[0])?.signature,
+      )
+      if (initSig) {
+        lead += initSig
+        insertedSignatureHtml = initSig
+      }
+    } else {
+      const embeddedSig = signatureBlock(
+        (accounts.find((a) => a.id === accountId) ?? accounts[0])?.signature,
+      )
+      if (embeddedSig) insertedSignatureHtml = embeddedSig
     }
 
     return lead + html
@@ -1589,6 +1617,13 @@
         // reply icon.  Only present when this Compose was opened
         // by a reply / reply-all / "respond with meeting" flow.
         repliedTo: snap.initialAtSend?.repliedTo ?? null,
+        // #276 follow-up: when this Compose was opened by
+        // editing a queued Outbox row, the source row id rides
+        // through to the backend so it can drop the original
+        // atomically with enqueueing the edited copy.  Cancel
+        // path doesn't reach this invoke, so cancelling leaves
+        // the source row alone — what the user expects.
+        outboxSource: snap.initialAtSend?.outboxSource ?? null,
       })
     } catch (e: any) {
       const msg = formatError(e) || 'Failed to send'
