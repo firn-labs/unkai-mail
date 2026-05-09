@@ -6555,11 +6555,7 @@ async fn send_email(
 /// flag on the original message that a Compose reply just answered
 /// (#255).  Logs on failure rather than propagating — the user's
 /// mail already left the building.
-async fn mark_original_answered_imap(
-    account: &Account,
-    cache: &Cache,
-    rt: &RepliedToRef,
-) {
+async fn mark_original_answered_imap(account: &Account, cache: &Cache, rt: &RepliedToRef) {
     if let Err(e) = cache.mark_envelope_replied(&account.id, &rt.folder, rt.uid, &rt.kind) {
         tracing::warn!(
             "answered-cache update failed for account '{}', folder '{}', uid {}: {e}",
@@ -6572,9 +6568,7 @@ async fn mark_original_answered_imap(
     let password = match credentials::get_imap_password(&account.id) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(
-                "answered-flag IMAP STORE skipped — keychain lookup failed: {e}"
-            );
+            tracing::warn!("answered-flag IMAP STORE skipped — keychain lookup failed: {e}");
             return;
         }
     };

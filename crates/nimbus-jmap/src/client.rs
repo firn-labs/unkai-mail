@@ -569,11 +569,7 @@ impl JmapClient {
     /// send path after a successful reply / reply-all / meeting
     /// reply so the original message reflects the answered state
     /// across clients.
-    pub async fn mark_as_answered(
-        &self,
-        folder: &str,
-        uid: u32,
-    ) -> Result<(), NimbusError> {
+    pub async fn mark_as_answered(&self, folder: &str, uid: u32) -> Result<(), NimbusError> {
         let jmap_id = self.resolve_jmap_id(folder, uid).await?;
 
         let resp = self
