@@ -83,6 +83,15 @@
   let loading = $state(false)
   let loadError = $state<string | null>(null)
 
+  /** When non-null, the user is mid-drag on the proposed-slot
+   *  band.  We capture the cursor's initial Y and the
+   *  `pickedStart` at the instant of pointerdown; pointermove
+   *  computes a delta against those.  Cleared on pointerup. */
+  let dragState = $state<null | {
+    startY: number
+    initialPickedStart: Date
+  }>(null)
+
   $effect.pre(() => {
     focusDay = stripTime(proposedStart)
     pickedStart = new Date(proposedStart)
@@ -185,6 +194,76 @@
     pickedStart = next
     pickedEnd = new Date(next.getTime() + eventDurationMs)
   }
+
+  // ── Drag-to-reschedule on the proposed-slot band ────────────
+  // Pointerdown on the band starts a drag, pointermove (on the
+  // document so we don't lose the cursor when it leaves the
+  // band's bounding box) updates `pickedStart` snapped to a 15-
+  // minute step, pointerup ends the drag.  We do the document
+  // listeners inside an `$effect` keyed on `dragState` so they
+  // attach exactly while a drag is active and detach right after.
+  function bandPointerDown(e: PointerEvent) {
+    // Stop propagation so the underlying column's `onclick` doesn't
+    // fire when the user simply taps the band.
+    e.stopPropagation()
+    e.preventDefault()
+    dragState = {
+      startY: e.clientY,
+      initialPickedStart: new Date(pickedStart),
+    }
+  }
+
+  /** Keyboard equivalent of dragging the band — Arrow Up / Down
+   *  nudges the picked slot by 15 minutes (Shift = 1 hour),
+   *  clamped to the focused day.  Lets keyboard-only users
+   *  reschedule without a mouse. */
+  function bandKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    e.preventDefault()
+    const step = e.shiftKey ? 60 : 15
+    const sign = e.key === 'ArrowDown' ? 1 : -1
+    const candidate = new Date(pickedStart)
+    candidate.setMinutes(candidate.getMinutes() + sign * step)
+    const dayStart = stripTime(focusDay).getTime()
+    const dayMaxStart = dayStart + 24 * 60 * 60 * 1000 - eventDurationMs
+    const clamped = Math.max(dayStart, Math.min(candidate.getTime(), dayMaxStart))
+    pickedStart = new Date(clamped)
+    pickedEnd = new Date(clamped + eventDurationMs)
+  }
+
+  $effect(() => {
+    if (!dragState) return
+    const initial = dragState
+    function onMove(ev: PointerEvent) {
+      const dy = ev.clientY - initial.startY
+      // 60 minutes / HOUR_PX pixels → minutes-per-pixel.  Snap to
+      // 15-minute increments so the band lands on the same grid
+      // the click-to-relocate path uses.
+      const minutesDelta = Math.round((dy / HOUR_PX) * 60 / 15) * 15
+      const candidate = new Date(initial.initialPickedStart)
+      candidate.setMinutes(candidate.getMinutes() + minutesDelta)
+      // Clamp to the focused day so a drag can't push the slot
+      // out of the visible grid.  `dayMaxStart` keeps the slot's
+      // *end* on the same day too, so the band never visually
+      // wraps off the bottom.
+      const dayStart = stripTime(focusDay).getTime()
+      const dayMaxStart = dayStart + 24 * 60 * 60 * 1000 - eventDurationMs
+      const clamped = Math.max(dayStart, Math.min(candidate.getTime(), dayMaxStart))
+      pickedStart = new Date(clamped)
+      pickedEnd = new Date(clamped + eventDurationMs)
+    }
+    function onUp() {
+      dragState = null
+    }
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onUp)
+    return () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', onUp)
+    }
+  })
 
   function close() {
     onclose()
@@ -497,18 +576,30 @@
                  offset = the 32 px header row + the band's offset
                  inside the grid; `left` and `right` stretch the
                  band across all attendee columns regardless of
-                 their flex-derived width.  `pointer-events-none`
-                 so clicks pass through to the columns underneath. -->
+                 their flex-derived width.  Pointer events are
+                 enabled so the user can grab and drag the band
+                 to reschedule (a tap with no drag is a no-op
+                 because we `stopPropagation` on pointerdown,
+                 leaving relocation by clicking adjacent column
+                 area as the alternative gesture). -->
             {#if pickedSlotBand()}
               {@const band = pickedSlotBand()!}
               <div
-                class="pointer-events-none absolute border-2 border-primary-500 bg-primary-500/10 rounded-sm"
+                class="absolute border-2 border-primary-500 bg-primary-500/10 rounded-sm select-none {dragState
+                  ? 'cursor-grabbing'
+                  : 'cursor-grab'}"
                 style="
                   top: {32 + band.top}px;
                   left: {TIME_GUTTER_PX}px;
                   right: 0;
                   height: {band.height}px;
+                  touch-action: none;
                 "
+                onpointerdown={bandPointerDown}
+                onkeydown={bandKeyDown}
+                role="button"
+                tabindex="0"
+                aria-label="{m.event_planner_proposed_label()}: {timeFmt.format(pickedStart)} – {timeFmt.format(pickedEnd)}"
               ></div>
             {/if}
           </div>
