@@ -6598,7 +6598,7 @@ async fn send_email(
     outbox_source: Option<OutboxSourceRef>,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<(), NimbusError> {
+) -> Result<i64, NimbusError> {
     // Validate up-front: building the lettre Message rejects bad
     // addresses, missing bodies, etc.  Doing it here means
     // user-facing input errors still surface in Compose's modal
@@ -6656,7 +6656,13 @@ async fn send_email(
         try_drain_outbox_entry(&app_clone, &cache, entry_id).await;
     });
 
-    Ok(())
+    // #276 follow-up: return the new row id so Compose can hand
+    // it to App.svelte's `onsentenqueued` callback.  The
+    // edit-from-outbox path uses it to surface the new (or
+    // still-failing) row in the right pane immediately, so the
+    // user sees their edit in the queue without manually
+    // re-clicking the row.
+    Ok(entry_id)
 }
 
 /// Drive one queued outbox row through SMTP / JMAP.  Removes the

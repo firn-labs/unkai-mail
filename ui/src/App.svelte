@@ -238,6 +238,17 @@
    *  response if the row is updated by a retry / failure
    *  recording while the user has it open. */
   let selectedOutboxRow = $state<OutboxRowDto | null>(null)
+  /** Snapshot of "did the currently-open Compose start as an
+   *  edit-from-outbox?".  Captured at `openCompose` time
+   *  because Compose's `onclose` fires immediately on Send
+   *  (#156's instant-close) before its async send pipeline
+   *  reaches `invoke('send_email')` — so by the time we'd want
+   *  to inspect `composeInitial.outboxSource`, the modal has
+   *  already cleared it.  Set on open, consumed by
+   *  `onsentenqueued`, cleared by a fresh `openCompose` of any
+   *  kind so a subsequent non-edit send can't accidentally
+   *  inherit it. */
+  let composeOpenedAsEditOfOutbox = $state(false)
 
   // Bindable mirror of MailList's currently-rendered envelope rows.
   // Used by the auto-advance-after-delete flow (#99) to pick the
@@ -1200,6 +1211,12 @@
     // previous failed background send (#156).
     composeSendError = ''
     composeInitial = initial
+    // Snapshot whether this Compose started life as an
+    // edit-from-outbox — onsentenqueued reads it later (#276
+    // follow-up).  Re-set on every open so a fresh non-edit
+    // compose can't inherit the arming from a previous edit
+    // that the user cancelled.
+    composeOpenedAsEditOfOutbox = initial.outboxSource != null
   }
 
   /** Re-open a queued Outbox message in Compose for editing
@@ -1296,6 +1313,46 @@
       } catch (e) {
         console.warn('send-failed notification failed', e)
       }
+    }
+  }
+
+  /** Fires when Compose's send invoke succeeds with the new
+   *  outbox row's id (#276 follow-up).  Distinct from `onclose`
+   *  because the modal closes immediately on Send (#156's
+   *  instant-close UX) — relying on `onclose` alone makes
+   *  cancel and send indistinguishable.
+   *
+   *  When the just-sent Compose started life as an
+   *  edit-from-outbox, look up the new row in the queue and
+   *  surface it as the selected Outbox preview.  Three
+   *  outcomes:
+   *
+   *    * Healthy network: the drain task may have already
+   *      removed the row by the time this lookup runs — the
+   *      list comes back without the id, and we leave the
+   *      selection cleared (the empty-Outbox auto-route in
+   *      `outbox-updated` then takes over).
+   *    * Failed send: the row is still in the queue with a
+   *      `last_error`; we select it so the user can see what
+   *      went wrong without manually clicking the row.
+   *    * Mid-flight: row exists with no error yet — same
+   *      select behaviour, the row's status updates in place
+   *      via the `outbox-updated` listener as the drain
+   *      finishes. */
+  async function onComposeSentEnqueued(newRowId: number) {
+    if (!composeOpenedAsEditOfOutbox) return
+    composeOpenedAsEditOfOutbox = false
+    // Stay on the Outbox folder (the user was here when they
+    // clicked Edit; switching away would be confusing).
+    selectedFolder = OUTBOX_FOLDER
+    selectedUid = null
+    try {
+      const rows = await invoke<OutboxRowDto[]>('list_outbox', {
+        accountId: activeAccountId ?? '',
+      })
+      selectedOutboxRow = rows.find((r) => r.id === newRowId) ?? null
+    } catch (e) {
+      console.warn('list_outbox after edit-send failed', e)
     }
   }
 
@@ -2211,6 +2268,7 @@
           closeCompose()
         }}
         onsendfailed={onComposeSendFailed}
+        onsentenqueued={onComposeSentEnqueued}
       />
     {/if}
   </div>
