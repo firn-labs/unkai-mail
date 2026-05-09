@@ -178,6 +178,44 @@ pub async fn probe_server_certificate(host: &str, port: u16) -> Result<Vec<u8>, 
     Ok(leaf)
 }
 
+/// Strip a redundant display name when it equals the email address.
+///
+/// Some senders / IMAP envelopes populate the personal-name slot with
+/// the bare email address.  Our IMAP `format_address` already collapses
+/// those upstream, but envelopes cached *before* that fix still carry
+/// the malformed `addr <addr>` form — which lettre's `Mailbox::parse`
+/// rejects because the unquoted `@` violates RFC 5322's phrase syntax.
+///
+/// This sanitiser is a defensive last-mile pass: if a candidate
+/// recipient looks like `Name <user@host>` and the name (stripped of
+/// surrounding quotes / whitespace) equals the email itself, we
+/// return just the bare `user@host` so lettre accepts it.  Any other
+/// shape is returned unchanged.
+fn sanitise_recipient(addr: &str) -> String {
+    let trimmed = addr.trim();
+    let Some(open) = trimmed.rfind('<') else {
+        return addr.to_string();
+    };
+    let Some(close) = trimmed.rfind('>') else {
+        return addr.to_string();
+    };
+    if close <= open {
+        return addr.to_string();
+    }
+    let email = trimmed[open + 1..close].trim();
+    let name = trimmed[..open].trim();
+    let name_unquoted = name
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(name)
+        .trim();
+    if name_unquoted.eq_ignore_ascii_case(email) {
+        email.to_string()
+    } else {
+        addr.to_string()
+    }
+}
+
 /// Build the lettre `Message` for an outgoing email *without* sending it.
 ///
 /// Exposed so callers (e.g. `main.rs`) can build the message once, send
@@ -185,8 +223,9 @@ pub async fn probe_server_certificate(host: &str, port: u16) -> Result<Vec<u8>, 
 /// `message.formatted()` to `APPEND` a copy into the IMAP Sent folder
 /// — without re-running the (potentially expensive) MIME serialization.
 pub fn build_outgoing_message(email: &OutgoingEmail) -> Result<Message, NimbusError> {
-    let from_mailbox: Mailbox = email.from.parse().map_err(|e| {
-        NimbusError::Protocol(format!("Invalid 'from' address '{}': {e}", email.from))
+    let from_clean = sanitise_recipient(&email.from);
+    let from_mailbox: Mailbox = from_clean.parse().map_err(|e| {
+        NimbusError::Protocol(format!("Invalid 'from' address '{from_clean}': {e}"))
     })?;
 
     let mut builder: MessageBuilder = Message::builder()
@@ -194,27 +233,31 @@ pub fn build_outgoing_message(email: &OutgoingEmail) -> Result<Message, NimbusEr
         .subject(&email.subject);
 
     for addr in &email.to {
-        let mailbox: Mailbox = addr
+        let clean = sanitise_recipient(addr);
+        let mailbox: Mailbox = clean
             .parse()
-            .map_err(|e| NimbusError::Protocol(format!("Invalid 'to' address '{addr}': {e}")))?;
+            .map_err(|e| NimbusError::Protocol(format!("Invalid 'to' address '{clean}': {e}")))?;
         builder = builder.to(mailbox);
     }
     for addr in &email.cc {
-        let mailbox: Mailbox = addr
+        let clean = sanitise_recipient(addr);
+        let mailbox: Mailbox = clean
             .parse()
-            .map_err(|e| NimbusError::Protocol(format!("Invalid 'cc' address '{addr}': {e}")))?;
+            .map_err(|e| NimbusError::Protocol(format!("Invalid 'cc' address '{clean}': {e}")))?;
         builder = builder.cc(mailbox);
     }
     for addr in &email.bcc {
-        let mailbox: Mailbox = addr
+        let clean = sanitise_recipient(addr);
+        let mailbox: Mailbox = clean
             .parse()
-            .map_err(|e| NimbusError::Protocol(format!("Invalid 'bcc' address '{addr}': {e}")))?;
+            .map_err(|e| NimbusError::Protocol(format!("Invalid 'bcc' address '{clean}': {e}")))?;
         builder = builder.bcc(mailbox);
     }
 
     if let Some(reply_to) = &email.reply_to {
-        let mailbox: Mailbox = reply_to.parse().map_err(|e| {
-            NimbusError::Protocol(format!("Invalid 'reply-to' address '{reply_to}': {e}"))
+        let clean = sanitise_recipient(reply_to);
+        let mailbox: Mailbox = clean.parse().map_err(|e| {
+            NimbusError::Protocol(format!("Invalid 'reply-to' address '{clean}': {e}"))
         })?;
         builder = builder.reply_to(mailbox);
     }
@@ -496,4 +539,49 @@ fn build_with_calendar(
     builder
         .multipart(mixed)
         .map_err(|e| NimbusError::Protocol(format!("Failed to build invite email: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitise_recipient;
+
+    #[test]
+    fn drops_redundant_display_name_equal_to_email() {
+        // Some IMAP envelopes carry the email itself in the
+        // personal-name slot; lettre rejects the resulting
+        // `addr <addr>` because the unquoted `@` breaks RFC 5322.
+        assert_eq!(
+            sanitise_recipient("alex@example.com <alex@example.com>"),
+            "alex@example.com"
+        );
+    }
+
+    #[test]
+    fn drops_redundant_quoted_display_name_equal_to_email() {
+        assert_eq!(
+            sanitise_recipient("\"alex@example.com\" <alex@example.com>"),
+            "alex@example.com"
+        );
+    }
+
+    #[test]
+    fn case_insensitive_redundancy_check() {
+        assert_eq!(
+            sanitise_recipient("ALEX@example.com <alex@example.com>"),
+            "alex@example.com"
+        );
+    }
+
+    #[test]
+    fn keeps_real_display_name() {
+        assert_eq!(
+            sanitise_recipient("Alex Morgan <alex@example.com>"),
+            "Alex Morgan <alex@example.com>"
+        );
+    }
+
+    #[test]
+    fn passes_through_bare_address() {
+        assert_eq!(sanitise_recipient("alex@example.com"), "alex@example.com");
+    }
 }
