@@ -150,5 +150,27 @@
 
   "contact_view_button_edit": "Edit",
   "contact_view_button_delete": "Delete",
-  "contact_view_empty_state": "No contact details to show yet."
+  "contact_view_empty_state": "No contact details to show yet.",
+
+  "outbox_banner_empty": "The Outbox is empty. Mail you send appears here briefly while it's on its way.",
+  "outbox_banner_failed": "{count} messages couldn't be sent yet — Nimbus will keep retrying on every sync. You can retry now, edit, or discard each one.",
+  "outbox_banner_failed_singular": "1 message couldn't be sent yet — Nimbus will keep retrying on every sync. You can retry now, edit, or discard it.",
+  "outbox_banner_in_flight": "{count} messages in flight. They'll move to Sent once the server confirms.",
+  "outbox_banner_in_flight_singular": "1 message in flight. It'll move to Sent once the server confirms.",
+  "outbox_loading": "Loading…",
+  "outbox_empty": "No queued messages.",
+  "outbox_no_subject": "(no subject)",
+  "outbox_no_recipients": "(no recipients)",
+  "outbox_label_to": "To:",
+  "outbox_label_from": "From:",
+  "outbox_label_last_error": "Last error:",
+  "outbox_label_attempts": "{count} attempts",
+  "outbox_label_attempts_singular": "1 attempt",
+  "outbox_button_retry": "Retry now",
+  "outbox_button_edit": "Edit",
+  "outbox_button_delete": "Delete",
+  "outbox_button_retry_title": "Try sending this message now",
+  "outbox_button_edit_title": "Re-open this message in Compose to edit it",
+  "outbox_button_delete_title": "Discard this message without sending",
+  "outbox_confirm_discard": "Discard \"{subject}\" without sending?"
 }

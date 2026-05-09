@@ -150,5 +150,27 @@
 
   "contact_view_button_edit": "Bearbeiten",
   "contact_view_button_delete": "Löschen",
-  "contact_view_empty_state": "Noch keine Details für diesen Kontakt."
+  "contact_view_empty_state": "Noch keine Details für diesen Kontakt.",
+
+  "outbox_banner_empty": "Der Postausgang ist leer. Hier erscheinen kurz Ihre versendeten Nachrichten, während sie unterwegs sind.",
+  "outbox_banner_failed": "{count} Nachrichten konnten noch nicht versendet werden — Nimbus versucht es bei jeder Synchronisierung erneut. Sie können jede Nachricht jetzt wiederholen, bearbeiten oder verwerfen.",
+  "outbox_banner_failed_singular": "1 Nachricht konnte noch nicht versendet werden — Nimbus versucht es bei jeder Synchronisierung erneut. Sie können sie jetzt wiederholen, bearbeiten oder verwerfen.",
+  "outbox_banner_in_flight": "{count} Nachrichten unterwegs. Sie wandern in den Gesendet-Ordner, sobald der Server sie bestätigt.",
+  "outbox_banner_in_flight_singular": "1 Nachricht unterwegs. Sie wandert in den Gesendet-Ordner, sobald der Server sie bestätigt.",
+  "outbox_loading": "Lade…",
+  "outbox_empty": "Keine wartenden Nachrichten.",
+  "outbox_no_subject": "(kein Betreff)",
+  "outbox_no_recipients": "(keine Empfänger)",
+  "outbox_label_to": "An:",
+  "outbox_label_from": "Von:",
+  "outbox_label_last_error": "Letzter Fehler:",
+  "outbox_label_attempts": "{count} Versuche",
+  "outbox_label_attempts_singular": "1 Versuch",
+  "outbox_button_retry": "Jetzt wiederholen",
+  "outbox_button_edit": "Bearbeiten",
+  "outbox_button_delete": "Verwerfen",
+  "outbox_button_retry_title": "Diese Nachricht jetzt zu versenden versuchen",
+  "outbox_button_edit_title": "Diese Nachricht zum Bearbeiten in Compose öffnen",
+  "outbox_button_delete_title": "Diese Nachricht ohne Versenden verwerfen",
+  "outbox_confirm_discard": "„{subject}“ ohne Versenden verwerfen?"
 }
