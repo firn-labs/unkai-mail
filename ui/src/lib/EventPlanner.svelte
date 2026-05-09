@@ -398,7 +398,15 @@
         {:else if loadError}
           <p class="text-sm text-error-500">{loadError}</p>
         {:else}
-          <div class="inline-flex" style="min-width: 100%">
+          <!-- Grid container.  `relative` so the proposed-slot
+               band absolutely positions against this row instead
+               of falling through to the viewport.  `flex` (not
+               inline-flex) + `min-w-full` + `flex-1` per attendee
+               column means columns grow to fill the modal when
+               there's room and only fall back to a per-column
+               minimum (which triggers horizontal scroll) when
+               the attendee count exceeds what fits. -->
+          <div class="relative flex min-w-full">
             <!-- Time gutter on the left -->
             <div class="shrink-0" style="width: {TIME_GUTTER_PX}px">
               <!-- Header spacer aligning with attendee column header row -->
@@ -415,12 +423,15 @@
               </div>
             </div>
 
-            <!-- One column per attendee -->
+            <!-- One column per attendee.  `flex-1` so columns
+                 share whatever width is left after the gutter;
+                 `min-w-[160px]` so a long attendee list still
+                 produces a readable grid + horizontal scroll. -->
             {#each availability as av (av.email)}
               {@const dayPeriods = busyForDay(av.busyPeriods, focusDay)}
               <div
-                class="shrink-0 border-l border-surface-200 dark:border-surface-700"
-                style="width: {ATTENDEE_COL_PX}px"
+                class="flex-1 border-l border-surface-200 dark:border-surface-700"
+                style="min-width: {ATTENDEE_COL_PX}px"
               >
                 <!-- Attendee header -->
                 <div
@@ -481,18 +492,21 @@
               </div>
             {/each}
 
-            <!-- Proposed slot — one absolutely-positioned band that
-                 spans the full row of attendee columns at the
-                 picked time.  Pointer-events-none so the band
-                 doesn't swallow grid clicks. -->
+            <!-- Proposed slot — absolutely positioned against the
+                 grid container above (which is `relative`).  Top
+                 offset = the 32 px header row + the band's offset
+                 inside the grid; `left` and `right` stretch the
+                 band across all attendee columns regardless of
+                 their flex-derived width.  `pointer-events-none`
+                 so clicks pass through to the columns underneath. -->
             {#if pickedSlotBand()}
               {@const band = pickedSlotBand()!}
               <div
-                class="pointer-events-none absolute border-2 border-primary-500 bg-primary-500/10"
+                class="pointer-events-none absolute border-2 border-primary-500 bg-primary-500/10 rounded-sm"
                 style="
-                  top: calc(8rem + {band.top}px);
-                  left: calc(1.25rem + {TIME_GUTTER_PX}px);
-                  width: {ATTENDEE_COL_PX * availability.length}px;
+                  top: {32 + band.top}px;
+                  left: {TIME_GUTTER_PX}px;
+                  right: 0;
                   height: {band.height}px;
                 "
               ></div>
