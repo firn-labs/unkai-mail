@@ -2149,7 +2149,6 @@
               refreshToken={outboxRefreshToken}
               selectedId={selectedOutboxRow?.id ?? null}
               onselect={(row) => (selectedOutboxRow = row)}
-              onedit={onEditOutbox}
             />
           {:else}
             <MailList
@@ -2175,7 +2174,7 @@
              retry / edit / delete actions stay on the row in
              OutboxList. -->
         <div class="flex-1 min-w-0">
-          <OutboxView row={selectedOutboxRow} />
+          <OutboxView row={selectedOutboxRow} onedit={onEditOutbox} />
         </div>
       {:else}
         <MailView
