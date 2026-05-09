@@ -178,6 +178,57 @@ async fn delete_resource_inner(
         .map_err(|e| NimbusError::Network(format!("DELETE {url}: {e}")))
 }
 
+/// OPTIONS probe — returns `true` iff the server's `Allow` header
+/// advertises `PUT` (or `DELETE`) on the calendar collection.
+///
+/// We use this as a belt-and-braces companion to the
+/// `current-user-privilege-set` PROPFIND in `discovery`: some Sabre/DAV
+/// builds either omit the privilege set entirely on shared calendars or
+/// shape it in a way our parser misses, but every CalDAV server has to
+/// answer OPTIONS truthfully (RFC 4918 §18) so the calendar-edit UI
+/// can fall back to this signal. Callers run it during
+/// `sync_nextcloud_calendars` and stamp the verdict onto the cached
+/// `read_only` flag so the EventEditor can grey itself out before the
+/// user even tries to write.
+///
+/// `Ok(true)` means the calendar accepts writes; `Ok(false)` means it
+/// answered cleanly but refused PUT/DELETE; `Err(_)` means the probe
+/// itself failed (network, auth) and the caller should leave the
+/// existing `read_only` flag alone.
+pub async fn calendar_is_writable(
+    calendar_url: &str,
+    username: &str,
+    app_password: &str,
+    trusted_certs: &[TrustedCert],
+) -> Result<bool, NimbusError> {
+    ensure_https(calendar_url)?;
+    let http = build(trusted_certs)?;
+    let resp = http
+        .request(Method::OPTIONS, calendar_url)
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("OPTIONS {calendar_url}: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(NimbusError::Nextcloud(format!(
+            "OPTIONS {calendar_url} returned HTTP {}",
+            resp.status()
+        )));
+    }
+    let allow = resp
+        .headers()
+        .get(reqwest::header::ALLOW)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    // Empty `Allow` → server didn't tell us, assume writable so we
+    // don't accidentally lock the user out of every calendar.
+    if allow.is_empty() {
+        return Ok(true);
+    }
+    Ok(allow.contains("PUT") || allow.contains("DELETE"))
+}
+
 /// Strip a trailing `/` from a server URL.
 pub fn normalize_server_url(url: &str) -> String {
     url.trim_end_matches('/').to_string()
