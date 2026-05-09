@@ -9588,10 +9588,138 @@ fn restart_app(app: AppHandle) {
     app.restart();
 }
 
+// ── File-association handlers (#254) ────────────────────────────
+//
+// `bundle.fileAssociations` in `tauri.conf.json` registers Nimbus
+// with the OS as an "Open with…" candidate for `.ics` and `.eml`.
+// When the user double-clicks (or `start file.eml`s) one of those
+// the OS launches us with the path as `argv[1]`.  We capture the
+// argument once at startup and stash it in `PENDING_FILE_OPEN`;
+// the frontend polls `take_pending_file_to_open` after mount and
+// routes the path to the right view.
+
+/// One-shot slot for the file the OS handed us at launch time.
+/// Frontend takes ownership on its first read so a refresh of the
+/// main window doesn't loop into the same import flow.
+static PENDING_FILE_OPEN: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+
+fn pending_file_slot() -> &'static Mutex<Option<String>> {
+    PENDING_FILE_OPEN.get_or_init(|| Mutex::new(None))
+}
+
+/// Capture argv[1] at startup if it points at an `.ics` or `.eml`
+/// file we know how to open.  Anything else is ignored — Tauri
+/// passes any `--flag` style argv too and we don't want to
+/// accidentally treat those as paths.
+fn capture_launch_file_arg() {
+    let Some(arg) = std::env::args().nth(1) else {
+        return;
+    };
+    if arg.starts_with('-') {
+        return;
+    }
+    let lower = arg.to_lowercase();
+    if !(lower.ends_with(".ics") || lower.ends_with(".eml")) {
+        return;
+    }
+    if !std::path::Path::new(&arg).is_file() {
+        return;
+    }
+    if let Ok(mut slot) = pending_file_slot().lock() {
+        *slot = Some(arg);
+    }
+}
+
+/// Frontend hook: returns the launch-time file path (if any) and
+/// clears the slot so a window refresh doesn't re-open it.
+#[tauri::command]
+fn take_pending_file_to_open() -> Option<String> {
+    pending_file_slot()
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+}
+
+/// Read an `.eml` file from disk and parse it into the same
+/// `Email` shape `get_mail` returns from the cache.  Used by the
+/// view-only popout when the OS hands us a `.eml` to open.  No
+/// account context — the popout disables reply / forward / archive
+/// because there's no IMAP session to act against.
+#[tauri::command]
+fn parse_eml_file(path: String) -> Result<nimbus_core::models::Email, NimbusError> {
+    let bytes =
+        std::fs::read(&path).map_err(|e| NimbusError::Other(format!("read {path}: {e}")))?;
+    let stem = std::path::Path::new(&path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    nimbus_imap::parse_eml_bytes(&bytes, &format!("file:{stem}"), "", "")
+}
+
+/// Read an `.ics` file from disk and parse it into one or more
+/// `CalendarEvent`s.  Caller (the import-from-disk flow) opens the
+/// first event in the EventEditor so the user can pick a target
+/// calendar and save it via the existing create path.
+#[tauri::command]
+fn parse_ics_file(path: String) -> Result<Vec<nimbus_core::models::CalendarEvent>, NimbusError> {
+    let body = std::fs::read_to_string(&path)
+        .map_err(|e| NimbusError::Other(format!("read {path}: {e}")))?;
+    nimbus_caldav::ical::parse_ics(&body)
+}
+
+/// Cross-platform "open the OS Default Apps panel" — used by the
+/// settings page button so users can mark Nimbus as the default
+/// handler for `.ics` / `.eml` (which OS APIs don't let us do
+/// programmatically without a COM dance on Windows).
+///
+/// - Windows: `start ms-settings:defaultapps` opens the modern
+///   Settings panel directly on the Default-Apps page.
+/// - macOS: no settings deep-link for default apps; we open the
+///   user's home directory in Finder so they can right-click an
+///   `.ics` / `.eml` → Get Info → "Open with" → "Change All".
+/// - Linux: `xdg-mime default` is the canonical CLI; opening a
+///   GUI panel varies wildly across desktops, so we fall back to
+///   doing nothing and let the user run the CLI themselves.
+#[tauri::command]
+fn open_default_apps_settings() -> Result<(), NimbusError> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", "ms-settings:defaultapps"])
+            .spawn()
+            .map_err(|e| NimbusError::Other(format!("open defaults panel: {e}")))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
+            .spawn()
+            .map_err(|e| NimbusError::Other(format!("open defaults panel: {e}")))?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Err(NimbusError::Other(
+            "Default-app registration on Linux is per-desktop; \
+             use `xdg-mime default nimbus-mail.desktop text/calendar message/rfc822` \
+             from a terminal to mark Nimbus as the default handler."
+                .into(),
+        ))
+    }
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 fn main() {
     tracing_subscriber::fmt::init();
+
+    // Pick up the path the OS handed us if Nimbus was invoked as
+    // an `.ics` / `.eml` file handler (#254).  Capturing here —
+    // before the Tauri builder runs — means the slot is populated
+    // by the time the frontend's `take_pending_file_to_open`
+    // ping arrives on first paint.
+    capture_launch_file_arg();
 
     // Open (and migrate) the local mail cache once at startup, then
     // hand it to Tauri as managed state so every command can borrow it.
@@ -10161,6 +10289,11 @@ fn main() {
             show_main_window_cmd,
             quit_app,
             restart_app,
+            // #254 — file-association entry points
+            take_pending_file_to_open,
+            parse_eml_file,
+            parse_ics_file,
+            open_default_apps_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

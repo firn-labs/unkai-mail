@@ -16,6 +16,134 @@ use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 
 use crate::mutf7;
 
+/// Parse a raw RFC 5322 message into our `Email` shape.  Same MIME
+/// walk + transfer-decoding + charset logic `fetch_message` runs
+/// against IMAP-fetched bytes, factored out so the Tauri layer can
+/// reuse it for offline `.eml` opens (#254) without an account
+/// context.  Defaults `is_read = true` and `is_starred = false`
+/// because there are no IMAP flags on a file from disk.
+pub fn parse_eml_bytes(
+    raw: &[u8],
+    id: &str,
+    account_id: &str,
+    folder: &str,
+) -> Result<Email, NimbusError> {
+    let parsed = MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| NimbusError::Protocol("Failed to parse message".into()))?;
+
+    let subject = parsed.subject().unwrap_or("").to_string();
+    let from = parsed
+        .from()
+        .and_then(|list| list.first())
+        .map(|addr| {
+            let name = addr.name().unwrap_or("");
+            let email = addr.address().unwrap_or("");
+            if name.is_empty() {
+                email.to_string()
+            } else {
+                format!("{name} <{email}>")
+            }
+        })
+        .unwrap_or_default();
+
+    let to = parsed
+        .to()
+        .map(|list| {
+            list.iter()
+                .filter_map(|a| a.address().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let cc = parsed
+        .cc()
+        .map(|list| {
+            list.iter()
+                .filter_map(|a| a.address().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let body_text = (0..parsed.text_body_count())
+        .filter_map(|i| parsed.body_text(i).map(|s| s.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body_text = if body_text.is_empty() {
+        None
+    } else {
+        Some(body_text.replace("\r\n", "\n").replace('\r', "\n"))
+    };
+
+    let body_html = (0..parsed.html_body_count())
+        .filter_map(|i| parsed.body_html(i).map(|s| s.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body_html = if body_html.is_empty() {
+        None
+    } else {
+        Some(body_html)
+    };
+
+    let has_attachments = parsed.attachment_count() > 0;
+    let attachments: Vec<EmailAttachment> = parsed
+        .attachments()
+        .enumerate()
+        .map(|(idx, part)| {
+            let part_id = idx as u32;
+            let filename = part
+                .attachment_name()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "attachment".to_string());
+            let content_type = part
+                .content_type()
+                .map(|ct| {
+                    let ctype = ct.ctype();
+                    match ct.subtype() {
+                        Some(sub) => format!("{ctype}/{sub}"),
+                        None => ctype.to_string(),
+                    }
+                })
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let size = Some(part.contents().len() as u64);
+            let content_id = part.content_id().map(|s| s.to_string());
+            EmailAttachment {
+                filename,
+                content_type,
+                size,
+                part_id,
+                content_id,
+            }
+        })
+        .collect();
+
+    let date = parsed
+        .date()
+        .and_then(|d| {
+            DateTime::parse_from_rfc3339(&d.to_rfc3339())
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        })
+        .unwrap_or_else(Utc::now);
+
+    Ok(Email {
+        id: id.to_string(),
+        account_id: account_id.to_string(),
+        folder: folder.to_string(),
+        from,
+        to,
+        cc,
+        subject,
+        body_text,
+        body_html,
+        date,
+        is_read: true,
+        is_starred: false,
+        has_attachments,
+        attachments,
+    })
+}
+
 /// `async-imap`'s `Session` is generic over its underlying I/O. We
 /// pin the alias to the concrete `Compat<TlsStream<TcpStream>>` so
 /// downstream callers don't have to think about the four layers of
