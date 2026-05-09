@@ -1539,14 +1539,17 @@
          (input, textarea, button) when the calendar is read-only.
          The fieldset defaults (border, padding, min-width) get
          neutralised with Tailwind utilities so the layout stays
-         identical to the previous `<div>`.  Greying via opacity
-         signals "this is intentionally inert" without re-styling
-         every individual control.  Create mode is never read-only
-         — the calendar picker filters those out — so this only
-         actually flips in edit mode. -->
+         identical to the previous `<div>`.  Create mode is never
+         read-only — the calendar picker filters those out — so
+         this only actually flips in edit mode.
+         Visual cue: we rely on the native disabled-control styling
+         + the cursor-not-allowed hint + the read-only banner just
+         above the footer rather than a global `opacity` dim, so
+         the event details (title, time, attendees) stay fully
+         readable when the user opens an event just to *view* it. -->
     <fieldset
       disabled={mode === 'edit' && currentCalendarReadOnly}
-      class="flex-1 overflow-y-auto p-5 space-y-3 border-0 min-w-0 {mode === 'edit' && currentCalendarReadOnly ? 'opacity-60' : ''}"
+      class="flex-1 overflow-y-auto p-5 space-y-3 border-0 min-w-0 {mode === 'edit' && currentCalendarReadOnly ? '[&_input]:cursor-not-allowed [&_textarea]:cursor-not-allowed [&_button]:cursor-not-allowed [&_select]:cursor-not-allowed' : ''}"
     >
       <!-- Row 1 — Title spans the row alongside the calendar
            dropdown (mockup #128).  Title gets the lion's share
