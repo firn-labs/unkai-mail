@@ -182,5 +182,15 @@
   "outbox_view_label_attempts": "Versuche",
   "outbox_view_empty_body": "(Diese Nachricht hat keinen anzeigbaren Inhalt.)",
   "event_editor_readonly_banner": "Dieser Kalender ist schreibgeschützt — Sie können den Termin ansehen, Änderungen werden aber nicht gespeichert.",
-  "event_editor_close": "Schließen"
+  "event_editor_close": "Schließen",
+  "event_editor_find_time": "Termin finden",
+  "event_planner_title": "Termin finden",
+  "event_planner_close": "Schließen",
+  "event_planner_loading": "Verfügbarkeit wird geladen…",
+  "event_planner_no_attendees": "Fügen Sie mindestens eine teilnehmende Person hinzu, um die Verfügbarkeit zu sehen.",
+  "event_planner_proposed_label": "Vorschlag",
+  "event_planner_apply": "Diesen Zeitraum verwenden",
+  "event_planner_cancel": "Abbrechen",
+  "event_planner_source_unknown_title": "Keine Verfügbarkeitsdaten — als frei angenommen.",
+  "event_planner_source_local_title": "Aus Ihren eigenen Kalendern (diese Person hat kein Nextcloud-Konto bzw. ihr Kalender wird nicht mit Ihnen geteilt)."
 }
