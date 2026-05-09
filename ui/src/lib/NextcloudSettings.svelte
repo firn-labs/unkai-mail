@@ -118,6 +118,11 @@
     color: string | null
     last_synced_at: string | null
     hidden?: boolean
+    /** CalDAV-derived read-only flag (#236) — informational
+     *  for this surface; the visibility checkboxes still
+     *  apply to read-only calendars (the user can choose to
+     *  hide a shared calendar from the sidebar). */
+    read_only?: boolean
   }
   let calendarsList = $state<Record<string, CalendarSummary[]>>({})
 

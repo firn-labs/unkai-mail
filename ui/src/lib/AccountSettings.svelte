@@ -321,6 +321,12 @@
     color: string | null
     last_synced_at: string | null
     hidden?: boolean
+    /** CalDAV-derived read-only flag (#236).  The default-
+     *  calendar picker still lists these so the user can pick
+     *  a shared calendar as their default, but EventEditor's
+     *  create-mode picker filters them out and falls back to
+     *  the first writable calendar. */
+    read_only?: boolean
   }
   let calendarsForPicker = $state<CalendarRow[]>([])
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')

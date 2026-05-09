@@ -73,6 +73,10 @@
      *  before the event-editor dropdown sees them so the "Add
      *  event" flow matches the CalendarView sidebar. */
     hidden?: boolean
+    /** CalDAV-derived read-only flag (#236).  EventEditor's
+     *  picker filters these out for create-mode so the user
+     *  can't pick a calendar a save would land 403 on. */
+    read_only?: boolean
   }
 
   interface Attachment {

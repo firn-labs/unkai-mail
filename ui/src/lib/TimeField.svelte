@@ -34,13 +34,16 @@
   // A counter would also work; uniqueness is what matters.
   const listId = `timefield-list-${crypto.randomUUID()}`
 
-  /** Pre-computed list of selectable times. 15-min increments
-   *  cover the common meeting cadence (the standard scheduler
-   *  default). Cheap enough to compute once at module load. */
+  /** Pre-computed list of selectable times.  5-min increments
+   *  (#236) so a user can pick odd off-the-hour starts like
+   *  09:25 from the dropdown without dropping into the typed
+   *  fallback.  The list is ~12× longer than the old 15-min
+   *  set (288 entries) — still a single-frame render in the
+   *  current listbox, no scroll-perf hit. */
   const slots = (() => {
     const out: string[] = []
     for (let h = 0; h < 24; h++) {
-      for (let m = 0; m < 60; m += 15) {
+      for (let m = 0; m < 60; m += 5) {
         out.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`)
       }
     }

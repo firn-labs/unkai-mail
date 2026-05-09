@@ -77,6 +77,13 @@
     display_name: string
     color: string | null
     last_synced_at: string | null
+    /** CalDAV-derived read-only flag (#236).  Set when the
+     *  user can only view this calendar (typical for shared
+     *  calendars where the owner granted view-only access).
+     *  The picker filters these out for new events and the
+     *  Delete button is hidden when an existing event lives
+     *  on one. */
+    read_only?: boolean
   }
 
   // `stage` — used by Compose's "Add event" button (#152). Captures
@@ -207,8 +214,37 @@
       const parts = event.id.split('::')
       return parts.slice(0, 2).join('::')
     }
-    return draft?.calendarId ?? calendars[0]?.id ?? ''
+    // Default for create-mode: prefer the parent's hint, else
+    // the first writable calendar in the picker (#236 — used to
+    // be `calendars[0]` which could land on a read-only calendar
+    // and immediately fail the save).
+    return (
+      draft?.calendarId ??
+      calendars.find((c) => !c.read_only)?.id ??
+      calendars[0]?.id ??
+      ''
+    )
   }
+
+  /** True when the currently-selected calendar is read-only (#236).
+   *  Drives both "remove the Delete button" and the future
+   *  Save-disabled UX so the user can't issue a write the server
+   *  would reject anyway.  In edit-mode the calendar is fixed to
+   *  the event's home calendar; in create-mode the picker filters
+   *  read-only entries out so this stays `false` by construction. */
+  const currentCalendarReadOnly = $derived.by(() => {
+    const cal = calendars.find((c) => c.id === calendarId)
+    return cal?.read_only === true
+  })
+
+  /** Picker options for create-mode (#236).  Read-only calendars
+   *  are removed from the list entirely — saving would fail
+   *  server-side and there's no point letting the user pick one
+   *  in the first place.  Edit-mode renders the calendar as a
+   *  static label, so this only affects the create flow. */
+  const writableCalendars = $derived(
+    calendars.filter((c) => !c.read_only),
+  )
 
   // Close on Escape.  We attach to `document` so the key works
   // regardless of where focus is — including inside DateField /
@@ -861,7 +897,9 @@
     | '30'
     | '45'
     | '60'
+    | '120'
     | '1440'
+    | '10080'
     | 'custom'
   // svelte-ignore state_referenced_locally
   let reminderChoice = $state<ReminderChoice>(deriveReminderChoice())
@@ -869,9 +907,23 @@
   const originalReminders = event?.reminders ?? []
   function deriveReminderChoice(): ReminderChoice {
     const list = event?.reminders ?? []
-    if (list.length === 0) return 'none'
+    if (list.length === 0) {
+      // New events default to "15 minutes before" (#236).
+      // Edit-mode events with no VALARM stay on 'none' — the
+      // user explicitly didn't ask for a reminder, and silently
+      // adding one would be a behaviour change for every event
+      // they re-save.
+      return event ? 'none' : '15'
+    }
     if (list.length > 1) return 'custom'
     const m = list[0].trigger_minutes_before
+    // Preset minutes-before values that map cleanly to dropdown
+    // labels.  Anything else falls through to 'custom' and is
+    // round-tripped via `originalReminders` so the user's odd
+    // 17-min reminder doesn't silently become a 15-min one on
+    // re-save.  120 (2h) and 10080 (1w) added in #236 — without
+    // them, existing events with those reminders showed up as
+    // "Custom" and looked like the dropdown wasn't loading.
     if (
       m === 0 ||
       m === 5 ||
@@ -880,7 +932,9 @@
       m === 30 ||
       m === 45 ||
       m === 60 ||
-      m === 1440
+      m === 120 ||
+      m === 1440 ||
+      m === 10080
     ) {
       return String(m) as ReminderChoice
     }
@@ -1480,7 +1534,7 @@
               id="event-calendar"
               ariaLabel="Calendar"
               bind:value={calendarId}
-              options={calendars.map((c) => ({ value: c.id, label: c.display_name }))}
+              options={writableCalendars.map((c) => ({ value: c.id, label: c.display_name }))}
               placeholder="Select calendar"
             />
           </div>
@@ -1544,7 +1598,9 @@
               { value: '30', label: '30 minutes before' },
               { value: '45', label: '45 minutes before' },
               { value: '60', label: '1 hour before' },
+              { value: '120', label: '2 hours before' },
               { value: '1440', label: '1 day before' },
+              { value: '10080', label: '1 week before' },
               ...(reminderChoice === 'custom'
                 ? [{ value: 'custom' as const, label: 'Custom (preserved from server)' }]
                 : []),
@@ -1957,7 +2013,12 @@
               ? 'Add to message'
               : 'Save'}
       </button>
-      {#if mode === 'edit'}
+      {#if mode === 'edit' && !currentCalendarReadOnly}
+        <!-- #236: hide Delete when the calendar is read-only.
+             A user can still open such an event to view the
+             details, but the server would reject the
+             `DELETE` so showing the button would just produce
+             a confusing error toast. -->
         <button class="btn preset-outlined-error-500" disabled={saving || deleting} onclick={remove}>
           {deleting ? 'Deleting…' : 'Delete'}
         </button>
