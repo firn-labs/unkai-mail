@@ -1542,14 +1542,16 @@
          identical to the previous `<div>`.  Create mode is never
          read-only — the calendar picker filters those out — so
          this only actually flips in edit mode.
-         Visual cue: we rely on the native disabled-control styling
-         + the cursor-not-allowed hint + the read-only banner just
-         above the footer rather than a global `opacity` dim, so
-         the event details (title, time, attendees) stay fully
-         readable when the user opens an event just to *view* it. -->
+         Readability: the scoped `<style>` block at the bottom of
+         this file overrides the default browser dimming on
+         disabled inputs / buttons / textareas (color and the
+         webkit `-webkit-text-fill-color`) so the event details
+         stay fully legible.  The visual cue that the form is
+         locked comes from `cursor-not-allowed` on the controls
+         + the explicit "read-only" banner above the footer. -->
     <fieldset
       disabled={mode === 'edit' && currentCalendarReadOnly}
-      class="flex-1 overflow-y-auto p-5 space-y-3 border-0 min-w-0 {mode === 'edit' && currentCalendarReadOnly ? '[&_input]:cursor-not-allowed [&_textarea]:cursor-not-allowed [&_button]:cursor-not-allowed [&_select]:cursor-not-allowed' : ''}"
+      class="flex-1 overflow-y-auto p-5 space-y-3 border-0 min-w-0 {mode === 'edit' && currentCalendarReadOnly ? 'event-editor-readonly' : ''}"
     >
       <!-- Row 1 — Title spans the row alongside the calendar
            dropdown (mockup #128).  Title gets the lion's share
@@ -2091,3 +2093,26 @@
     </footer>
   </div>
 </div>
+
+<style>
+  /* #236 — readability for the read-only EventEditor.  The browser's
+     default `:disabled` styling dims inputs/buttons/textareas via
+     both the `color` property and the webkit-only
+     `-webkit-text-fill-color` (which wins over `color` in webkit
+     even when `color` is set).  We override both to keep the user's
+     event details legible — the disabled signal is communicated by
+     `cursor-not-allowed` on the controls and the read-only banner
+     above the footer, not by dimming the text.
+     `:global()` is required because the disabled controls live
+     inside Skeleton-styled descendants whose class scoping otherwise
+     hides them from this style block. */
+  .event-editor-readonly :global(input:disabled),
+  .event-editor-readonly :global(textarea:disabled),
+  .event-editor-readonly :global(select:disabled),
+  .event-editor-readonly :global(button:disabled) {
+    opacity: 1;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+    cursor: not-allowed;
+  }
+</style>

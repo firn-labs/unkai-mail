@@ -10,11 +10,11 @@ mod badge;
 
 use nimbus_caldav::{
     Calendar as CaldavCalendar, RawEvent, build_ics as caldav_build_ics,
-    calendar_is_writable as caldav_calendar_is_writable,
     create_calendar as caldav_create_calendar, create_event as caldav_create_event,
     delete_calendar as caldav_delete_calendar, delete_event as caldav_delete_event,
-    list_calendars as caldav_list_calendars, sync_calendar as caldav_sync_calendar,
-    update_calendar as caldav_update_calendar, update_event as caldav_update_event,
+    list_calendars as caldav_list_calendars, probe_calendar_writable as caldav_probe_writable,
+    sync_calendar as caldav_sync_calendar, update_calendar as caldav_update_calendar,
+    update_event as caldav_update_event,
 };
 use nimbus_carddav::{
     Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
@@ -3622,16 +3622,27 @@ async fn sync_nextcloud_calendars(
     );
 
     // #236 follow-up — privilege-set parsing alone misses a few
-    // Sabre/DAV variants (notably some shared-calendar configs that
-    // omit `current-user-privilege-set` entirely). Cross-check each
-    // calendar with an OPTIONS probe: if `Allow:` doesn't advertise
-    // PUT or DELETE, the server isn't going to accept writes from
-    // this account, regardless of what the privilege XML implied.
-    // We OR the two signals (read_only stays true if either
-    // declared the calendar non-writable) so a writable verdict
-    // requires both checks to agree.
+    // Sabre/DAV variants (notably some shared-calendar configs
+    // that omit `current-user-privilege-set` entirely or
+    // advertise write privileges that the actual PUT then
+    // refuses with 404).  OPTIONS is similarly unreliable —
+    // some configs return the resource type's full method list
+    // regardless of ACL.  The only signal that reliably matches
+    // what the user hits at save time is an actual PUT, so we
+    // do exactly that: drop a placeholder VEVENT in 1970 (so it
+    // never collides with real data), DELETE it on the way out,
+    // and treat the PUT verdict as canonical.  The probe fires
+    // once per calendar per sync — the cost is one extra
+    // request pair on top of the existing PROPFIND/REPORT
+    // traffic.
+    //
+    // We OR with the privilege-set verdict so a writable
+    // discovery only stands when both signals agree; any
+    // probe failure (network, 5xx) leaves the privilege-set
+    // verdict alone rather than misclassify on a transient
+    // blip.
     for cal in &mut server_calendars {
-        match caldav_calendar_is_writable(
+        match caldav_probe_writable(
             &cal.path,
             &account.username,
             &app_password,
@@ -3640,13 +3651,25 @@ async fn sync_nextcloud_calendars(
         .await
         {
             Ok(true) => {
-                // OPTIONS says writable — defer to the privilege-set
-                // verdict (which may still flag it read-only).
+                // PUT succeeded → calendar accepts writes. The
+                // privilege-set may still have flagged it
+                // read-only (rare); we trust the PUT result and
+                // *clear* the flag so a re-shared calendar that
+                // gets write access back also resurfaces in the
+                // editor.
+                if cal.read_only {
+                    tracing::info!(
+                        "CalDAV: write-probe overrides privilege-set on '{}' \
+                         (PUT succeeded → marking writable)",
+                        cal.path
+                    );
+                }
+                cal.read_only = false;
             }
             Ok(false) => {
                 if !cal.read_only {
                     tracing::info!(
-                        "CalDAV: OPTIONS marks calendar '{}' read-only (Allow lacks PUT/DELETE)",
+                        "CalDAV: write-probe marks calendar '{}' read-only (PUT 403/404)",
                         cal.path
                     );
                 }
@@ -3654,7 +3677,7 @@ async fn sync_nextcloud_calendars(
             }
             Err(e) => {
                 tracing::warn!(
-                    "CalDAV: OPTIONS probe for '{}' failed, keeping privilege-set verdict: {e}",
+                    "CalDAV: write-probe for '{}' failed, keeping privilege-set verdict: {e}",
                     cal.path
                 );
             }

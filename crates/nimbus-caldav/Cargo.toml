@@ -23,3 +23,7 @@ quick-xml.workspace = true
 # iCalendar parser (`ical` feature) — pulls VEVENT/VCALENDAR handling
 # out of the same crate CardDAV uses for vCards.
 ical.workspace = true
+# Random-UID generator for the read-only write-probe.  We mint a
+# fresh per-probe UID so two parallel probes can't collide on the
+# server-side href.
+uuid.workspace = true
