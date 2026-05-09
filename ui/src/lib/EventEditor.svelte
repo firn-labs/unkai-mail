@@ -1286,17 +1286,32 @@
         onsaved()
       }
 
-      // Sync Talk participants + room visibility once the
-      // CalDAV save has stuck.  Only fires when the user
-      // created a Talk room from this editor session and
-      // there's at least one attendee — pure "Talk-but-no-
-      // attendees" rooms behave like personal scratch rooms
-      // and don't need any of this.
-      if (pendingTalkRoom && input.attendees.length > 0) {
-        await syncTalkParticipants(input.attendees)
-      }
-
+      // Dismiss IMMEDIATELY now that the calendar event is
+      // persisted (#255 follow-up).  Awaiting Talk-participant
+      // sync inside the same try-block kept the editor — and the
+      // closure holding `onclose` — alive for the 1-3 s of
+      // sequential NC round-trips, and any late `onclose()` would
+      // race against the parent's next "open editor" gesture
+      // (e.g. a second "Respond with meeting" reply on the same
+      // thread).  The parent's `onsaved` already fired above, so
+      // the editor has done everything it owes the caller; the
+      // Talk-participant sync is post-success housekeeping that
+      // the user shouldn't have to wait on.
       onclose()
+
+      // Fire-and-forget Talk participant sync.  Only fires when
+      // the user created a Talk room from this editor session
+      // and there's at least one attendee — pure "Talk-but-no-
+      // attendees" rooms behave like personal scratch rooms and
+      // don't need any of this.  Errors land in the console; the
+      // calendar event is already saved and the user has moved
+      // on.  Misses get caught the next time the user opens the
+      // event in the editor (the room sync re-runs from there).
+      if (pendingTalkRoom && input.attendees.length > 0) {
+        void syncTalkParticipants(input.attendees).catch((e) =>
+          console.warn('syncTalkParticipants failed (event already saved)', e),
+        )
+      }
     } catch (e) {
       error = formatError(e) || 'Failed to save event'
     } finally {
