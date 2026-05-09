@@ -180,5 +180,7 @@
   "outbox_view_label_bcc": "Bcc",
   "outbox_view_label_queued_at": "Wartet seit",
   "outbox_view_label_attempts": "Versuche",
-  "outbox_view_empty_body": "(Diese Nachricht hat keinen anzeigbaren Inhalt.)"
+  "outbox_view_empty_body": "(Diese Nachricht hat keinen anzeigbaren Inhalt.)",
+  "event_editor_readonly_banner": "Dieser Kalender ist schreibgeschützt — Sie können den Termin ansehen, Änderungen werden aber nicht gespeichert.",
+  "event_editor_close": "Schließen"
 }
