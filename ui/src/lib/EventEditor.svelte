@@ -1473,8 +1473,30 @@
   }
 
   function currentCalendarLabel(): string {
-    return calendars.find((c) => c.id === calendarId)?.display_name ?? '(unknown)'
+    const c = calendars.find((c) => c.id === calendarId)
+    if (!c) return '(unknown)'
+    // Surface read-only status in the static label so the user
+    // sees at a glance why this event can't be deleted (#236).
+    return c.read_only ? `${c.display_name} (read-only)` : c.display_name
   }
+
+  // Diagnostic for #236 — when EventEditor opens in edit mode,
+  // log the resolved calendar's read_only flag so a missing /
+  // mis-parsed privilege-set surfaces in DevTools instead of
+  // landing as "Delete still shows" with no signal as to why.
+  // Logged once at mount; harmless on every other open.
+  $effect(() => {
+    if (mode !== 'edit') return
+    const c = calendars.find((cc) => cc.id === calendarId)
+    console.log('[event-editor] edit-mode calendar:', {
+      calendarId,
+      found: !!c,
+      display_name: c?.display_name,
+      read_only: c?.read_only,
+      total_calendars: calendars.length,
+      read_only_count: calendars.filter((cc) => cc.read_only).length,
+    })
+  })
 </script>
 
 <!-- Backdrop click closes the editor — same UX pattern as the
