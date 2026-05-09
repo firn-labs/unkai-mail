@@ -4132,6 +4132,60 @@ fn organizer_local(account: &NextcloudAccount) -> (String, Option<String>) {
 /// Create a new VEVENT in the given calendar.
 ///
 /// Generates a fresh UUID for the UID so callers don't have to.
+/// `calendars-updated` event payload (#236 follow-up).  Fired when
+/// the cache flips a calendar's `read_only` flag — currently the
+/// only writer is the CalDAV-write fallback below, but the event
+/// is generic so other future flips (e.g. a successful re-sync
+/// that rolls a calendar back to writable) can ride the same
+/// channel.  The frontend listens, refetches `get_cached_calendars`,
+/// and refreshes any `EventEditor` already mounted.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarsUpdatedPayload {
+    nextcloud_account_id: Option<String>,
+}
+
+/// Inspect a CalDAV-write error for the 403/404 permission signal
+/// and, if present, mark the affected calendar as `read_only` in
+/// the local cache.  Best-effort: failures here are logged and
+/// dropped — the user already saw the upstream write fail; the
+/// only loss from a missed flip is that they'd see the same
+/// error again on the next attempt.
+///
+/// Emits `calendars-updated` so the EventEditor (already open
+/// with the failed save) refreshes its `calendars` prop and the
+/// `currentCalendarReadOnly` derived flips, hiding Save + Delete.
+fn flag_calendar_read_only_on_forbidden(
+    app: &AppHandle,
+    cache: &Cache,
+    calendar_id: &str,
+    err: &NimbusError,
+) {
+    if !matches!(err, NimbusError::CalDavWriteForbidden(_)) {
+        return;
+    }
+    if let Err(e) = cache.set_calendar_read_only(calendar_id, true) {
+        tracing::warn!(
+            "failed to flip read_only=true on calendar '{calendar_id}' after CalDAV 403/404: {e}"
+        );
+        return;
+    }
+    tracing::info!(
+        "calendar '{calendar_id}' marked read-only locally after CalDAV write was forbidden"
+    );
+    // Resolve the NC account id from the calendar id (`{nc}::{path}`)
+    // so the frontend listener can scope its refresh — costs nothing
+    // to include and lets a future multi-account UI avoid blanket
+    // refetches.
+    let nc_account_id = calendar_id.split_once("::").map(|(nc, _)| nc.to_string());
+    let payload = CalendarsUpdatedPayload {
+        nextcloud_account_id: nc_account_id,
+    };
+    if let Err(e) = app.emit("calendars-updated", &payload) {
+        tracing::warn!("failed to emit calendars-updated event: {e}");
+    }
+}
+
 /// The PUT uses `If-None-Match: *`, so a UID collision surfaces as
 /// a structured error instead of a silent overwrite. On success, the
 /// new event is upserted into the local cache so the UI can render it
@@ -4141,6 +4195,7 @@ async fn create_calendar_event(
     calendar_id: String,
     input: CalendarEventInput,
     cache: State<'_, Cache>,
+    app: AppHandle,
 ) -> Result<CalendarEvent, NimbusError> {
     let (nc_id, calendar_path) =
         cache
@@ -4172,7 +4227,8 @@ async fn create_calendar_event(
         &ics,
         &account.trusted_certs,
     )
-    .await?;
+    .await
+    .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
 
     let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
     cache.upsert_single_event(&calendar_id, &row)?;
@@ -4195,6 +4251,7 @@ async fn update_calendar_event(
     event_id: String,
     input: CalendarEventInput,
     cache: State<'_, Cache>,
+    app: AppHandle,
 ) -> Result<CalendarEvent, NimbusError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
@@ -4212,7 +4269,12 @@ async fn update_calendar_event(
     // another device (NC web, phone) doesn't surface to the
     // user as "refresh and try again" — it transparently syncs
     // and re-PUTs once.
-    let (outcome, handle) = update_event_with_etag_retry(&cache, &event_id, &ics).await?;
+    let outer_calendar_id = handle.calendar_id.clone();
+    let (outcome, handle) = update_event_with_etag_retry(&cache, &event_id, &ics)
+        .await
+        .inspect_err(|e| {
+            flag_calendar_read_only_on_forbidden(&app, &cache, &outer_calendar_id, e)
+        })?;
 
     let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
     cache.upsert_single_event(&handle.calendar_id, &row)?;
@@ -4230,11 +4292,13 @@ async fn update_calendar_event(
 async fn delete_calendar_event(
     event_id: String,
     cache: State<'_, Cache>,
+    app: AppHandle,
 ) -> Result<(), NimbusError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
+    let calendar_id = handle.calendar_id.clone();
     caldav_delete_event(
         &handle.href,
         &nc_account.username,
@@ -4242,7 +4306,8 @@ async fn delete_calendar_event(
         &handle.etag,
         &nc_account.trusted_certs,
     )
-    .await?;
+    .await
+    .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
     cache.delete_event_by_id(&event_id)?;
     Ok(())
 }

@@ -2025,16 +2025,39 @@
       {/if}
     </div>
 
+    {#if mode === 'edit' && currentCalendarReadOnly}
+      <!-- Read-only banner (#236 follow-up).  Sits just above
+           the footer so the user sees *why* Save / Delete
+           aren't on offer before reaching for them.  The
+           banner appears either because the calendar's
+           privilege-set was parsed at discovery OR because a
+           previous Save attempt got back a 403/404 and the
+           write-failure fallback flipped the flag. -->
+      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 text-xs text-surface-600 dark:text-surface-300 flex items-center gap-2">
+        <Icon name="warning" size={14} />
+        <span>This calendar is read-only — you can view this event, but changes can't be saved.</span>
+      </div>
+    {/if}
+
     <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-700 flex items-center gap-2">
-      <button class="btn preset-filled-primary-500" disabled={saving || deleting} onclick={save}>
-        {saving
-          ? 'Saving…'
-          : mode === 'create'
-            ? 'Create'
-            : mode === 'stage'
-              ? 'Add to message'
-              : 'Save'}
-      </button>
+      {#if !(mode === 'edit' && currentCalendarReadOnly)}
+        <!-- #236: hide Save when the calendar is read-only.
+             The server would reject the PUT (NC's permission-
+             masking returns 404 instead of 403, our CalDAV
+             write path catches both); offering the button
+             just produces a confusing error toast.  Create-
+             mode never lands here because the calendar
+             picker filters read-only entries out upstream. -->
+        <button class="btn preset-filled-primary-500" disabled={saving || deleting} onclick={save}>
+          {saving
+            ? 'Saving…'
+            : mode === 'create'
+              ? 'Create'
+              : mode === 'stage'
+                ? 'Add to message'
+                : 'Save'}
+        </button>
+      {/if}
       {#if mode === 'edit' && !currentCalendarReadOnly}
         <!-- #236: hide Delete when the calendar is read-only.
              A user can still open such an event to view the
@@ -2047,7 +2070,7 @@
       {/if}
       <div class="flex-1"></div>
       <button class="btn preset-outlined-surface-500" disabled={saving || deleting} onclick={() => void cancel()}>
-        Cancel
+        {mode === 'edit' && currentCalendarReadOnly ? 'Close' : 'Cancel'}
       </button>
     </footer>
   </div>
