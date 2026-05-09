@@ -1475,9 +1475,7 @@
   function currentCalendarLabel(): string {
     const c = calendars.find((c) => c.id === calendarId)
     if (!c) return '(unknown)'
-    // Surface read-only status in the static label so the user
-    // sees at a glance why this event can't be deleted (#236).
-    return c.read_only ? `${c.display_name} (read-only)` : c.display_name
+    return c.display_name
   }
 
   // Diagnostic for #236 — when EventEditor opens in edit mode,
