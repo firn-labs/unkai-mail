@@ -25,5 +25,23 @@
     "security": {
       "csp": null
     }
+  },
+  "bundle": {
+    "fileAssociations": [
+      {
+        "ext": ["ics"],
+        "name": "iCalendar Event",
+        "description": "iCalendar event invitation",
+        "mimeType": "text/calendar",
+        "role": "Editor"
+      },
+      {
+        "ext": ["eml"],
+        "name": "Email Message",
+        "description": "RFC 822 email message",
+        "mimeType": "message/rfc822",
+        "role": "Viewer"
+      }
+    ]
   }
 }
