@@ -172,5 +172,13 @@
   "outbox_button_retry_title": "Diese Nachricht jetzt zu versenden versuchen",
   "outbox_button_edit_title": "Diese Nachricht zum Bearbeiten in Compose öffnen",
   "outbox_button_delete_title": "Diese Nachricht ohne Versenden verwerfen",
-  "outbox_confirm_discard": "„{subject}“ ohne Versenden verwerfen?"
+  "outbox_confirm_discard": "„{subject}“ ohne Versenden verwerfen?",
+  "outbox_view_unreadable": "Diese wartende Nachricht konnte nicht für die Vorschau gelesen werden.",
+  "outbox_view_label_from": "Von",
+  "outbox_view_label_to": "An",
+  "outbox_view_label_cc": "Cc",
+  "outbox_view_label_bcc": "Bcc",
+  "outbox_view_label_queued_at": "Wartet seit",
+  "outbox_view_label_attempts": "Versuche",
+  "outbox_view_empty_body": "(Diese Nachricht hat keinen anzeigbaren Inhalt.)"
 }

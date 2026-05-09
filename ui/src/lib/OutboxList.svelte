@@ -72,11 +72,24 @@
      *  events so the list re-fetches without losing its scroll
      *  position. */
     refreshToken?: number
+    /** Currently-selected row id, controlled by the parent so
+     *  the right pane (`OutboxView`) and the list highlight
+     *  stay in sync.  `null` means no row selected — the right
+     *  pane shows its empty placeholder. */
+    selectedId?: number | null
+    /** User clicked a row, OR the previously-selected row was
+     *  refreshed / removed by a queue update.  The right-pane
+     *  preview reads from this snapshot — `null` means the
+     *  selected row vanished (drained successfully, deleted,
+     *  or edited away) and the right pane should drop back to
+     *  its empty state. */
+    onselect?: (row: OutboxRowDto | null) => void
     /** Re-open this queued message in Compose for editing.
-     *  App.svelte calls `edit_outbox_entry` (which removes the
-     *  row) and pipes the result into a fresh Compose modal
-     *  with the original recipients / body / answered-tracking
-     *  ref intact. */
+     *  App.svelte deserialises the embedded `OutgoingEmail`
+     *  and opens a fresh Compose modal with `outboxSource: {
+     *  id }` set so a successful send replaces the queued
+     *  copy.  Cancelling Compose leaves the original row in
+     *  the queue. */
     onedit: (row: OutboxRowDto) => void
   }
   let {
@@ -84,6 +97,8 @@
     unified = false,
     accounts = [],
     refreshToken = 0,
+    selectedId = null,
+    onselect,
     onedit,
   }: Props = $props()
 
@@ -102,6 +117,17 @@
         unified ? {} : { accountId },
       )
       rows = fresh
+      // Keep the parent's preview row in sync with the fresh
+      // list.  If the previously-selected id is still present,
+      // re-emit the updated snapshot so attempt counts /
+      // `last_error` propagate to the right-pane preview; if
+      // it's gone (drained successfully, deleted, edited away),
+      // clear the selection so the right pane drops back to
+      // its empty state.
+      if (selectedId !== null) {
+        const stillThere = fresh.find((r) => r.id === selectedId) ?? null
+        onselect?.(stillThere)
+      }
     } catch (e) {
       error = `${e}`
     } finally {
@@ -237,7 +263,20 @@
     {:else}
       {#each rows as row (row.id)}
         <div
-          class="border-b border-surface-100 dark:border-surface-800 px-4 py-3 group hover:bg-surface-50 dark:hover:bg-surface-900/40"
+          role="button"
+          tabindex="0"
+          aria-pressed={selectedId === row.id}
+          class="border-b border-surface-100 dark:border-surface-800 px-4 py-3 group cursor-pointer transition-colors
+            {selectedId === row.id
+              ? 'bg-primary-500/10'
+              : 'hover:bg-surface-50 dark:hover:bg-surface-900/40'}"
+          onclick={() => onselect?.(row)}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              onselect?.(row)
+            }
+          }}
         >
           <div class="flex items-center justify-between gap-2 mb-1">
             <span class="text-sm font-semibold truncate">
@@ -270,7 +309,10 @@
               type="button"
               class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
               disabled={busyId === row.id}
-              onclick={() => void retryRow(row)}
+              onclick={(e) => {
+                e.stopPropagation()
+                void retryRow(row)
+              }}
               title={m.outbox_button_retry_title()}
             >
               <Icon name={busyId === row.id ? 'loading' : 'sync'} size={14} />
@@ -279,7 +321,10 @@
             <button
               type="button"
               class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
-              onclick={() => editRow(row)}
+              onclick={(e) => {
+                e.stopPropagation()
+                editRow(row)
+              }}
               title={m.outbox_button_edit_title()}
             >
               <Icon name="compose" size={14} />
@@ -289,7 +334,10 @@
               type="button"
               class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5 hover:bg-red-500/15 hover:text-red-500"
               disabled={busyId === row.id}
-              onclick={() => void deleteRow(row)}
+              onclick={(e) => {
+                e.stopPropagation()
+                void deleteRow(row)
+              }}
               title={m.outbox_button_delete_title()}
             >
               <Icon name="trash" size={14} />

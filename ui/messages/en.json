@@ -172,5 +172,13 @@
   "outbox_button_retry_title": "Try sending this message now",
   "outbox_button_edit_title": "Re-open this message in Compose to edit it",
   "outbox_button_delete_title": "Discard this message without sending",
-  "outbox_confirm_discard": "Discard \"{subject}\" without sending?"
+  "outbox_confirm_discard": "Discard \"{subject}\" without sending?",
+  "outbox_view_unreadable": "This queued message couldn't be parsed for preview.",
+  "outbox_view_label_from": "From",
+  "outbox_view_label_to": "To",
+  "outbox_view_label_cc": "Cc",
+  "outbox_view_label_bcc": "Bcc",
+  "outbox_view_label_queued_at": "Queued",
+  "outbox_view_label_attempts": "Attempts",
+  "outbox_view_empty_body": "(This message has no displayable body.)"
 }
