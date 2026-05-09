@@ -454,6 +454,12 @@
      *  minute 0 to 15 and be treated as a drag, creating a
      *  ghost event the user didn't ask for. */
     startClientY: number
+    /** True once the cursor has moved past `CLICK_PIXEL_SLOP`
+     *  pixels from `startClientY` (#236 follow-up).  Gates
+     *  the drag-overlay render so a plain click doesn't
+     *  flash a 2-pixel sliver of "you're creating an event"
+     *  preview between mousedown and mouseup. */
+    hasMoved: boolean
   }
   let drag = $state<DragState | null>(null)
   /** Pixel slop for the "this was a click, not a drag" check
@@ -1107,6 +1113,7 @@
       currentMinute: minute,
       startEventId: evEl?.dataset.eventId ?? null,
       startClientY: ev.clientY,
+      hasMoved: false,
     }
   }
 
@@ -1114,9 +1121,15 @@
     if (!drag || drag.dayKey !== bucket.dayKey) return
     const target = ev.currentTarget as HTMLElement
     const rect = target.getBoundingClientRect()
+    // Flip `hasMoved` only after the cursor crosses the
+    // click-vs-drag threshold (#236) so the drag overlay
+    // doesn't render — and the mouseup branch doesn't
+    // create a ghost event — for what was really just a click.
+    const pixelDelta = Math.abs(ev.clientY - drag.startClientY)
     drag = {
       ...drag,
       currentMinute: pxToMinuteSnapped(ev.clientY - rect.top),
+      hasMoved: drag.hasMoved || pixelDelta > CLICK_PIXEL_SLOP,
     }
   }
 
@@ -1177,9 +1190,15 @@
   }
 
   /** Geometry for the in-progress drag overlay rendered on the
-      currently-active day column. */
+      currently-active day column.  Returns `null` until the
+      cursor has actually moved past `CLICK_PIXEL_SLOP` (#236):
+      without this gate, a press-then-release click on an event
+      tile briefly painted a 2px sliver of the create-event
+      overlay between mousedown and mouseup which read as a
+      flicker.  Real drags pass the threshold within the first
+      mousemove tick so the overlay still appears responsively. */
   function dragOverlay(bucket: WeekBucket): { topPx: number; heightPx: number } | null {
-    if (!drag || drag.dayKey !== bucket.dayKey) return null
+    if (!drag || drag.dayKey !== bucket.dayKey || !drag.hasMoved) return null
     const a = Math.min(drag.startMinute, drag.currentMinute)
     const b = Math.max(drag.startMinute, drag.currentMinute)
     return {
@@ -1569,19 +1588,24 @@
                        through three states: full (pin + text),
                        pin-only as a hint that there *is* a
                        location worth expanding for, and hidden
-                       when there's no room left at all.  The
-                       remaining content is then vertically
-                       centred in the block (`justify-center`)
-                       so a half-filled tile reads as
-                       intentionally compact rather than
-                       top-stuck. -->
+                       when there's no room left at all.
+                       Tile content top-aligns by default — the
+                       tile reads as a normal calendar entry with
+                       the title at the top.  Only when something
+                       had to be hidden (time or location won't
+                       fit) do we centre what's left, so a tiny
+                       sliver shows its title in the middle of
+                       the box rather than mashed against the
+                       top edge. -->
                   {@const showTime = p.heightPx >= 32}
                   {@const showLocationFull = !!locationLabel && p.heightPx >= 50}
                   {@const showLocationIcon =
                     !!locationLabel && p.heightPx >= 38 && p.heightPx < 50}
+                  {@const compactCentered =
+                    !showTime || (!!locationLabel && !showLocationFull)}
                   <div
                     data-event-id={p.event.id}
-                    class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight flex flex-col justify-center {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
+                    class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight flex flex-col {compactCentered ? 'justify-center' : 'justify-start'} {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
                     style="--ev-color: {eventColor(p.event)}; top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px);"
                     title={`${p.event.summary || '(no title)'} — ${fmtTime(p.event.start)}–${fmtTime(p.event.end)}${p.event.location ? ` @ ${p.event.location}` : ''}`}
                     role="button"
