@@ -1460,80 +1460,133 @@
   }
 
   async function onRespondWithMeeting(mail: ReplyableMail) {
-    let ncId = ''
+    console.log('[respond-with-meeting] click', {
+      uid: mail.uid,
+      account_id: mail.account_id,
+      folder: mail.folder,
+      meetingDraftAlreadySet: meetingDraft !== null,
+      composeInitialAlreadySet: composeInitial !== null,
+    })
+
+    // Defensive: if a previous flow left state behind (e.g. an
+    // unclosed Compose modal whose overlay would hide the editor),
+    // clear it so the new EventEditor lands on top of an empty
+    // surface.  Should be rare with the recent fixes — log so we
+    // can spot the leak if it does happen.
+    if (meetingDraft !== null) {
+      console.warn(
+        '[respond-with-meeting] meetingDraft was already set; clearing before re-open',
+      )
+      meetingDraft = null
+    }
+    if (composeInitial !== null) {
+      console.warn(
+        '[respond-with-meeting] composeInitial was set; clearing before opening editor',
+      )
+      composeInitial = null
+    }
+
+    // Top-level try/catch so any unhandled rejection surfaces as a
+    // visible alert instead of leaving the user staring at a
+    // button that did nothing.  Inner blocks still run their own
+    // try/catch where they can give a more specific message.
     try {
-      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
-      if (list.length === 0) {
-        alert('Connect a Nextcloud account first (Settings → Nextcloud).')
+      let ncId = ''
+      try {
+        const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+        console.log('[respond-with-meeting] nc accounts:', list.length)
+        if (list.length === 0) {
+          alert('Connect a Nextcloud account first (Settings → Nextcloud).')
+          return
+        }
+        ncId = list[0].id
+      } catch (e) {
+        alert(`Failed to load Nextcloud accounts: ${e}`)
         return
       }
-      ncId = list[0].id
-    } catch (e) {
-      alert(`Failed to load Nextcloud accounts: ${e}`)
-      return
-    }
 
-    let calendars: CalendarSummary[] = []
-    try {
-      calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
-    } catch (e) {
-      alert(`Failed to load calendars: ${e}`)
-      return
-    }
-    const visible = calendars.filter((c) => !c.hidden)
-    if (visible.length === 0) {
-      alert('No writable calendars found on your Nextcloud account.')
-      return
-    }
-    let initialCalendarId = visible[0].id
-    try {
-      const s = await invoke<{ default_calendar_id: string | null }>('get_app_settings')
-      if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
-        initialCalendarId = s.default_calendar_id!
+      let calendars: CalendarSummary[] = []
+      try {
+        calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+        console.log(
+          '[respond-with-meeting] calendars total:',
+          calendars.length,
+          'hidden:',
+          calendars.filter((c) => c.hidden).length,
+        )
+      } catch (e) {
+        alert(`Failed to load calendars: ${e}`)
+        return
       }
-    } catch {}
+      const visible = calendars.filter((c) => !c.hidden)
+      if (visible.length === 0) {
+        alert('No writable calendars found on your Nextcloud account.')
+        return
+      }
+      let initialCalendarId = visible[0].id
+      try {
+        const s = await invoke<{ default_calendar_id: string | null }>('get_app_settings')
+        if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
+          initialCalendarId = s.default_calendar_id!
+        }
+      } catch {}
 
-    // Split the thread's participants — From + To go required,
-    // Cc goes optional.  Skip the active account (the user is the
-    // organizer; the editor adds them as CHAIR).  De-dupe across
-    // buckets so an address that appears in both To and Cc only
-    // shows up once in the higher-priority bucket.
-    const self = activeAccountEmail.toLowerCase()
-    const seen = new Set<string>()
-    const required: string[] = []
-    for (const piece of [mail.from, ...mail.to]) {
-      const addr = bareEmail(piece)
-      if (!addr) continue
-      const key = addr.toLowerCase()
-      if (key === self || seen.has(key)) continue
-      seen.add(key)
-      required.push(piece)
-    }
-    const optional: string[] = []
-    for (const piece of mail.cc) {
-      const addr = bareEmail(piece)
-      if (!addr) continue
-      const key = addr.toLowerCase()
-      if (key === self || seen.has(key)) continue
-      seen.add(key)
-      optional.push(piece)
-    }
+      // Split the thread's participants — From + To go required,
+      // Cc goes optional.  Skip the active account (the user is the
+      // organizer; the editor adds them as CHAIR).  De-dupe across
+      // buckets so an address that appears in both To and Cc only
+      // shows up once in the higher-priority bucket.
+      const self = activeAccountEmail.toLowerCase()
+      const seen = new Set<string>()
+      const required: string[] = []
+      for (const piece of [mail.from, ...mail.to]) {
+        const addr = bareEmail(piece)
+        if (!addr) continue
+        const key = addr.toLowerCase()
+        if (key === self || seen.has(key)) continue
+        seen.add(key)
+        required.push(piece)
+      }
+      const optional: string[] = []
+      for (const piece of mail.cc) {
+        const addr = bareEmail(piece)
+        if (!addr) continue
+        const key = addr.toLowerCase()
+        if (key === self || seen.has(key)) continue
+        seen.add(key)
+        optional.push(piece)
+      }
 
-    const start = nextHalfHour(new Date())
-    const end = new Date(start.getTime() + 30 * 60 * 1000)
+      const start = nextHalfHour(new Date())
+      const end = new Date(start.getTime() + 30 * 60 * 1000)
 
-    meetingDraft = {
-      calendars: visible,
-      draft: {
-        calendarId: initialCalendarId,
-        start,
-        end,
-        summary: meetingSubject(mail.subject),
-        requiredAttendees: required,
-        optionalAttendees: optional,
-        createTalkRoom: true,
-      },
-      replyTo: mail,
+      console.log(
+        '[respond-with-meeting] setting meetingDraft, required:',
+        required.length,
+        'optional:',
+        optional.length,
+        'calendarId:',
+        initialCalendarId,
+      )
+      meetingDraft = {
+        calendars: visible,
+        draft: {
+          calendarId: initialCalendarId,
+          start,
+          end,
+          summary: meetingSubject(mail.subject),
+          requiredAttendees: required,
+          optionalAttendees: optional,
+          createTalkRoom: true,
+        },
+        replyTo: mail,
+      }
+      console.log(
+        '[respond-with-meeting] meetingDraft set; EventEditor should now mount',
+      )
+    } catch (e) {
+      console.error('[respond-with-meeting] unhandled error', e)
+      alert(`Failed to open meeting editor: ${e}`)
     }
   }
 
