@@ -4425,6 +4425,14 @@ struct AttendeeBusyPeriod {
     /// One of "busy", "tentative", "unavailable", "free".  The
     /// planner UI maps these to its own colour palette.
     kind: String,
+    /// Source event's summary, when the period came from our
+    /// local-cache scan (the user's own calendars where the
+    /// attendee is listed).  CalDAV free-busy responses
+    /// deliberately don't carry titles — privacy — so this
+    /// stays `None` for `nc-freebusy` periods.  Surfacing it
+    /// in the planner is fine because the user already owns
+    /// the event whose title we're showing.
+    summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4519,6 +4527,9 @@ async fn get_attendee_availability(
                                 start: p.start,
                                 end: p.end,
                                 kind: busy_kind_to_string(p.kind),
+                                // Free-busy responses don't
+                                // carry titles by design.
+                                summary: None,
                             })
                             .collect(),
                     });
@@ -4538,6 +4549,10 @@ async fn get_attendee_availability(
 
         // Step 3: local-cache scan — events in the user's own
         // calendars where this person is listed as an attendee.
+        // Surface the event title alongside the period: these are
+        // events the *requesting* user already owns (they're
+        // looking at their own calendar), so showing a meeting
+        // title isn't a privacy regression.
         let busy: Vec<AttendeeBusyPeriod> = local_events
             .iter()
             .filter(|ev| {
@@ -4549,6 +4564,11 @@ async fn get_attendee_availability(
                 start: ev.start,
                 end: ev.end,
                 kind: "busy".into(),
+                summary: if ev.summary.trim().is_empty() {
+                    None
+                } else {
+                    Some(ev.summary.clone())
+                },
             })
             .collect();
 
