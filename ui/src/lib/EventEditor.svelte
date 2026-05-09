@@ -1534,7 +1534,20 @@
       >✕</button>
     </header>
 
-    <div class="flex-1 overflow-y-auto p-5 space-y-3">
+    <!-- #236 follow-up — wrap the entire form in a `<fieldset>`
+         so the disabled-attribute cascades to every native control
+         (input, textarea, button) when the calendar is read-only.
+         The fieldset defaults (border, padding, min-width) get
+         neutralised with Tailwind utilities so the layout stays
+         identical to the previous `<div>`.  Greying via opacity
+         signals "this is intentionally inert" without re-styling
+         every individual control.  Create mode is never read-only
+         — the calendar picker filters those out — so this only
+         actually flips in edit mode. -->
+    <fieldset
+      disabled={mode === 'edit' && currentCalendarReadOnly}
+      class="flex-1 overflow-y-auto p-5 space-y-3 border-0 min-w-0 {mode === 'edit' && currentCalendarReadOnly ? 'opacity-60' : ''}"
+    >
       <!-- Row 1 — Title spans the row alongside the calendar
            dropdown (mockup #128).  Title gets the lion's share
            of the width; calendar picker tucks into a fixed
@@ -2023,7 +2036,7 @@
       {#if error}
         <p class="text-sm text-red-500">{error}</p>
       {/if}
-    </div>
+    </fieldset>
 
     {#if mode === 'edit' && currentCalendarReadOnly}
       <!-- Read-only banner (#236 follow-up).  Sits just above

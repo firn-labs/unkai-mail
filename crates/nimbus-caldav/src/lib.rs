@@ -32,6 +32,7 @@ pub mod write;
 mod xml_util;
 
 pub use calendars::{create_calendar, delete_calendar, update_calendar};
+pub use client::calendar_is_writable;
 pub use discovery::{Calendar, list_calendars};
 pub use expand::expand_event;
 pub use ical::{build_ics, parse_ics};

@@ -10,6 +10,7 @@ mod badge;
 
 use nimbus_caldav::{
     Calendar as CaldavCalendar, RawEvent, build_ics as caldav_build_ics,
+    calendar_is_writable as caldav_calendar_is_writable,
     create_calendar as caldav_create_calendar, create_event as caldav_create_event,
     delete_calendar as caldav_delete_calendar, delete_event as caldav_delete_event,
     list_calendars as caldav_list_calendars, sync_calendar as caldav_sync_calendar,
@@ -3607,7 +3608,7 @@ async fn sync_nextcloud_calendars(
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     // ── Phase 1: discovery + reconcile the calendar list ────────
-    let server_calendars = caldav_list_calendars(
+    let mut server_calendars = caldav_list_calendars(
         &account.server_url,
         &account.username,
         &app_password,
@@ -3619,6 +3620,46 @@ async fn sync_nextcloud_calendars(
         server_calendars.len(),
         nc_id
     );
+
+    // #236 follow-up — privilege-set parsing alone misses a few
+    // Sabre/DAV variants (notably some shared-calendar configs that
+    // omit `current-user-privilege-set` entirely). Cross-check each
+    // calendar with an OPTIONS probe: if `Allow:` doesn't advertise
+    // PUT or DELETE, the server isn't going to accept writes from
+    // this account, regardless of what the privilege XML implied.
+    // We OR the two signals (read_only stays true if either
+    // declared the calendar non-writable) so a writable verdict
+    // requires both checks to agree.
+    for cal in &mut server_calendars {
+        match caldav_calendar_is_writable(
+            &cal.path,
+            &account.username,
+            &app_password,
+            &account.trusted_certs,
+        )
+        .await
+        {
+            Ok(true) => {
+                // OPTIONS says writable — defer to the privilege-set
+                // verdict (which may still flag it read-only).
+            }
+            Ok(false) => {
+                if !cal.read_only {
+                    tracing::info!(
+                        "CalDAV: OPTIONS marks calendar '{}' read-only (Allow lacks PUT/DELETE)",
+                        cal.path
+                    );
+                }
+                cal.read_only = true;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "CalDAV: OPTIONS probe for '{}' failed, keeping privilege-set verdict: {e}",
+                    cal.path
+                );
+            }
+        }
+    }
 
     let rows: Vec<CalendarRow> = server_calendars
         .iter()
@@ -3632,10 +3673,10 @@ async fn sync_nextcloud_calendars(
             // updates so existing local toggles survive re-sync.
             hidden: false,
             muted: false,
-            // #236 — server-side privilege-set determines whether the
-            // editor lets the user write events here.  The upsert
-            // refreshes this on every discovery so a calendar that
-            // gets re-shared as read-only between syncs flips
+            // #236 — server-side privilege-set + OPTIONS probe agree
+            // on whether the editor lets the user write events here.
+            // The upsert refreshes this on every discovery so a calendar
+            // that gets re-shared as read-only between syncs flips
             // promptly.
             read_only: c.read_only,
         })
