@@ -4503,6 +4503,36 @@ async fn get_attendee_availability(
             }
         };
 
+        // Always pre-compute the local-cache hits — events from
+        // the user's own calendars (which include shared/subscribed
+        // calendars in NC) where this person is listed.  Used both
+        // as the fallback when free-busy fails AND as a title
+        // source to enrich free-busy periods that come back without
+        // names attached.
+        let local_for_attendee: Vec<(
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+            Option<String>,
+        )> = local_events
+            .iter()
+            .filter(|ev| {
+                ev.attendees
+                    .iter()
+                    .any(|a| a.email.to_ascii_lowercase() == lower)
+            })
+            .map(|ev| {
+                (
+                    ev.start,
+                    ev.end,
+                    if ev.summary.trim().is_empty() {
+                        None
+                    } else {
+                        Some(ev.summary.clone())
+                    },
+                )
+            })
+            .collect();
+
         // Step 2: NC user → free-busy-query.
         if let Some(m) = nc_match.as_ref() {
             let principal_url = caldav_nc_principal_home(&account.server_url, &m.user_id);
@@ -4527,9 +4557,23 @@ async fn get_attendee_availability(
                                 start: p.start,
                                 end: p.end,
                                 kind: busy_kind_to_string(p.kind),
-                                // Free-busy responses don't
-                                // carry titles by design.
-                                summary: None,
+                                // Free-busy responses themselves
+                                // don't carry titles by design,
+                                // but if we *also* have the same
+                                // event in our local cache (the
+                                // attendee invited us, or their
+                                // calendar is shared with us),
+                                // surface its title — that's not
+                                // a privacy regression because we
+                                // already own the data on our
+                                // side.  Match on start time;
+                                // server-side regeneration of
+                                // free-busy uses the source
+                                // event's DTSTART verbatim.
+                                summary: local_for_attendee
+                                    .iter()
+                                    .find(|(s, _, _)| *s == p.start)
+                                    .and_then(|(_, _, sum)| sum.clone()),
                             })
                             .collect(),
                     });
@@ -4547,28 +4591,15 @@ async fn get_attendee_availability(
             }
         }
 
-        // Step 3: local-cache scan — events in the user's own
+        // Step 3: local-cache fallback — events in the user's own
         // calendars where this person is listed as an attendee.
-        // Surface the event title alongside the period: these are
-        // events the *requesting* user already owns (they're
-        // looking at their own calendar), so showing a meeting
-        // title isn't a privacy regression.
-        let busy: Vec<AttendeeBusyPeriod> = local_events
+        let busy: Vec<AttendeeBusyPeriod> = local_for_attendee
             .iter()
-            .filter(|ev| {
-                ev.attendees
-                    .iter()
-                    .any(|a| a.email.to_ascii_lowercase() == lower)
-            })
-            .map(|ev| AttendeeBusyPeriod {
-                start: ev.start,
-                end: ev.end,
+            .map(|(start, end, summary)| AttendeeBusyPeriod {
+                start: *start,
+                end: *end,
                 kind: "busy".into(),
-                summary: if ev.summary.trim().is_empty() {
-                    None
-                } else {
-                    Some(ev.summary.clone())
-                },
+                summary: summary.clone(),
             })
             .collect();
 
