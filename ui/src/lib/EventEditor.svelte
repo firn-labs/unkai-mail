@@ -1541,11 +1541,16 @@
          without any of the dimming `<fieldset disabled>` triggers
          and without the layout quirks fieldset introduces inside
          a flex column.  The Cancel/Close button lives in the
-         footer outside this region so it stays clickable. -->
-    <div
-      inert={mode === 'edit' && currentCalendarReadOnly}
-      class="flex-1 overflow-y-auto p-5 space-y-3"
-    >
+         footer outside this region so it stays clickable.
+         Split the scroll container (outer div, never inert) from
+         the inert wrapper (inner div) so the scrollbar drag —
+         which registers as a click on the scroll container — keeps
+         working even when the form's contents are locked. -->
+    <div class="flex-1 overflow-y-auto p-5">
+      <div
+        inert={mode === 'edit' && currentCalendarReadOnly}
+        class="space-y-3"
+      >
       <!-- Row 1 — Title spans the row alongside the calendar
            dropdown (mockup #128).  Title gets the lion's share
            of the width; calendar picker tucks into a fixed
@@ -2034,6 +2039,7 @@
       {#if error}
         <p class="text-sm text-red-500">{error}</p>
       {/if}
+      </div>
     </div>
 
     {#if mode === 'edit' && currentCalendarReadOnly}
