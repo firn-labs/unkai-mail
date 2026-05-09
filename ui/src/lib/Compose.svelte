@@ -574,6 +574,22 @@
       html = ''
     }
 
+    // Integration blocks first — meeting invite, Talk link, NC
+    // file links.  These read as "what I'm sending you" content,
+    // so the signature belongs *after* them: it signs off the
+    // whole message including the cards, not just the empty
+    // typing space.  Reply / "Respond with meeting" flows
+    // depend on the meeting card landing above the signature
+    // (the signature is the bottom of the user's content).
+    if (initial?.meetingInvite) lead += meetingInviteHtml(initial.meetingInvite)
+    if (initial?.talkLink) lead += talkInviteHtml(initial.talkLink)
+    if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
+      const items = initial.nextcloudLinks
+        .map((l) => `<p>🔗 <a href="${l.url}">${esc(l.filename)}</a></p>`)
+        .join('')
+      lead += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
+    }
+
     // Signature: best-effort grab of the active account at init
     // time so replies open with the user's name already attached.
     // If the account list hasn't loaded yet, we skip and let the
@@ -584,15 +600,6 @@
     if (initSig) {
       lead += initSig
       insertedSignatureHtml = initSig
-    }
-
-    if (initial?.meetingInvite) lead += meetingInviteHtml(initial.meetingInvite)
-    if (initial?.talkLink) lead += talkInviteHtml(initial.talkLink)
-    if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
-      const items = initial.nextcloudLinks
-        .map((l) => `<p>🔗 <a href="${l.url}">${esc(l.filename)}</a></p>`)
-        .join('')
-      lead += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
     }
 
     return lead + html
@@ -621,13 +628,29 @@
 
     if (insertedSignatureHtml === null) {
       if (!nextSig) return
-      // Splice the signature right after the leading two empty
-      // paragraphs that initialBodyHtml stamps in.  Falls back to
-      // appendHtml when the body shape is unfamiliar (drafts).
+      // Splice the signature into the lead.  Layout target:
+      //   <p></p><p></p>            ← empty typing area
+      //   [meeting / talk / NC integration blocks]
+      //   [signature]                ← here
+      //   [quoted reply / body]
+      //
+      // Prefer the position right BEFORE the quoted-history
+      // wrapper — that pins the signature after any integration
+      // cards the user is sending.  Fall back to the position
+      // right after the empty paragraphs (correct for fresh
+      // composes with no quote and no integrations).  Last
+      // resort: appendHtml when the body shape is unfamiliar
+      // (e.g. an opened draft we can't reason about).
       const leadIdx = bodyHtml.indexOf('<p></p><p></p>')
       if (leadIdx !== -1) {
-        const after = leadIdx + '<p></p><p></p>'.length
-        const replaced = bodyHtml.slice(0, after) + nextSig + bodyHtml.slice(after)
+        const afterLead = leadIdx + '<p></p><p></p>'.length
+        const quoteIdx = bodyHtml.indexOf(
+          '<div data-nimbus-block="quoted-history"',
+          afterLead,
+        )
+        const insertAt = quoteIdx !== -1 ? quoteIdx : afterLead
+        const replaced =
+          bodyHtml.slice(0, insertAt) + nextSig + bodyHtml.slice(insertAt)
         editorApi.setHtml(replaced)
         bodyHtml = replaced
       } else {
