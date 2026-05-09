@@ -180,5 +180,7 @@
   "outbox_view_label_bcc": "Bcc",
   "outbox_view_label_queued_at": "Queued",
   "outbox_view_label_attempts": "Attempts",
-  "outbox_view_empty_body": "(This message has no displayable body.)"
+  "outbox_view_empty_body": "(This message has no displayable body.)",
+  "event_editor_readonly_banner": "This calendar is read-only — you can view this event, but changes can't be saved.",
+  "event_editor_close": "Close"
 }

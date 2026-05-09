@@ -40,6 +40,7 @@
   import Select from './Select.svelte'
   import EmailKindChip from './EmailKindChip.svelte'
   import Toggle from './Toggle.svelte'
+  import { m } from '../paraglide/messages'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
   interface EventAttendee {
@@ -2050,7 +2051,7 @@
            write-failure fallback flipped the flag. -->
       <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 text-xs text-surface-600 dark:text-surface-300 flex items-center gap-2">
         <Icon name="warning" size={14} />
-        <span>This calendar is read-only — you can view this event, but changes can't be saved.</span>
+        <span>{m.event_editor_readonly_banner()}</span>
       </div>
     {/if}
 
@@ -2085,7 +2086,7 @@
       {/if}
       <div class="flex-1"></div>
       <button class="btn preset-outlined-surface-500" disabled={saving || deleting} onclick={() => void cancel()}>
-        {mode === 'edit' && currentCalendarReadOnly ? 'Close' : 'Cancel'}
+        {mode === 'edit' && currentCalendarReadOnly ? m.event_editor_close() : 'Cancel'}
       </button>
     </footer>
   </div>
