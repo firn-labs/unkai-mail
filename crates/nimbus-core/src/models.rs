@@ -407,6 +407,25 @@ pub struct EmailEnvelope {
     pub date: DateTime<Utc>,
     pub is_read: bool,
     pub is_starred: bool,
+    /// Mirrors the IMAP `\Answered` system flag (#255).  Refreshed
+    /// on every envelope re-fetch.  Drives the generic reply icon
+    /// in the mail list for messages the user answered before this
+    /// feature shipped or answered from a different client; the
+    /// per-kind `replied_kind` below takes precedence when set.
+    /// `#[serde(default)]` so older cached payloads deserialise
+    /// cleanly.
+    #[serde(default)]
+    pub is_answered: bool,
+    /// Nimbus-only metadata recording *how* the user replied
+    /// (#255): `"reply"`, `"reply-all"`, or `"meeting"`.  IMAP
+    /// carries one boolean answered bit, but the user's intent
+    /// (which icon to show) is something only we know — we
+    /// stamp this on the original message after Compose's send
+    /// path succeeds.  `None` means we didn't track a reply via
+    /// Nimbus; the UI then falls back to `is_answered` for the
+    /// icon decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replied_kind: Option<String>,
     /// Owning account id. Populated when envelopes are read out of the
     /// cache (where `account_id` is a column on every row) so the UI
     /// can render an account label in unified-inbox mode and route the

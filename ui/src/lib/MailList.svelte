@@ -26,6 +26,14 @@
     date: string      // RFC 3339 string (serde serialises DateTime<Utc> this way)
     is_read: boolean
     is_starred: boolean
+    /** IMAP `\Answered` flag (#255).  Drives the generic-reply
+     *  fallback icon — true when *anyone* (Nimbus, another
+     *  client, the user's phone) has answered the message. */
+    is_answered?: boolean
+    /** Nimbus-only reply kind (#255): `'reply'`, `'reply-all'`,
+     *  `'meeting'`.  Stamped by the send path; takes precedence
+     *  over `is_answered` for the icon decision. */
+    replied_kind?: string | null
     /** Owning account id. Always populated for envelopes read out of
         the cache; left empty for envelopes coming straight from the
         IMAP/JMAP clients (those paths don't surface to the UI). */
@@ -734,6 +742,45 @@
     void loadOlder()
   })
 
+  // ── Answered-indicator (#255) ───────────────────────────────
+  // Small icon prefixed to the subject when this message has
+  // been answered.  Three sources of truth, in priority order:
+  //
+  //   1. `replied_kind` — Nimbus stamped this when the user
+  //      replied via Compose.  Carries the *kind* of reply
+  //      (reply / reply-all / meeting), so we can pick the
+  //      matching icon.
+  //   2. `is_answered` — the IMAP `\Answered` system flag.
+  //      True when *anyone* (Nimbus, another mail client, the
+  //      user's phone) has answered the message.  We don't
+  //      know how, so fall back to the generic reply icon.
+  //   3. neither — return null, the subject renders without an
+  //      icon prefix.
+  function answeredIconName(
+    env: EmailEnvelope,
+  ): 'reply' | 'reply-all' | 'respond-with-meeting' | null {
+    switch (env.replied_kind) {
+      case 'reply':
+        return 'reply'
+      case 'reply-all':
+        return 'reply-all'
+      case 'meeting':
+        return 'respond-with-meeting'
+    }
+    return env.is_answered ? 'reply' : null
+  }
+  function answeredIconTitle(env: EmailEnvelope): string {
+    switch (env.replied_kind) {
+      case 'reply':
+        return 'You replied'
+      case 'reply-all':
+        return 'You replied to all'
+      case 'meeting':
+        return 'You responded with a meeting'
+    }
+    return 'Answered'
+  }
+
   // Render dates compactly: today → time, otherwise short date.
   function formatDate(iso: string): string {
     const d = new Date(iso)
@@ -932,8 +979,19 @@
               </span>
               <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
             </div>
-            <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate">
-              {env.subject || '(no subject)'}
+            <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
+              {#if answeredIconName(env)}
+                <span
+                  class="shrink-0 inline-flex items-center text-primary-500"
+                  title={answeredIconTitle(env)}
+                  aria-label={answeredIconTitle(env)}
+                >
+                  <Icon name={answeredIconName(env)!} size={14} />
+                </span>
+              {/if}
+              <span class="truncate min-w-0">
+                {env.subject || '(no subject)'}
+              </span>
             </p>
             {#if unified && env.account_id}
               <p class="text-[11px] text-surface-500 mt-1 truncate">

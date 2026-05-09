@@ -601,13 +601,17 @@ impl ImapClient {
                     })
                     .unwrap_or_else(Utc::now);
 
-                // Flags: \Seen means read, \Flagged means starred
+                // Flags: \Seen → read, \Flagged → starred,
+                // \Answered → user-or-other-client replied to this
+                // message (#255).
                 let mut is_read = false;
                 let mut is_starred = false;
+                let mut is_answered = false;
                 for flag in fetch.flags() {
                     match flag {
                         async_imap::types::Flag::Seen => is_read = true,
                         async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
                         _ => {}
                     }
                 }
@@ -620,6 +624,13 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    // The IMAP client doesn't track *how* the user
+                    // replied — that's Nimbus-only metadata stamped
+                    // by the send path (#255), so leave it None
+                    // here; the cache merge preserves whatever's
+                    // already on disk.
+                    replied_kind: None,
                     // The IMAP client doesn't carry the account id; the
                     // caller stamps it into the cache via
                     // `upsert_envelopes_for_account`, and cache reads
@@ -1040,6 +1051,41 @@ impl ImapClient {
             .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
 
         info!("Marked UID {uid} as \\Seen in '{folder}'");
+        Ok(())
+    }
+
+    /// Set the IMAP `\Answered` system flag on a message (#255).
+    ///
+    /// Called after Compose's send path delivers a successful reply
+    /// (or reply-all, or "respond with meeting") so the original
+    /// message is marked answered on the server — round-trips to
+    /// other mail clients the user might have open, and gives
+    /// Nimbus's mail-list a stable signal across cache rebuilds.
+    /// Uses `UID STORE <uid> +FLAGS (\Answered)`; idempotent.
+    pub async fn mark_as_answered(
+        &mut self,
+        folder: &str,
+        uid: u32,
+    ) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // Read-write SELECT so the server accepts the STORE.
+        session.select(to_wire(folder)).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        let _updates: Vec<_> = session
+            .uid_store(uid.to_string(), "+FLAGS (\\Answered)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID STORE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        info!("Marked UID {uid} as \\Answered in '{folder}'");
         Ok(())
     }
 
@@ -1473,10 +1519,12 @@ impl ImapClient {
 
                 let mut is_read = false;
                 let mut is_starred = false;
+                let mut is_answered = false;
                 for flag in fetch.flags() {
                     match flag {
                         async_imap::types::Flag::Seen => is_read = true,
                         async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
                         _ => {}
                     }
                 }
@@ -1489,6 +1537,8 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    replied_kind: None,
                     account_id: String::new(),
                 })
             })
@@ -1584,10 +1634,12 @@ impl ImapClient {
                     .unwrap_or_else(Utc::now);
                 let mut is_read = false;
                 let mut is_starred = false;
+                let mut is_answered = false;
                 for flag in fetch.flags() {
                     match flag {
                         async_imap::types::Flag::Seen => is_read = true,
                         async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
                         _ => {}
                     }
                 }
@@ -1599,6 +1651,8 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    replied_kind: None,
                     account_id: String::new(),
                 })
             })
@@ -1710,10 +1764,12 @@ impl ImapClient {
 
                 let mut is_read = false;
                 let mut is_starred = false;
+                let mut is_answered = false;
                 for flag in fetch.flags() {
                     match flag {
                         async_imap::types::Flag::Seen => is_read = true,
                         async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
                         _ => {}
                     }
                 }
@@ -1726,6 +1782,8 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    replied_kind: None,
                     account_id: String::new(),
                 })
             })

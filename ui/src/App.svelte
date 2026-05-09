@@ -810,7 +810,7 @@
       // and signature state already wired up.
       unlistenComposeFromMail = await listen<{
         kind: 'reply' | 'reply-all' | 'forward'
-        mail: OpenMail
+        mail: ReplyableMail
       }>('compose-from-mail', (e) => {
         const { kind, mail } = e.payload
         if (kind === 'reply') onReply(mail)
@@ -1209,15 +1209,33 @@
     date: string
   }
 
-  function onReply(mail: OpenMail) {
+  /** Reply / reply-all / "respond with meeting" need to know
+   *  (account_id, folder, uid) so the answered-tracking flow
+   *  (#255) can flip `\Answered` on the original message after
+   *  a successful send.  MailView passes them through via
+   *  `{...email, uid}`; the standalone-window emit threads the
+   *  same shape across windows. */
+  type ReplyableMail = OpenMail & {
+    account_id: string
+    folder: string
+    uid: number
+  }
+
+  function onReply(mail: ReplyableMail) {
     openCompose({
       to: mail.from,
       subject: replySubject(mail.subject),
       body: quoteBody(mail.from, mail.date, mail.body_text),
+      repliedTo: {
+        accountId: mail.account_id,
+        folder: mail.folder,
+        uid: mail.uid,
+        kind: 'reply',
+      },
     })
   }
 
-  function onReplyAll(mail: OpenMail) {
+  function onReplyAll(mail: ReplyableMail) {
     const others = [...mail.to, ...mail.cc].filter(
       (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
     )
@@ -1226,6 +1244,12 @@
       cc: others.join(', '),
       subject: replySubject(mail.subject),
       body: quoteBody(mail.from, mail.date, mail.body_text),
+      repliedTo: {
+        accountId: mail.account_id,
+        folder: mail.folder,
+        uid: mail.uid,
+        kind: 'reply-all',
+      },
     })
   }
 
@@ -1372,8 +1396,11 @@
      *  Compose pre-filled as a reply once the event lands
      *  (#195).  Absent when the editor was opened from a
      *  source other than an email thread (e.g. an .ics file
-     *  the OS handed us via "Open with…", #254). */
-    replyTo?: OpenMail
+     *  the OS handed us via "Open with…", #254).  Carries the
+     *  `ReplyableMail` shape so the post-save Compose knows the
+     *  (account_id, folder, uid) needed to flip `\Answered`
+     *  (#255). */
+    replyTo?: ReplyableMail
   } | null>(null)
 
   /** Strip an `"Name" <addr>` wrapper down to the bare email. */
@@ -1406,7 +1433,7 @@
     return out
   }
 
-  async function onRespondWithMeeting(mail: OpenMail) {
+  async function onRespondWithMeeting(mail: ReplyableMail) {
     let ncId = ''
     try {
       const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
@@ -1536,6 +1563,15 @@
       // which prepends `meetingInvite`-rendered HTML.
       body: quoteBody(original.from, original.date, original.body_text),
       meetingInvite,
+      // #255 — flag the original as `\Answered` once the meeting
+      // reply lands.  The icon distinguishes "respond with
+      // meeting" from a plain reply or reply-all.
+      repliedTo: {
+        accountId: original.account_id,
+        folder: original.folder,
+        uid: original.uid,
+        kind: 'meeting',
+      },
     })
   }
 
