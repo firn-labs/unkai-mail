@@ -1585,6 +1585,10 @@
     last_synced_at: string | null
     hidden?: boolean
     muted?: boolean
+    /** CalDAV-derived read-only flag (#236) — passed through
+     *  to EventEditor so the picker / Delete button know not
+     *  to offer writes against read-only shared calendars. */
+    read_only?: boolean
   }
   let meetingDraft = $state<{
     calendars: CalendarSummary[]

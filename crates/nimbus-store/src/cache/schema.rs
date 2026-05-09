@@ -943,6 +943,22 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX outbox_by_account
         ON outbox_messages (account_id, queued_at DESC);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v27 → v28: per-calendar read-only flag (#236).
+    //
+    // Reflects the CalDAV `current-user-privilege-set` PROPFIND
+    // result.  `1` means the user only has read access
+    // (typical for shared calendars where the owner granted
+    // view-only access), so the EventEditor hides the Delete
+    // button and removes the calendar from the new-event picker.
+    // Default `0` keeps existing rows writable until the next
+    // discovery cycle stamps the actual value — preserves the
+    // pre-#236 happy path for servers that don't advertise the
+    // prop at all.
+    r#"
+    ALTER TABLE calendars
+        ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

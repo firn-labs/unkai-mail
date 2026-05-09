@@ -64,6 +64,12 @@ pub struct CalendarRow {
     /// on the agenda grid. Local-only — never synced to the server.
     /// Toggled via the coloured swatch button in the CalendarView sidebar.
     pub muted: bool,
+    /// CalDAV `current-user-privilege-set` says the user can only
+    /// read this calendar (#236).  Mirrors the field on the
+    /// discovery `Calendar` struct so a post-discovery upsert can
+    /// stamp it.  When `true`, the EventEditor hides the Delete
+    /// button and removes the calendar from the new-event picker.
+    pub read_only: bool,
 }
 
 /// One VEVENT ready for upsert. Mirrors `nimbus_caldav::RawEvent`'s
@@ -126,6 +132,8 @@ pub struct CachedCalendar {
     /// appears in the sidebar but its events are skipped on the grid.
     /// Never round-trips to the server.
     pub muted: bool,
+    /// CalDAV-derived read-only flag (#236).  See `CalendarRow`.
+    pub read_only: bool,
 }
 
 /// Sync bookmark for a single calendar. Separate from `CachedCalendar`
@@ -194,14 +202,20 @@ impl Cache {
             // about, so a post-sync upsert must not overwrite what the
             // user picked. On first insert we stamp whatever the row
             // carries (both default to `false` from discovery).
+            //
+            // `read_only` (#236) IS in the UPDATE set — it mirrors the
+            // server-side `current-user-privilege-set` PROPFIND result,
+            // so a calendar that gets re-shared as read-only between
+            // syncs needs to flip in the cache too.
             let mut stmt = tx.prepare(
                 "INSERT INTO calendars
-                    (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted, read_only)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (nextcloud_account_id, path) DO UPDATE SET
                     display_name = excluded.display_name,
                     color        = COALESCE(excluded.color, calendars.color),
-                    ctag         = COALESCE(excluded.ctag, calendars.ctag)",
+                    ctag         = COALESCE(excluded.ctag, calendars.ctag),
+                    read_only    = excluded.read_only",
             )?;
             for r in rows {
                 let id = format!("{nc_account_id}::{}", r.path);
@@ -214,6 +228,7 @@ impl Cache {
                     r.ctag,
                     r.hidden as i64,
                     r.muted as i64,
+                    r.read_only as i64,
                 ])?;
             }
         }
@@ -258,8 +273,8 @@ impl Cache {
         let id = format!("{nc_account_id}::{}", row.path);
         conn.execute(
             "INSERT INTO calendars
-                (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted, read_only)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT (nextcloud_account_id, path) DO NOTHING",
             params![
                 id,
@@ -270,6 +285,7 @@ impl Cache {
                 row.ctag,
                 row.hidden as i64,
                 row.muted as i64,
+                row.read_only as i64,
             ],
         )?;
         Ok(id)
@@ -340,7 +356,7 @@ impl Cache {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, path, display_name, color,
-                    ctag, sync_token, last_synced_at, hidden, muted
+                    ctag, sync_token, last_synced_at, hidden, muted, read_only
              FROM calendars
              WHERE nextcloud_account_id = ?1
              ORDER BY display_name COLLATE NOCASE",
@@ -349,6 +365,7 @@ impl Cache {
             let ts: Option<i64> = r.get(7)?;
             let hidden: i64 = r.get(8)?;
             let muted: i64 = r.get(9)?;
+            let read_only: i64 = r.get(10)?;
             Ok(CachedCalendar {
                 id: r.get(0)?,
                 nextcloud_account_id: r.get(1)?,
@@ -360,6 +377,7 @@ impl Cache {
                 last_synced_at: ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
                 hidden: hidden != 0,
                 muted: muted != 0,
+                read_only: read_only != 0,
             })
         })?;
         let mut out = Vec::new();
@@ -1061,6 +1079,7 @@ mod tests {
             ctag: Some(format!("ctag-{path}")),
             hidden: false,
             muted: false,
+            read_only: false,
         }
     }
 

@@ -75,6 +75,10 @@
      *  preview so the "what's already on my day" view matches
      *  what the user actually has visible in CalendarView. */
     muted?: boolean
+    /** CalDAV-derived read-only flag (#236).  The accept-into
+     *  picker filters these out — accepting an invite into a
+     *  read-only calendar would fail server-side. */
+    read_only?: boolean
   }
   /** Slim mirror of the Rust `CalendarEvent` — we only consume
    *  the fields needed to lay the preview out (id for calendar
@@ -1181,7 +1185,7 @@
                       {@const partstat = userPartstatOn(ev)}
                       <div
                         class="absolute rounded-sm text-[10px] overflow-hidden pointer-events-auto"
-                        style="left: 36px; right: 50%; top: {g.top}px; height: {g.height}px; {existingEventStyle(colour, partstat)}"
+                        style="left: 36px; right: 4px; top: {g.top}px; height: {g.height}px; {existingEventStyle(colour, partstat)}"
                         title={`${ev.summary || '(no title)'} — ${range}${cal ? ` · ${cal.display_name}` : ''}${partstat && partstat !== 'ACCEPTED' ? ` (${partstat.toLowerCase()})` : ''}`}
                       >
                         {#if showInline}
@@ -1197,17 +1201,28 @@
                   {/if}
                 {/each}
 
-                <!-- Proposed event on the right half.  Inline
-                     styles only — no compound scoped classes —
-                     so the box is guaranteed to render with a
-                     visible border + fill regardless of CSS
-                     scoping quirks.  Two flavours:
+                <!-- Proposed event sits in the same column as the
+                     existing events (#236) — overlaid on top so
+                     the user can read it against the surrounding
+                     calendar in context.  Inline styles only — no
+                     compound scoped classes — so the box is
+                     guaranteed to render with a visible border +
+                     fill regardless of CSS scoping quirks.  Two
+                     flavours:
                      - already-on-calendar → calendar-coloured
                        fill (or stripes / declined-border per
-                       the user's PARTSTAT)
+                       the user's PARTSTAT) plus the primary
+                       ring-2 + invite pill so the user can tell
+                       which event the invite refers to.  The
+                       same-UID existing event is filtered out of
+                       the preview loop above so this is the
+                       only render of that event, no overlap.
                      - not-on-calendar → primary dashed border
                        + light primary tint to signal "what you
-                       would be adding". -->
+                       would be adding".  When this overlaps a
+                       real existing event, the lighter tint lets
+                       the existing event's coloured strip show
+                       through behind the dashed outline. -->
                 {#if proposedGeom}
                   {@const tooltip = proposedExistsInCalendar
                     ? `${invite.summary || '(untitled)'} — from this invite (already on your calendar, ${respondedAs ? respondedAs.toLowerCase() : 'accepted'})`
@@ -1226,7 +1241,7 @@
                          calendar. -->
                     <div
                       class="absolute rounded-sm text-[10px] font-medium overflow-hidden pointer-events-auto ring-2 ring-primary-500/70"
-                      style="left: 50%; right: 4px; top: {proposedGeom.top}px; height: {proposedGeom.height}px; {existingEventStyle(c, respondedAs)}"
+                      style="left: 36px; right: 4px; top: {proposedGeom.top}px; height: {proposedGeom.height}px; {existingEventStyle(c, respondedAs)}"
                       title={tooltip}
                     >
                       {#if showInlineProp}
@@ -1252,7 +1267,7 @@
                          "this is what you would be adding". -->
                     <div
                       class="absolute rounded-sm text-[10px] font-medium border-2 border-dashed border-primary-500 bg-primary-500/15 text-primary-900 dark:text-primary-100 overflow-hidden pointer-events-auto"
-                      style="left: 50%; right: 4px; top: {proposedGeom.top}px; height: {proposedGeom.height}px;"
+                      style="left: 36px; right: 4px; top: {proposedGeom.top}px; height: {proposedGeom.height}px;"
                       title={tooltip}
                     >
                       {#if showInlineProp}

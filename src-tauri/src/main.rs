@@ -3518,6 +3518,14 @@ struct CalendarSummary {
     /// the coloured swatch in the CalendarView sidebar.
     #[serde(default)]
     muted: bool,
+    /// CalDAV-derived read-only flag (#236).  Mirrors
+    /// `current-user-privilege-set`: `true` when the user can't add
+    /// or modify events on this calendar (typical for shared
+    /// calendars where the owner granted view-only access).  The
+    /// EventEditor hides Delete and removes the calendar from the
+    /// new-event picker when this is set.
+    #[serde(default)]
+    read_only: bool,
 }
 
 /// Summary returned to the UI after a calendar sync run.
@@ -3570,6 +3578,10 @@ async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>,
             // to fully visible is fine.
             hidden: false,
             muted: false,
+            // The discovery path has the privilege-set bit; pass
+            // it through so the setup probe can already gray out
+            // read-only calendars.
+            read_only: c.read_only,
         })
         .collect())
 }
@@ -3620,6 +3632,12 @@ async fn sync_nextcloud_calendars(
             // updates so existing local toggles survive re-sync.
             hidden: false,
             muted: false,
+            // #236 — server-side privilege-set determines whether the
+            // editor lets the user write events here.  The upsert
+            // refreshes this on every discovery so a calendar that
+            // gets re-shared as read-only between syncs flips
+            // promptly.
+            read_only: c.read_only,
         })
         .collect();
     cache.upsert_calendars(&nc_id, &rows)?;
@@ -3711,6 +3729,7 @@ fn get_cached_calendars(
             last_synced_at: c.last_synced_at,
             hidden: c.hidden,
             muted: c.muted,
+            read_only: c.read_only,
         })
         .collect())
 }
@@ -3766,6 +3785,10 @@ async fn create_nextcloud_calendar(
         ctag: None,
         hidden: false,
         muted: false,
+        // The user just created this calendar, so they own it and
+        // have full write privileges (#236).  Next discovery cycle
+        // confirms via `current-user-privilege-set` PROPFIND.
+        read_only: false,
     };
     let id = cache.insert_calendar(&nc_id, &row)?;
 
@@ -3777,6 +3800,10 @@ async fn create_nextcloud_calendar(
         last_synced_at: None,
         hidden: false,
         muted: false,
+        // Same reasoning as `insert_calendar` above — fresh
+        // user-created calendar is owned by the user, fully
+        // writable until next discovery says otherwise.
+        read_only: false,
     })
 }
 
@@ -8121,13 +8148,18 @@ async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError>
     }
 
     // Window: from now back ~tolerance (so a tick that just
-    // crossed the reminder time still catches it) forward 1 day
-    // (covers reminders up to "1 day before", which is the
-    // largest preset the editor offers).
+    // crossed the reminder time still catches it) forward 7 days
+    // (covers reminders up to "1 week before", the largest
+    // preset the editor offers — #236).  An event whose 1-week
+    // reminder is approaching has its `start` 7 days from now,
+    // so the cache filter must include events that far ahead or
+    // the reminder never fires.  Cheap: same per-calendar
+    // expansion path the agenda grid already runs, just with a
+    // wider date range.
     let now = Utc::now();
     let tolerance = chrono::Duration::seconds(EVENT_REMINDER_FIRE_TOLERANCE_SECS);
     let range_start = now - tolerance;
-    let range_end = now + chrono::Duration::days(1) + tolerance;
+    let range_end = now + chrono::Duration::days(7) + tolerance;
 
     let input = match cache.list_events_for_expansion(&calendar_ids, range_start, range_end) {
         Ok(i) => i,
