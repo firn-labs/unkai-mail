@@ -1534,24 +1534,17 @@
       >✕</button>
     </header>
 
-    <!-- #236 follow-up — wrap the entire form in a `<fieldset>`
-         so the disabled-attribute cascades to every native control
-         (input, textarea, button) when the calendar is read-only.
-         The fieldset defaults (border, padding, min-width) get
-         neutralised with Tailwind utilities so the layout stays
-         identical to the previous `<div>`.  Create mode is never
-         read-only — the calendar picker filters those out — so
-         this only actually flips in edit mode.
-         Readability: the scoped `<style>` block at the bottom of
-         this file overrides the default browser dimming on
-         disabled inputs / buttons / textareas (color and the
-         webkit `-webkit-text-fill-color`) so the event details
-         stay fully legible.  The visual cue that the form is
-         locked comes from `cursor-not-allowed` on the controls
-         + the explicit "read-only" banner above the footer. -->
-    <fieldset
-      disabled={mode === 'edit' && currentCalendarReadOnly}
-      class="flex-1 overflow-y-auto p-5 space-y-3 border-0 min-w-0 {mode === 'edit' && currentCalendarReadOnly ? 'event-editor-readonly' : ''}"
+    <!-- #236 follow-up — when the calendar is read-only we want
+         the form to *look* normal (so the user can still read the
+         event details) but be non-interactive (no click, no
+         focus, no typing).  HTML5 `inert` does exactly that
+         without any of the dimming `<fieldset disabled>` triggers
+         and without the layout quirks fieldset introduces inside
+         a flex column.  The Cancel/Close button lives in the
+         footer outside this region so it stays clickable. -->
+    <div
+      inert={mode === 'edit' && currentCalendarReadOnly}
+      class="flex-1 overflow-y-auto p-5 space-y-3"
     >
       <!-- Row 1 — Title spans the row alongside the calendar
            dropdown (mockup #128).  Title gets the lion's share
@@ -2041,7 +2034,7 @@
       {#if error}
         <p class="text-sm text-red-500">{error}</p>
       {/if}
-    </fieldset>
+    </div>
 
     {#if mode === 'edit' && currentCalendarReadOnly}
       <!-- Read-only banner (#236 follow-up).  Sits just above
@@ -2093,26 +2086,3 @@
     </footer>
   </div>
 </div>
-
-<style>
-  /* #236 — readability for the read-only EventEditor.  The browser's
-     default `:disabled` styling dims inputs/buttons/textareas via
-     both the `color` property and the webkit-only
-     `-webkit-text-fill-color` (which wins over `color` in webkit
-     even when `color` is set).  We override both to keep the user's
-     event details legible — the disabled signal is communicated by
-     `cursor-not-allowed` on the controls and the read-only banner
-     above the footer, not by dimming the text.
-     `:global()` is required because the disabled controls live
-     inside Skeleton-styled descendants whose class scoping otherwise
-     hides them from this style block. */
-  .event-editor-readonly :global(input:disabled),
-  .event-editor-readonly :global(textarea:disabled),
-  .event-editor-readonly :global(select:disabled),
-  .event-editor-readonly :global(button:disabled) {
-    opacity: 1;
-    color: inherit;
-    -webkit-text-fill-color: currentColor;
-    cursor: not-allowed;
-  }
-</style>
