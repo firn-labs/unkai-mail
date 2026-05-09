@@ -6,7 +6,7 @@
 //! headers ourselves. Mirrors the shape of `nimbus-carddav::client` —
 //! only the default `Content-Type` and user agent change.
 
-use reqwest::{Client, Method, Response};
+use reqwest::{Client, Method, Response, StatusCode};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -178,62 +178,117 @@ async fn delete_resource_inner(
         .map_err(|e| NimbusError::Network(format!("DELETE {url}: {e}")))
 }
 
-/// OPTIONS probe — returns `true` iff the server's `Allow` header
-/// advertises `PUT` (or `DELETE`) on the calendar collection.
+/// Definitive read-only probe — PUT a tiny placeholder VEVENT,
+/// observe what the server says, and DELETE it on the way out.
 ///
-/// We use this as a belt-and-braces companion to the
-/// `current-user-privilege-set` PROPFIND in `discovery`: some Sabre/DAV
-/// builds either omit the privilege set entirely on shared calendars or
-/// shape it in a way our parser misses, but every CalDAV server has to
-/// answer OPTIONS truthfully (RFC 4918 §18) so the calendar-edit UI
-/// can fall back to this signal. Callers run it during
-/// `sync_nextcloud_calendars` and stamp the verdict onto the cached
-/// `read_only` flag so the EventEditor can grey itself out before the
-/// user even tries to write.
+/// Why an active probe instead of OPTIONS / privilege-set:
+///   Both header- and prop-based signals lie on at least one
+///   real Sabre/DAV configuration we've seen — `Allow:` returns
+///   the resource-type's full method list regardless of ACL,
+///   and `<current-user-privilege-set>` either isn't advertised
+///   or comes back claiming write privileges that the actual
+///   PUT then refuses with 404.  The only signal that matches
+///   what the user will hit at save-time is an actual PUT.
 ///
-/// `Ok(true)` means the calendar accepts writes; `Ok(false)` means it
-/// answered cleanly but refused PUT/DELETE; `Err(_)` means the probe
-/// itself failed (network, auth) and the caller should leave the
-/// existing `read_only` flag alone.
-pub async fn calendar_is_writable(
+/// Probe shape:
+///   - UID `nimbus-readonly-probe-{uuid}` so the resource is
+///     uniquely owned by us and recognisable in any orphaned
+///     state.
+///   - DTSTART / DTEND fixed at `19700101T000000Z` so the event
+///     never surfaces in real date-range queries even if the
+///     cleanup DELETE silently fails.
+///   - SUMMARY says "Nimbus read-only probe (auto-deleted)" so
+///     a human staring at server logs / orphaned data sees
+///     immediately what it is.
+///   - No ATTENDEE / ORGANIZER → Sabre/DAV's auto-iTIP never
+///     fires, so we never leak a probe-event invitation.
+///
+/// Returns:
+///   - `Ok(true)` — PUT succeeded → calendar is writable.
+///     The cleanup DELETE is fired right after; failures there
+///     are logged but do not affect the verdict.
+///   - `Ok(false)` — PUT returned 403 Forbidden or 404 Not
+///     Found.  Sabre/DAV (NC's CalDAV stack) returns 404
+///     instead of 403 for ACL-denied resources as a
+///     permission-masking pattern, so we treat both as the
+///     same signal.
+///   - `Err(_)` — probe itself failed (network, auth, HTTP 5xx,
+///     unexpected status).  Caller should leave the existing
+///     `read_only` flag alone rather than misclassify on a
+///     transient blip.
+pub async fn probe_calendar_writable(
     calendar_url: &str,
     username: &str,
     app_password: &str,
     trusted_certs: &[TrustedCert],
 ) -> Result<bool, NimbusError> {
-    ensure_https(calendar_url)?;
     let http = build(trusted_certs)?;
-    let resp = http
-        .request(Method::OPTIONS, calendar_url)
-        .basic_auth(username, Some(app_password))
-        .send()
-        .await
-        .map_err(|e| NimbusError::Network(format!("OPTIONS {calendar_url}: {e}")))?;
-    if !resp.status().is_success() {
+    let probe_uid = format!("nimbus-readonly-probe-{}", uuid::Uuid::new_v4());
+    let probe_href = format!(
+        "{}/{}.ics",
+        calendar_url.trim_end_matches('/'),
+        probe_uid
+    );
+    let ics = format!(
+        "BEGIN:VCALENDAR\r\n\
+         VERSION:2.0\r\n\
+         PRODID:-//Nimbus Mail//read-only probe//EN\r\n\
+         BEGIN:VEVENT\r\n\
+         UID:{probe_uid}\r\n\
+         DTSTAMP:19700101T000000Z\r\n\
+         DTSTART:19700101T000000Z\r\n\
+         DTEND:19700101T010000Z\r\n\
+         SUMMARY:Nimbus read-only probe (auto-deleted)\r\n\
+         END:VEVENT\r\n\
+         END:VCALENDAR\r\n"
+    );
+
+    let put = put_ics(&http, &probe_href, username, app_password, &ics, None, true).await?;
+    let status = put.status();
+    tracing::debug!(
+        "CalDAV read-only probe PUT {} → HTTP {}",
+        probe_href,
+        status
+    );
+
+    if status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    if !status.is_success() {
         return Err(NimbusError::Nextcloud(format!(
-            "OPTIONS {calendar_url} returned HTTP {}",
-            resp.status()
+            "read-only probe PUT {probe_href} returned HTTP {status}"
         )));
     }
-    let allow = resp
+
+    // The PUT succeeded.  Capture the etag (some servers gate
+    // DELETE on If-Match even when we just created the resource)
+    // and clean up.  Any failure here is logged but not
+    // propagated — the verdict is "writable" regardless of how
+    // tidy the cleanup turned out.
+    let etag = put
         .headers()
-        .get(reqwest::header::ALLOW)
+        .get(reqwest::header::ETAG)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    // Logging the raw `Allow` header is the only way to diagnose
-    // servers where the OPTIONS probe disagrees with the actual
-    // PUT verdict (e.g. Sabre/DAV configs that return the full
-    // resource-type method list regardless of ACL).  `info!` so
-    // it shows up at the default level — the volume per sync is
-    // one line per calendar, manageable.
-    tracing::info!("CalDAV OPTIONS {}: Allow={:?}", calendar_url, allow);
-    // Empty `Allow` → server didn't tell us, assume writable so we
-    // don't accidentally lock the user out of every calendar.
-    if allow.is_empty() {
-        return Ok(true);
+        .map(|s| s.trim_matches('"').to_string());
+    match delete_resource(&http, &probe_href, username, app_password, etag.as_deref()).await {
+        Ok(resp) => {
+            let dstatus = resp.status();
+            if !dstatus.is_success() && dstatus != StatusCode::NOT_FOUND {
+                tracing::warn!(
+                    "CalDAV read-only probe: cleanup DELETE {probe_href} returned HTTP {dstatus} \
+                     (probe event may need manual removal)"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "CalDAV read-only probe: cleanup DELETE {probe_href} failed: {e} \
+                 (probe event may need manual removal)"
+            );
+        }
     }
-    Ok(allow.contains("PUT") || allow.contains("DELETE"))
+
+    Ok(true)
 }
 
 /// Strip a trailing `/` from a server URL.
