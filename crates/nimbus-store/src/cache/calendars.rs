@@ -203,10 +203,23 @@ impl Cache {
             // user picked. On first insert we stamp whatever the row
             // carries (both default to `false` from discovery).
             //
-            // `read_only` (#236) IS in the UPDATE set — it mirrors the
-            // server-side `current-user-privilege-set` PROPFIND result,
-            // so a calendar that gets re-shared as read-only between
-            // syncs needs to flip in the cache too.
+            // `read_only` (#236) is sticky-true: once *any* signal
+            // (privilege-set PROPFIND, OPTIONS Allow header, or a
+            // reactive 403/404 on a write attempt) flags a calendar
+            // as read-only, sync can't downgrade it back to writable.
+            //
+            // Why MAX instead of plain `excluded.read_only`:
+            //   Some Sabre/DAV configs don't advertise the
+            //   `current-user-privilege-set` prop AND respond to
+            //   OPTIONS with the resource-type's full method list
+            //   (regardless of the user's ACL).  Both proactive
+            //   signals lie, the calendar looks writable in
+            //   discovery, but the server still 404s the PUT.  Our
+            //   reactive `set_calendar_read_only(true)` fires on
+            //   that 404 — but the next sync would then clobber it
+            //   back to writable here, defeating the fallback.
+            //   MAX preserves the true verdict so the editor stops
+            //   offering Save permanently once we know.
             let mut stmt = tx.prepare(
                 "INSERT INTO calendars
                     (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted, read_only)
@@ -215,7 +228,7 @@ impl Cache {
                     display_name = excluded.display_name,
                     color        = COALESCE(excluded.color, calendars.color),
                     ctag         = COALESCE(excluded.ctag, calendars.ctag),
-                    read_only    = excluded.read_only",
+                    read_only    = MAX(calendars.read_only, excluded.read_only)",
             )?;
             for r in rows {
                 let id = format!("{nc_account_id}::{}", r.path);

@@ -221,6 +221,13 @@ pub async fn calendar_is_writable(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_ascii_uppercase();
+    // Logging the raw `Allow` header is the only way to diagnose
+    // servers where the OPTIONS probe disagrees with the actual
+    // PUT verdict (e.g. Sabre/DAV configs that return the full
+    // resource-type method list regardless of ACL).  `info!` so
+    // it shows up at the default level — the volume per sync is
+    // one line per calendar, manageable.
+    tracing::info!("CalDAV OPTIONS {}: Allow={:?}", calendar_url, allow);
     // Empty `Allow` → server didn't tell us, assume writable so we
     // don't accidentally lock the user out of every calendar.
     if allow.is_empty() {
