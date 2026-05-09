@@ -1062,11 +1062,7 @@ impl ImapClient {
     /// other mail clients the user might have open, and gives
     /// Nimbus's mail-list a stable signal across cache rebuilds.
     /// Uses `UID STORE <uid> +FLAGS (\Answered)`; idempotent.
-    pub async fn mark_as_answered(
-        &mut self,
-        folder: &str,
-        uid: u32,
-    ) -> Result<(), NimbusError> {
+    pub async fn mark_as_answered(&mut self, folder: &str, uid: u32) -> Result<(), NimbusError> {
         let session = self
             .session
             .as_mut()
