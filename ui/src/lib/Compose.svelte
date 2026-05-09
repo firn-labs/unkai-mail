@@ -200,6 +200,15 @@
         another duplicate) and removes the modal overlay so the
         component fills the whole window. */
     inStandaloneWindow?: boolean
+    /** Fires after `invoke('send_email')` resolves successfully
+     *  with the id of the new Outbox row (#276 follow-up).
+     *  Distinct from `onclose` because the modal closes
+     *  immediately on Send (#156); this callback is the proof
+     *  the user actually went through with the send rather
+     *  than cancelling.  App.svelte uses the row id to look
+     *  the new row up and surface it as the selected Outbox
+     *  preview after an edit-from-outbox send. */
+    onsentenqueued?: (newRowId: number) => void
   }
   let {
     accounts,
@@ -209,6 +218,7 @@
     onsendfailed,
     initialError = '',
     inStandaloneWindow = false,
+    onsentenqueued,
   }: Props = $props()
 
   /**
@@ -1599,7 +1609,7 @@
     stagedEvent: StagedMeetingEvent | null
   }): Promise<void> {
     try {
-      await invoke('send_email', {
+      const newOutboxId = await invoke<number>('send_email', {
         accountId: snap.fromAccountId,
         email: {
           from: snap.fromHeader,
@@ -1625,6 +1635,12 @@
         // the source row alone — what the user expects.
         outboxSource: snap.initialAtSend?.outboxSource ?? null,
       })
+      // Send was accepted into the local queue (#276 follow-up).
+      // Hand the new row id to the parent so App.svelte can
+      // surface it as the selected Outbox preview after an
+      // edit-from-outbox send.  Best-effort; a missing
+      // handler is a no-op for non-edit flows.
+      onsentenqueued?.(newOutboxId)
     } catch (e: any) {
       const msg = formatError(e) || 'Failed to send'
       console.warn('send_email failed (modal already closed)', e)
