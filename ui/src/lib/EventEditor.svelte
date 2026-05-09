@@ -40,6 +40,7 @@
   import Select from './Select.svelte'
   import EmailKindChip from './EmailKindChip.svelte'
   import Toggle from './Toggle.svelte'
+  import EventPlanner from './EventPlanner.svelte'
   import { m } from '../paraglide/messages'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
@@ -396,6 +397,12 @@
       ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'CHAIR')
       : seedRole(draft?.chairAttendees, 'CHAIR'),
   )
+
+  /** True when the EventPlanner modal is open (#137).  Keeps the
+   *  planner unmounted unless the user actually clicked "Find
+   *  time" so its initial-load `get_attendee_availability` IPC
+   *  doesn't fire on every editor open. */
+  let plannerOpen = $state(false)
 
   /** Lower-cased addresses we consider "the user" — the union
    *  of every configured mail-account email.  Used by the RSVP
@@ -2027,6 +2034,24 @@
       {@render attendeeInput('REQ-PARTICIPANT', 'Required attendees')}
       {@render attendeeInput('OPT-PARTICIPANT', 'Optional attendees')}
 
+      <!-- "Find time" trigger (#137).  Disabled until at least
+           one attendee has been added — without anyone to query,
+           the planner has nothing to render.  Sits between the
+           inputs and the chip list so the user reaches it as
+           soon as they've finished typing names. -->
+      {#if [...chairAttendees, ...requiredAttendees, ...optionalAttendees].length > 0}
+        <div class="flex">
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-primary-500"
+            onclick={() => { plannerOpen = true }}
+          >
+            <Icon name="calendar" size={14} class="inline-block align-text-bottom mr-1.5" />
+            {m.event_editor_find_time()}
+          </button>
+        </div>
+      {/if}
+
       <!-- Section separator + the chip lists grouped by role.
            Each header is faint until there's content under it,
            and `chipList` short-circuits empty buckets so the
@@ -2091,3 +2116,27 @@
     </footer>
   </div>
 </div>
+
+<!-- Scheduling-assistant modal (#137).  Mounted at the document
+     root level so its overlay covers the EventEditor too — the
+     user can apply a slot from the planner and see the editor's
+     time fields update immediately when the planner closes. -->
+{#if plannerOpen}
+  {@const ncId = calendars.find((c) => c.id === calendarId)?.nextcloud_account_id ?? ''}
+  {#if ncId}
+    <EventPlanner
+      open={plannerOpen}
+      {ncId}
+      attendees={[...chairAttendees, ...requiredAttendees, ...optionalAttendees]}
+      proposedStart={fromLocalSplit(startDate, startTime)}
+      proposedEnd={fromLocalSplit(endDate, endTime)}
+      onclose={() => { plannerOpen = false }}
+      onapply={(s, e) => {
+        startDate = toLocalDateInput(s)
+        startTime = toLocalTimeInput(s)
+        endDate = toLocalDateInput(e)
+        endTime = toLocalTimeInput(e)
+      }}
+    />
+  {/if}
+{/if}

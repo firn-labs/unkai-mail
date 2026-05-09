@@ -182,5 +182,15 @@
   "outbox_view_label_attempts": "Attempts",
   "outbox_view_empty_body": "(This message has no displayable body.)",
   "event_editor_readonly_banner": "This calendar is read-only — you can view this event, but changes can't be saved.",
-  "event_editor_close": "Close"
+  "event_editor_close": "Close",
+  "event_editor_find_time": "Find time",
+  "event_planner_title": "Find time",
+  "event_planner_close": "Close",
+  "event_planner_loading": "Loading availability…",
+  "event_planner_no_attendees": "Add at least one attendee to see availability.",
+  "event_planner_proposed_label": "Proposed",
+  "event_planner_apply": "Use this time",
+  "event_planner_cancel": "Cancel",
+  "event_planner_source_unknown_title": "No availability data — assume free.",
+  "event_planner_source_local_title": "From your own calendars (this person isn't a Nextcloud user, or their calendar isn't shared with you)."
 }
