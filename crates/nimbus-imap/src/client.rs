@@ -1827,6 +1827,15 @@ fn decode_header(bytes: &[u8]) -> String {
 }
 
 /// Format an IMAP envelope address as "Name <user@host>" (or just the address).
+///
+/// When the envelope's display-name slot equals the bare email
+/// (case-insensitive), we drop the name and emit just the address.
+/// Some senders / mail servers populate the personal-name component
+/// with the email itself, which would produce malformed RFC 5322
+/// like `alex@example.com <alex@example.com>` — the unquoted `@` in
+/// the phrase makes the result unparseable, and a plain reply would
+/// fail with "Invalid 'to' address".  Collapsing the redundant name
+/// also cleans up the mail-list display.
 fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
     let name = addr
         .name
@@ -1850,10 +1859,22 @@ fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
         format!("{mailbox}@{host}")
     };
 
-    match (name.is_empty(), email.is_empty()) {
+    let decoded_name = if name.is_empty() {
+        String::new()
+    } else {
+        decode_header(name.as_bytes())
+    };
+
+    // Treat a name that's identical to the email as no name at all.
+    let name_is_redundant = !email.is_empty() && decoded_name.trim().eq_ignore_ascii_case(&email);
+
+    match (
+        decoded_name.is_empty() || name_is_redundant,
+        email.is_empty(),
+    ) {
         (true, _) => email,
-        (false, true) => decode_header(name.as_bytes()),
-        (false, false) => format!("{} <{email}>", decode_header(name.as_bytes())),
+        (false, true) => decoded_name,
+        (false, false) => format!("{decoded_name} <{email}>"),
     }
 }
 
