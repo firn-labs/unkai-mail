@@ -1460,41 +1460,21 @@
   }
 
   async function onRespondWithMeeting(mail: ReplyableMail) {
-    console.log('[respond-with-meeting] click', {
-      uid: mail.uid,
-      account_id: mail.account_id,
-      folder: mail.folder,
-      meetingDraftAlreadySet: meetingDraft !== null,
-      composeInitialAlreadySet: composeInitial !== null,
-    })
+    // Defensive: if a previous flow left state behind (e.g. a
+    // Compose modal whose overlay would z-index over the new
+    // editor), clear it so the EventEditor lands on top of an
+    // empty surface.
+    meetingDraft = null
+    composeInitial = null
 
-    // Defensive: if a previous flow left state behind (e.g. an
-    // unclosed Compose modal whose overlay would hide the editor),
-    // clear it so the new EventEditor lands on top of an empty
-    // surface.  Should be rare with the recent fixes — log so we
-    // can spot the leak if it does happen.
-    if (meetingDraft !== null) {
-      console.warn(
-        '[respond-with-meeting] meetingDraft was already set; clearing before re-open',
-      )
-      meetingDraft = null
-    }
-    if (composeInitial !== null) {
-      console.warn(
-        '[respond-with-meeting] composeInitial was set; clearing before opening editor',
-      )
-      composeInitial = null
-    }
-
-    // Top-level try/catch so any unhandled rejection surfaces as a
-    // visible alert instead of leaving the user staring at a
-    // button that did nothing.  Inner blocks still run their own
-    // try/catch where they can give a more specific message.
+    // Top-level try/catch so any unhandled rejection surfaces as
+    // a visible alert instead of leaving the user staring at a
+    // button that did nothing.  The inner blocks still run their
+    // own try/catch where they can give a more specific message.
     try {
       let ncId = ''
       try {
         const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
-        console.log('[respond-with-meeting] nc accounts:', list.length)
         if (list.length === 0) {
           alert('Connect a Nextcloud account first (Settings → Nextcloud).')
           return
@@ -1508,12 +1488,6 @@
       let calendars: CalendarSummary[] = []
       try {
         calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
-        console.log(
-          '[respond-with-meeting] calendars total:',
-          calendars.length,
-          'hidden:',
-          calendars.filter((c) => c.hidden).length,
-        )
       } catch (e) {
         alert(`Failed to load calendars: ${e}`)
         return
@@ -1560,14 +1534,6 @@
       const start = nextHalfHour(new Date())
       const end = new Date(start.getTime() + 30 * 60 * 1000)
 
-      console.log(
-        '[respond-with-meeting] setting meetingDraft, required:',
-        required.length,
-        'optional:',
-        optional.length,
-        'calendarId:',
-        initialCalendarId,
-      )
       meetingDraft = {
         calendars: visible,
         draft: {
@@ -1581,11 +1547,7 @@
         },
         replyTo: mail,
       }
-      console.log(
-        '[respond-with-meeting] meetingDraft set; EventEditor should now mount',
-      )
     } catch (e) {
-      console.error('[respond-with-meeting] unhandled error', e)
       alert(`Failed to open meeting editor: ${e}`)
     }
   }
