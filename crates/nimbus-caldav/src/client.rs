@@ -224,11 +224,7 @@ pub async fn probe_calendar_writable(
 ) -> Result<bool, NimbusError> {
     let http = build(trusted_certs)?;
     let probe_uid = format!("nimbus-readonly-probe-{}", uuid::Uuid::new_v4());
-    let probe_href = format!(
-        "{}/{}.ics",
-        calendar_url.trim_end_matches('/'),
-        probe_uid
-    );
+    let probe_href = format!("{}/{}.ics", calendar_url.trim_end_matches('/'), probe_uid);
     let ics = format!(
         "BEGIN:VCALENDAR\r\n\
          VERSION:2.0\r\n\
