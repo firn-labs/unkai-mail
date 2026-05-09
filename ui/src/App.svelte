@@ -33,6 +33,7 @@
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
   import { openReminderInStandaloneWindow } from './lib/reminderPopupWindow'
+  import { openMailFileInStandaloneWindow } from './lib/standaloneMailFileWindow'
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
@@ -823,6 +824,16 @@
       unlistenMailtoFromMail = await listen<{
         init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }
       }>('mailto-from-mail', (e) => openCompose(e.payload.init))
+
+      // #254 — when Nimbus is launched as the OS handler for an
+      // .ics or .eml file (Windows registry / macOS UTI / Linux
+      // .desktop), the backend stashes the path in a one-shot
+      // slot during process startup.  Pull it now, after the
+      // event listeners are wired so an iCal "Show event" path
+      // can still race past us if it ever overlaps.  Best-effort:
+      // any failure is logged and dropped so a malformed handoff
+      // doesn't keep the user staring at an empty app shell.
+      void processPendingLaunchFile()
     })()
     return () => {
       unlistenNewMail?.()
@@ -1348,15 +1359,21 @@
       start: Date
       end: Date
       summary: string
+      description?: string
+      location?: string
+      url?: string
       requiredAttendees: string[]
       optionalAttendees: string[]
+      chairAttendees?: string[]
       createTalkRoom: boolean
     }
     /** Original thread the user clicked "Respond with meeting"
      *  on — held here so `onMeetingEditorSaved` can reopen
      *  Compose pre-filled as a reply once the event lands
-     *  (#195). */
-    replyTo: OpenMail
+     *  (#195).  Absent when the editor was opened from a
+     *  source other than an email thread (e.g. an .ics file
+     *  the OS handed us via "Open with…", #254). */
+    replyTo?: OpenMail
   } | null>(null)
 
   /** Strip an `"Name" <addr>` wrapper down to the bare email. */
@@ -1496,6 +1513,12 @@
       talkUrl: isUrl ? loc : null,
     }
 
+    // No source thread (e.g. the editor was opened from an .ics
+    // file we got handed via the OS, #254) — just save the event
+    // and bow out.  No reply Compose makes sense without an
+    // email to reply to.
+    if (!ctx.replyTo) return
+
     // Open Compose as a reply to the original thread, with the
     // styled meeting card pre-filled into the body.  Existing
     // reply ergonomics (To from From, Re: subject prefix, quoted
@@ -1514,6 +1537,183 @@
       body: quoteBody(original.from, original.date, original.body_text),
       meetingInvite,
     })
+  }
+
+  // ── OS file-association handoff (#254) ─────────────────────────
+  // When the user launches Nimbus by double-clicking an .ics /
+  // .eml file (or via "Open with… → Nimbus"), the OS hands the
+  // path to the process as `argv[1]`.  The Rust side stashes it
+  // in a one-shot slot during process startup; we drain it here
+  // and dispatch by extension:
+  //
+  //   .eml → spawn a view-only popout window (read-only by
+  //          design — no account context, no folder, so reply /
+  //          archive don't make sense)
+  //   .ics → load the user's calendars, parse the file into
+  //          our CalendarEvent shape, prefill EventEditor in
+  //          create-mode so the user can adjust the title /
+  //          time / attendees and save into a calendar of their
+  //          choice (per the user's directive — NOT read-only)
+
+  /** Lift a `CalendarEvent.attendees` list into the
+   *  required / optional / chair buckets EventEditor's draft
+   *  prop expects.  Each attendee is rendered as `"Name" <addr>`
+   *  when CN is present, or just the bare address otherwise —
+   *  matches `parseAddress` everywhere else. */
+  function bucketAttendeesByRole(
+    attendees: { email: string; common_name?: string | null; role?: string | null }[],
+    self: string,
+  ): {
+    required: string[]
+    optional: string[]
+    chair: string[]
+  } {
+    const required: string[] = []
+    const optional: string[] = []
+    const chair: string[] = []
+    const selfAddr = self.toLowerCase()
+    for (const a of attendees) {
+      const email = (a.email || '').replace(/^mailto:/i, '').trim()
+      if (!email) continue
+      if (email.toLowerCase() === selfAddr) continue
+      const piece = a.common_name ? `"${a.common_name}" <${email}>` : email
+      const role = (a.role || 'REQ-PARTICIPANT').toUpperCase()
+      if (role === 'OPT-PARTICIPANT') optional.push(piece)
+      else if (role === 'CHAIR') chair.push(piece)
+      else required.push(piece)
+    }
+    return { required, optional, chair }
+  }
+
+  /** Drain the one-shot launch-file slot in the Rust backend
+   *  and dispatch the path by extension.  Called once during
+   *  the main app's startup `$effect`. */
+  async function processPendingLaunchFile() {
+    let path: string | null = null
+    try {
+      path = await invoke<string | null>('take_pending_file_to_open')
+    } catch (e) {
+      console.warn('take_pending_file_to_open failed', e)
+      return
+    }
+    if (!path) return
+
+    const lower = path.toLowerCase()
+    if (lower.endsWith('.eml')) {
+      try {
+        await openMailFileInStandaloneWindow(path)
+      } catch (e) {
+        console.warn('openMailFileInStandaloneWindow failed', e)
+      }
+      return
+    }
+    if (lower.endsWith('.ics')) {
+      await openIcsFileInEditor(path)
+      return
+    }
+    console.warn('pending file has unsupported extension:', path)
+  }
+
+  /** Subset of the Rust `CalendarEvent` shape we read off of
+   *  `parse_ics_file`.  EventEditor and CalendarView each
+   *  define their own internal interface for the same data;
+   *  rather than reach in and import a non-exported type, we
+   *  stamp out the fields we actually need here. */
+  interface ImportedIcsEvent {
+    summary: string
+    description?: string | null
+    start: string
+    end: string
+    location?: string | null
+    url?: string | null
+    attendees?: { email: string; common_name?: string | null; role?: string | null }[]
+  }
+
+  /** Parse an .ics on disk and open EventEditor in create-mode
+   *  pre-filled with the parsed event's data.  Multiple VEVENTs
+   *  in one file are uncommon for hand-shared invites — we use
+   *  the first one and let the user save it; the others are
+   *  ignored.  The user picks the calendar in the editor. */
+  async function openIcsFileInEditor(path: string) {
+    let events: ImportedIcsEvent[] = []
+    try {
+      events = await invoke<ImportedIcsEvent[]>('parse_ics_file', { path })
+    } catch (e) {
+      alert(`Could not parse the calendar file: ${e}`)
+      return
+    }
+    if (events.length === 0) {
+      alert('The calendar file did not contain any events.')
+      return
+    }
+    const ev = events[0]
+
+    // Calendars come from the user's first connected Nextcloud
+    // account (same source the "Respond with meeting" flow
+    // uses).  Without an NC account there's nowhere to save
+    // the event, so we surface that and bail.
+    let ncId = ''
+    try {
+      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      if (list.length === 0) {
+        alert(
+          'Connect a Nextcloud account first (Settings → Nextcloud) so this event has a calendar to land in.',
+        )
+        return
+      }
+      ncId = list[0].id
+    } catch (e) {
+      alert(`Failed to load Nextcloud accounts: ${e}`)
+      return
+    }
+
+    let calendars: CalendarSummary[] = []
+    try {
+      calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+    } catch (e) {
+      alert(`Failed to load calendars: ${e}`)
+      return
+    }
+    const visible = calendars.filter((c) => !c.hidden)
+    if (visible.length === 0) {
+      alert('No writable calendars found on your Nextcloud account.')
+      return
+    }
+    let initialCalendarId = visible[0].id
+    try {
+      const s = await invoke<{ default_calendar_id: string | null }>(
+        'get_app_settings',
+      )
+      if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
+        initialCalendarId = s.default_calendar_id!
+      }
+    } catch {}
+
+    const buckets = bucketAttendeesByRole(ev.attendees ?? [], activeAccountEmail)
+
+    meetingDraft = {
+      calendars: visible,
+      draft: {
+        calendarId: initialCalendarId,
+        start: new Date(ev.start),
+        end: new Date(ev.end),
+        summary: ev.summary || '',
+        description: ev.description ?? undefined,
+        location: ev.location ?? undefined,
+        url: ev.url ?? undefined,
+        requiredAttendees: buckets.required,
+        optionalAttendees: buckets.optional,
+        chairAttendees: buckets.chair,
+        // Don't auto-mint a Talk room for a third-party invite
+        // we just imported — the original file may already have
+        // a join URL in LOCATION or URL, and creating a fresh
+        // room would muddy the invite.
+        createTalkRoom: false,
+      },
+      // No source thread — this is a file the user opened, not
+      // a reply path.  `onMeetingEditorSaved` skips its Compose
+      // step when this is absent.
+    }
   }
 
   /** "Save as note" handler — issue #67's email→note bridge. Builds

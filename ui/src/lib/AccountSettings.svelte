@@ -565,6 +565,24 @@
     }
   }
 
+  /** Open the OS's default-apps settings page so the user can
+   *  pick Nimbus as the default handler for .ics / .eml (#254).
+   *  Nimbus is *eligible* once installed thanks to the
+   *  `bundle.fileAssociations` declarations, but on Windows
+   *  marking it as the *default* requires user consent in the
+   *  Settings panel — programmatic association without the
+   *  user clicking through is locked down by Windows for
+   *  anti-hijacking reasons.  The Rust command shell-execs the
+   *  appropriate OS surface (`ms-settings:defaultapps` /
+   *  `~/Library/Preferences` / xdg-mime hint). */
+  async function openDefaultAppsSettings() {
+    try {
+      await invoke('open_default_apps_settings')
+    } catch (e) {
+      alert(`Could not open the default-apps settings page: ${e}`)
+    }
+  }
+
   /** Reconcile the stored bit against the OS on mount — picks
    *  up the case where the user removed the autostart entry
    *  manually (e.g. via system settings) since the last
@@ -1240,6 +1258,33 @@
             {m.settings_general_language_hint()}
           </p>
         {/if}
+
+        <!-- File associations (#254).  Nimbus is registered as an
+             eligible handler for .ics / .eml during install via
+             the bundle.fileAssociations entries in
+             tauri.conf.json — but on Windows, "eligible" doesn't
+             mean "default".  The user has to flip the toggle in
+             the OS settings panel themselves; we provide a
+             shortcut button instead of asking them to dig
+             through Settings → Apps → Default apps by hand. -->
+        <div class="pt-2 border-t border-surface-300/40 dark:border-surface-700/40">
+          <div class="flex items-start justify-between gap-3">
+            <div class="text-sm">
+              <div>{m.settings_general_file_assoc_label()}</div>
+              <div class="text-xs text-surface-500 mt-0.5">
+                {m.settings_general_file_assoc_hint()}
+              </div>
+            </div>
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-500 shrink-0 inline-flex items-center gap-1.5"
+              onclick={openDefaultAppsSettings}
+            >
+              <Icon name="open-link" size={14} />
+              {m.settings_general_file_assoc_button()}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
     {/if}

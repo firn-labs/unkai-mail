@@ -12,6 +12,10 @@
   "settings_general_language_restart_now": "Jetzt neu starten",
   "settings_general_language_restart_later": "Später neu starten",
 
+  "settings_general_file_assoc_label": ".ics- und .eml-Dateien in Nimbus öffnen",
+  "settings_general_file_assoc_hint": "Nimbus ist beim Betriebssystem als möglicher Handler registriert. Setzen Sie Nimbus in den OS-Einstellungen als Standardprogramm, damit doppelt angeklickte Kalender­einladungen und E-Mail-Dateien hier geöffnet werden.",
+  "settings_general_file_assoc_button": "OS-Einstellungen öffnen",
+
   "account_setup_welcome_title": "Willkommen bei Nimbus Mail",
   "account_setup_welcome_subtitle": "Lassen Sie uns Ihr E-Mail-Konto einrichten",
   "account_setup_close_label": "Einrichtungsassistenten schließen",
