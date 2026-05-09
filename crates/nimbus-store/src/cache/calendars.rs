@@ -350,6 +350,26 @@ impl Cache {
         Ok(())
     }
 
+    /// Flip a calendar's `read_only` flag (#236 follow-up).  Used
+    /// by the CalDAV write-failure fallback in `main.rs`: when a
+    /// PUT or DELETE returns 403 or 404, we treat that as the
+    /// server saying "no write access" (Sabre/DAV's permission
+    /// masking pattern) and stamp the calendar as read-only
+    /// locally so the EventEditor stops offering Save / Delete
+    /// for this and any other event on it.  Idempotent.
+    pub fn set_calendar_read_only(
+        &self,
+        calendar_id: &str,
+        read_only: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE calendars SET read_only = ?2 WHERE id = ?1",
+            params![calendar_id, read_only as i64],
+        )?;
+        Ok(())
+    }
+
     /// All cached calendars for one Nextcloud account, alphabetised
     /// by display name.
     pub fn list_calendars(&self, nc_account_id: &str) -> Result<Vec<CachedCalendar>, CacheError> {

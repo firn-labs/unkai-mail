@@ -31,6 +31,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
@@ -1206,6 +1207,34 @@
       heightPx: Math.max(2, (b - a) * PX_PER_MINUTE),
     }
   }
+
+  /** Listen for `calendars-updated` events from the backend
+   *  (#236 follow-up).  The CalDAV write-failure fallback fires
+   *  this whenever it flips a calendar's `read_only` flag in the
+   *  cache after a 403/404 — re-pulling the calendar list here
+   *  refreshes EventEditor's `calendars` prop so the
+   *  `currentCalendarReadOnly` derived flips and Save/Delete
+   *  hide on the in-flight editor instance. */
+  $effect(() => {
+    let unlisten: UnlistenFn | null = null
+    let alive = true
+    void (async () => {
+      try {
+        unlisten = await listen('calendars-updated', () => {
+          if (!alive) return
+          // Re-read the cache; events list isn't affected so the
+          // existing window of events stays intact.
+          void reloadFromCache(loadedRangeStart, loadedRangeEnd)
+        })
+      } catch (e) {
+        console.warn('listen calendars-updated failed', e)
+      }
+    })()
+    return () => {
+      alive = false
+      unlisten?.()
+    }
+  })
 </script>
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">

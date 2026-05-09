@@ -33,6 +33,18 @@ pub enum NimbusError {
     #[error("Resource changed on the server since last sync: {0}")]
     EtagMismatch(String),
 
+    /// CalDAV / WebDAV write refused with 403 Forbidden or 404
+    /// Not Found (#236 follow-up).  Distinguished from
+    /// `Nextcloud` so the calling Tauri command can react —
+    /// flip the calendar's `read_only` flag in the local cache
+    /// + emit `calendars-updated` so the EventEditor stops
+    /// offering Save / Delete on this and any other event in
+    /// that calendar.  Sabre/DAV (NC's CalDAV stack) commonly
+    /// returns 404 instead of 403 for forbidden resources as a
+    /// permission-masking pattern, so we treat both the same.
+    #[error("CalDAV write forbidden: {0}")]
+    CalDavWriteForbidden(String),
+
     #[error("{0}")]
     Other(String),
 }
