@@ -6448,6 +6448,24 @@ fn pick_archive_folder(account_id: &str, cache: &Cache) -> Option<String> {
 
 // ── SMTP commands ───────────────────────────────────────────────
 
+/// Reference to the original message a Compose send is responding to
+/// (#255).  Set by Compose's reply / reply-all / "respond with
+/// meeting" flows so the backend can flip the IMAP `\Answered` flag
+/// (or JMAP `$answered` keyword) on the original and stamp the
+/// per-kind `replied_kind` into the local cache, which drives the
+/// reply-icon prefix on the mail-list row.  `None` for fresh
+/// composes / forwards / drafts — none of which are "answers".
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepliedToRef {
+    folder: String,
+    uid: u32,
+    /// `"reply"` / `"reply-all"` / `"meeting"`.  Anything else falls
+    /// through to a generic answered icon — the validation here is
+    /// loose because the backend treats this as opaque metadata.
+    kind: String,
+}
+
 /// Send an email via the account's configured SMTP server.
 ///
 /// The frontend builds an `OutgoingEmail` (recipients, subject, body,
@@ -6459,10 +6477,16 @@ fn pick_archive_folder(account_id: &str, cache: &Cache) -> Option<String> {
 ///
 /// After SMTP delivery, the message is appended to the IMAP Sent folder
 /// so the user has a visible record. JMAP handles this server-side.
+///
+/// `replied_to` (#255) optionally points at the original message —
+/// when present, after a successful send we set the `\Answered` /
+/// `$answered` flag on the original and stamp `replied_kind` into
+/// the cache so the mail-list row gains its reply icon.
 #[tauri::command]
 async fn send_email(
     account_id: String,
     email: OutgoingEmail,
+    replied_to: Option<RepliedToRef>,
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
     let account = load_account(&cache, &account_id)?;
@@ -6471,7 +6495,11 @@ async fn send_email(
     // a copy to Sent itself — no separate SMTP/APPEND needed.
     if uses_jmap(&account) {
         let client = connect_jmap(&account).await?;
-        return client.send_email(&email).await;
+        client.send_email(&email).await?;
+        if let Some(rt) = replied_to.as_ref() {
+            mark_original_answered_jmap(&account, &cache, &client, rt).await;
+        }
+        return Ok(());
     }
 
     // Build the lettre message once so the same bytes go to both the
@@ -6511,7 +6539,94 @@ async fn send_email(
             account.id
         );
     }
+
+    // Same best-effort treatment for the answered-flag flip: SMTP
+    // already succeeded so the user's reply is out the door, and a
+    // missing flag here just means the icon won't appear until the
+    // next IMAP envelope fetch (which sees `\Answered` independently
+    // because the user's other clients also carry it).
+    if let Some(rt) = replied_to.as_ref() {
+        mark_original_answered_imap(&account, &cache, rt).await;
+    }
     Ok(())
+}
+
+/// Best-effort: stamp the local cache row + the IMAP `\Answered`
+/// flag on the original message that a Compose reply just answered
+/// (#255).  Logs on failure rather than propagating — the user's
+/// mail already left the building.
+async fn mark_original_answered_imap(
+    account: &Account,
+    cache: &Cache,
+    rt: &RepliedToRef,
+) {
+    if let Err(e) = cache.mark_envelope_replied(&account.id, &rt.folder, rt.uid, &rt.kind) {
+        tracing::warn!(
+            "answered-cache update failed for account '{}', folder '{}', uid {}: {e}",
+            account.id,
+            rt.folder,
+            rt.uid
+        );
+    }
+
+    let password = match credentials::get_imap_password(&account.id) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                "answered-flag IMAP STORE skipped — keychain lookup failed: {e}"
+            );
+            return;
+        }
+    };
+    let mut client = match ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("answered-flag IMAP STORE skipped — connect failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = client.mark_as_answered(&rt.folder, rt.uid).await {
+        tracing::warn!(
+            "answered-flag IMAP STORE failed for '{}' uid {}: {e}",
+            rt.folder,
+            rt.uid
+        );
+    }
+    let _ = client.logout().await;
+}
+
+/// JMAP analogue of `mark_original_answered_imap` — uses the
+/// already-connected JMAP client (no second connect needed since
+/// JMAP is HTTPS-pooled, not a long-lived session).
+async fn mark_original_answered_jmap(
+    account: &Account,
+    cache: &Cache,
+    client: &JmapClient,
+    rt: &RepliedToRef,
+) {
+    if let Err(e) = cache.mark_envelope_replied(&account.id, &rt.folder, rt.uid, &rt.kind) {
+        tracing::warn!(
+            "answered-cache update failed for account '{}', folder '{}', uid {}: {e}",
+            account.id,
+            rt.folder,
+            rt.uid
+        );
+    }
+    if let Err(e) = client.mark_as_answered(&rt.folder, rt.uid).await {
+        tracing::warn!(
+            "answered-keyword JMAP set failed for '{}' uid {}: {e}",
+            rt.folder,
+            rt.uid
+        );
+    }
 }
 
 /// Locate the account's Sent folder (via the IMAP `\Sent` attribute,

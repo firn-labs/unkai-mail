@@ -124,6 +124,20 @@
         the note content with the user's signature *below* it,
         not stranded above an empty body.  Default `false`. */
     bodyAboveSignature?: boolean
+    /** Original-message reference for reply / reply-all / "respond
+        with meeting" flows (#255).  Threads the answer-kind
+        through Compose's send invoke so the backend can flip
+        `\Answered` on the original message and stamp the local
+        cache row's `replied_kind` — that's what drives the small
+        reply icon in front of the subject in the mail list.
+        Unset for fresh composes, forwards, draft-edits, and the
+        calendar-machinery sends. */
+    repliedTo?: {
+      accountId: string
+      folder: string
+      uid: number
+      kind: 'reply' | 'reply-all' | 'meeting'
+    }
     /** When Compose is opened by clicking "Edit" on an existing draft
         in the Drafts folder, this points at the server-side copy we
         opened from. Once the user sends or re-saves, that copy needs
@@ -1547,6 +1561,11 @@
           body_html: snap.bodyHtml || null,
           attachments: snap.attachments,
         },
+        // #255: lets the backend stamp `\Answered` on the
+        // original + persist `replied_kind` for the mail-list
+        // reply icon.  Only present when this Compose was opened
+        // by a reply / reply-all / "respond with meeting" flow.
+        repliedTo: snap.initialAtSend?.repliedTo ?? null,
       })
     } catch (e: any) {
       const msg = formatError(e) || 'Failed to send'
@@ -1561,6 +1580,10 @@
           body: snap.body,
           attachments: snap.attachments,
           in_reply_to: snap.initialAtSend?.in_reply_to ?? null,
+          // Carry the answered-tracking ref into the recovery
+          // draft so a successful retry still flips `\Answered`
+          // on the original (#255).
+          repliedTo: snap.initialAtSend?.repliedTo,
           nextcloudLinks: snap.initialAtSend?.nextcloudLinks,
           talkLink: snap.initialAtSend?.talkLink,
           draftSource: snap.draftSource ?? undefined,

@@ -330,9 +330,11 @@ impl JmapClient {
                     .unwrap_or_else(Utc::now);
 
                 // JMAP uses keywords instead of flags:
-                //   $seen → read, $flagged → starred
+                //   $seen → read, $flagged → starred,
+                //   $answered → user has replied to this message (#255)
                 let is_read = email.keywords.contains_key("$seen");
                 let is_starred = email.keywords.contains_key("$flagged");
+                let is_answered = email.keywords.contains_key("$answered");
 
                 EmailEnvelope {
                     // JMAP IDs are strings, but our model uses u32 UIDs.
@@ -345,6 +347,8 @@ impl JmapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    replied_kind: None,
                     // Stamped into the cache by the caller; left empty
                     // here for the same reason as the IMAP path.
                     account_id: String::new(),
@@ -557,6 +561,46 @@ impl JmapClient {
         }
 
         info!("JMAP: marked '{jmap_id}' as $seen");
+        Ok(())
+    }
+
+    /// Set the `$answered` keyword on a message (#255) — equivalent
+    /// of IMAP's `UID STORE +FLAGS (\Answered)`.  Called from the
+    /// send path after a successful reply / reply-all / meeting
+    /// reply so the original message reflects the answered state
+    /// across clients.
+    pub async fn mark_as_answered(
+        &self,
+        folder: &str,
+        uid: u32,
+    ) -> Result<(), NimbusError> {
+        let jmap_id = self.resolve_jmap_id(folder, uid).await?;
+
+        let resp = self
+            .call(vec![MethodCall {
+                name: "Email/set".into(),
+                args: json!({
+                    "accountId": self.account_id,
+                    "update": {
+                        jmap_id.clone(): {
+                            "keywords/$answered": true,
+                        },
+                    },
+                }),
+                call_id: "answered0".into(),
+            }])
+            .await?;
+
+        let args = Self::find_response(&resp.method_responses, "answered0")?;
+        if let Some(errors) = args.get("notUpdated")
+            && let Some(err) = errors.get(&jmap_id)
+        {
+            return Err(NimbusError::Protocol(format!(
+                "Failed to mark as answered: {err}"
+            )));
+        }
+
+        info!("JMAP: marked '{jmap_id}' as $answered");
         Ok(())
     }
 

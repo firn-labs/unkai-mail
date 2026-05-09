@@ -874,6 +874,30 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE nextcloud_accounts
         ADD COLUMN trusted_certs_json TEXT NOT NULL DEFAULT '[]';
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v25 → v26: track which messages the user has answered so the
+    // mail list can show a small reply / reply-all / meeting-reply
+    // icon in front of the subject (#255).
+    //
+    // Two columns:
+    //   * `is_answered` — mirrors the IMAP `\Answered` system flag.
+    //     Refreshed on every envelope re-fetch.  `1` is enough to
+    //     show a generic reply icon for messages the user
+    //     answered before this feature shipped (or answered from
+    //     a different client) — IMAP-canonical fallback.
+    //   * `replied_kind` — Nimbus-only metadata recording *how*
+    //     the user replied: `'reply'`, `'reply-all'`, or
+    //     `'meeting'`.  IMAP carries one boolean answered bit;
+    //     the kind is something only we know, so we store it
+    //     locally and never overwrite it on envelope re-fetches.
+    //     `NULL` means "we didn't reply via Nimbus" — fall back
+    //     to `is_answered` for the icon decision.
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN is_answered INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages
+        ADD COLUMN replied_kind TEXT;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

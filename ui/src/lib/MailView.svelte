@@ -65,13 +65,13 @@
     folder?: string
     uid: number | null
     onread?: (uid: number) => void
-    onreply?: (mail: Email) => void
-    onreplyall?: (mail: Email) => void
-    onforward?: (mail: Email) => void
+    onreply?: (mail: Email & { uid: number }) => void
+    onreplyall?: (mail: Email & { uid: number }) => void
+    onforward?: (mail: Email & { uid: number }) => void
     /** Open the "Create Talk room" flow seeded from this email's
         subject + thread participants. Wired from `App.svelte` so the
         resulting Compose window stacks on top of the inbox view. */
-    onrespondwithmeeting?: (mail: Email) => void
+    onrespondwithmeeting?: (mail: Email & { uid: number }) => void
     /** Save the email as a Nextcloud note. The handler in
         `App.svelte` picks the NC account and POSTs to the Notes
         API — we just hand over the email so the title/body are
@@ -1359,26 +1359,26 @@
       {:else}
         <button
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
-          onclick={() => email && onreply?.(email)}
+          onclick={() => email && uid != null && onreply?.({ ...email, uid })}
           title="Reply"
           aria-label="Reply"
         ><Icon name="reply" size={16} /></button>
         <button
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
-          onclick={() => email && onreplyall?.(email)}
+          onclick={() => email && uid != null && onreplyall?.({ ...email, uid })}
           title="Reply to everyone"
           aria-label="Reply to everyone"
         ><Icon name="reply-all" size={16} /></button>
         <button
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
-          onclick={() => email && onforward?.(email)}
+          onclick={() => email && uid != null && onforward?.({ ...email, uid })}
           title="Forward"
           aria-label="Forward"
         ><Icon name="forward" size={16} /></button>
         {#if onrespondwithmeeting}
           <button
             class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
-            onclick={() => email && onrespondwithmeeting?.(email)}
+            onclick={() => email && uid != null && onrespondwithmeeting?.({ ...email, uid })}
             title="Create a calendar event with a Talk link and the thread's participants as attendees"
             aria-label="Respond with meeting"
           ><Icon name="respond-with-meeting" size={16} /></button>

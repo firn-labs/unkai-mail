@@ -527,17 +527,25 @@ impl Cache {
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
         {
+            // Note (#255): `replied_kind` is intentionally NOT in
+            // the UPDATE clause — IMAP envelope re-fetches don't
+            // know which kind of reply happened, so leave whatever
+            // we stamped from the send path in place.  `is_answered`
+            // *is* refreshed because the IMAP `\Answered` flag is
+            // authoritative for "did anyone (incl. another client)
+            // answer this".
             let mut stmt = tx.prepare(
                 "INSERT INTO messages
                    (account_id, folder, uid, from_addr, subject, internal_date,
-                    is_read, is_starred, cached_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    is_read, is_starred, is_answered, cached_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
                    internal_date = excluded.internal_date,
                    is_read       = excluded.is_read,
                    is_starred    = excluded.is_starred,
+                   is_answered   = excluded.is_answered,
                    cached_at     = excluded.cached_at",
             )?;
             for env in envelopes {
@@ -550,6 +558,7 @@ impl Cache {
                     env.date.timestamp(),
                     env.is_read as i64,
                     env.is_starred as i64,
+                    env.is_answered as i64,
                     now,
                 ])?;
             }
@@ -574,7 +583,8 @@ impl Cache {
     ) -> Result<Vec<EmailEnvelope>, CacheError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT uid, folder, from_addr, subject, internal_date, is_read, is_starred
+            "SELECT uid, folder, from_addr, subject, internal_date,
+                    is_read, is_starred, is_answered, replied_kind
              FROM messages
              WHERE account_id = ?1 AND folder = ?2 AND pending_action IS NULL
              ORDER BY internal_date DESC
@@ -591,6 +601,8 @@ impl Cache {
                 date,
                 is_read: r.get::<_, i64>(5)? != 0,
                 is_starred: r.get::<_, i64>(6)? != 0,
+                is_answered: r.get::<_, i64>(7)? != 0,
+                replied_kind: r.get(8)?,
                 account_id: account_id.to_string(),
             })
         })?;
@@ -647,7 +659,8 @@ impl Cache {
     ) -> Result<Vec<EmailEnvelope>, CacheError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT account_id, uid, folder, from_addr, subject, internal_date, is_read, is_starred
+            "SELECT account_id, uid, folder, from_addr, subject, internal_date,
+                    is_read, is_starred, is_answered, replied_kind
              FROM messages
              WHERE folder = ?1 AND pending_action IS NULL
              ORDER BY internal_date DESC
@@ -665,6 +678,8 @@ impl Cache {
                 date,
                 is_read: r.get::<_, i64>(6)? != 0,
                 is_starred: r.get::<_, i64>(7)? != 0,
+                is_answered: r.get::<_, i64>(8)? != 0,
+                replied_kind: r.get(9)?,
             })
         })?;
 
@@ -899,6 +914,36 @@ impl Cache {
         }
 
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Stamp a cached envelope as answered (#255).  Sets both
+    /// `is_answered = 1` (so the row keeps the generic-reply
+    /// fallback even after the IMAP `\Answered` flag round-trips
+    /// from the server) and `replied_kind` to one of `"reply"`,
+    /// `"reply-all"`, or `"meeting"`.
+    ///
+    /// Called from the Compose send path after a successful
+    /// reply / reply-all / meeting reply.  Idempotent: re-running
+    /// with the same kind is a no-op; re-running with a different
+    /// kind overwrites — useful only in unusual flows where the
+    /// user replies, then later "responds with meeting" on the
+    /// same source thread.
+    pub fn mark_envelope_replied(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        kind: &str,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages
+             SET is_answered = 1,
+                 replied_kind = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, kind],
+        )?;
         Ok(())
     }
 
@@ -1363,6 +1408,8 @@ mod tests {
             date: Utc::now() - Duration::minutes(offset_min),
             is_read: false,
             is_starred: false,
+            is_answered: false,
+            replied_kind: None,
             account_id: String::new(),
         }
     }
