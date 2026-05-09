@@ -615,13 +615,16 @@
                     ></div>
                   {/each}
                   <!-- Busy blocks.  When the source has an event
-                       title (local-cache scan), surface it inside
-                       the block — `truncate` keeps multi-event days
-                       readable in narrow columns and the tooltip
-                       carries the full title for hover detail.
-                       Blocks shorter than ~24 px hide the inline
-                       text so a short slot doesn't overflow its own
-                       border. -->
+                       title — either because the period came
+                       directly from the user's local cache OR
+                       because we matched a free-busy slot to a
+                       cached event by start-time — surface the
+                       title inside the block.  `truncate` keeps
+                       multi-event days readable in narrow columns
+                       and the full title is in the tooltip.
+                       Threshold of 14 px matches the rendered
+                       height of one 10 px / leading-tight line
+                       plus the 2 px top padding. -->
                   {#each dayPeriods as p, i (i)}
                     {@const off = periodOffsetPx(p, focusDay)}
                     <div
@@ -629,7 +632,7 @@
                       style="top: {off.top}px; height: {off.height}px"
                       title={periodTooltip(p)}
                     >
-                      {#if p.summary && off.height >= 24}
+                      {#if p.summary && off.height >= 14}
                         <span class="block px-1 pt-0.5 text-[10px] leading-tight truncate text-surface-900 dark:text-surface-50">
                           {p.summary}
                         </span>
