@@ -6,4 +6,6 @@
 mod client;
 mod mutf7;
 
-pub use client::{EnvelopeBatch, ImapClient, parse_eml_bytes, probe_server_certificate};
+pub use client::{
+    EnvelopeBatch, FlagSnapshot, ImapClient, parse_eml_bytes, probe_server_certificate,
+};

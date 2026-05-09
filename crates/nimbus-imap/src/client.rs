@@ -303,6 +303,22 @@ pub struct EnvelopeBatch {
     pub envelopes: Vec<EmailEnvelope>,
 }
 
+/// IMAP system-flag snapshot for a single message UID.
+///
+/// Returned by `fetch_flags`, which exists to refresh the
+/// `\Seen` / `\Flagged` / `\Answered` bits on already-cached
+/// envelopes — the standard envelope-fetch path is incremental and
+/// doesn't re-read flags on UIDs the cache already knows about, so
+/// flag changes another mail client makes (mark-read on a phone,
+/// answer from webmail, etc.) need this catch-up to round-trip.
+#[derive(Debug, Clone, Copy)]
+pub struct FlagSnapshot {
+    pub uid: u32,
+    pub is_read: bool,
+    pub is_starred: bool,
+    pub is_answered: bool,
+}
+
 impl ImapClient {
     /// Connect to an IMAP server over TLS and log in.
     ///
@@ -1083,6 +1099,91 @@ impl ImapClient {
 
         info!("Marked UID {uid} as \\Answered in '{folder}'");
         Ok(())
+    }
+
+    /// Re-read the IMAP system flags on a set of UIDs, returning a
+    /// snapshot of `\Seen` / `\Flagged` / `\Answered` per UID.
+    ///
+    /// The standard envelope-fetch path (`fetch_envelopes`) only
+    /// pulls UIDs strictly newer than the cache bookmark — so flag
+    /// changes another client makes (marked-read on a phone,
+    /// answered from webmail) never round-trip to Nimbus on their
+    /// own.  This is the catch-up: cheap (`UID FETCH x,y,z (UID
+    /// FLAGS)`), no envelope payload, just the flag bits.
+    ///
+    /// Returns an entry per UID the server actually reports back
+    /// (a UID that was expunged between calls just drops out).
+    pub async fn fetch_flags(
+        &mut self,
+        folder: &str,
+        uids: &[u32],
+    ) -> Result<Vec<FlagSnapshot>, NimbusError> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // EXAMINE (read-only) is enough — we're not flipping flags
+        // here, just observing them, and read-only avoids
+        // accidentally clearing the server's `\Recent` flag
+        // bookkeeping for the folder.
+        session.examine(to_wire(folder)).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to examine folder '{folder}': {e}"))
+        })?;
+
+        // Comma-separated UID set is the canonical IMAP way to
+        // address a discrete list — no "1:50" range wastefulness if
+        // the cached UIDs aren't contiguous, and the server folds
+        // adjacent ones into ranges in its parser anyway.
+        let uid_set = uids
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let fetches: Vec<_> = session
+            .uid_fetch(&uid_set, "(UID FLAGS)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH (FLAGS) failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID FETCH (FLAGS): {e}")))?;
+
+        let snapshots: Vec<FlagSnapshot> = fetches
+            .iter()
+            .filter_map(|fetch| {
+                let uid = fetch.uid?;
+                let mut is_read = false;
+                let mut is_starred = false;
+                let mut is_answered = false;
+                for flag in fetch.flags() {
+                    match flag {
+                        async_imap::types::Flag::Seen => is_read = true,
+                        async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
+                        _ => {}
+                    }
+                }
+                Some(FlagSnapshot {
+                    uid,
+                    is_read,
+                    is_starred,
+                    is_answered,
+                })
+            })
+            .collect();
+
+        debug!(
+            "Refreshed flags for {} UID(s) in '{folder}' (asked: {}, got: {})",
+            snapshots.len(),
+            uids.len(),
+            snapshots.len()
+        );
+        Ok(snapshots)
     }
 
     /// Append a raw RFC 822 message to a folder via IMAP `APPEND`.

@@ -5552,6 +5552,13 @@ async fn fetch_unified_envelopes(
 /// message.
 struct FolderPollOutcome {
     new_envelopes: Vec<EmailEnvelope>,
+    /// Count of cached envelope rows whose `\Seen` / `\Flagged` /
+    /// `\Answered` flags drifted between polls — typically because
+    /// another mail client (phone, webmail) flipped a flag and we
+    /// just caught up.  Callers use this to fire the
+    /// `mail-flags-updated` Tauri event so the frontend can re-read
+    /// the cache without a manual refresh (#255 follow-up).
+    flag_changes: u32,
 }
 
 /// Fetch+cache+reconcile for one (account, folder) pair.
@@ -5619,7 +5626,14 @@ async fn poll_folder(
             tracing::warn!("cache.set_sync_state (JMAP) failed: {e}");
         }
 
-        return Ok(FolderPollOutcome { new_envelopes });
+        // JMAP cross-client flag refresh isn't wired here yet —
+        // `Email/changes` would be the proper way, but the user's
+        // primary path is IMAP and JMAP cross-client `$answered` is
+        // a follow-up.  Report zero flag changes for now.
+        return Ok(FolderPollOutcome {
+            new_envelopes,
+            flag_changes: 0,
+        });
     }
 
     // ── IMAP path ──────────────────────────────────────────────
@@ -5663,6 +5677,36 @@ async fn poll_folder(
                 "list_all_uids for '{account_id}'/'{folder}' failed (skipping reconcile): {e}"
             );
             Vec::new()
+        }
+    };
+
+    // Flag refresh on the visible window (#255 follow-up).
+    // `fetch_envelopes` above only fetches UIDs strictly newer than
+    // the cache bookmark, so flag flips another client made
+    // (mark-read on a phone, answer from webmail, star elsewhere)
+    // never round-trip into Nimbus.  Cheap catch-up: one
+    // `UID FETCH x,y,z (UID FLAGS)` on the same window the user
+    // sees in the mail list.  Read the recent UIDs from the cache
+    // *before* the upsert below — the freshly-fetched batch will
+    // get its flags through the upsert path, this snapshot covers
+    // everything older than the bookmark.
+    let recent_cached_uids = cache
+        .list_recent_envelope_uids(account_id, folder, limit)
+        .unwrap_or_else(|e| {
+            tracing::warn!("list_recent_envelope_uids failed (skipping flag refresh): {e}");
+            Vec::new()
+        });
+    let flag_snapshots = if recent_cached_uids.is_empty() || uidvalidity_rotated {
+        Vec::new()
+    } else {
+        match client.fetch_flags(folder, &recent_cached_uids).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "fetch_flags for '{account_id}'/'{folder}' failed (skipping flag refresh): {e}"
+                );
+                Vec::new()
+            }
         }
     };
 
@@ -5735,7 +5779,35 @@ async fn poll_folder(
         tracing::warn!("cache.set_sync_state failed: {e}");
     }
 
-    Ok(FolderPollOutcome { new_envelopes })
+    // Apply the flag snapshot we collected before logout.  Done
+    // here (after the envelope upsert) so a UID that was both new
+    // *and* re-flagged won't be flickered between the two writes —
+    // the upsert lands its envelope-derived flags first, the
+    // reconcile then runs against everything else.  `replied_kind`
+    // is preserved by `reconcile_envelope_flags` (Nimbus-only
+    // metadata that IMAP can't carry).
+    let flag_changes = if flag_snapshots.is_empty() {
+        0
+    } else {
+        let tuples: Vec<(u32, bool, bool, bool)> = flag_snapshots
+            .iter()
+            .map(|s| (s.uid, s.is_read, s.is_starred, s.is_answered))
+            .collect();
+        cache
+            .reconcile_envelope_flags(account_id, folder, &tuples)
+            .unwrap_or_else(|e| {
+                tracing::warn!("reconcile_envelope_flags failed: {e}");
+                0
+            })
+    };
+    if flag_changes > 0 {
+        tracing::info!("Reconciled {flag_changes} flag change(s) for '{account_id}'/'{folder}'");
+    }
+
+    Ok(FolderPollOutcome {
+        new_envelopes,
+        flag_changes,
+    })
 }
 
 /// Fetch a full message (headers + body) by folder + UID.
@@ -6488,6 +6560,7 @@ async fn send_email(
     email: OutgoingEmail,
     replied_to: Option<RepliedToRef>,
     cache: State<'_, Cache>,
+    app: AppHandle,
 ) -> Result<(), NimbusError> {
     let account = load_account(&cache, &account_id)?;
 
@@ -6498,6 +6571,7 @@ async fn send_email(
         client.send_email(&email).await?;
         if let Some(rt) = replied_to.as_ref() {
             mark_original_answered_jmap(&account, &cache, &client, rt).await;
+            emit_mail_flags_updated(&app, &account.id, &rt.folder);
         }
         return Ok(());
     }
@@ -6547,8 +6621,24 @@ async fn send_email(
     // because the user's other clients also carry it).
     if let Some(rt) = replied_to.as_ref() {
         mark_original_answered_imap(&account, &cache, rt).await;
+        emit_mail_flags_updated(&app, &account.id, &rt.folder);
     }
     Ok(())
+}
+
+/// Fire the `mail-flags-updated` Tauri event so the frontend
+/// re-reads the cache and the mail list reflects a flag change
+/// without a manual refresh.  Best-effort — a dropped event just
+/// means the user has to click refresh, which they would have
+/// before this plumbing existed anyway.
+fn emit_mail_flags_updated(app: &AppHandle, account_id: &str, folder: &str) {
+    let payload = MailFlagsUpdatedPayload {
+        account_id: account_id.to_string(),
+        folder: folder.to_string(),
+    };
+    if let Err(e) = app.emit("mail-flags-updated", &payload) {
+        tracing::warn!("failed to emit mail-flags-updated event: {e}");
+    }
 }
 
 /// Best-effort: stamp the local cache row + the IMAP `\Answered`
@@ -7348,6 +7438,24 @@ struct NewMailPayload {
     subject: String,
 }
 
+/// `mail-flags-updated` event payload (#255 follow-up).  Tells the
+/// frontend "the cached envelopes for this (account, folder) had a
+/// flag-only change — please re-read the cache".  Two emit sites:
+///
+///   * Compose's send path, right after stamping `replied_kind` /
+///     flipping `\Answered` on the message we just answered, so the
+///     reply icon appears in the mail list immediately rather than
+///     waiting for the next user-initiated refresh.
+///   * The poll path's catch-up flag refresh, when it detects a
+///     `\Seen` / `\Flagged` / `\Answered` change made on another
+///     mail client.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MailFlagsUpdatedPayload {
+    account_id: String,
+    folder: String,
+}
+
 /// Bring the main window to the front. Called from the tray's
 /// left-click handler, the tray menu's "Open Nimbus" item, and the
 /// `show_main_window` command.
@@ -7394,6 +7502,21 @@ async fn check_mail_now_inner(app: &AppHandle) -> Result<(), NimbusError> {
                         account.id,
                         outcome.new_envelopes.len()
                     );
+                }
+                // #255: when the catch-up flag refresh found a
+                // cross-client `\Seen` / `\Flagged` / `\Answered`
+                // change, signal the frontend to re-read the cache
+                // so the mail list picks it up without a manual
+                // refresh.  Skip when nothing changed — silence is
+                // the point.
+                if outcome.flag_changes > 0 {
+                    let payload = MailFlagsUpdatedPayload {
+                        account_id: account.id.clone(),
+                        folder: "INBOX".to_string(),
+                    };
+                    if let Err(e) = app.emit("mail-flags-updated", &payload) {
+                        tracing::warn!("failed to emit mail-flags-updated event: {e}");
+                    }
                 }
             }
             Err(e) => {

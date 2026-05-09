@@ -411,6 +411,18 @@
     subject: string
   }
 
+  /** `mail-flags-updated` event payload (#255 follow-up).  Backend
+   *  fires this whenever the cached `\Seen` / `\Flagged` /
+   *  `\Answered` flags change — either Compose's post-send
+   *  marking or the poll path's cross-client catch-up.  We don't
+   *  inspect the fields today (the listener just bumps
+   *  `refreshToken` to re-read the cache), but they're kept on
+   *  the type so per-folder filtering stays an easy follow-up. */
+  type MailFlagsUpdatedPayload = {
+    accountId: string
+    folder: string
+  }
+
   type AppPrefs = {
     minimize_to_tray: boolean
     background_sync_enabled: boolean
@@ -770,9 +782,22 @@
     let unlistenComposeFromMail: UnlistenFn | null = null
     let unlistenEditDraftFromMail: UnlistenFn | null = null
     let unlistenMailtoFromMail: UnlistenFn | null = null
+    let unlistenMailFlagsUpdated: UnlistenFn | null = null
     ;(async () => {
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
+      )
+      // #255: backend fires this whenever the answered / read /
+      // starred flag on a cached envelope changes (Compose's
+      // post-send marking, plus the cross-client catch-up the
+      // poll path runs).  Bump the refresh token so MailList
+      // re-reads the cache and the row picks up the new flags
+      // without a manual refresh.
+      unlistenMailFlagsUpdated = await listen<MailFlagsUpdatedPayload>(
+        'mail-flags-updated',
+        () => {
+          refreshToken++
+        },
       )
       unlistenEventReminder = await listen<EventReminder>(
         'event-reminder',
@@ -844,6 +869,7 @@
       unlistenComposeFromMail?.()
       unlistenEditDraftFromMail?.()
       unlistenMailtoFromMail?.()
+      unlistenMailFlagsUpdated?.()
       if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     }
   })
