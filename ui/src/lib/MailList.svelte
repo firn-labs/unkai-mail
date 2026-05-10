@@ -38,6 +38,11 @@
         the cache; left empty for envelopes coming straight from the
         IMAP/JMAP clients (those paths don't surface to the UI). */
     account_id: string
+    /** RFC 5322 threading anchors (#277).  Optional — older
+     *  cached envelopes predate the parser. */
+    message_id?: string | null
+    in_reply_to?: string | null
+    references_ids?: string[]
   }
 
   /** Slim account row used to render the account label on each row in
@@ -95,6 +100,102 @@
     onmessagemoved,
     refreshing = $bindable(false),
   }: Props = $props()
+
+  // ── Conversation-view grouping (#277) ───────────────────────
+  // Bundles every envelope that shares an RFC 5322 thread root
+  // into a single inbox row, the way iPhone Mail / Thunderbird
+  // do.  The thread head is the *newest* message; siblings are
+  // hidden until the user clicks the count chevron.
+  //
+  // `threadKeyOf` picks the most-stable identifier we have:
+  //
+  //   1. `references_ids[0]` — the chain's root, when this is a
+  //      reply.  Two messages whose `References:` headers both
+  //      start with `<root>` belong to the same thread, full stop.
+  //   2. `message_id` — for top-of-thread originals.  Future
+  //      replies to this mail will carry it as their first
+  //      `References:` entry, so siblings still resolve correctly.
+  //   3. `__solo:{account}:{uid}` — fallback for envelopes that
+  //      pre-date the v31 schema migration (no parsed headers
+  //      yet) or for one-off mails the server didn't tag.  Each
+  //      gets its own bucket → behaves like the old flat list.
+  let expandedThreads = $state<Set<string>>(new Set())
+
+  function threadKeyOf(env: EmailEnvelope): string {
+    if (env.references_ids && env.references_ids.length > 0) {
+      return env.references_ids[0]
+    }
+    if (env.message_id) {
+      return env.message_id
+    }
+    return `__solo:${env.account_id}:${env.uid}`
+  }
+
+  function toggleThread(key: string) {
+    // Re-assign so Svelte 5 picks up the mutation — Set
+    // mutations alone don't trigger reactivity.
+    const next = new Set(expandedThreads)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    expandedThreads = next
+  }
+
+  /** One row to actually paint.  Heads carry `siblingCount`
+   *  and a fresh `threadKey`; siblings carry `siblingCount=0`
+   *  and the same key as their head so the visual indent +
+   *  toggle button can find each other. */
+  type RenderRow = {
+    env: EmailEnvelope
+    siblingCount: number
+    isSibling: boolean
+    threadKey: string
+  }
+
+  let renderRows = $derived.by((): RenderRow[] => {
+    // Bucket envelopes by thread key, preserving the bucket
+    // order in which the *first* member appears (envelopes are
+    // already date-sorted newest-first).
+    const groups = new Map<string, EmailEnvelope[]>()
+    for (const env of envelopes) {
+      const key = threadKeyOf(env)
+      const arr = groups.get(key)
+      if (arr) arr.push(env)
+      else groups.set(key, [env])
+    }
+    // Each bucket newest-first too — usually a no-op because
+    // envelopes are already in that order, but explicit is
+    // safer when an out-of-order arrival lands later.
+    for (const arr of groups.values()) {
+      arr.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    }
+    const out: RenderRow[] = []
+    const seen = new Set<string>()
+    for (const env of envelopes) {
+      const key = threadKeyOf(env)
+      if (seen.has(key)) continue
+      seen.add(key)
+      const group = groups.get(key)!
+      const head = group[0]
+      const siblings = group.slice(1)
+      out.push({
+        env: head,
+        siblingCount: siblings.length,
+        isSibling: false,
+        threadKey: key,
+      })
+      if (expandedThreads.has(key)) {
+        for (const sib of siblings) {
+          out.push({
+            env: sib,
+            siblingCount: 0,
+            isSibling: true,
+            threadKey: key,
+          })
+        }
+      }
+    }
+    return out
+  })
 
   /** Short label for the per-row account chip in unified mode. We
       prefer the display name and fall back to the email's local part
@@ -922,7 +1023,8 @@
     {:else if envelopes.length === 0}
       <div class="p-6 text-center text-sm text-surface-500">No messages in {folder}.</div>
     {:else}
-      {#each envelopes as env (`${env.account_id}:${env.uid}`)}
+      {#each renderRows as row (`${row.env.account_id}:${row.env.uid}:${row.isSibling ? 's' : 'h'}`)}
+        {@const env = row.env}
         {@const selected = selectedUid === env.uid && (!unified || selectedUid === env.uid)}
         {@const multi = isMulti(env.uid)}
         <!-- Unread visual treatment: a 3px themed accent strip on the
@@ -932,8 +1034,10 @@
              unread tint for the background colour; the accent strip
              stays orthogonal so an unread+selected row keeps both.
              The row is wrapped in a `group` so the inline quick-
-             action icons (#98) reveal on row hover. -->
-        <div class="group relative">
+             action icons (#98) reveal on row hover.
+             Sibling rows of an expanded thread (#277) get extra
+             left padding so they read as nested under the head. -->
+        <div class="group relative {row.isSibling ? 'pl-6 bg-surface-50/50 dark:bg-surface-900/30' : ''}">
           <!-- Row is a `<div role="button">` rather than a real
                `<button>` because several webview engines (notably
                Edge WebView2 on Windows) refuse to fire
@@ -977,7 +1081,37 @@
               <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
                 {env.from || '(unknown sender)'}
               </span>
-              <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
+              <span class="flex items-center gap-1.5 shrink-0">
+                {#if row.siblingCount > 0}
+                  <!-- Conversation count + chevron (#277).  Click
+                       toggles expansion of the thread below this
+                       row inline.  `stopPropagation` so the row
+                       click (which opens the head message) doesn't
+                       fire alongside. -->
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-0.5 text-[11px] text-surface-500 hover:text-primary-500 px-1 py-0.5 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700"
+                    title={expandedThreads.has(row.threadKey)
+                      ? 'Collapse conversation'
+                      : 'Show full conversation'}
+                    onclick={(e) => {
+                      e.stopPropagation()
+                      toggleThread(row.threadKey)
+                    }}
+                  >
+                    <span>{row.siblingCount + 1}</span>
+                    <!-- Unicode chevron — Icon.svelte registry
+                         doesn't carry a chevron-up/down today and
+                         we'd rather not stamp out two new SVGs for
+                         a per-row affordance.  Span keeps the
+                         baseline aligned with the count number. -->
+                    <span class="text-[9px] leading-none">
+                      {expandedThreads.has(row.threadKey) ? '▲' : '▼'}
+                    </span>
+                  </button>
+                {/if}
+                <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'}">{formatDate(env.date)}</span>
+              </span>
             </div>
             <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
               {#if answeredIconName(env)}

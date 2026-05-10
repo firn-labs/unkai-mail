@@ -1791,6 +1791,9 @@ mod tests {
             is_answered: false,
             replied_kind: None,
             account_id: String::new(),
+            message_id: None,
+            in_reply_to: None,
+            references_ids: Vec::new(),
         }
     }
 
@@ -1862,6 +1865,9 @@ mod tests {
             is_starred: false,
             has_attachments: true,
             attachments: vec![],
+            message_id: None,
+            in_reply_to: None,
+            references_ids: Vec::new(),
         }
     }
 
