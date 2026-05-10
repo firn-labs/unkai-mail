@@ -472,6 +472,28 @@ pub struct EmailEnvelope {
     /// older cached payloads parsing cleanly.
     #[serde(default)]
     pub account_id: String,
+    /// RFC 5322 `Message-ID:` header — the canonical unique
+    /// identifier for this mail across servers (#277).  Populated
+    /// from the FETCH headers; cached to drive thread-grouping
+    /// without re-parsing the body blob.  Round-trips through
+    /// the cache as a separate column for fast index lookups.
+    /// `None` for older cached envelopes that pre-date the v31
+    /// schema migration; the IMAP fetch path back-fills on the
+    /// next sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// RFC 5322 `In-Reply-To:` header — the immediate parent
+    /// of this reply (#277).  Drives the inbox bundling
+    /// (siblings sharing a parent collapse into one row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// RFC 5322 `References:` header parsed into the ordered
+    /// chain of ancestor Message-IDs (oldest-first) (#277).
+    /// Used to find the *root* of a thread (first entry) for
+    /// grouping when `In-Reply-To` is missing or threads
+    /// branched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references_ids: Vec<String>,
 }
 
 /// Represents an email message.

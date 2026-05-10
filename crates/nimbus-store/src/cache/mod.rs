@@ -585,7 +585,8 @@ impl Cache {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT uid, folder, from_addr, subject, internal_date,
-                    is_read, is_starred, is_answered, replied_kind
+                    is_read, is_starred, is_answered, replied_kind,
+                    message_id, in_reply_to, references_ids
              FROM messages
              WHERE account_id = ?1 AND folder = ?2 AND pending_action IS NULL
              ORDER BY internal_date DESC
@@ -594,6 +595,11 @@ impl Cache {
         let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
             let ts: i64 = r.get(4)?;
             let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+            let refs_json: Option<String> = r.get(11)?;
+            let references_ids: Vec<String> = refs_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
             Ok(EmailEnvelope {
                 uid: r.get::<_, i64>(0)? as u32,
                 folder: r.get(1)?,
@@ -605,6 +611,9 @@ impl Cache {
                 is_answered: r.get::<_, i64>(7)? != 0,
                 replied_kind: r.get(8)?,
                 account_id: account_id.to_string(),
+                message_id: r.get(9)?,
+                in_reply_to: r.get(10)?,
+                references_ids,
             })
         })?;
 
@@ -661,7 +670,8 @@ impl Cache {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT account_id, uid, folder, from_addr, subject, internal_date,
-                    is_read, is_starred, is_answered, replied_kind
+                    is_read, is_starred, is_answered, replied_kind,
+                    message_id, in_reply_to, references_ids
              FROM messages
              WHERE folder = ?1 AND pending_action IS NULL
              ORDER BY internal_date DESC
@@ -670,6 +680,11 @@ impl Cache {
         let rows = stmt.query_map(params![folder, limit as i64], |r| {
             let ts: i64 = r.get(5)?;
             let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+            let refs_json: Option<String> = r.get(12)?;
+            let references_ids: Vec<String> = refs_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
             Ok(EmailEnvelope {
                 account_id: r.get(0)?,
                 uid: r.get::<_, i64>(1)? as u32,
@@ -681,6 +696,9 @@ impl Cache {
                 is_starred: r.get::<_, i64>(7)? != 0,
                 is_answered: r.get::<_, i64>(8)? != 0,
                 replied_kind: r.get(9)?,
+                message_id: r.get(10)?,
+                in_reply_to: r.get(11)?,
+                references_ids,
             })
         })?;
 
