@@ -361,63 +361,6 @@ impl Cache {
         Ok(())
     }
 
-    /// Walk the event cache for rows that have `ics_raw` but no
-    /// resolved `latitude` / `longitude`, and return the
-    /// `(event_id, ics_raw)` pairs.  Used at app startup to
-    /// back-fill the GEO columns added in #280 — events synced
-    /// before that PR (or before parser improvements like the
-    /// X-APPLE-STRUCTURED-LOCATION fallback) live in the cache
-    /// without coordinates even when their iCalendar body has
-    /// them.  CalDAV's incremental sync won't re-emit unchanged
-    /// events, so we re-parse what we already have on disk.
-    ///
-    /// Filters by `LIKE` on `ics_raw` to skip events whose body
-    /// can't possibly contain a GEO — keeps the work proportional
-    /// to events that actually need it.  Bound the result so a
-    /// pathologically large cache doesn't spend the whole startup
-    /// re-parsing.
-    pub fn find_events_needing_geo_backfill(
-        &self,
-        max_rows: usize,
-    ) -> Result<Vec<(String, String)>, CacheError> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, ics_raw FROM calendar_events
-             WHERE latitude IS NULL AND longitude IS NULL
-               AND (ics_raw LIKE '%GEO:%'
-                    OR ics_raw LIKE '%X-APPLE-STRUCTURED-LOCATION%')
-             LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![max_rows as i64], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
-    }
-
-    /// Stamp the GEO coordinates onto an event row, used by the
-    /// startup back-fill path.  Rows with their own pin already
-    /// set are skipped at the SQL level by
-    /// `find_events_needing_geo_backfill`, so this is unconditional
-    /// — no risk of clobbering newer data.
-    pub fn set_event_geo(
-        &self,
-        event_id: &str,
-        latitude: f64,
-        longitude: f64,
-    ) -> Result<(), CacheError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE calendar_events SET latitude = ?2, longitude = ?3
-             WHERE id = ?1",
-            params![event_id, latitude, longitude],
-        )?;
-        Ok(())
-    }
-
     /// Flip a calendar's `read_only` flag (#236 follow-up).  Used
     /// by the CalDAV write-failure fallback in `main.rs`: when a
     /// PUT or DELETE returns 403 or 404, we treat that as the
