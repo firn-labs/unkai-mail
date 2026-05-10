@@ -219,6 +219,22 @@
   let longitude = $state<number | null>(
     typeof event?.longitude === 'number' ? event.longitude : null,
   )
+  /** Tracks the privacy toggle for location autocomplete + map
+   *  preview (#280).  Off by default; flipping it on in General
+   *  Settings opts the user into Nominatim queries and OSM tile
+   *  loads.  Both `LocationField` and `MapPreview` honour this
+   *  flag so a stale pin from a pre-existing event doesn't load
+   *  the iframe behind the user's back. */
+  let geocodingEnabled = $state(false)
+  $effect(() => {
+    void invoke<{ location_geocoding_enabled?: boolean }>('get_app_settings')
+      .then((s) => {
+        geocodingEnabled = s.location_geocoding_enabled === true
+      })
+      .catch(() => {
+        geocodingEnabled = false
+      })
+  })
   // svelte-ignore state_referenced_locally
   let transparency = $state(event?.transparency ?? 'OPAQUE')
 
@@ -1759,6 +1775,7 @@
           value={location}
           {latitude}
           {longitude}
+          enabled={geocodingEnabled}
           placeholder={m.event_editor_location_placeholder()}
           onpick={(v, lat, lon) => {
             location = v
@@ -1795,13 +1812,15 @@
         {/if}
       </div>
 
-      <!-- Map preview (#280).  Mounted only when the location-
-           autocomplete pick stamped lat/lon onto the event; a
-           free-text address without a geocoded match keeps the
-           form compact.  The component is read-only — there's
-           no drag-the-pin gesture; tweaking the location goes
-           through the input above. -->
-      {#if latitude !== null && longitude !== null}
+      <!-- Map preview (#280).  Mounted only when (a) the user
+           opted into location geocoding in General Settings, and
+           (b) the autocomplete pick (or a stored GEO from a
+           previous opt-in) stamped lat/lon on the event.  The
+           privacy gate stops the OSM iframe from loading tiles
+           when the user has the feature off — even an existing
+           event with cached coordinates won't reach out to
+           openstreetmap.org until the toggle is back on. -->
+      {#if geocodingEnabled && latitude !== null && longitude !== null}
         <MapPreview
           latitude={latitude}
           longitude={longitude}

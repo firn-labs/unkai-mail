@@ -217,6 +217,13 @@
     ui_locale?: string
     /** #190 when true, the locale follows `navigator.language`. */
     ui_locale_auto?: boolean
+    /** #280 master toggle for the EventEditor's location
+     *  autocomplete + inline map preview.  Off (default) keeps
+     *  Location as a plain text input that never leaves the
+     *  device; on opts the user into Nominatim queries and
+     *  OpenStreetMap tile loads.  Non-optional because the Rust
+     *  side serialises a default value on `get_app_settings`. */
+    location_geocoding_enabled: boolean
   }
   interface CustomThemeRow {
     id: string
@@ -248,6 +255,7 @@
     ui_scale_auto: true,
     ui_locale: '',
     ui_locale_auto: true,
+    location_geocoding_enabled: false,
   })
 
   // ── Logo / app-icon picker (Issue #X) ───────────────────────
@@ -1392,6 +1400,27 @@
                 </button>
               </div>
             {/if}
+          </div>
+        </div>
+
+        <!-- #280 — location autocomplete + inline map preview.
+             Off by default because each typed query goes to
+             nominatim.openstreetmap.org and the embedded map
+             loads tiles from openstreetmap.org — both outside
+             the user's Nextcloud trust boundary.  Spelling out
+             the dependency in the description lets the user
+             make an informed call. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.location_geocoding_enabled}
+            label={m.settings_location_geocoding_label()}
+            onchange={() => scheduleSave()}
+          />
+          <div class="flex-1">
+            <span>{m.settings_location_geocoding_label()}</span>
+            <p class="text-xs text-surface-400 mt-0.5">
+              {m.settings_location_geocoding_help()}
+            </p>
           </div>
         </div>
 

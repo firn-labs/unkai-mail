@@ -169,6 +169,20 @@ pub struct AppSettings {
     /// links before the user clicks them.
     #[serde(default = "default_true")]
     pub link_check_enabled: bool,
+    /// Master toggle for the EventEditor's location autocomplete
+    /// + inline map preview (#280).  Default **off** — the
+    /// feature sends each typed query to Nominatim
+    /// (`nominatim.openstreetmap.org`) and the map preview iframe
+    /// loads tiles from `openstreetmap.org`, both third-party
+    /// services outside the user's Nextcloud trust boundary.
+    /// Off-by-default keeps the Location field as a plain text
+    /// input that never leaves the device; flipping it on opts
+    /// the user into the convenience of geocoded suggestions and
+    /// the inline pin.  The cached `geocode_cache` rows are
+    /// preserved when the toggle flips off — they're just not
+    /// consulted — so a later opt-back-in is instant.
+    #[serde(default)]
+    pub location_geocoding_enabled: bool,
 }
 
 fn default_logo_style() -> String {
@@ -258,6 +272,12 @@ impl Default for AppSettings {
             ui_locale: String::new(),
             ui_locale_auto: true,
             link_check_enabled: true,
+            // Off by default — the location autocomplete + map
+            // preview send each typed query to Nominatim and load
+            // tiles from openstreetmap.org, both outside the
+            // user's Nextcloud trust boundary.  Users opt in
+            // explicitly from General Settings (#280).
+            location_geocoding_enabled: false,
         }
     }
 }
