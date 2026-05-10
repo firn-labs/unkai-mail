@@ -258,6 +258,8 @@ mod tests {
             transparency: None,
             attendees: vec![],
             reminders: vec![],
+            latitude: None,
+            longitude: None,
         }
     }
 
@@ -375,6 +377,8 @@ mod tests {
             transparency: None,
             attendees: vec![],
             reminders: vec![],
+            latitude: None,
+            longitude: None,
         };
 
         let out = expand_event(
@@ -418,6 +422,8 @@ mod tests {
             transparency: None,
             attendees: vec![],
             reminders: vec![],
+            latitude: None,
+            longitude: None,
         };
 
         // Window only covers May.

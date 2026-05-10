@@ -4058,6 +4058,14 @@ struct CalendarEventInput {
     attendees: Vec<EventAttendee>,
     #[serde(default)]
     reminders: Vec<EventReminder>,
+    /// `GEO` latitude / longitude (RFC 5545 §3.8.1.6).  Set by the
+    /// EventEditor's location-autocomplete pick (#280); `None`
+    /// when the user typed the location free-text without
+    /// selecting a geocoded match.
+    #[serde(default)]
+    latitude: Option<f64>,
+    #[serde(default)]
+    longitude: Option<f64>,
 }
 
 /// Build a `CalendarEvent` skeleton from form input. Caller fills in
@@ -4095,6 +4103,8 @@ fn input_to_calendar_event(uid: &str, input: &CalendarEventInput) -> CalendarEve
         transparency: input.transparency.clone(),
         attendees: input.attendees.clone(),
         reminders: input.reminders.clone(),
+        latitude: input.latitude,
+        longitude: input.longitude,
     }
 }
 
@@ -4125,6 +4135,8 @@ fn calendar_event_to_row(
         transparency: event.transparency.clone(),
         attendees: event.attendees.clone(),
         reminders: event.reminders.clone(),
+        latitude: event.latitude,
+        longitude: event.longitude,
         ics_raw: ics_raw.to_string(),
     }
 }
@@ -5429,6 +5441,8 @@ fn raw_event_to_rows(raw: &RawEvent) -> Vec<CalendarEventRow> {
             transparency: e.transparency.clone(),
             attendees: e.attendees.clone(),
             reminders: e.reminders.clone(),
+            latitude: e.latitude,
+            longitude: e.longitude,
             ics_raw: raw.ics_raw.clone(),
         })
         .collect()

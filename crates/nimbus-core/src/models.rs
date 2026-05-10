@@ -1009,6 +1009,19 @@ pub struct CalendarEvent {
     /// events with several alarms round-trip without losing data.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reminders: Vec<EventReminder>,
+    /// `GEO` property latitude (RFC 5545 §3.8.1.6) — stamped by
+    /// the EventEditor's location-autocomplete pick (#280) so the
+    /// inline map preview can drop a pin on the canonical place.
+    /// `None` for events whose `LOCATION` is free-text without a
+    /// geocoded match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    /// `GEO` property longitude — pairs with `latitude`.  Stored
+    /// independently rather than as a tuple so the JSON shape
+    /// surfaces both fields by name (the UI's IPC shape uses
+    /// camelCase getters per field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
 }
 
 /// A single ATTENDEE property on a VEVENT.

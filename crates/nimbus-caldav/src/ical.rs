@@ -98,6 +98,8 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
     let mut url: Option<String> = None;
     let mut transparency: Option<String> = None;
     let mut attendees: Vec<EventAttendee> = Vec::new();
+    let mut latitude: Option<f64> = None;
+    let mut longitude: Option<f64> = None;
 
     for prop in props {
         let name = prop.name.to_ascii_uppercase();
@@ -130,6 +132,17 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
                     attendees.push(att);
                 }
             }
+            // RFC 5545 §3.8.1.6 — `GEO` carries `lat;lon` as a
+            // semicolon-separated pair of FLOATs.  We tolerate the
+            // common `lat,lon` typo (some clients emit it) so a
+            // round-trip from a non-conforming sender doesn't drop
+            // the pin.
+            "GEO" => {
+                if let Some((lat, lon)) = parse_geo_pair(value) {
+                    latitude = Some(lat);
+                    longitude = Some(lon);
+                }
+            }
             _ => {}
         }
     }
@@ -158,6 +171,8 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
         // Filled in by the caller from the VEVENT's nested VALARM
         // components — they aren't visible at the property level.
         reminders: Vec::new(),
+        latitude,
+        longitude,
     }))
 }
 
@@ -604,6 +619,12 @@ pub fn build_ics_with_method(
     if let Some(loc) = &event.location {
         lines.push(format!("LOCATION:{}", escape_text(loc)));
     }
+    // RFC 5545 §3.8.1.6 — `GEO:lat;lon`.  Six decimal places give
+    // ~11 cm precision, well past what any geocoder produces, and
+    // strips trailing zeros so the line stays compact.
+    if let (Some(lat), Some(lon)) = (event.latitude, event.longitude) {
+        lines.push(format!("GEO:{};{}", format_geo(lat), format_geo(lon)));
+    }
     if let Some(url) = &event.url {
         lines.push(format!("URL:{url}"));
     }
@@ -931,6 +952,37 @@ fn format_utc_dt(dt: &DateTime<Utc>) -> String {
     dt.format("%Y%m%dT%H%M%SZ").to_string()
 }
 
+/// Parse a `GEO:` value (RFC 5545 §3.8.1.6 — `lat;lon`) into a
+/// pair of floats.  Tolerates a comma separator (some clients emit
+/// `lat,lon` despite the spec) and ignores values that don't fit
+/// the WGS-84 lat/lon ranges so a junk `GEO` line doesn't poison
+/// the event.
+fn parse_geo_pair(value: &str) -> Option<(f64, f64)> {
+    let raw = value.trim();
+    let (lhs, rhs) = raw.split_once(';').or_else(|| raw.split_once(','))?;
+    let lat: f64 = lhs.trim().parse().ok()?;
+    let lon: f64 = rhs.trim().parse().ok()?;
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    Some((lat, lon))
+}
+
+/// Render an f64 latitude / longitude as a compact decimal — six
+/// places (~ 11 cm) is past what any geocoder produces.  Strips
+/// trailing zeros so a clean integer doesn't trail `.000000` and
+/// uses `'.'` regardless of locale (RFC 5545 floats are always
+/// decimal-point).
+fn format_geo(v: f64) -> String {
+    let s = format!("{:.6}", v);
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Render a "minutes before start" trigger as `-PT15M` / `PT0S` /
 /// `PT5M` (negative value means "after start"). Pulls hours and
 /// minutes apart so the wire format matches what most servers store
@@ -1059,6 +1111,43 @@ END:VCALENDAR\r\n";
         assert_eq!(e.rdate[1].to_rfc3339(), "2026-05-15T09:00:00+00:00");
         assert_eq!(e.exdate.len(), 1);
         assert_eq!(e.exdate[0].to_rfc3339(), "2026-05-04T09:00:00+00:00");
+    }
+
+    #[test]
+    fn geo_roundtrips_through_parse_and_build() {
+        // Standard semicolon-separated form.
+        let ics = "BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+BEGIN:VEVENT\r\n\
+UID:geo@example.com\r\n\
+SUMMARY:Coffee\r\n\
+DTSTART:20260510T100000Z\r\n\
+DTEND:20260510T110000Z\r\n\
+LOCATION:Café Hartmann\r\n\
+GEO:52.520008;13.404954\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+        let events = parse_ics(ics).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].latitude, Some(52.520008));
+        assert_eq!(events[0].longitude, Some(13.404954));
+
+        // Round-trip: build_ics emits the same `GEO:` shape.
+        let rebuilt = crate::build_ics(&events[0], None, None);
+        assert!(
+            rebuilt.contains("GEO:52.520008;13.404954"),
+            "expected GEO line, got:\n{rebuilt}"
+        );
+    }
+
+    #[test]
+    fn geo_tolerates_comma_separator_and_rejects_out_of_range() {
+        // Some clients emit `lat,lon` despite the spec — accept it.
+        assert_eq!(super::parse_geo_pair("52.5,13.4"), Some((52.5, 13.4)));
+        // Out-of-range values (bogus) → None.
+        assert_eq!(super::parse_geo_pair("999;0"), None);
+        assert_eq!(super::parse_geo_pair("0;999"), None);
+        assert_eq!(super::parse_geo_pair("not-a-number"), None);
     }
 
     #[test]
