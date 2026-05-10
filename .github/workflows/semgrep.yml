@@ -36,7 +36,7 @@ jobs:
     # Security tab on the upstream repo is the authoritative view.
     if: (github.actor != 'dependabot[bot]')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Run Semgrep
         # `--config p/security-audit` is the cross-language default
         # security pack.  We add the Rust + TS-specific packs on
