@@ -1163,9 +1163,20 @@
                  adaptively to fit the border length — two
                  stacked rows of different heights produce
                  different phases, and the line visibly jogs at
-                 every row boundary.  Fixed pixel pattern (2 px
-                 dot, 3 px gap, 5 px cycle) keeps the spacing
-                 identical regardless of row height.
+                 every row boundary.
+                 The cycle is expressed as a *percentage*
+                 (`calc(100% / 12)`) instead of a fixed pixel
+                 length so the pattern auto-scales: every
+                 sibling row gets exactly 12 cycles end-to-end
+                 regardless of its rendered height, which means
+                 the last cycle of one row finishes flush with
+                 the first cycle of the next.  No phase break,
+                 no need to constrain row height.
+                 The last sibling's connector spans only the
+                 top half of the row (it stops at the dot),
+                 so it gets 6 cycles instead of 12 — that
+                 keeps the pixel cycle identical to the rows
+                 above it, so density looks uniform.
                  The element is `w-0.5` (2 px) and uses
                  `-translate-x-1/2` to centre at `left-6`, the
                  same x as the dot so the dot sits *on* the
@@ -1173,7 +1184,7 @@
                  the gradient picks up via `currentColor`. -->
             <span
               class="pointer-events-none absolute left-6 top-0 w-0.5 -translate-x-1/2 text-primary-500/60 {row.isLastSibling ? 'bottom-1/2' : 'bottom-0'}"
-              style="background-image: repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px 5px);"
+              style="background-image: repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px calc(100% / {row.isLastSibling ? 6 : 12}));"
               aria-hidden="true"
             ></span>
             <span
@@ -1220,6 +1231,21 @@
             }}
             oncontextmenu={(e) => openContextMenu(e, env)}
           >
+            <!-- Unread dot.  Pinned to the top-right corner
+                 of the row (above the timestamp) so it sits
+                 in the natural "what's new" zone of the row.
+                 A redundant cue that complements the bold
+                 sender, the primary-tinted accent strip, and
+                 the row-tint, and reads at a glance even when
+                 scanning a long list.  Hidden when the row is
+                 read so a triaged inbox stays calm. -->
+            {#if !env.is_read}
+              <span
+                class="pointer-events-none absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary-500"
+                aria-label="Unread"
+                title="Unread"
+              ></span>
+            {/if}
             <div class="flex items-center justify-between mb-1">
               <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
                 {env.from || '(unknown sender)'}
