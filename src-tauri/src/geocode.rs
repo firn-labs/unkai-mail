@@ -128,7 +128,32 @@ struct NominatimHit {
     address: Option<GeocodeAddress>,
 }
 
+/// Public-Nominatim base URL — used when the user hasn't
+/// configured a custom one.  Exported so the settings UI can
+/// show it to the user as the "default" placeholder text.
+pub const DEFAULT_NOMINATIM_BASE_URL: &str = "https://nominatim.openstreetmap.org";
+
+/// Resolve which Nominatim base URL to actually hit, given the
+/// user's setting.  Empty / whitespace-only → public default;
+/// otherwise the user-supplied value with any trailing slashes
+/// trimmed (so `https://x/`, `https://x//`, and `https://x` all
+/// produce the same result).  We do this in one place instead
+/// of at the call site so a typo in the setting can never
+/// produce a malformed `https://x//search` URL.
+pub fn resolve_nominatim_base_url(user_setting: &str) -> &str {
+    let trimmed = user_setting.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_NOMINATIM_BASE_URL;
+    }
+    trimmed.trim_end_matches('/')
+}
+
 /// Issue a forward-geocoding request to Nominatim.
+///
+/// `base_url` is the resolved endpoint root — typically the
+/// public Nominatim, but a self-hosted instance is supported via
+/// the `nominatim_base_url` user setting.  See
+/// `resolve_nominatim_base_url`.
 ///
 /// `lang` is the IETF tag whose translations Nominatim should
 /// prefer (Accept-Language header).  Empty string means "let
@@ -140,15 +165,19 @@ struct NominatimHit {
 /// couple the protocol crate to `nimbus-store`, and the cache
 /// adds a small amount of canonicalisation we want visible in
 /// `main.rs` where the Tauri command flows.
-pub async fn nominatim_search(query: &str, lang: &str) -> Result<Vec<GeocodeResult>, NimbusError> {
+pub async fn nominatim_search(
+    query: &str,
+    lang: &str,
+    base_url: &str,
+) -> Result<Vec<GeocodeResult>, NimbusError> {
     let q = query.trim();
     if q.is_empty() {
         return Ok(Vec::new());
     }
 
+    let base = resolve_nominatim_base_url(base_url);
     let url = format!(
-        "https://nominatim.openstreetmap.org/search\
-         ?format=jsonv2&addressdetails=1&limit=8&q={}",
+        "{base}/search?format=jsonv2&addressdetails=1&limit=8&q={}",
         urlencoding(q),
     );
 
@@ -228,6 +257,31 @@ fn urlencoding(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_base_url_falls_back_to_default_on_empty() {
+        assert_eq!(resolve_nominatim_base_url(""), DEFAULT_NOMINATIM_BASE_URL);
+        assert_eq!(
+            resolve_nominatim_base_url("   "),
+            DEFAULT_NOMINATIM_BASE_URL
+        );
+    }
+
+    #[test]
+    fn resolve_base_url_trims_trailing_slashes() {
+        assert_eq!(
+            resolve_nominatim_base_url("https://nominatim.example.com"),
+            "https://nominatim.example.com"
+        );
+        assert_eq!(
+            resolve_nominatim_base_url("https://nominatim.example.com/"),
+            "https://nominatim.example.com"
+        );
+        assert_eq!(
+            resolve_nominatim_base_url("https://nominatim.example.com////"),
+            "https://nominatim.example.com"
+        );
+    }
 
     #[test]
     fn urlencoding_escapes_spaces_and_diacritics() {

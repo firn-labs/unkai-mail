@@ -183,6 +183,17 @@ pub struct AppSettings {
     /// consulted — so a later opt-back-in is instant.
     #[serde(default)]
     pub location_geocoding_enabled: bool,
+    /// Override base URL for forward-geocoding (#259 follow-up).
+    /// Empty string means "use the built-in default
+    /// `https://nominatim.openstreetmap.org`".  Self-hosters
+    /// can point this at their own Nominatim instance —
+    /// Nominatim's posted usage policy actively recommends a
+    /// private deployment for any volume above casual use.
+    /// We trim trailing slashes at request time and append
+    /// `/search` ourselves; the URL the user enters should be
+    /// the base (e.g. `https://nominatim.example.com`).
+    #[serde(default)]
+    pub nominatim_base_url: String,
 }
 
 fn default_logo_style() -> String {
@@ -278,6 +289,11 @@ impl Default for AppSettings {
             // user's Nextcloud trust boundary.  Users opt in
             // explicitly from General Settings (#280).
             location_geocoding_enabled: false,
+            // Empty = fall back to the public Nominatim
+            // endpoint at request time.  Setting this to a
+            // self-hosted URL routes every typed query through
+            // the user's own Nominatim instead.
+            nominatim_base_url: String::new(),
         }
     }
 }
