@@ -568,20 +568,6 @@ impl Cache {
                 } else {
                     serde_json::to_string(&env.references_ids).ok()
                 };
-                // Diagnostic for #277 — confirms the cache write
-                // is receiving the threading data the IMAP layer
-                // claims to extract.  Compare the values logged
-                // here to the `imap thread headers` line for the
-                // same UID; if they diverge, the bug is between
-                // the IMAP envelope and this upsert.
-                tracing::info!(
-                    "cache upsert envelope folder={folder} uid={uid} msg_id={mid:?} in_reply_to={irt:?} refs_present={rp}",
-                    folder = env.folder,
-                    uid = env.uid,
-                    mid = env.message_id,
-                    irt = env.in_reply_to,
-                    rp = refs_json.is_some(),
-                );
                 stmt.execute(params![
                     account_id,
                     env.folder,
