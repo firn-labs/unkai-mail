@@ -102,6 +102,11 @@
   let listEl = $state<HTMLDivElement | null>(null)
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  /** Generation counter so a slow in-flight fetch can't
+   *  clobber a newer one's result.  Each scheduled fetch
+   *  bumps it; `runFetch` only writes back if its captured
+   *  generation still matches when the network call returns. */
+  let fetchGen = 0
 
   function scheduleFetch(query: string) {
     if (debounceTimer) clearTimeout(debounceTimer)
@@ -110,41 +115,61 @@
       open = false
       return
     }
-    if (query.trim().length < 3) {
-      // Bumped to 3 (vs 2 in LocationField) because postal-
-      // address queries with two-character prefixes return
-      // junk hits (single-letter street abbreviations) that
-      // pollute the dropdown.
+    const trimmed = query.trim()
+    if (trimmed.length === 0) {
+      // Empty input — fully reset.  Anything else (1-char
+      // prefixes, sub-threshold strings) keeps whatever we
+      // last had so the dropdown doesn't flicker shut while
+      // the user is mid-edit.
       suggestions = []
       open = false
       return
     }
+    if (trimmed.length < 2) {
+      // Below the useful-query floor; don't fire a fetch but
+      // also don't clear the previously-rendered suggestions.
+      return
+    }
     debounceTimer = setTimeout(() => {
-      void runFetch(query.trim())
+      void runFetch(trimmed)
     }, 350)
   }
 
   async function runFetch(query: string) {
+    const gen = ++fetchGen
     loading = true
     try {
       const hits = await invoke<GeocodeResult[]>('geocode_search', {
         query,
         lang,
       })
-      // Drop hits without an `address` block — those don't
-      // have anything we could fill into the structured
-      // form fields.  Nominatim emits these for some POI
-      // types; for street-address geocoding we want the
-      // ones that resolved to a postal address.
-      suggestions = hits.filter((h) => !!h.address)
-      open = suggestions.length > 0
-      activeIndex = suggestions.length > 0 ? 0 : -1
+      // A newer fetch already started — drop this stale
+      // result so we don't paint the user's old query over
+      // their newer one.
+      if (gen !== fetchGen) return
+      if (hits.length > 0) {
+        suggestions = hits
+        open = true
+        activeIndex = 0
+      } else if (suggestions.length === 0) {
+        // No hits *and* no previous results to fall back
+        // on — leave the dropdown closed.
+        open = false
+      }
+      // Else: keep the previously-rendered suggestions
+      // visible.  This is what fixes the "type a house
+      // number, dropdown disappears" bug — Nominatim
+      // returns 0 hits for many partial street+number
+      // combos, but the user's earlier "Schillerstraße"
+      // suggestions are still the right pick to advance
+      // the form.
     } catch (e) {
       console.warn('geocode_search (address) failed', e)
-      suggestions = []
-      open = false
+      // Don't blow away suggestions on a network blip —
+      // they're still useful even if the next refinement
+      // failed.
     } finally {
-      loading = false
+      if (gen === fetchGen) loading = false
     }
   }
 
@@ -160,7 +185,13 @@
    *  city sets `city`, a small village sets `village`, etc.
    *  Street combines `road` with `house_number`; ordering is
    *  language-dependent in real life, but `road house_number`
-   *  works for most European postal conventions including DE. */
+   *  works for most European postal conventions including DE.
+   *
+   *  Fallback: a hit with no `address` block at all (rare,
+   *  but Nominatim returns these for some POI / amenity hits)
+   *  seeds `street` with the human-readable `display_name`
+   *  rather than emptying the form silently — picking *any*
+   *  suggestion should produce *something* visible. */
   function pickToForm(hit: GeocodeResult): AddressPick {
     const a = hit.address ?? ({} as GeocodeAddress)
     const street = [a.road ?? '', a.houseNumber ?? '']
@@ -180,6 +211,15 @@
       a.state || a.stateDistrict || a.region || a.county || ''
     const postal_code = a.postcode || ''
     const country = a.country || ''
+    if (!street && !locality && !region && !postal_code && !country) {
+      return {
+        street: hit.displayName,
+        locality: '',
+        region: '',
+        postal_code: '',
+        country: '',
+      }
+    }
     return { street, locality, region, postal_code, country }
   }
 
