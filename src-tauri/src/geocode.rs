@@ -63,6 +63,48 @@ pub struct GeocodeResult {
     /// Sub-type within the class ("cafe", "restaurant", …).
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
+    /// Structured address parts from Nominatim's
+    /// `addressdetails=1` response.  Used by #259's contact-form
+    /// suggestion picker to fill street / locality / region /
+    /// postcode / country in one shot.  `None` for pre-#259
+    /// cache rows whose serialised JSON didn't carry the field —
+    /// the cache is forward-compatible because every component
+    /// is `#[serde(default)]`.
+    #[serde(default)]
+    pub address: Option<GeocodeAddress>,
+}
+
+/// Structured address components Nominatim returns under the
+/// `address` key when `addressdetails=1` is requested (#259).
+/// Field names follow Nominatim's snake_case keys; we expose
+/// them via the parent's `rename_all = "camelCase"` to the
+/// frontend so they fit the existing IPC convention.
+///
+/// Every field is optional because Nominatim only emits the
+/// keys it has — a forest-only POI returns `country` and
+/// nothing else, while a postal address returns the full set.
+/// We keep the "any of {city, town, village, hamlet, …}"
+/// fallback list in the frontend because picking the right
+/// locality field is a presentation decision, not a data one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeocodeAddress {
+    pub road: Option<String>,
+    pub house_number: Option<String>,
+    pub neighbourhood: Option<String>,
+    pub suburb: Option<String>,
+    pub city: Option<String>,
+    pub town: Option<String>,
+    pub village: Option<String>,
+    pub hamlet: Option<String>,
+    pub municipality: Option<String>,
+    pub county: Option<String>,
+    pub state: Option<String>,
+    pub state_district: Option<String>,
+    pub region: Option<String>,
+    pub postcode: Option<String>,
+    pub country: Option<String>,
+    pub country_code: Option<String>,
 }
 
 /// Raw Nominatim hit before lat/lon get coerced to floats.
@@ -82,6 +124,8 @@ struct NominatimHit {
     class: Option<String>,
     #[serde(default, rename = "type")]
     kind: Option<String>,
+    #[serde(default)]
+    address: Option<GeocodeAddress>,
 }
 
 /// Issue a forward-geocoding request to Nominatim.
@@ -159,6 +203,7 @@ pub async fn nominatim_search(query: &str, lang: &str) -> Result<Vec<GeocodeResu
                 osm_type: h.osm_type,
                 class: h.class,
                 kind: h.kind,
+                address: h.address,
             })
         })
         .collect())
@@ -209,5 +254,43 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].display_name, "Berlin, 10117, Deutschland");
         assert_eq!(hits[0].kind.as_deref(), Some("city"));
+        // Pre-#259 hits don't carry an `address` object — make
+        // sure the optional default keeps working.
+        assert!(hits[0].address.is_none());
+    }
+
+    #[test]
+    fn deserialises_addressdetails_response() {
+        // Real-shape Nominatim hit for a German postal address
+        // with `addressdetails=1`.  All the parts the contact
+        // form needs sit under `address` and we should surface
+        // them.
+        let body = r#"[
+          {
+            "place_id": 67890,
+            "lat": "52.520008",
+            "lon": "13.404954",
+            "display_name": "Schillerstraße 12, Charlottenburg, Berlin, 10625, Deutschland",
+            "address": {
+              "road": "Schillerstraße",
+              "house_number": "12",
+              "suburb": "Charlottenburg",
+              "city": "Berlin",
+              "state": "Berlin",
+              "postcode": "10625",
+              "country": "Deutschland",
+              "country_code": "de"
+            }
+          }
+        ]"#;
+        let hits: Vec<NominatimHit> = serde_json::from_str(body).unwrap();
+        assert_eq!(hits.len(), 1);
+        let addr = hits[0].address.as_ref().expect("address present");
+        assert_eq!(addr.road.as_deref(), Some("Schillerstraße"));
+        assert_eq!(addr.house_number.as_deref(), Some("12"));
+        assert_eq!(addr.city.as_deref(), Some("Berlin"));
+        assert_eq!(addr.postcode.as_deref(), Some("10625"));
+        assert_eq!(addr.country.as_deref(), Some("Deutschland"));
+        assert_eq!(addr.country_code.as_deref(), Some("de"));
     }
 }
