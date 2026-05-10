@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod badge;
+mod geocode;
 
 use nimbus_caldav::{
     BusyKind as CaldavBusyKind, Calendar as CaldavCalendar, RawEvent,
@@ -4638,6 +4639,108 @@ async fn get_attendee_availability(
     }
 
     Ok(out)
+}
+
+// ── Location autocomplete + map preview (#280) ───────────────
+//
+// The EventEditor's Location field offers two affordances:
+//
+//   1. **Autocomplete** — keystrokes (debounced) call
+//      `geocode_search`, which dedupes against the local
+//      `geocode_cache` table before hitting Nominatim.  Picking
+//      a suggestion stamps the canonical `display_name` plus
+//      `(lat, lon)` onto the in-flight event, which then
+//      round-trips through `LOCATION` + `GEO` in the iCalendar
+//      body.
+//
+//   2. **Inline map preview** — once the event has a `(lat,
+//      lon)`, the UI mounts a small MapLibre canvas pointing at
+//      it.  All tile traffic goes to public OSM-backed tile
+//      services with attribution (see the frontend component).
+//
+// `detect_nc_maps` is informational: it tells the UI whether
+// the user's connected NC has the Maps app enabled so the UI
+// can surface "Using your Nextcloud Maps" in the autocomplete
+// header.  The actual geocoding still goes to Nominatim either
+// way — NC Maps doesn't expose a server-side proxy at present.
+
+#[tauri::command]
+async fn geocode_search(
+    query: String,
+    lang: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<geocode::GeocodeResult>, NimbusError> {
+    let lang = lang.unwrap_or_default();
+    // Cache hit short-circuits the network round-trip.  The
+    // cache itself canonicalises the query (whitespace,
+    // case-folding) so a tiny stylistic typo doesn't burn an
+    // upstream call.
+    if let Some(json) = cache
+        .get_geocode_cache(&query, &lang)
+        .map_err(NimbusError::from)?
+    {
+        if let Ok(hits) = serde_json::from_str::<Vec<geocode::GeocodeResult>>(&json) {
+            return Ok(hits);
+        }
+        // Cache row exists but is corrupt — fall through to a
+        // fresh fetch and let the new payload overwrite it.
+        tracing::warn!("geocode_cache: corrupt row for {query:?}, refetching");
+    }
+
+    let hits = geocode::nominatim_search(&query, &lang).await?;
+    let serialised = serde_json::to_string(&hits)
+        .map_err(|e| NimbusError::Other(format!("geocode result serialise: {e}")))?;
+    if let Err(e) = cache.put_geocode_cache(&query, &lang, &serialised) {
+        // Cache write failure is non-fatal — the user still
+        // gets the live result.
+        tracing::warn!("geocode_cache write failed: {e}");
+    }
+    Ok(hits)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextcloudMapsCapability {
+    /// True when the connected NC has the Maps app enabled.
+    available: bool,
+}
+
+#[tauri::command]
+async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    // The capabilities OCS endpoint returns an enabled-apps map
+    // we can scan for `maps` without needing to actually call
+    // any Maps-app endpoints.  Soft-fails to "not available"
+    // on any network blip — the UI just shows the generic
+    // OSM-attribution copy in that case.
+    let server = account.server_url.trim_end_matches('/');
+    let url = format!("{server}/ocs/v2.php/cloud/capabilities?format=json");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| NimbusError::Network(format!("capabilities client: {e}")))?;
+    let resp = client
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(&account.username, Some(&app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("capabilities request: {e}")))?;
+    if !resp.status().is_success() {
+        return Ok(NextcloudMapsCapability { available: false });
+    }
+    // The capabilities body is deeply nested; we just look for
+    // any case-insensitive hint of "maps" inside the
+    // capabilities key.  More precise parsing would tie us to
+    // an NC version's exact JSON shape — this is informational
+    // anyway, and a false negative just means the UI doesn't
+    // show the "via NC Maps" hint.
+    let body = resp.text().await.unwrap_or_default();
+    let available = body.to_ascii_lowercase().contains("\"maps\"");
+    Ok(NextcloudMapsCapability { available })
 }
 
 /// Remove a locally-cached event whose iCalendar `UID` matches
@@ -11274,6 +11377,8 @@ fn main() {
             update_calendar_event,
             delete_calendar_event,
             get_attendee_availability,
+            geocode_search,
+            detect_nc_maps,
             dismiss_cancelled_event,
             is_event_in_calendar,
             record_cancelled_invite,

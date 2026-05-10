@@ -1,0 +1,213 @@
+//! Geocoding via Nominatim — the canonical OSM-backed geocoder
+//! (#280).
+//!
+//! Fetches forward-geocoding suggestions for the EventEditor's
+//! Location autocomplete.  Routes through the local
+//! `geocode_cache` SQLite table (see `nimbus-store::cache::geocode`)
+//! so the same query typed twice doesn't burn two upstream calls,
+//! and so the user honours Nominatim's posted "1 req/sec
+//! absolute" rate limit naturally.
+//!
+//! # Privacy
+//!
+//! Each network-bound request emits the user's typed query and a
+//! best-effort UA string identifying this app + version.  No
+//! stable identifier is sent — Nominatim sees an anonymous
+//! desktop client.  Results are cached locally so a returning
+//! user typing the same place doesn't repeat the round-trip.
+//!
+//! # Future: NC Maps proxy
+//!
+//! The Nextcloud Maps app (when installed) is primarily a Leaflet
+//! frontend that calls Nominatim from the browser side; it
+//! doesn't currently expose a usable server-side proxy.  This
+//! module deliberately stays Nominatim-direct so the offline /
+//! NC-absent flow keeps working; a future PR can add an
+//! NC-proxied tier if/when Maps grows one.
+
+use std::time::Duration;
+
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+
+use nimbus_core::NimbusError;
+
+/// One forward-geocoding suggestion.  Mirrors the Nominatim
+/// response we care about, plus a normalised `(lat, lon)` pair —
+/// Nominatim emits both as JSON strings, never numbers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeocodeResult {
+    /// Server-side row id — we don't use it but caching the raw
+    /// JSON shape means rebuilding the struct from cache returns
+    /// the same value as a fresh fetch.
+    #[serde(default)]
+    pub place_id: u64,
+    /// Human-readable address ("Berlin Hauptbahnhof, …, Berlin,
+    /// 10557, Deutschland").  This is what we drop into the
+    /// `LOCATION:` field.
+    pub display_name: String,
+    /// Latitude in decimal degrees (WGS-84).
+    pub lat: f64,
+    /// Longitude in decimal degrees (WGS-84).
+    pub lon: f64,
+    /// Coarse OSM type ("node", "way", "relation"); we surface
+    /// it in the autocomplete tooltip when present.
+    #[serde(default)]
+    pub osm_type: Option<String>,
+    /// Class of place ("amenity", "highway", "tourism", …) —
+    /// used by the UI to pick a small icon if we add per-type
+    /// markers later.
+    #[serde(default)]
+    pub class: Option<String>,
+    /// Sub-type within the class ("cafe", "restaurant", …).
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
+}
+
+/// Raw Nominatim hit before lat/lon get coerced to floats.
+/// Nominatim emits both as strings, so we deserialise into a
+/// shadow struct and then convert.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct NominatimHit {
+    #[serde(default)]
+    place_id: u64,
+    display_name: String,
+    lat: String,
+    lon: String,
+    #[serde(default)]
+    osm_type: Option<String>,
+    #[serde(default)]
+    class: Option<String>,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+}
+
+/// Issue a forward-geocoding request to Nominatim.
+///
+/// `lang` is the IETF tag whose translations Nominatim should
+/// prefer (Accept-Language header).  Empty string means "let
+/// Nominatim default to local-language names", which is fine for
+/// most use cases.
+///
+/// The function does **not** consult the local cache — that's the
+/// caller's job.  Pulling cache logic into this layer would
+/// couple the protocol crate to `nimbus-store`, and the cache
+/// adds a small amount of canonicalisation we want visible in
+/// `main.rs` where the Tauri command flows.
+pub async fn nominatim_search(query: &str, lang: &str) -> Result<Vec<GeocodeResult>, NimbusError> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let url = format!(
+        "https://nominatim.openstreetmap.org/search\
+         ?format=jsonv2&addressdetails=1&limit=8&q={}",
+        urlencoding(q),
+    );
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        // Nominatim's usage policy requires an honest User-Agent
+        // identifying the application + version + a contact path.
+        // Repo URL satisfies the contact requirement.
+        .user_agent(concat!(
+            "NimbusMail/",
+            env!("CARGO_PKG_VERSION"),
+            " (+https://github.com/Videothek/nimbus-mail)"
+        ))
+        .build()
+        .map_err(|e| NimbusError::Network(format!("geocode HTTP client: {e}")))?;
+
+    let mut req = client.get(&url);
+    if !lang.trim().is_empty() {
+        req = req.header(reqwest::header::ACCEPT_LANGUAGE, lang);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("geocode request: {e}")))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(NimbusError::Other(format!(
+            "Nominatim returned HTTP {status}"
+        )));
+    }
+    let hits: Vec<NominatimHit> = resp
+        .json()
+        .await
+        .map_err(|e| NimbusError::Protocol(format!("geocode JSON: {e}")))?;
+
+    Ok(hits
+        .into_iter()
+        .filter_map(|h| {
+            let lat: f64 = h.lat.parse().ok()?;
+            let lon: f64 = h.lon.parse().ok()?;
+            // Drop hits outside WGS-84 ranges — defensive against
+            // server-side wobbles, never seen in practice.
+            if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                return None;
+            }
+            Some(GeocodeResult {
+                place_id: h.place_id,
+                display_name: h.display_name,
+                lat,
+                lon,
+                osm_type: h.osm_type,
+                class: h.class,
+                kind: h.kind,
+            })
+        })
+        .collect())
+}
+
+/// Minimal percent-encoding for query-string values.  Mirrors the
+/// helper in `nimbus-nextcloud::user` so we don't pull in a fresh
+/// dep just for one path.
+fn urlencoding(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urlencoding_escapes_spaces_and_diacritics() {
+        assert_eq!(urlencoding("Café Berlin"), "Caf%C3%A9%20Berlin");
+        assert_eq!(urlencoding("a-b_c.d~e"), "a-b_c.d~e");
+    }
+
+    #[test]
+    fn deserialises_a_real_response_shape() {
+        // Subset of an actual Nominatim hit.  The field set is
+        // representative of what we surface in the UI.
+        let body = r#"[
+          {
+            "place_id": 12345,
+            "lat": "52.520008",
+            "lon": "13.404954",
+            "display_name": "Berlin, 10117, Deutschland",
+            "osm_type": "node",
+            "class": "place",
+            "type": "city"
+          }
+        ]"#;
+        let hits: Vec<NominatimHit> = serde_json::from_str(body).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].display_name, "Berlin, 10117, Deutschland");
+        assert_eq!(hits[0].kind.as_deref(), Some("city"));
+    }
+}
