@@ -1138,9 +1138,15 @@
              stays orthogonal so an unread+selected row keeps both.
              The row is wrapped in a `group` so the inline quick-
              action icons (#98) reveal on row hover.
-             Sibling rows of an expanded thread (#277) get extra
-             left padding so they read as nested under the head. -->
-        <div class="group relative {row.isSibling ? 'pl-6 bg-surface-50/50 dark:bg-surface-900/30' : ''}">
+             Sibling rows of an expanded thread (#277) keep their
+             accent strip flush at x=0 (same column as the head
+             row's strip) so the primary-coloured border reads as
+             a continuous thread connector running down from head
+             to children.  The visual nesting comes from extra
+             left-padding on the inner row's content (see below)
+             plus the faint bg tint, NOT from indenting the
+             outer wrapper. -->
+        <div class="group relative {row.isSibling ? 'bg-surface-50/50 dark:bg-surface-900/30' : ''}">
           <!-- Row is a `<div role="button">` rather than a real
                `<button>` because several webview engines (notably
                Edge WebView2 on Windows) refuse to fire
@@ -1154,7 +1160,7 @@
             role="button"
             tabindex="0"
             aria-pressed={selected}
-            class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
+            class="w-full text-left {row.isSibling ? 'pl-9' : 'pl-3'} pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
               {row.isSibling || !env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
               {selected
                 ? 'bg-primary-500/10'
