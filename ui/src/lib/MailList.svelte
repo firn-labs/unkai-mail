@@ -1156,18 +1156,24 @@
              expects. -->
         <div class="group relative {row.isSibling ? 'bg-surface-50/50 dark:bg-surface-900/30' : ''}">
           {#if row.isSibling}
-            <!-- Vertical dotted track.  The element is 0 px wide
-                 sitting at left=24; `border-r-2 border-dotted`
-                 paints a 2 px line on its right edge (x=24..26)
-                 and `-translate-x-px` shifts the whole element
-                 1 px left so the line ends up centred at x=24
-                 — the same x the dot is centred on.  For the
-                 last sibling in a thread, `bottom-1/2` clips the
-                 line at the row's vertical centre (where the
-                 dot sits) instead of letting it spill below the
-                 last child. -->
+            <!-- Vertical dotted track + dot.
+                 We render the dots via a background-image
+                 (`repeating-linear-gradient`) instead of
+                 `border-dotted` because the latter spaces dots
+                 adaptively to fit the border length — two
+                 stacked rows of different heights produce
+                 different phases, and the line visibly jogs at
+                 every row boundary.  Fixed pixel pattern (2 px
+                 dot, 3 px gap, 5 px cycle) keeps the spacing
+                 identical regardless of row height.
+                 The element is `w-0.5` (2 px) and uses
+                 `-translate-x-1/2` to centre at `left-6`, the
+                 same x as the dot so the dot sits *on* the
+                 line.  `text-primary-500/60` sets the colour
+                 the gradient picks up via `currentColor`. -->
             <span
-              class="pointer-events-none absolute left-6 top-0 -translate-x-px border-r-2 border-dotted border-primary-500/60 {row.isLastSibling ? 'bottom-1/2' : 'bottom-0'}"
+              class="pointer-events-none absolute left-6 top-0 w-0.5 -translate-x-1/2 text-primary-500/60 {row.isLastSibling ? 'bottom-1/2' : 'bottom-0'}"
+              style="background-image: repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px 5px);"
               aria-hidden="true"
             ></span>
             <span
