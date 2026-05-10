@@ -192,5 +192,10 @@
   "event_planner_apply": "Use this time",
   "event_planner_cancel": "Cancel",
   "event_planner_source_unknown_title": "No availability data — assume free.",
-  "event_planner_source_local_title": "From your own calendars (this person isn't a Nextcloud user, or their calendar isn't shared with you)."
+  "event_planner_source_local_title": "From your own calendars (this person isn't a Nextcloud user, or their calendar isn't shared with you).",
+  "event_editor_location_placeholder": "Location",
+  "location_field_loading": "Searching…",
+  "map_preview_iframe_title": "Map preview",
+  "map_preview_attribution": "© OpenStreetMap contributors",
+  "map_preview_open_external": "Open in OpenStreetMap"
 }
