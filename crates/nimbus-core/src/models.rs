@@ -523,6 +523,20 @@ pub struct Email {
     /// messages from before the attachment metadata landed.
     #[serde(default)]
     pub attachments: Vec<EmailAttachment>,
+    /// RFC 5322 `Message-ID:` (#277). Mirrors the field on
+    /// `EmailEnvelope`; surfaced here so reply / forward flows
+    /// have it without an extra cache lookup.  `None` for older
+    /// cached payloads or when the source mail had no
+    /// Message-ID at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// RFC 5322 `In-Reply-To:` (#277).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// RFC 5322 `References:` parsed into ordered ancestor IDs
+    /// (#277).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references_ids: Vec<String>,
 }
 
 /// Metadata for one attachment on a received email.
