@@ -670,6 +670,21 @@ impl ImapClient {
 
                 let (message_id, in_reply_to, references_ids) = extract_threading_headers(fetch);
 
+                // Diagnostic for #277 — confirms the IMAP path is
+                // actually pulling the threading headers off the
+                // FETCH response.  Logged at info so it shows up
+                // in the default tracing config without needing a
+                // RUST_LOG flip; the per-envelope volume is
+                // bounded by the sync's batch size and the line
+                // is one short kvp string, so the cost is
+                // negligible.
+                tracing::info!(
+                    "imap thread headers uid={uid} msg_id={msg:?} in_reply_to={irt:?} refs_len={rl}",
+                    msg = message_id,
+                    irt = in_reply_to,
+                    rl = references_ids.len(),
+                );
+
                 Some(EmailEnvelope {
                     uid,
                     folder: folder.to_string(),

@@ -152,6 +152,23 @@
   }
 
   let renderRows = $derived.by((): RenderRow[] => {
+    // Diagnostic for #277 — log a small sample of envelope
+    // threading data so we can see whether the data made it
+    // through to the frontend.  Limit to first 5 envelopes so
+    // the console doesn't flood; that's enough to confirm the
+    // shape.
+    if (envelopes.length > 0) {
+      console.log(
+        '[mail-list] threading sample',
+        envelopes.slice(0, 5).map((e) => ({
+          uid: e.uid,
+          subject: e.subject.slice(0, 40),
+          message_id: e.message_id,
+          in_reply_to: e.in_reply_to,
+          refs_len: e.references_ids?.length ?? 0,
+        })),
+      )
+    }
     // Bucket envelopes by thread key, preserving the bucket
     // order in which the *first* member appears (envelopes are
     // already date-sorted newest-first).
