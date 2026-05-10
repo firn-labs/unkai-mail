@@ -178,11 +178,15 @@
   /** One row to actually paint.  Heads carry `siblingCount`
    *  and a fresh `threadKey`; siblings carry `siblingCount=0`
    *  and the same key as their head so the visual indent +
-   *  toggle button can find each other. */
+   *  toggle button can find each other.  `isLastSibling`
+   *  marks the bottom-most child of an expanded thread —
+   *  used to clip the dotted-line connector at the dot
+   *  instead of letting it run to the row's bottom edge. */
   type RenderRow = {
     env: EmailEnvelope
     siblingCount: number
     isSibling: boolean
+    isLastSibling: boolean
     threadKey: string
   }
 
@@ -284,14 +288,16 @@
         env: head,
         siblingCount: siblings.length,
         isSibling: false,
+        isLastSibling: false,
         threadKey: key,
       })
       if (expandedThreads.has(key)) {
-        for (const sib of siblings) {
+        for (let i = 0; i < siblings.length; i++) {
           out.push({
-            env: sib,
+            env: siblings[i],
             siblingCount: 0,
             isSibling: true,
+            isLastSibling: i === siblings.length - 1,
             threadKey: key,
           })
         }
@@ -1150,8 +1156,18 @@
              expects. -->
         <div class="group relative {row.isSibling ? 'bg-surface-50/50 dark:bg-surface-900/30' : ''}">
           {#if row.isSibling}
+            <!-- Vertical dotted track.  The element is 0 px wide
+                 sitting at left=24; `border-r-2 border-dotted`
+                 paints a 2 px line on its right edge (x=24..26)
+                 and `-translate-x-px` shifts the whole element
+                 1 px left so the line ends up centred at x=24
+                 — the same x the dot is centred on.  For the
+                 last sibling in a thread, `bottom-1/2` clips the
+                 line at the row's vertical centre (where the
+                 dot sits) instead of letting it spill below the
+                 last child. -->
             <span
-              class="pointer-events-none absolute left-6 top-0 bottom-0 border-l-2 border-dotted border-primary-500/60"
+              class="pointer-events-none absolute left-6 top-0 -translate-x-px border-r-2 border-dotted border-primary-500/60 {row.isLastSibling ? 'bottom-1/2' : 'bottom-0'}"
               aria-hidden="true"
             ></span>
             <span
