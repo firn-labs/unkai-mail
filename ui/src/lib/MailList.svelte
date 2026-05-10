@@ -187,24 +187,6 @@
   }
 
   let renderRows = $derived.by((): RenderRow[] => {
-    // Diagnostic for #277 — dump every envelope's threading
-    // shape AND its computed thread key.  Grouping requires
-    // parent.threadKey === reply.threadKey, so if envelopes
-    // that should belong together produce different keys, the
-    // log will show it directly.
-    if (envelopes.length > 0) {
-      console.log(
-        '[mail-list] threading dump',
-        envelopes.slice(0, 20).map((e) => ({
-          uid: e.uid,
-          subject: e.subject.slice(0, 50),
-          message_id: e.message_id ?? null,
-          in_reply_to: e.in_reply_to ?? null,
-          references_ids: e.references_ids ?? [],
-          threadKey: threadKeyOf(e),
-        })),
-      )
-    }
     // Bucket envelopes by thread key, preserving the bucket
     // order in which the *first* member appears (envelopes are
     // already date-sorted newest-first).
@@ -1179,7 +1161,7 @@
                 : multi
                   ? 'bg-primary-500/15 hover:bg-primary-500/20'
                   : !env.is_read
-                    ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
+                    ? 'bg-primary-500/4 dark:bg-primary-500/7 hover:bg-primary-500/10'
                     : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
             draggable="true"
             ondragstart={(e) => onMailDragStart(e, env)}
@@ -1202,37 +1184,7 @@
               <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
                 {env.from || '(unknown sender)'}
               </span>
-              <span class="flex items-center gap-1.5 shrink-0">
-                {#if row.siblingCount > 0}
-                  <!-- Conversation count + chevron (#277).  Click
-                       toggles expansion of the thread below this
-                       row inline.  `stopPropagation` so the row
-                       click (which opens the head message) doesn't
-                       fire alongside. -->
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-0.5 text-[11px] text-surface-500 hover:text-primary-500 px-1 py-0.5 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700"
-                    title={expandedThreads.has(row.threadKey)
-                      ? 'Collapse conversation'
-                      : 'Show full conversation'}
-                    onclick={(e) => {
-                      e.stopPropagation()
-                      toggleThread(row.threadKey)
-                    }}
-                  >
-                    <span>{row.siblingCount + 1}</span>
-                    <!-- Unicode chevron — Icon.svelte registry
-                         doesn't carry a chevron-up/down today and
-                         we'd rather not stamp out two new SVGs for
-                         a per-row affordance.  Span keeps the
-                         baseline aligned with the count number. -->
-                    <span class="text-[9px] leading-none">
-                      {expandedThreads.has(row.threadKey) ? '▲' : '▼'}
-                    </span>
-                  </button>
-                {/if}
-                <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'}">{formatDate(env.date)}</span>
-              </span>
+              <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
             </div>
             <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
               {#if answeredIconName(env)}
@@ -1248,10 +1200,48 @@
                 {env.subject || '(no subject)'}
               </span>
             </p>
-            {#if unified && env.account_id}
-              <p class="text-[11px] text-surface-500 mt-1 truncate">
-                {accountLabel(env.account_id)}
-              </p>
+            <!-- Bottom meta row.  Account label on the left in
+                 unified mode; conversation count + chevron
+                 (#277) tucked to the bottom-right via
+                 `ml-auto`.  Only renders if at least one piece
+                 needs to show; otherwise the row stays compact. -->
+            {#if row.siblingCount > 0 || (unified && env.account_id)}
+              <div class="flex items-center gap-2 mt-1 text-[11px] text-surface-500 min-w-0">
+                {#if unified && env.account_id}
+                  <span class="truncate">{accountLabel(env.account_id)}</span>
+                {/if}
+                {#if row.siblingCount > 0}
+                  <!-- Conversation count + chevron (#277).  Click
+                       toggles expansion of the thread below this
+                       row inline.  `stopPropagation` so the row
+                       click (which opens the head message)
+                       doesn't fire alongside.  `ml-auto` pushes
+                       the cluster to the right edge of the meta
+                       row so it sits at the row's bottom-right
+                       corner. -->
+                  <button
+                    type="button"
+                    class="shrink-0 ml-auto inline-flex items-center gap-0.5 hover:text-primary-500 px-1 py-0.5 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700"
+                    title={expandedThreads.has(row.threadKey)
+                      ? 'Collapse conversation'
+                      : 'Show full conversation'}
+                    onclick={(e) => {
+                      e.stopPropagation()
+                      toggleThread(row.threadKey)
+                    }}
+                  >
+                    <span>{row.siblingCount + 1}</span>
+                    <!-- Unicode chevron — Icon.svelte registry
+                         doesn't carry a chevron-up/down today and
+                         we'd rather not stamp out two new SVGs
+                         for a per-row affordance.  Span keeps the
+                         baseline aligned with the count number. -->
+                    <span class="text-[9px] leading-none">
+                      {expandedThreads.has(row.threadKey) ? '▲' : '▼'}
+                    </span>
+                  </button>
+                {/if}
+              </div>
             {/if}
           </div>
           <!-- Hover-revealed quick actions (#98).  Anchored to the
