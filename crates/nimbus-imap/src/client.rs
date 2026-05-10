@@ -652,6 +652,14 @@ impl ImapClient {
                     // `upsert_envelopes_for_account`, and cache reads
                     // populate the field on the way back out.
                     account_id: String::new(),
+                    // RFC 5322 threading headers (#277).  Populated
+                    // by `populate_threading_headers` after the
+                    // envelopes Vec is built so we only walk the
+                    // ENVELOPE / extra HEADER.FIELDS data once per
+                    // FETCH response batch.
+                    message_id: None,
+                    in_reply_to: None,
+                    references_ids: Vec::new(),
                 })
             })
             .collect();
@@ -1637,6 +1645,9 @@ impl ImapClient {
                     is_answered,
                     replied_kind: None,
                     account_id: String::new(),
+                    message_id: None,
+                    in_reply_to: None,
+                    references_ids: Vec::new(),
                 })
             })
             .collect();
@@ -1751,6 +1762,9 @@ impl ImapClient {
                     is_answered,
                     replied_kind: None,
                     account_id: String::new(),
+                    message_id: None,
+                    in_reply_to: None,
+                    references_ids: Vec::new(),
                 })
             })
             .collect();
@@ -1882,6 +1896,9 @@ impl ImapClient {
                     is_answered,
                     replied_kind: None,
                     account_id: String::new(),
+                    message_id: None,
+                    in_reply_to: None,
+                    references_ids: Vec::new(),
                 })
             })
             .collect();

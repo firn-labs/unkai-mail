@@ -306,7 +306,20 @@ ${nextcloudFooter("You'll be invited via Nextcloud — accepting in your mail cl
  *  The outer `data-nimbus-block` attribute lets the editor's
  *  `NimbusBlock` extension capture this as an atom node so the
  *  styled wrapper survives Tiptap's schema (which would otherwise
- *  unwrap the `<div>` and strip the inline styles). */
+ *  unwrap the `<div>` and strip the inline styles).
+ *
+ *  The inner content is also wrapped in a `<blockquote
+ *  type="cite">` (#277).  Standard mail clients use blockquote
+ *  as the canonical "this is quoted from a previous mail"
+ *  signal — Apple Mail, Thunderbird, Gmail, Outlook each render
+ *  blockquoted content with their own indent / collapse
+ *  affordance ("Show original", a vertical bar, etc.).  The
+ *  `type="cite"` attribute is the long-standing convention for
+ *  email-quoted blockquotes (vs. literary citations); it does
+ *  nothing visual but a couple of clients use it as a stronger
+ *  signal that the block is a mail quote.  We zero out the
+ *  blockquote's default browser indent so it doesn't double
+ *  up with the styled div's own padding. */
 export function quotedHistoryHtml(args: {
   fromHeader: string
   whenText: string
@@ -325,7 +338,7 @@ export function quotedHistoryHtml(args: {
 <div data-nimbus-block="quoted-history" style="margin:24px 0 0 0;padding:14px 18px;background:#f1f5f9;border-left:3px solid #cbd5e1;border-radius:8px;color:#64748b;font-size:13px;line-height:1.55;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px;">Previous conversation</div>
   <div style="font-size:12px;color:#475569;margin-bottom:10px;">${meta}</div>
-  <div style="color:#64748b;">${bodyHtml}</div>
+  <blockquote type="cite" style="margin:0;padding:0;border:0;color:#64748b;">${bodyHtml}</blockquote>
 </div>
 `.trim()
 }
