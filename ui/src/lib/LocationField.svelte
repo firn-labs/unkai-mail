@@ -46,6 +46,11 @@
     /** IETF tag for Nominatim's Accept-Language header.  Empty
      *  string keeps the server-default (local-language names). */
     lang?: string
+    /** Privacy gate (#280).  When `false`, the field stays a
+     *  plain text input — no debounced fetch, no dropdown, no
+     *  IPC call.  The user opts in via General Settings; until
+     *  then nothing leaves the device.  Default `false`. */
+    enabled?: boolean
     /** Fired when the user picks a suggestion or clears the
      *  geocoded match by editing free-form. */
     onpick: (
@@ -61,6 +66,7 @@
     longitude,
     placeholder = '',
     lang = '',
+    enabled = false,
     onpick,
   }: Props = $props()
 
@@ -79,6 +85,15 @@
 
   function scheduleFetch(query: string) {
     if (debounceTimer) clearTimeout(debounceTimer)
+    // Privacy gate — don't even schedule the fetch when the
+    // user hasn't opted in.  Settings can flip this live; on
+    // the next keystroke after the toggle goes off, the field
+    // immediately stops touching the network.
+    if (!enabled) {
+      suggestions = []
+      open = false
+      return
+    }
     if (query.trim().length < 2) {
       suggestions = []
       open = false

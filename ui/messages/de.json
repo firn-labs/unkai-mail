@@ -197,5 +197,7 @@
   "location_field_loading": "Suche läuft…",
   "map_preview_iframe_title": "Kartenvorschau",
   "map_preview_attribution": "© OpenStreetMap-Mitwirkende",
-  "map_preview_open_external": "In OpenStreetMap öffnen"
+  "map_preview_open_external": "In OpenStreetMap öffnen",
+  "settings_location_geocoding_label": "Standort-Vervollständigung + Kartenvorschau",
+  "settings_location_geocoding_help": "Standardmäßig deaktiviert. Wenn aktiviert, schlägt das Standortfeld im Termin-Editor passende Orte vor und zeigt eine eingebettete Karte. Jede eingegebene Suche wird an den Nominatim-Dienst von OpenStreetMap gesendet, die Karte lädt Kacheln von openstreetmap.org — beides Dritt-Anbieter außerhalb Ihrer Nextcloud."
 }

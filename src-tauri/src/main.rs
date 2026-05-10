@@ -4669,7 +4669,17 @@ async fn geocode_search(
     query: String,
     lang: Option<String>,
     cache: State<'_, Cache>,
+    settings: State<'_, SharedSettings>,
 ) -> Result<Vec<geocode::GeocodeResult>, NimbusError> {
+    // Privacy gate (#280).  Off by default; the user must opt in
+    // via General Settings before any keystroke leaves the
+    // device.  We refuse here as well as in the UI so a
+    // mis-wired component can't accidentally exfiltrate a query
+    // before the toggle's state propagates.
+    if !settings.read().await.location_geocoding_enabled {
+        return Ok(Vec::new());
+    }
+
     let lang = lang.unwrap_or_default();
     // Cache hit short-circuits the network round-trip.  The
     // cache itself canonicalises the query (whitespace,
