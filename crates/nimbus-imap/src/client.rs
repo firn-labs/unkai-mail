@@ -557,7 +557,11 @@ impl ImapClient {
                 let range = format!("{}:*", hi.saturating_add(1));
                 debug!("Incremental UID FETCH {folder} range={range}");
                 session
-                    .uid_fetch(range, "(UID FLAGS INTERNALDATE ENVELOPE)")
+                    .uid_fetch(
+                        range,
+                        "(UID FLAGS INTERNALDATE ENVELOPE \
+                         BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+                    )
                     .await
                     .map_err(|e| NimbusError::Protocol(format!("UID FETCH failed: {e}")))?
                     .try_collect()
@@ -570,7 +574,11 @@ impl ImapClient {
                 let range = format!("{start}:{total}");
                 debug!("Full FETCH {folder} range={range}");
                 session
-                    .fetch(&range, "(UID FLAGS INTERNALDATE ENVELOPE)")
+                    .fetch(
+                        &range,
+                        "(UID FLAGS INTERNALDATE ENVELOPE \
+                         BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+                    )
                     .await
                     .map_err(|e| NimbusError::Protocol(format!("FETCH failed: {e}")))?
                     .try_collect()
@@ -632,6 +640,8 @@ impl ImapClient {
                     }
                 }
 
+                let (message_id, in_reply_to, references_ids) = extract_threading_headers(fetch);
+
                 Some(EmailEnvelope {
                     uid,
                     folder: folder.to_string(),
@@ -652,14 +662,9 @@ impl ImapClient {
                     // `upsert_envelopes_for_account`, and cache reads
                     // populate the field on the way back out.
                     account_id: String::new(),
-                    // RFC 5322 threading headers (#277).  Populated
-                    // by `populate_threading_headers` after the
-                    // envelopes Vec is built so we only walk the
-                    // ENVELOPE / extra HEADER.FIELDS data once per
-                    // FETCH response batch.
-                    message_id: None,
-                    in_reply_to: None,
-                    references_ids: Vec::new(),
+                    message_id,
+                    in_reply_to,
+                    references_ids,
                 })
             })
             .collect();
@@ -1590,7 +1595,11 @@ impl ImapClient {
             .join(",");
 
         let fetches: Vec<_> = session
-            .uid_fetch(set, "(UID FLAGS INTERNALDATE ENVELOPE)")
+            .uid_fetch(
+                set,
+                "(UID FLAGS INTERNALDATE ENVELOPE \
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+            )
             .await
             .map_err(|e| NimbusError::Protocol(format!("UID FETCH after SEARCH failed: {e}")))?
             .try_collect()
@@ -1634,6 +1643,9 @@ impl ImapClient {
                     }
                 }
 
+                let (thread_msg_id, thread_in_reply_to, thread_refs) =
+                    extract_threading_headers(fetch);
+
                 Some(EmailEnvelope {
                     uid,
                     folder: folder.to_string(),
@@ -1645,9 +1657,9 @@ impl ImapClient {
                     is_answered,
                     replied_kind: None,
                     account_id: String::new(),
-                    message_id: None,
-                    in_reply_to: None,
-                    references_ids: Vec::new(),
+                    message_id: thread_msg_id,
+                    in_reply_to: thread_in_reply_to,
+                    references_ids: thread_refs,
                 })
             })
             .collect();
@@ -1708,7 +1720,11 @@ impl ImapClient {
             .collect::<Vec<_>>()
             .join(",");
         let fetches: Vec<_> = session
-            .uid_fetch(set, "(UID FLAGS INTERNALDATE ENVELOPE)")
+            .uid_fetch(
+                set,
+                "(UID FLAGS INTERNALDATE ENVELOPE \
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+            )
             .await
             .map_err(|e| NimbusError::Protocol(format!("UID FETCH (older search) failed: {e}")))?
             .try_collect()
@@ -1751,6 +1767,8 @@ impl ImapClient {
                         _ => {}
                     }
                 }
+                let (thread_msg_id, thread_in_reply_to, thread_refs) =
+                    extract_threading_headers(fetch);
                 Some(EmailEnvelope {
                     uid,
                     folder: folder.to_string(),
@@ -1762,9 +1780,9 @@ impl ImapClient {
                     is_answered,
                     replied_kind: None,
                     account_id: String::new(),
-                    message_id: None,
-                    in_reply_to: None,
-                    references_ids: Vec::new(),
+                    message_id: thread_msg_id,
+                    in_reply_to: thread_in_reply_to,
+                    references_ids: thread_refs,
                 })
             })
             .collect();
@@ -1841,7 +1859,11 @@ impl ImapClient {
             .join(",");
 
         let fetches: Vec<_> = session
-            .uid_fetch(set, "(UID FLAGS INTERNALDATE ENVELOPE)")
+            .uid_fetch(
+                set,
+                "(UID FLAGS INTERNALDATE ENVELOPE \
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+            )
             .await
             .map_err(|e| NimbusError::Protocol(format!("UID FETCH (older) failed: {e}")))?
             .try_collect()
@@ -1885,6 +1907,9 @@ impl ImapClient {
                     }
                 }
 
+                let (thread_msg_id, thread_in_reply_to, thread_refs) =
+                    extract_threading_headers(fetch);
+
                 Some(EmailEnvelope {
                     uid,
                     folder: folder.to_string(),
@@ -1896,9 +1921,9 @@ impl ImapClient {
                     is_answered,
                     replied_kind: None,
                     account_id: String::new(),
-                    message_id: None,
-                    in_reply_to: None,
-                    references_ids: Vec::new(),
+                    message_id: thread_msg_id,
+                    in_reply_to: thread_in_reply_to,
+                    references_ids: thread_refs,
                 })
             })
             .collect();
@@ -1994,6 +2019,105 @@ fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
         (false, true) => decoded_name,
         (false, false) => format!("{decoded_name} <{email}>"),
     }
+}
+
+/// Pull RFC 5322 threading headers off a `Fetch` response (#277).
+///
+/// Returns `(message_id, in_reply_to, references)` where each
+/// Message-ID has its angle brackets stripped — `<abc@h>` →
+/// `abc@h` — so cache lookups don't have to be bracket-aware.
+///
+/// `Message-ID` and `In-Reply-To` come from the IMAP `ENVELOPE`
+/// response (cheap, already in the FETCH).  `References` is *not*
+/// part of ENVELOPE and has to be pulled from a
+/// `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` section, which we
+/// added to the FETCH at the call site.
+fn extract_threading_headers(
+    fetch: &async_imap::types::Fetch,
+) -> (Option<String>, Option<String>, Vec<String>) {
+    let envelope = fetch.envelope();
+    let message_id = envelope
+        .and_then(|e| e.message_id.as_ref())
+        .and_then(|raw| std::str::from_utf8(raw).ok())
+        .and_then(strip_msgid_brackets);
+    let in_reply_to = envelope
+        .and_then(|e| e.in_reply_to.as_ref())
+        .and_then(|raw| std::str::from_utf8(raw).ok())
+        .and_then(strip_msgid_brackets);
+    let references = fetch
+        .header()
+        .and_then(|raw| std::str::from_utf8(raw).ok())
+        .map(parse_references_header)
+        .unwrap_or_default();
+    (message_id, in_reply_to, references)
+}
+
+/// `<abc@host>` → `Some("abc@host")`.  Tolerates surrounding
+/// whitespace and a value that's already bare (no brackets).
+/// Empty / whitespace-only inputs return `None` so the caller can
+/// store a clean `NULL` instead of an empty string.
+fn strip_msgid_brackets(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let stripped = trimmed
+        .strip_prefix('<')
+        .and_then(|inner| inner.strip_suffix('>'))
+        .unwrap_or(trimmed);
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped.to_string())
+    }
+}
+
+/// Parse the body of a `BODY[HEADER.FIELDS (REFERENCES)]` response
+/// into the ordered Message-ID list from the `References:` header.
+/// The body is one or more lines starting with `References:`, with
+/// continuation lines (RFC 5322 §2.2.3) folded by leading
+/// whitespace.  We unfold by joining all non-empty lines that
+/// follow `References:` until a blank line.  Each resulting token
+/// matching `<...>` becomes one entry, brackets stripped.
+fn parse_references_header(raw: &str) -> Vec<String> {
+    let mut joined = String::new();
+    let mut in_refs = false;
+    for line in raw.lines() {
+        if let Some(rest) = line
+            .strip_prefix("References:")
+            .or_else(|| line.strip_prefix("references:"))
+            .or_else(|| line.strip_prefix("REFERENCES:"))
+        {
+            in_refs = true;
+            joined.push_str(rest);
+        } else if in_refs && (line.starts_with(' ') || line.starts_with('\t')) {
+            // Continuation of the folded header.
+            joined.push(' ');
+            joined.push_str(line);
+        } else if in_refs {
+            // Reached the next header or a blank line — done.
+            break;
+        }
+    }
+    let mut out = Vec::new();
+    let bytes = joined.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            if let Some(end) = bytes[i + 1..].iter().position(|&b| b == b'>') {
+                if let Ok(id) = std::str::from_utf8(&bytes[i + 1..i + 1 + end]) {
+                    let trimmed = id.trim();
+                    if !trimmed.is_empty() {
+                        out.push(trimmed.to_string());
+                    }
+                }
+                i += 1 + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Parse an RFC 2822 date string (as found in Date: headers) to chrono UTC.

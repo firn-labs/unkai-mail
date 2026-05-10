@@ -624,6 +624,22 @@ pub struct OutgoingEmail {
     /// mail they typed land in Sent.
     #[serde(default)]
     pub skip_sent_copy: bool,
+    /// `In-Reply-To` value to set on the outgoing message (#277).
+    /// Carries the parent's `Message-ID` *without* angle brackets;
+    /// the SMTP layer adds them.  `None` for original mails (not
+    /// replies); `Some` for any reply / forward where we know
+    /// the parent's Message-ID.  This is what makes other
+    /// clients thread our reply with its parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// `References` chain to set on the outgoing message (#277).
+    /// Ordered oldest-first, *without* angle brackets per element.
+    /// Per RFC 5322 §3.6.4 the new message's References should
+    /// be the parent's References plus the parent's Message-ID,
+    /// so the chain grows by one entry on each reply.  Empty for
+    /// original mails.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body
