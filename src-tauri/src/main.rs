@@ -10919,6 +10919,59 @@ fn main() {
         Err(e) => tracing::warn!("contact backfill failed: {e}"),
     }
 
+    // One-time GEO back-fill for the calendar cache (#280).
+    //
+    // The `latitude` / `longitude` columns were added in schema
+    // v29 with a NULL default.  CalDAV's incremental sync only
+    // re-emits events that changed server-side, so any event
+    // synced before #280 (or before the
+    // X-APPLE-STRUCTURED-LOCATION fallback parser landed) sits
+    // in the cache with NULL coordinates even when the iCalendar
+    // body it carries has them.  Re-parse the stored `ics_raw`
+    // for those rows once at boot and update the columns
+    // in-place.  The SQL `WHERE` filter (`latitude IS NULL …
+    // ics_raw LIKE '%GEO%'`) skips rows that already have a pin
+    // or can't possibly grow one, so subsequent boots short-
+    // circuit cheaply.
+    match cache.find_events_needing_geo_backfill(5_000) {
+        Ok(rows) if !rows.is_empty() => {
+            let mut parsed = 0usize;
+            let mut written = 0usize;
+            for (event_id, ics_raw) in rows {
+                parsed += 1;
+                let Ok(events) = nimbus_caldav::parse_ics(&ics_raw) else {
+                    continue;
+                };
+                // The `ics_raw` for one CalDAV resource can carry
+                // master + recurrence-id overrides.  Find the
+                // VEVENT whose UID matches the `event_id`'s UID
+                // segment so we don't stamp an override's GEO
+                // onto its master and vice-versa.
+                let target_uid = event_id.splitn(3, "::").nth(1).unwrap_or(&event_id);
+                let pin = events
+                    .iter()
+                    .find(|e| e.id == target_uid)
+                    .or_else(|| events.first())
+                    .and_then(|e| match (e.latitude, e.longitude) {
+                        (Some(lat), Some(lon)) => Some((lat, lon)),
+                        _ => None,
+                    });
+                if let Some((lat, lon)) = pin {
+                    if let Err(e) = cache.set_event_geo(&event_id, lat, lon) {
+                        tracing::warn!("event GEO back-fill: write for {event_id} failed: {e}");
+                    } else {
+                        written += 1;
+                    }
+                }
+            }
+            if written > 0 {
+                tracing::info!("event GEO back-fill: re-parsed {parsed} rows, wrote {written}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("event GEO back-fill scan failed: {e}"),
+    }
+
     // App-wide preferences (Issue #16). A missing file is fine on first
     // run — `load_settings` returns defaults. We wrap in Arc<RwLock<..>>
     // so the background sync loop can re-snapshot per tick while the
