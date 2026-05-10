@@ -3777,6 +3777,28 @@ async fn sync_nextcloud_calendars(
     Ok(report)
 }
 
+/// Single-calendar sync by app-side `calendar_id`.  Used by the
+/// EventEditor to freshen one calendar's events the moment the
+/// user opens an event for editing — narrows the window where a
+/// stale-etag PUT (the "If-Match failed" race) can happen.  Soft-
+/// fails on any error and just propagates it; the caller logs
+/// without surfacing a toast because this is best-effort
+/// freshening, not a user-initiated sync.
+#[tauri::command]
+async fn sync_calendar_by_id(
+    calendar_id: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let (nc_id, path) = cache
+        .get_calendar_server_path(&calendar_id)?
+        .ok_or_else(|| {
+            NimbusError::Other(format!(
+                "calendar '{calendar_id}' is not in the local cache"
+            ))
+        })?;
+    refresh_calendar_cache(&cache, &nc_id, &path).await
+}
+
 /// Cache-only list of calendars for a Nextcloud account. Used by the
 /// sidebar widget on startup so it can paint before the first sync
 /// finishes (or if the user is offline).
@@ -4385,19 +4407,10 @@ async fn delete_calendar_event(
     app: AppHandle,
 ) -> Result<(), NimbusError> {
     let handle = load_event_handle(&cache, &event_id)?;
-    let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
-
     let calendar_id = handle.calendar_id.clone();
-    caldav_delete_event(
-        &handle.href,
-        &nc_account.username,
-        &app_password,
-        &handle.etag,
-        &nc_account.trusted_certs,
-    )
-    .await
-    .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
+    delete_event_with_etag_retry(&cache, &event_id, &handle)
+        .await
+        .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
     cache.delete_event_by_id(&event_id)?;
     Ok(())
 }
@@ -5459,6 +5472,72 @@ async fn update_event_with_etag_retry(
             )
             .await?;
             Ok((outcome, fresh))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `caldav_delete_event` with the same transparent etag-mismatch
+/// recovery the update path uses.  When the cached etag is stale
+/// (another client edited the event since our last sync) the
+/// PUT comes back as `EtagMismatch` instead of a wordy
+/// "refresh and try again" error; we sync the parent calendar,
+/// reload the handle with the fresh etag, and retry once.  If
+/// the retry comes back 404 (`caldav_delete_event` reports that
+/// as `Ok(())` per RFC 4918 §9.6 — the resource is already
+/// gone, which is the state we wanted), we surface success too.
+///
+/// Caller passes the already-loaded `handle` so we don't repeat
+/// the cache lookup; in the rare two-step retry case we re-load
+/// internally to pick up the fresh href / etag.
+async fn delete_event_with_etag_retry(
+    cache: &Cache,
+    event_id: &str,
+    handle: &CalendarEventServerHandle,
+) -> Result<(), NimbusError> {
+    let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    match caldav_delete_event(
+        &handle.href,
+        &nc_account.username,
+        &app_password,
+        &handle.etag,
+        &nc_account.trusted_certs,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(NimbusError::EtagMismatch(_)) => {
+            tracing::info!("stale etag for delete of {event_id}; refreshing calendar and retrying");
+            let cal_path = cache
+                .get_calendar_server_path(&handle.calendar_id)?
+                .map(|(_, p)| p)
+                .ok_or_else(|| {
+                    NimbusError::Other(format!(
+                        "calendar '{}' is not in the local cache",
+                        handle.calendar_id
+                    ))
+                })?;
+            refresh_calendar_cache(cache, &handle.nextcloud_account_id, &cal_path).await?;
+            // Refresh may have removed the row entirely (someone
+            // else already deleted the event).  Treat that as
+            // success — our intent was "make this event go
+            // away", which is now true.
+            let Some(fresh) = cache
+                .get_event_server_handle(event_id)
+                .map_err(NimbusError::from)?
+            else {
+                return Ok(());
+            };
+            caldav_delete_event(
+                &fresh.href,
+                &nc_account.username,
+                &app_password,
+                &fresh.etag,
+                &nc_account.trusted_certs,
+            )
+            .await
         }
         Err(e) => Err(e),
     }
@@ -11371,6 +11450,7 @@ fn main() {
             list_nextcloud_addressbooks,
             list_nextcloud_calendars,
             sync_nextcloud_calendars,
+            sync_calendar_by_id,
             get_cached_calendars,
             create_nextcloud_calendar,
             update_nextcloud_calendar,
