@@ -1138,13 +1138,27 @@
              stays orthogonal so an unread+selected row keeps both.
              The row is wrapped in a `group` so the inline quick-
              action icons (#98) reveal on row hover.
-             Sibling rows of an expanded thread (#277) keep the
-             same outer dimensions as the head row but render a
-             small primary-coloured dot in front of their subject;
-             stacked, the dots form a vertical "dotted line"
-             trailing from the head row down through its
-             children.  Faint bg tint stays as a secondary cue. -->
+             Sibling rows of an expanded thread (#277) get an
+             absolutely-positioned thread connector — a vertical
+             dotted line spanning the row's full height plus a
+             solid dot at its midpoint.  When multiple siblings
+             stack the dotted lines join into one continuous
+             vertical track, with one dot per child anchored to
+             the line.  The inner row content shifts right
+             (`pl-12`) to clear the connector; the from / subject
+             columns naturally indent under the head as the user
+             expects. -->
         <div class="group relative {row.isSibling ? 'bg-surface-50/50 dark:bg-surface-900/30' : ''}">
+          {#if row.isSibling}
+            <span
+              class="pointer-events-none absolute left-6 top-0 bottom-0 border-l-2 border-dotted border-primary-500/60"
+              aria-hidden="true"
+            ></span>
+            <span
+              class="pointer-events-none absolute left-6 top-1/2 w-2 h-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary-500"
+              aria-hidden="true"
+            ></span>
+          {/if}
           <!-- Row is a `<div role="button">` rather than a real
                `<button>` because several webview engines (notably
                Edge WebView2 on Windows) refuse to fire
@@ -1158,7 +1172,7 @@
             role="button"
             tabindex="0"
             aria-pressed={selected}
-            class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
+            class="w-full text-left {row.isSibling ? 'pl-12' : 'pl-3'} pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
               {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
               {selected
                 ? 'bg-primary-500/10'
@@ -1191,18 +1205,6 @@
               <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
             </div>
             <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
-              {#if row.isSibling}
-                <!-- Sibling-row marker (#277).  A small primary-
-                     coloured dot anchored before the subject
-                     text on every sibling row.  Stacked across
-                     the expanded children, the dots form a
-                     vertical dotted line that visually attaches
-                     them to the head row above. -->
-                <span
-                  class="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-primary-500"
-                  aria-hidden="true"
-                ></span>
-              {/if}
               {#if answeredIconName(env)}
                 <span
                   class="shrink-0 inline-flex items-center text-primary-500"
