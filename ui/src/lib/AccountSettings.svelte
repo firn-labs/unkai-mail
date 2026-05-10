@@ -1174,6 +1174,27 @@
           <span>After delete / archive, open the next message automatically</span>
         </div>
 
+        <!-- #280 — location autocomplete + inline map preview.
+             Off by default because each typed query goes to
+             nominatim.openstreetmap.org and the embedded map
+             loads tiles from openstreetmap.org — both outside
+             the user's Nextcloud trust boundary.  Spelling out
+             the dependency in the description lets the user
+             make an informed call. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.location_geocoding_enabled}
+            label={m.settings_location_geocoding_label()}
+            onchange={() => scheduleSave()}
+          />
+          <div class="flex-1">
+            <span>{m.settings_location_geocoding_label()}</span>
+            <p class="text-xs text-surface-400 mt-0.5">
+              {m.settings_location_geocoding_help()}
+            </p>
+          </div>
+        </div>
+
         <!-- Display language (#190).  Auto by default — paraglide
              picks from `navigator.language` (the OS-reported
              language) on launch.  The dropdown forces a specific
@@ -1400,27 +1421,6 @@
                 </button>
               </div>
             {/if}
-          </div>
-        </div>
-
-        <!-- #280 — location autocomplete + inline map preview.
-             Off by default because each typed query goes to
-             nominatim.openstreetmap.org and the embedded map
-             loads tiles from openstreetmap.org — both outside
-             the user's Nextcloud trust boundary.  Spelling out
-             the dependency in the description lets the user
-             make an informed call. -->
-        <div class="flex items-start gap-3">
-          <Toggle
-            bind:checked={appSettings.location_geocoding_enabled}
-            label={m.settings_location_geocoding_label()}
-            onchange={() => scheduleSave()}
-          />
-          <div class="flex-1">
-            <span>{m.settings_location_geocoding_label()}</span>
-            <p class="text-xs text-surface-400 mt-0.5">
-              {m.settings_location_geocoding_help()}
-            </p>
           </div>
         </div>
 
