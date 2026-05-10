@@ -1138,14 +1138,12 @@
              stays orthogonal so an unread+selected row keeps both.
              The row is wrapped in a `group` so the inline quick-
              action icons (#98) reveal on row hover.
-             Sibling rows of an expanded thread (#277) keep their
-             accent strip flush at x=0 (same column as the head
-             row's strip) so the primary-coloured border reads as
-             a continuous thread connector running down from head
-             to children.  The visual nesting comes from extra
-             left-padding on the inner row's content (see below)
-             plus the faint bg tint, NOT from indenting the
-             outer wrapper. -->
+             Sibling rows of an expanded thread (#277) keep the
+             same outer dimensions as the head row but render a
+             small primary-coloured dot in front of their subject;
+             stacked, the dots form a vertical "dotted line"
+             trailing from the head row down through its
+             children.  Faint bg tint stays as a secondary cue. -->
         <div class="group relative {row.isSibling ? 'bg-surface-50/50 dark:bg-surface-900/30' : ''}">
           <!-- Row is a `<div role="button">` rather than a real
                `<button>` because several webview engines (notably
@@ -1160,8 +1158,8 @@
             role="button"
             tabindex="0"
             aria-pressed={selected}
-            class="w-full text-left {row.isSibling ? 'pl-9' : 'pl-3'} pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
-              {row.isSibling || !env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
+            class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
+              {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
               {selected
                 ? 'bg-primary-500/10'
                 : multi
@@ -1193,6 +1191,18 @@
               <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
             </div>
             <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
+              {#if row.isSibling}
+                <!-- Sibling-row marker (#277).  A small primary-
+                     coloured dot anchored before the subject
+                     text on every sibling row.  Stacked across
+                     the expanded children, the dots form a
+                     vertical dotted line that visually attaches
+                     them to the head row above. -->
+                <span
+                  class="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-primary-500"
+                  aria-hidden="true"
+                ></span>
+              {/if}
               {#if answeredIconName(env)}
                 <span
                   class="shrink-0 inline-flex items-center text-primary-500"
