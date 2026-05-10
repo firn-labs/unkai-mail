@@ -501,6 +501,14 @@ impl JmapClient {
             // cache uses for older rows. Wiring up JMAP attachments
             // is its own issue once the IMAP side is proven.
             attachments: Vec::new(),
+            // JMAP's `Email` includes `messageId` / `inReplyTo`
+            // / `references` headers, but our `JmapEmail` type
+            // doesn't request them yet — wiring those in is a
+            // follow-up.  For now JMAP-fetched messages thread
+            // only via JMAP's server-side `thread_id`.
+            message_id: None,
+            in_reply_to: None,
+            references_ids: Vec::new(),
         })
     }
 

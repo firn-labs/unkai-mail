@@ -126,6 +126,31 @@ pub fn parse_eml_bytes(
         })
         .unwrap_or_else(Utc::now);
 
+    // RFC 5322 threading headers (#277).  `mail_parser::Message`
+    // exposes Message-ID and References as `Vec<String>` (the
+    // headers are repeatable in theory).  In practice
+    // `Message-ID:` is unique per message and `In-Reply-To:`
+    // is normally a single ID, while `References:` is the
+    // ancestor chain.  Brackets are stripped at storage time
+    // for consistent comparison.
+    let header_first = |name: &str| {
+        parsed
+            .header(name)
+            .and_then(|h| h.as_text())
+            .map(str::to_string)
+    };
+    let message_id = header_first("Message-ID")
+        .or_else(|| header_first("Message-Id"))
+        .as_deref()
+        .and_then(strip_msgid_brackets);
+    let in_reply_to = header_first("In-Reply-To")
+        .as_deref()
+        .and_then(strip_msgid_brackets);
+    let references_ids = header_first("References")
+        .as_deref()
+        .map(parse_references_header)
+        .unwrap_or_default();
+
     Ok(Email {
         id: id.to_string(),
         account_id: account_id.to_string(),
@@ -141,6 +166,9 @@ pub fn parse_eml_bytes(
         is_starred: false,
         has_attachments,
         attachments,
+        message_id,
+        in_reply_to,
+        references_ids,
     })
 }
 
@@ -866,6 +894,27 @@ impl ImapClient {
             parsed.attachment_count()
         );
 
+        // RFC 5322 threading headers — same parse as in
+        // `parse_eml_bytes`.  Mirror that helper inline because
+        // the two paths walk slightly different `parsed` shapes.
+        let header_first = |name: &str| {
+            parsed
+                .header(name)
+                .and_then(|h| h.as_text())
+                .map(str::to_string)
+        };
+        let message_id = header_first("Message-ID")
+            .or_else(|| header_first("Message-Id"))
+            .as_deref()
+            .and_then(strip_msgid_brackets);
+        let in_reply_to = header_first("In-Reply-To")
+            .as_deref()
+            .and_then(strip_msgid_brackets);
+        let references_ids = header_first("References")
+            .as_deref()
+            .map(parse_references_header)
+            .unwrap_or_default();
+
         Ok(Email {
             id: format!("{folder}:{uid}"),
             account_id: account_id.to_string(),
@@ -881,6 +930,9 @@ impl ImapClient {
             is_starred,
             has_attachments,
             attachments,
+            message_id,
+            in_reply_to,
+            references_ids,
         })
     }
 

@@ -1299,7 +1299,8 @@ impl Cache {
                 "SELECT m.from_addr, m.subject, m.internal_date,
                         m.is_read, m.is_starred,
                         b.body_text, b.body_html, b.has_attachments,
-                        b.to_addrs, b.cc_addrs, b.attachments
+                        b.to_addrs, b.cc_addrs, b.attachments,
+                        m.message_id, m.in_reply_to, m.references_ids
                  FROM messages m
                  INNER JOIN message_bodies b USING (account_id, folder, uid)
                  WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
@@ -1310,6 +1311,11 @@ impl Cache {
                     let to_json: String = r.get(8)?;
                     let cc_json: String = r.get(9)?;
                     let attachments_json: String = r.get(10)?;
+                    let refs_json: Option<String> = r.get(13)?;
+                    let references_ids: Vec<String> = refs_json
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default();
                     Ok(Email {
                         id: format!("{folder}:{uid}"),
                         account_id: account_id.to_string(),
@@ -1325,6 +1331,9 @@ impl Cache {
                         is_starred: r.get::<_, i64>(4)? != 0,
                         has_attachments: r.get::<_, i64>(7)? != 0,
                         attachments: serde_json::from_str(&attachments_json).unwrap_or_default(),
+                        message_id: r.get(11)?,
+                        in_reply_to: r.get(12)?,
+                        references_ids,
                     })
                 },
             )

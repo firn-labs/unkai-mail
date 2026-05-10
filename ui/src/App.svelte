@@ -1417,6 +1417,13 @@
     subject: string
     body_text: string | null
     date: string
+    /** RFC 5322 threading anchors (#277).  Optional because
+     *  older cached payloads predate the parser; absent values
+     *  just mean the reply we send won't carry an In-Reply-To
+     *  pointing here. */
+    message_id?: string | null
+    in_reply_to?: string | null
+    references_ids?: string[]
   }
 
   /** Reply / reply-all / "respond with meeting" need to know
@@ -1441,6 +1448,12 @@
         folder: mail.folder,
         uid: mail.uid,
         kind: 'reply',
+        // RFC 5322 threading anchors (#277).  Carrying these on
+        // the reply context lets Compose stamp `In-Reply-To` /
+        // `References` on the outgoing message so other clients
+        // group it with the parent.
+        parentMessageId: mail.message_id ?? null,
+        parentReferences: mail.references_ids ?? [],
       },
     })
   }
@@ -1459,6 +1472,8 @@
         folder: mail.folder,
         uid: mail.uid,
         kind: 'reply-all',
+        parentMessageId: mail.message_id ?? null,
+        parentReferences: mail.references_ids ?? [],
       },
     })
   }
