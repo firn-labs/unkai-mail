@@ -466,6 +466,9 @@ mod tests {
             is_starred: false,
             has_attachments: false,
             attachments: vec![],
+            message_id: None,
+            in_reply_to: None,
+            references_ids: Vec::new(),
         }
     }
 
