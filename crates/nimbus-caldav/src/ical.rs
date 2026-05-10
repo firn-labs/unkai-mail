@@ -98,6 +98,8 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
     let mut url: Option<String> = None;
     let mut transparency: Option<String> = None;
     let mut attendees: Vec<EventAttendee> = Vec::new();
+    let mut latitude: Option<f64> = None;
+    let mut longitude: Option<f64> = None;
 
     for prop in props {
         let name = prop.name.to_ascii_uppercase();
@@ -130,6 +132,36 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
                     attendees.push(att);
                 }
             }
+            // RFC 5545 §3.8.1.6 — `GEO` carries `lat;lon` as a
+            // semicolon-separated pair of FLOATs.  We tolerate the
+            // common `lat,lon` typo (some clients emit it) so a
+            // round-trip from a non-conforming sender doesn't drop
+            // the pin.
+            "GEO" => {
+                if let Some((lat, lon)) = parse_geo_pair(value) {
+                    latitude = Some(lat);
+                    longitude = Some(lon);
+                }
+            }
+            // Apple Calendar (and a few others that follow its
+            // lead) skip the standard `GEO:` property and stash
+            // the coordinates inside the value of an
+            // `X-APPLE-STRUCTURED-LOCATION` property as a
+            // `geo:lat,lon` URI.  Without this fallback, an event
+            // created on an iPhone wouldn't surface a pin in
+            // Nimbus even though the data is right there in the
+            // body — that's the bug the user hit.  We only
+            // populate from this branch when the standard GEO
+            // hasn't already set the coordinates, so a server
+            // emitting both forms keeps the canonical one.
+            "X-APPLE-STRUCTURED-LOCATION" => {
+                if latitude.is_none() {
+                    if let Some((lat, lon)) = parse_apple_geo_uri(value) {
+                        latitude = Some(lat);
+                        longitude = Some(lon);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -158,6 +190,8 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
         // Filled in by the caller from the VEVENT's nested VALARM
         // components — they aren't visible at the property level.
         reminders: Vec::new(),
+        latitude,
+        longitude,
     }))
 }
 
@@ -604,6 +638,12 @@ pub fn build_ics_with_method(
     if let Some(loc) = &event.location {
         lines.push(format!("LOCATION:{}", escape_text(loc)));
     }
+    // RFC 5545 §3.8.1.6 — `GEO:lat;lon`.  Six decimal places give
+    // ~11 cm precision, well past what any geocoder produces, and
+    // strips trailing zeros so the line stays compact.
+    if let (Some(lat), Some(lon)) = (event.latitude, event.longitude) {
+        lines.push(format!("GEO:{};{}", format_geo(lat), format_geo(lon)));
+    }
     if let Some(url) = &event.url {
         lines.push(format!("URL:{url}"));
     }
@@ -931,6 +971,68 @@ fn format_utc_dt(dt: &DateTime<Utc>) -> String {
     dt.format("%Y%m%dT%H%M%SZ").to_string()
 }
 
+/// Parse a `GEO:` value (RFC 5545 §3.8.1.6 — `lat;lon`) into a
+/// pair of floats.  Tolerates a comma separator (some clients emit
+/// `lat,lon` despite the spec) and ignores values that don't fit
+/// the WGS-84 lat/lon ranges so a junk `GEO` line doesn't poison
+/// the event.
+fn parse_geo_pair(value: &str) -> Option<(f64, f64)> {
+    let raw = value.trim();
+    let (lhs, rhs) = raw.split_once(';').or_else(|| raw.split_once(','))?;
+    let lat: f64 = lhs.trim().parse().ok()?;
+    let lon: f64 = rhs.trim().parse().ok()?;
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    Some((lat, lon))
+}
+
+/// Parse the value of an `X-APPLE-STRUCTURED-LOCATION` property.
+///
+/// Apple Calendar (and some other Apple-ecosystem clients) skips
+/// the standard RFC 5545 `GEO:` property and stashes coordinates
+/// inside an Apple-specific extension whose value is an RFC 5870
+/// `geo:` URI of the form `geo:lat,lon[;u=accuracy]`.  We pull
+/// the lat/lon out of the path component and ignore everything
+/// after a `;` or `?` (URI parameters / query).
+///
+/// Examples we accept:
+///
+///   - `geo:52.520008,13.404954`
+///   - `geo:52.520008,13.404954;u=70`
+///   - `geo:52.520008,13.404954?q=Berlin`
+fn parse_apple_geo_uri(value: &str) -> Option<(f64, f64)> {
+    let raw = value.trim();
+    let body = raw
+        .strip_prefix("geo:")
+        .or_else(|| raw.strip_prefix("GEO:"))?;
+    // Drop URI params (`;u=…`) / queries (`?q=…`) so they don't
+    // break the float parse.
+    let core = body.split(|c: char| c == ';' || c == '?').next()?;
+    let (lhs, rhs) = core.split_once(',')?;
+    let lat: f64 = lhs.trim().parse().ok()?;
+    let lon: f64 = rhs.trim().parse().ok()?;
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    Some((lat, lon))
+}
+
+/// Render an f64 latitude / longitude as a compact decimal — six
+/// places (~ 11 cm) is past what any geocoder produces.  Strips
+/// trailing zeros so a clean integer doesn't trail `.000000` and
+/// uses `'.'` regardless of locale (RFC 5545 floats are always
+/// decimal-point).
+fn format_geo(v: f64) -> String {
+    let s = format!("{:.6}", v);
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Render a "minutes before start" trigger as `-PT15M` / `PT0S` /
 /// `PT5M` (negative value means "after start"). Pulls hours and
 /// minutes apart so the wire format matches what most servers store
@@ -1059,6 +1161,108 @@ END:VCALENDAR\r\n";
         assert_eq!(e.rdate[1].to_rfc3339(), "2026-05-15T09:00:00+00:00");
         assert_eq!(e.exdate.len(), 1);
         assert_eq!(e.exdate[0].to_rfc3339(), "2026-05-04T09:00:00+00:00");
+    }
+
+    #[test]
+    fn geo_roundtrips_through_parse_and_build() {
+        // Standard semicolon-separated form.
+        let ics = "BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+BEGIN:VEVENT\r\n\
+UID:geo@example.com\r\n\
+SUMMARY:Coffee\r\n\
+DTSTART:20260510T100000Z\r\n\
+DTEND:20260510T110000Z\r\n\
+LOCATION:Café Hartmann\r\n\
+GEO:52.520008;13.404954\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+        let events = parse_ics(ics).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].latitude, Some(52.520008));
+        assert_eq!(events[0].longitude, Some(13.404954));
+
+        // Round-trip: build_ics emits the same `GEO:` shape.
+        let rebuilt = crate::build_ics(&events[0], None, None);
+        assert!(
+            rebuilt.contains("GEO:52.520008;13.404954"),
+            "expected GEO line, got:\n{rebuilt}"
+        );
+    }
+
+    #[test]
+    fn geo_tolerates_comma_separator_and_rejects_out_of_range() {
+        // Some clients emit `lat,lon` despite the spec — accept it.
+        assert_eq!(super::parse_geo_pair("52.5,13.4"), Some((52.5, 13.4)));
+        // Out-of-range values (bogus) → None.
+        assert_eq!(super::parse_geo_pair("999;0"), None);
+        assert_eq!(super::parse_geo_pair("0;999"), None);
+        assert_eq!(super::parse_geo_pair("not-a-number"), None);
+    }
+
+    #[test]
+    fn apple_structured_location_falls_back_to_geo_uri() {
+        // Real-shape iPhone Calendar event: standard GEO is
+        // *absent*, the coordinates live in
+        // X-APPLE-STRUCTURED-LOCATION's value.  Without the
+        // fallback parser, latitude/longitude would stay None.
+        let ics = "BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+BEGIN:VEVENT\r\n\
+UID:apple@example.com\r\n\
+SUMMARY:Coffee\r\n\
+DTSTART:20260510T100000Z\r\n\
+DTEND:20260510T110000Z\r\n\
+LOCATION:Café Hartmann\\, Schillerstraße 12\\, 10625 Berlin\r\n\
+X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-APPLE-RADIUS=70;X-TITLE=Café Hartmann:geo:52.520008,13.404954\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+        let events = parse_ics(ics).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].latitude, Some(52.520008));
+        assert_eq!(events[0].longitude, Some(13.404954));
+    }
+
+    #[test]
+    fn apple_geo_uri_parser_handles_params_and_queries() {
+        assert_eq!(
+            super::parse_apple_geo_uri("geo:52.520008,13.404954"),
+            Some((52.520008, 13.404954))
+        );
+        assert_eq!(
+            super::parse_apple_geo_uri("geo:52.520008,13.404954;u=70"),
+            Some((52.520008, 13.404954))
+        );
+        assert_eq!(
+            super::parse_apple_geo_uri("geo:52.520008,13.404954?q=Berlin"),
+            Some((52.520008, 13.404954))
+        );
+        // Missing `geo:` prefix → not our property's shape.
+        assert_eq!(super::parse_apple_geo_uri("52.520008,13.404954"), None);
+        // Out-of-range → rejected.
+        assert_eq!(super::parse_apple_geo_uri("geo:999,0"), None);
+    }
+
+    #[test]
+    fn standard_geo_wins_over_apple_fallback() {
+        // When both forms are present, the RFC 5545 `GEO:`
+        // property is canonical and takes precedence — the
+        // Apple-specific URI may carry slightly different
+        // precision and we want round-trip stability.
+        let ics = "BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+BEGIN:VEVENT\r\n\
+UID:both@example.com\r\n\
+SUMMARY:Coffee\r\n\
+DTSTART:20260510T100000Z\r\n\
+DTEND:20260510T110000Z\r\n\
+GEO:52.520008;13.404954\r\n\
+X-APPLE-STRUCTURED-LOCATION;VALUE=URI:geo:52.500000,13.400000\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+        let events = parse_ics(ics).unwrap();
+        assert_eq!(events[0].latitude, Some(52.520008));
+        assert_eq!(events[0].longitude, Some(13.404954));
     }
 
     #[test]

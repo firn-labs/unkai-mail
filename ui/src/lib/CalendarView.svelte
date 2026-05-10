@@ -31,6 +31,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
@@ -73,6 +74,9 @@
      *  but stops its events from painting on the agenda grid. Toggled via
      *  the coloured swatch button in the CalendarView sidebar. */
     muted?: boolean
+    /** CalDAV-derived read-only flag (#236).  Drives the
+     *  EventEditor's picker filter + Delete-button hide. */
+    read_only?: boolean
   }
   interface EventAttendee {
     email: string
@@ -443,8 +447,29 @@
      *  while still allowing real drags that originate inside
      *  an event block to create a new draft. */
     startEventId: string | null
+    /** Raw clientY (px) of the mousedown — kept alongside the
+     *  snapped `startMinute` so we can tell a real drag from a
+     *  jittery click that just happened to cross a 15-minute
+     *  snap boundary (#236).  Without this, pressing on an
+     *  event near :07 and releasing near :08 would snap from
+     *  minute 0 to 15 and be treated as a drag, creating a
+     *  ghost event the user didn't ask for. */
+    startClientY: number
+    /** True once the cursor has moved past `CLICK_PIXEL_SLOP`
+     *  pixels from `startClientY` (#236 follow-up).  Gates
+     *  the drag-overlay render so a plain click doesn't
+     *  flash a 2-pixel sliver of "you're creating an event"
+     *  preview between mousedown and mouseup. */
+    hasMoved: boolean
   }
   let drag = $state<DragState | null>(null)
+  /** Pixel slop for the "this was a click, not a drag" check
+   *  (#236).  4px matches the OS-level click vs drag threshold
+   *  most platforms use; keeps the snapped-minute logic in
+   *  place for genuine sweeping drags while letting clicks on
+   *  an event block always open it for edit, even when they
+   *  land right on a snap boundary. */
+  const CLICK_PIXEL_SLOP = 4
 
   // Derived: calendar id → colour (for the coloured stripe on each
   // event block and the all-day pills).
@@ -980,13 +1005,20 @@
 
   // ── Editor open / close ─────────────────────────────────────
   /** Pick a sensible default calendar for a fresh `+ New event`.
-      Prefers a calendar that is sidebar-visible and not muted, then
-      one that is at least sidebar-visible, then the first overall. */
+      Prefers a calendar that is writable, sidebar-visible, and not
+      muted; then a writable calendar regardless of mute; then any
+      writable calendar at all.  Read-only calendars are skipped
+      (#236) so the EventEditor's create-mode picker — which
+      filters them out — never lands on a value missing from its
+      own options list. */
   function defaultCalendarId(): string {
     for (const c of sidebarCalendars) {
-      if (!c.muted) return c.id
+      if (!c.muted && !c.read_only) return c.id
     }
-    return sidebarCalendars[0]?.id ?? calendars[0]?.id ?? ''
+    for (const c of sidebarCalendars) {
+      if (!c.read_only) return c.id
+    }
+    return calendars.find((c) => !c.read_only)?.id ?? ''
   }
 
   function openCreateBlank() {
@@ -1081,6 +1113,8 @@
       startMinute: minute,
       currentMinute: minute,
       startEventId: evEl?.dataset.eventId ?? null,
+      startClientY: ev.clientY,
+      hasMoved: false,
     }
   }
 
@@ -1088,17 +1122,38 @@
     if (!drag || drag.dayKey !== bucket.dayKey) return
     const target = ev.currentTarget as HTMLElement
     const rect = target.getBoundingClientRect()
+    // Flip `hasMoved` only after the cursor crosses the
+    // click-vs-drag threshold (#236) so the drag overlay
+    // doesn't render — and the mouseup branch doesn't
+    // create a ghost event — for what was really just a click.
+    const pixelDelta = Math.abs(ev.clientY - drag.startClientY)
     drag = {
       ...drag,
       currentMinute: pxToMinuteSnapped(ev.clientY - rect.top),
+      hasMoved: drag.hasMoved || pixelDelta > CLICK_PIXEL_SLOP,
     }
   }
 
-  function onDayMouseUp(_ev: MouseEvent, bucket: WeekBucket) {
+  function onDayMouseUp(ev: MouseEvent, bucket: WeekBucket) {
     if (!drag || drag.dayKey !== bucket.dayKey) return
     const a = Math.min(drag.startMinute, drag.currentMinute)
     const b = Math.max(drag.startMinute, drag.currentMinute)
-    const moved = b - a >= 15
+    // Pixel-distance check (#236): the snapped-minute test
+    // alone treats a tiny mouse jiggle that crossed a 15-min
+    // boundary as a drag, creating a phantom event the user
+    // didn't ask for.  A press whose release lands within a
+    // few pixels is a click no matter what the snapped
+    // minutes say — open the event under the cursor and bail.
+    const pixelDelta = Math.abs(ev.clientY - drag.startClientY)
+    const isClick = pixelDelta <= CLICK_PIXEL_SLOP
+    if (isClick && drag.startEventId) {
+      const id = drag.startEventId
+      drag = null
+      const target = events.find((e) => e.id === id)
+      if (target) openEditor(target)
+      return
+    }
+    const moved = b - a >= 15 && !isClick
     // Click (no movement) on top of an existing event opens it
     // for editing — preserves the previous "click an event to
     // open it" affordance now that the event block no longer
@@ -1106,8 +1161,8 @@
     if (!moved && drag.startEventId) {
       const id = drag.startEventId
       drag = null
-      const ev = events.find((e) => e.id === id)
-      if (ev) openEditor(ev)
+      const target = events.find((e) => e.id === id)
+      if (target) openEditor(target)
       return
     }
     // Otherwise: bare click on empty space → 1-hour event,
@@ -1136,9 +1191,15 @@
   }
 
   /** Geometry for the in-progress drag overlay rendered on the
-      currently-active day column. */
+      currently-active day column.  Returns `null` until the
+      cursor has actually moved past `CLICK_PIXEL_SLOP` (#236):
+      without this gate, a press-then-release click on an event
+      tile briefly painted a 2px sliver of the create-event
+      overlay between mousedown and mouseup which read as a
+      flicker.  Real drags pass the threshold within the first
+      mousemove tick so the overlay still appears responsively. */
   function dragOverlay(bucket: WeekBucket): { topPx: number; heightPx: number } | null {
-    if (!drag || drag.dayKey !== bucket.dayKey) return null
+    if (!drag || drag.dayKey !== bucket.dayKey || !drag.hasMoved) return null
     const a = Math.min(drag.startMinute, drag.currentMinute)
     const b = Math.max(drag.startMinute, drag.currentMinute)
     return {
@@ -1146,6 +1207,34 @@
       heightPx: Math.max(2, (b - a) * PX_PER_MINUTE),
     }
   }
+
+  /** Listen for `calendars-updated` events from the backend
+   *  (#236 follow-up).  The CalDAV write-failure fallback fires
+   *  this whenever it flips a calendar's `read_only` flag in the
+   *  cache after a 403/404 — re-pulling the calendar list here
+   *  refreshes EventEditor's `calendars` prop so the
+   *  `currentCalendarReadOnly` derived flips and Save/Delete
+   *  hide on the in-flight editor instance. */
+  $effect(() => {
+    let unlisten: UnlistenFn | null = null
+    let alive = true
+    void (async () => {
+      try {
+        unlisten = await listen('calendars-updated', () => {
+          if (!alive) return
+          // Re-read the cache; events list isn't affected so the
+          // existing window of events stays intact.
+          void reloadFromCache(loadedRangeStart, loadedRangeEnd)
+        })
+      } catch (e) {
+        console.warn('listen calendars-updated failed', e)
+      }
+    })()
+    return () => {
+      alive = false
+      unlisten?.()
+    }
+  })
 </script>
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
@@ -1520,9 +1609,32 @@
                   {@const locationLabel = displayLocation(p.event)}
                   {@const meetingUrl = extractMeetingUrl(p.event)}
                   {@const showJoin = !!meetingUrl && inJoinWindow(p.event)}
+                  <!-- Per-row visibility (#236): hide elements
+                       that wouldn't fit instead of letting them
+                       overflow.  Title always shows (line-
+                       clamped), time shows when there's a second
+                       row of space, and the location goes
+                       through three states: full (pin + text),
+                       pin-only as a hint that there *is* a
+                       location worth expanding for, and hidden
+                       when there's no room left at all.
+                       Tile content top-aligns by default — the
+                       tile reads as a normal calendar entry with
+                       the title at the top.  Only when something
+                       had to be hidden (time or location won't
+                       fit) do we centre what's left, so a tiny
+                       sliver shows its title in the middle of
+                       the box rather than mashed against the
+                       top edge. -->
+                  {@const showTime = p.heightPx >= 32}
+                  {@const showLocationFull = !!locationLabel && p.heightPx >= 50}
+                  {@const showLocationIcon =
+                    !!locationLabel && p.heightPx >= 38 && p.heightPx < 50}
+                  {@const compactCentered =
+                    !showTime || (!!locationLabel && !showLocationFull)}
                   <div
                     data-event-id={p.event.id}
-                    class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
+                    class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight flex flex-col {compactCentered ? 'justify-center' : 'justify-start'} {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
                     style="--ev-color: {eventColor(p.event)}; top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px);"
                     title={`${p.event.summary || '(no title)'} — ${fmtTime(p.event.start)}–${fmtTime(p.event.end)}${p.event.location ? ` @ ${p.event.location}` : ''}`}
                     role="button"
@@ -1535,38 +1647,62 @@
                     >
                       {p.event.summary || '(no title)'}
                     </div>
-                    {#if p.heightPx > 32}
+                    {#if showTime}
                       <div class="opacity-90 truncate">
                         {fmtTime(p.event.start)} – {fmtTime(p.event.end)}
                       </div>
-                      {#if locationLabel}
-                        <!-- Location line — sits directly under
-                             the time so the "where" answer is
-                             always one glance below the "when".
-                             URL-shaped locations collapse to
-                             "Online" so a 200-character Zoom
-                             link doesn't trash a tight column.
-                             Pin glyph leads the line as a quick
-                             visual anchor (the common calendar-app
-                             convention). -->
-                        <div class="opacity-90 truncate flex items-center gap-1">
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            class="w-3 h-3 shrink-0"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            aria-hidden="true"
-                          >
-                            <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 1 1 18 0z" />
-                            <circle cx="12" cy="10" r="3" />
-                          </svg>
-                          <span class="truncate">{locationLabel}</span>
-                        </div>
-                      {/if}
+                    {/if}
+                    {#if showLocationFull}
+                      <!-- Location line — sits directly under
+                           the time so the "where" answer is
+                           always one glance below the "when".
+                           URL-shaped locations collapse to
+                           "Online" so a 200-character Zoom
+                           link doesn't trash a tight column.
+                           Pin glyph leads the line as a quick
+                           visual anchor (the common calendar-app
+                           convention). -->
+                      <div class="opacity-90 truncate flex items-center gap-1">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="w-3 h-3 shrink-0"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 1 1 18 0z" />
+                          <circle cx="12" cy="10" r="3" />
+                        </svg>
+                        <span class="truncate">{locationLabel}</span>
+                      </div>
+                    {:else if showLocationIcon}
+                      <!-- Pin-only fallback when the text won't
+                           fit but a sliver of vertical space is
+                           still available.  Hover tooltip on the
+                           parent block carries the full location,
+                           so this is a "there's a location worth
+                           expanding for" hint rather than a
+                           dead-end glyph. -->
+                      <div class="opacity-90 leading-none">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="w-3 h-3"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 1 1 18 0z" />
+                          <circle cx="12" cy="10" r="3" />
+                        </svg>
+                      </div>
                     {/if}
                     {#if showJoin}
                       <!-- Join button — only visible during the

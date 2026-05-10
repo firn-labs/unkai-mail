@@ -16,6 +16,134 @@ use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 
 use crate::mutf7;
 
+/// Parse a raw RFC 5322 message into our `Email` shape.  Same MIME
+/// walk + transfer-decoding + charset logic `fetch_message` runs
+/// against IMAP-fetched bytes, factored out so the Tauri layer can
+/// reuse it for offline `.eml` opens (#254) without an account
+/// context.  Defaults `is_read = true` and `is_starred = false`
+/// because there are no IMAP flags on a file from disk.
+pub fn parse_eml_bytes(
+    raw: &[u8],
+    id: &str,
+    account_id: &str,
+    folder: &str,
+) -> Result<Email, NimbusError> {
+    let parsed = MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| NimbusError::Protocol("Failed to parse message".into()))?;
+
+    let subject = parsed.subject().unwrap_or("").to_string();
+    let from = parsed
+        .from()
+        .and_then(|list| list.first())
+        .map(|addr| {
+            let name = addr.name().unwrap_or("");
+            let email = addr.address().unwrap_or("");
+            if name.is_empty() {
+                email.to_string()
+            } else {
+                format!("{name} <{email}>")
+            }
+        })
+        .unwrap_or_default();
+
+    let to = parsed
+        .to()
+        .map(|list| {
+            list.iter()
+                .filter_map(|a| a.address().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let cc = parsed
+        .cc()
+        .map(|list| {
+            list.iter()
+                .filter_map(|a| a.address().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let body_text = (0..parsed.text_body_count())
+        .filter_map(|i| parsed.body_text(i).map(|s| s.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body_text = if body_text.is_empty() {
+        None
+    } else {
+        Some(body_text.replace("\r\n", "\n").replace('\r', "\n"))
+    };
+
+    let body_html = (0..parsed.html_body_count())
+        .filter_map(|i| parsed.body_html(i).map(|s| s.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body_html = if body_html.is_empty() {
+        None
+    } else {
+        Some(body_html)
+    };
+
+    let has_attachments = parsed.attachment_count() > 0;
+    let attachments: Vec<EmailAttachment> = parsed
+        .attachments()
+        .enumerate()
+        .map(|(idx, part)| {
+            let part_id = idx as u32;
+            let filename = part
+                .attachment_name()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "attachment".to_string());
+            let content_type = part
+                .content_type()
+                .map(|ct| {
+                    let ctype = ct.ctype();
+                    match ct.subtype() {
+                        Some(sub) => format!("{ctype}/{sub}"),
+                        None => ctype.to_string(),
+                    }
+                })
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let size = Some(part.contents().len() as u64);
+            let content_id = part.content_id().map(|s| s.to_string());
+            EmailAttachment {
+                filename,
+                content_type,
+                size,
+                part_id,
+                content_id,
+            }
+        })
+        .collect();
+
+    let date = parsed
+        .date()
+        .and_then(|d| {
+            DateTime::parse_from_rfc3339(&d.to_rfc3339())
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        })
+        .unwrap_or_else(Utc::now);
+
+    Ok(Email {
+        id: id.to_string(),
+        account_id: account_id.to_string(),
+        folder: folder.to_string(),
+        from,
+        to,
+        cc,
+        subject,
+        body_text,
+        body_html,
+        date,
+        is_read: true,
+        is_starred: false,
+        has_attachments,
+        attachments,
+    })
+}
+
 /// `async-imap`'s `Session` is generic over its underlying I/O. We
 /// pin the alias to the concrete `Compat<TlsStream<TcpStream>>` so
 /// downstream callers don't have to think about the four layers of
@@ -173,6 +301,22 @@ pub struct ImapClient {
 pub struct EnvelopeBatch {
     pub uidvalidity: Option<u32>,
     pub envelopes: Vec<EmailEnvelope>,
+}
+
+/// IMAP system-flag snapshot for a single message UID.
+///
+/// Returned by `fetch_flags`, which exists to refresh the
+/// `\Seen` / `\Flagged` / `\Answered` bits on already-cached
+/// envelopes — the standard envelope-fetch path is incremental and
+/// doesn't re-read flags on UIDs the cache already knows about, so
+/// flag changes another mail client makes (mark-read on a phone,
+/// answer from webmail, etc.) need this catch-up to round-trip.
+#[derive(Debug, Clone, Copy)]
+pub struct FlagSnapshot {
+    pub uid: u32,
+    pub is_read: bool,
+    pub is_starred: bool,
+    pub is_answered: bool,
 }
 
 impl ImapClient {
@@ -473,13 +617,17 @@ impl ImapClient {
                     })
                     .unwrap_or_else(Utc::now);
 
-                // Flags: \Seen means read, \Flagged means starred
+                // Flags: \Seen → read, \Flagged → starred,
+                // \Answered → user-or-other-client replied to this
+                // message (#255).
                 let mut is_read = false;
                 let mut is_starred = false;
+                let mut is_answered = false;
                 for flag in fetch.flags() {
                     match flag {
                         async_imap::types::Flag::Seen => is_read = true,
                         async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
                         _ => {}
                     }
                 }
@@ -492,6 +640,13 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    // The IMAP client doesn't track *how* the user
+                    // replied — that's Nimbus-only metadata stamped
+                    // by the send path (#255), so leave it None
+                    // here; the cache merge preserves whatever's
+                    // already on disk.
+                    replied_kind: None,
                     // The IMAP client doesn't carry the account id; the
                     // caller stamps it into the cache via
                     // `upsert_envelopes_for_account`, and cache reads
@@ -913,6 +1068,122 @@ impl ImapClient {
 
         info!("Marked UID {uid} as \\Seen in '{folder}'");
         Ok(())
+    }
+
+    /// Set the IMAP `\Answered` system flag on a message (#255).
+    ///
+    /// Called after Compose's send path delivers a successful reply
+    /// (or reply-all, or "respond with meeting") so the original
+    /// message is marked answered on the server — round-trips to
+    /// other mail clients the user might have open, and gives
+    /// Nimbus's mail-list a stable signal across cache rebuilds.
+    /// Uses `UID STORE <uid> +FLAGS (\Answered)`; idempotent.
+    pub async fn mark_as_answered(&mut self, folder: &str, uid: u32) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // Read-write SELECT so the server accepts the STORE.
+        session.select(to_wire(folder)).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        let _updates: Vec<_> = session
+            .uid_store(uid.to_string(), "+FLAGS (\\Answered)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID STORE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        info!("Marked UID {uid} as \\Answered in '{folder}'");
+        Ok(())
+    }
+
+    /// Re-read the IMAP system flags on a set of UIDs, returning a
+    /// snapshot of `\Seen` / `\Flagged` / `\Answered` per UID.
+    ///
+    /// The standard envelope-fetch path (`fetch_envelopes`) only
+    /// pulls UIDs strictly newer than the cache bookmark — so flag
+    /// changes another client makes (marked-read on a phone,
+    /// answered from webmail) never round-trip to Nimbus on their
+    /// own.  This is the catch-up: cheap (`UID FETCH x,y,z (UID
+    /// FLAGS)`), no envelope payload, just the flag bits.
+    ///
+    /// Returns an entry per UID the server actually reports back
+    /// (a UID that was expunged between calls just drops out).
+    pub async fn fetch_flags(
+        &mut self,
+        folder: &str,
+        uids: &[u32],
+    ) -> Result<Vec<FlagSnapshot>, NimbusError> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // EXAMINE (read-only) is enough — we're not flipping flags
+        // here, just observing them, and read-only avoids
+        // accidentally clearing the server's `\Recent` flag
+        // bookkeeping for the folder.
+        session.examine(to_wire(folder)).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to examine folder '{folder}': {e}"))
+        })?;
+
+        // Comma-separated UID set is the canonical IMAP way to
+        // address a discrete list — no "1:50" range wastefulness if
+        // the cached UIDs aren't contiguous, and the server folds
+        // adjacent ones into ranges in its parser anyway.
+        let uid_set = uids
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let fetches: Vec<_> = session
+            .uid_fetch(&uid_set, "(UID FLAGS)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH (FLAGS) failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID FETCH (FLAGS): {e}")))?;
+
+        let snapshots: Vec<FlagSnapshot> = fetches
+            .iter()
+            .filter_map(|fetch| {
+                let uid = fetch.uid?;
+                let mut is_read = false;
+                let mut is_starred = false;
+                let mut is_answered = false;
+                for flag in fetch.flags() {
+                    match flag {
+                        async_imap::types::Flag::Seen => is_read = true,
+                        async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
+                        _ => {}
+                    }
+                }
+                Some(FlagSnapshot {
+                    uid,
+                    is_read,
+                    is_starred,
+                    is_answered,
+                })
+            })
+            .collect();
+
+        debug!(
+            "Refreshed flags for {} UID(s) in '{folder}' (asked: {}, got: {})",
+            snapshots.len(),
+            uids.len(),
+            snapshots.len()
+        );
+        Ok(snapshots)
     }
 
     /// Append a raw RFC 822 message to a folder via IMAP `APPEND`.
@@ -1345,10 +1616,12 @@ impl ImapClient {
 
                 let mut is_read = false;
                 let mut is_starred = false;
+                let mut is_answered = false;
                 for flag in fetch.flags() {
                     match flag {
                         async_imap::types::Flag::Seen => is_read = true,
                         async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
                         _ => {}
                     }
                 }
@@ -1361,6 +1634,8 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    replied_kind: None,
                     account_id: String::new(),
                 })
             })
@@ -1456,10 +1731,12 @@ impl ImapClient {
                     .unwrap_or_else(Utc::now);
                 let mut is_read = false;
                 let mut is_starred = false;
+                let mut is_answered = false;
                 for flag in fetch.flags() {
                     match flag {
                         async_imap::types::Flag::Seen => is_read = true,
                         async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
                         _ => {}
                     }
                 }
@@ -1471,6 +1748,8 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    replied_kind: None,
                     account_id: String::new(),
                 })
             })
@@ -1582,10 +1861,12 @@ impl ImapClient {
 
                 let mut is_read = false;
                 let mut is_starred = false;
+                let mut is_answered = false;
                 for flag in fetch.flags() {
                     match flag {
                         async_imap::types::Flag::Seen => is_read = true,
                         async_imap::types::Flag::Flagged => is_starred = true,
+                        async_imap::types::Flag::Answered => is_answered = true,
                         _ => {}
                     }
                 }
@@ -1598,6 +1879,8 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    is_answered,
+                    replied_kind: None,
                     account_id: String::new(),
                 })
             })
@@ -1645,6 +1928,15 @@ fn decode_header(bytes: &[u8]) -> String {
 }
 
 /// Format an IMAP envelope address as "Name <user@host>" (or just the address).
+///
+/// When the envelope's display-name slot equals the bare email
+/// (case-insensitive), we drop the name and emit just the address.
+/// Some senders / mail servers populate the personal-name component
+/// with the email itself, which would produce malformed RFC 5322
+/// like `alex@example.com <alex@example.com>` — the unquoted `@` in
+/// the phrase makes the result unparseable, and a plain reply would
+/// fail with "Invalid 'to' address".  Collapsing the redundant name
+/// also cleans up the mail-list display.
 fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
     let name = addr
         .name
@@ -1668,10 +1960,22 @@ fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
         format!("{mailbox}@{host}")
     };
 
-    match (name.is_empty(), email.is_empty()) {
+    let decoded_name = if name.is_empty() {
+        String::new()
+    } else {
+        decode_header(name.as_bytes())
+    };
+
+    // Treat a name that's identical to the email as no name at all.
+    let name_is_redundant = !email.is_empty() && decoded_name.trim().eq_ignore_ascii_case(&email);
+
+    match (
+        decoded_name.is_empty() || name_is_redundant,
+        email.is_empty(),
+    ) {
         (true, _) => email,
-        (false, true) => decode_header(name.as_bytes()),
-        (false, false) => format!("{} <{email}>", decode_header(name.as_bytes())),
+        (false, true) => decoded_name,
+        (false, false) => format!("{decoded_name} <{email}>"),
     }
 }
 

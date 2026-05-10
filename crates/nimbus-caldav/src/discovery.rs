@@ -43,6 +43,17 @@ pub struct Calendar {
     pub color: Option<String>,
     pub ctag: Option<String>,
     pub sync_token: Option<String>,
+    /// True when the user can only *read* this calendar — typical
+    /// for shared calendars where the owner granted view-only
+    /// access.  Derived from the CalDAV
+    /// `current-user-privilege-set` PROPFIND prop (RFC 3744 §5.4):
+    /// no `write` / `write-content` / `write-properties` privilege
+    /// in the set means the user can't add events or change
+    /// existing ones.  Servers that don't advertise the prop
+    /// default to writable so the existing happy path is
+    /// preserved (#236).
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 /// PROPFIND body. Only requests the props we consume.
@@ -52,6 +63,7 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
     <d:resourcetype/>
     <d:displayname/>
     <d:sync-token/>
+    <d:current-user-privilege-set/>
     <cs:getctag/>
     <apple:calendar-color/>
   </d:prop>
@@ -132,6 +144,11 @@ fn parse_response(
     let mut ctag: Option<String> = None;
     let mut sync_token: Option<String> = None;
     let mut is_calendar = false;
+    // `None` until a privilege set arrives.  Servers that don't
+    // advertise the prop leave this `None`, which `unwrap_or(false)`
+    // below treats as "writable" — preserves the existing happy path
+    // for servers that don't speak privilege-set.
+    let mut read_only: Option<bool> = None;
 
     loop {
         match reader.read_event()? {
@@ -154,6 +171,36 @@ fn parse_response(
                             _ => {}
                         }
                     }
+                }
+                "current-user-privilege-set" => {
+                    // RFC 3744 §5.4 — list of <privilege> entries the
+                    // current user has on this resource.  We treat
+                    // the calendar as writable if any of `write`,
+                    // `write-content`, or `write-properties` is
+                    // present; absent means read-only.  We don't
+                    // parse the per-privilege content since CalDAV
+                    // only nests one privilege element per
+                    // `<privilege>` and the local name is enough.
+                    let mut has_write = false;
+                    loop {
+                        match reader.read_event()? {
+                            Event::Empty(e) | Event::Start(e) => {
+                                let n = local_name(&e);
+                                if matches!(
+                                    n.as_str(),
+                                    "write" | "write-content" | "write-properties" | "all"
+                                ) {
+                                    has_write = true;
+                                }
+                            }
+                            Event::End(e) if local_name_end(&e) == "current-user-privilege-set" => {
+                                break;
+                            }
+                            Event::Eof => break,
+                            _ => {}
+                        }
+                    }
+                    read_only = Some(!has_write);
                 }
                 "displayname" => display_name = Some(read_text_until(reader, "displayname")?),
                 "calendar-color" => color = Some(read_text_until(reader, "calendar-color")?),
@@ -182,6 +229,7 @@ fn parse_response(
         color: color.filter(|s| !s.is_empty()),
         ctag: ctag.filter(|s| !s.is_empty()),
         sync_token: sync_token.filter(|s| !s.is_empty()),
+        read_only: read_only.unwrap_or(false),
     }))
 }
 
@@ -243,6 +291,66 @@ mod tests {
             c.path,
             "https://cloud.example.com/remote.php/dav/calendars/alice/personal/"
         );
+    }
+
+    #[test]
+    fn parses_read_only_privilege_set() {
+        // Two shared calendars: one with write privileges (full
+        // shared edit access — not read-only) and one with only
+        // read privileges (#236).  A third calendar omits the
+        // privilege-set entirely so we lock in the
+        // "default to writable" fallback for servers that don't
+        // advertise the prop.
+        let xml = r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/remote.php/dav/calendars/alice/shared-rw/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>
+        <d:displayname>Shared (read-write)</d:displayname>
+        <d:current-user-privilege-set>
+          <d:privilege><d:read/></d:privilege>
+          <d:privilege><d:write/></d:privilege>
+          <d:privilege><d:write-content/></d:privilege>
+        </d:current-user-privilege-set>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/calendars/alice/shared-ro/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>
+        <d:displayname>Shared (read-only)</d:displayname>
+        <d:current-user-privilege-set>
+          <d:privilege><d:read/></d:privilege>
+        </d:current-user-privilege-set>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/calendars/alice/no-priv-set/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>
+        <d:displayname>Server without priv-set</d:displayname>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"#;
+        let cals = parse_calendar_list(xml, "https://cloud.example.com").unwrap();
+        assert_eq!(cals.len(), 3);
+        let by_name: std::collections::HashMap<&str, &Calendar> =
+            cals.iter().map(|c| (c.name.as_str(), c)).collect();
+        assert_eq!(by_name["shared-rw"].read_only, false);
+        assert_eq!(by_name["shared-ro"].read_only, true);
+        // No privilege-set advertised → preserve pre-#236
+        // happy path: assume writable.
+        assert_eq!(by_name["no-priv-set"].read_only, false);
     }
 
     #[test]

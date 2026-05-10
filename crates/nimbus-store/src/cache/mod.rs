@@ -30,6 +30,7 @@
 
 pub mod calendars;
 pub mod contacts;
+pub mod geocode;
 pub mod key;
 pub mod notes;
 pub mod pool;
@@ -527,17 +528,25 @@ impl Cache {
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
         {
+            // Note (#255): `replied_kind` is intentionally NOT in
+            // the UPDATE clause — IMAP envelope re-fetches don't
+            // know which kind of reply happened, so leave whatever
+            // we stamped from the send path in place.  `is_answered`
+            // *is* refreshed because the IMAP `\Answered` flag is
+            // authoritative for "did anyone (incl. another client)
+            // answer this".
             let mut stmt = tx.prepare(
                 "INSERT INTO messages
                    (account_id, folder, uid, from_addr, subject, internal_date,
-                    is_read, is_starred, cached_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    is_read, is_starred, is_answered, cached_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
                    internal_date = excluded.internal_date,
                    is_read       = excluded.is_read,
                    is_starred    = excluded.is_starred,
+                   is_answered   = excluded.is_answered,
                    cached_at     = excluded.cached_at",
             )?;
             for env in envelopes {
@@ -550,6 +559,7 @@ impl Cache {
                     env.date.timestamp(),
                     env.is_read as i64,
                     env.is_starred as i64,
+                    env.is_answered as i64,
                     now,
                 ])?;
             }
@@ -574,7 +584,8 @@ impl Cache {
     ) -> Result<Vec<EmailEnvelope>, CacheError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT uid, folder, from_addr, subject, internal_date, is_read, is_starred
+            "SELECT uid, folder, from_addr, subject, internal_date,
+                    is_read, is_starred, is_answered, replied_kind
              FROM messages
              WHERE account_id = ?1 AND folder = ?2 AND pending_action IS NULL
              ORDER BY internal_date DESC
@@ -591,6 +602,8 @@ impl Cache {
                 date,
                 is_read: r.get::<_, i64>(5)? != 0,
                 is_starred: r.get::<_, i64>(6)? != 0,
+                is_answered: r.get::<_, i64>(7)? != 0,
+                replied_kind: r.get(8)?,
                 account_id: account_id.to_string(),
             })
         })?;
@@ -647,7 +660,8 @@ impl Cache {
     ) -> Result<Vec<EmailEnvelope>, CacheError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT account_id, uid, folder, from_addr, subject, internal_date, is_read, is_starred
+            "SELECT account_id, uid, folder, from_addr, subject, internal_date,
+                    is_read, is_starred, is_answered, replied_kind
              FROM messages
              WHERE folder = ?1 AND pending_action IS NULL
              ORDER BY internal_date DESC
@@ -665,6 +679,8 @@ impl Cache {
                 date,
                 is_read: r.get::<_, i64>(6)? != 0,
                 is_starred: r.get::<_, i64>(7)? != 0,
+                is_answered: r.get::<_, i64>(8)? != 0,
+                replied_kind: r.get(9)?,
             })
         })?;
 
@@ -746,6 +762,35 @@ impl Cache {
              WHERE account_id = ?1 AND folder = ?2",
         )?;
         let rows = stmt.query_map(params![account_id, folder], |r| r.get::<_, i64>(0))?;
+        let mut uids = Vec::new();
+        for row in rows {
+            uids.push(row? as u32);
+        }
+        Ok(uids)
+    }
+
+    /// Newest `limit` cached envelope UIDs for a folder, sorted by
+    /// `internal_date DESC` — the same ordering the mail list
+    /// renders.  Used by the flag-refresh path (#255 follow-up) to
+    /// catch up on cross-client `\Seen` / `\Flagged` / `\Answered`
+    /// changes on the visible window without re-pulling the whole
+    /// folder's flag set.
+    pub fn list_recent_envelope_uids(
+        &self,
+        account_id: &str,
+        folder: &str,
+        limit: u32,
+    ) -> Result<Vec<u32>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT uid FROM messages
+             WHERE account_id = ?1 AND folder = ?2
+             ORDER BY internal_date DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
+            r.get::<_, i64>(0)
+        })?;
         let mut uids = Vec::new();
         for row in rows {
             uids.push(row? as u32);
@@ -899,6 +944,136 @@ impl Cache {
         }
 
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Reconcile the cached `is_read` / `is_starred` / `is_answered`
+    /// flags for a batch of envelope rows against fresh server-side
+    /// values (#255 follow-up).
+    ///
+    /// The standard envelope-fetch path is incremental — it never
+    /// re-reads flags on UIDs older than the bookmark.  Without
+    /// this catch-up, marks made from another mail client (read on
+    /// a phone, answered from webmail, starred elsewhere) never
+    /// round-trip into the local cache, and Nimbus's mail list
+    /// drifts out of sync with reality.
+    ///
+    /// `replied_kind` is intentionally not touched — it's
+    /// Nimbus-only metadata about *how* the user replied via
+    /// Compose, and the IMAP `\Answered` bit doesn't carry the
+    /// kind, so leave whatever the send path stamped earlier.
+    /// The `unread_count` on the folder is kept in sync by
+    /// crediting / debiting per-row read-state flips inside the
+    /// same transaction.
+    ///
+    /// Each tuple is `(uid, is_read, is_starred, is_answered)`.
+    /// UIDs that don't exist in the cache are silently skipped —
+    /// they got expunged between fetch and reconcile, and the
+    /// envelope-fetch path will sweep them out on its own
+    /// reconcile pass.
+    pub fn reconcile_envelope_flags(
+        &self,
+        account_id: &str,
+        folder: &str,
+        snapshots: &[(u32, bool, bool, bool)],
+    ) -> Result<u32, CacheError> {
+        if snapshots.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+
+        let mut unread_delta: i64 = 0;
+        let mut changed: u32 = 0;
+        for (uid, is_read, is_starred, is_answered) in snapshots {
+            // Fetch current flags so we know whether to bump the
+            // folder's unread badge.  `query_row` returns
+            // `QueryReturnedNoRows` when the UID isn't cached —
+            // skip those.
+            let prior: Option<(bool, bool, bool)> = tx
+                .query_row(
+                    "SELECT is_read, is_starred, is_answered FROM messages
+                     WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                    params![account_id, folder, *uid as i64],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)? != 0,
+                            r.get::<_, i64>(1)? != 0,
+                            r.get::<_, i64>(2)? != 0,
+                        ))
+                    },
+                )
+                .ok();
+            let Some((was_read, was_starred, was_answered)) = prior else {
+                continue;
+            };
+            if was_read == *is_read && was_starred == *is_starred && was_answered == *is_answered {
+                continue;
+            }
+
+            tx.execute(
+                "UPDATE messages
+                 SET is_read = ?4, is_starred = ?5, is_answered = ?6
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![
+                    account_id,
+                    folder,
+                    *uid as i64,
+                    *is_read as i64,
+                    *is_starred as i64,
+                    *is_answered as i64,
+                ],
+            )?;
+            changed += 1;
+
+            // Bump the unread accumulator: if the flag flipped
+            // unread → read, the folder count drops by one; if it
+            // flipped read → unread, it goes up by one.
+            if was_read != *is_read {
+                unread_delta += if *is_read { -1 } else { 1 };
+            }
+        }
+
+        if unread_delta != 0 {
+            tx.execute(
+                "UPDATE folders
+                 SET unread_count = MAX(COALESCE(unread_count, 0) + ?3, 0)
+                 WHERE account_id = ?1 AND name = ?2",
+                params![account_id, folder, unread_delta],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Stamp a cached envelope as answered (#255).  Sets both
+    /// `is_answered = 1` (so the row keeps the generic-reply
+    /// fallback even after the IMAP `\Answered` flag round-trips
+    /// from the server) and `replied_kind` to one of `"reply"`,
+    /// `"reply-all"`, or `"meeting"`.
+    ///
+    /// Called from the Compose send path after a successful
+    /// reply / reply-all / meeting reply.  Idempotent: re-running
+    /// with the same kind is a no-op; re-running with a different
+    /// kind overwrites — useful only in unusual flows where the
+    /// user replies, then later "responds with meeting" on the
+    /// same source thread.
+    pub fn mark_envelope_replied(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        kind: &str,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages
+             SET is_answered = 1,
+                 replied_kind = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, kind],
+        )?;
         Ok(())
     }
 
@@ -1233,6 +1408,208 @@ impl Cache {
         }
         Ok(out)
     }
+
+    // ── Outbox (#276) ────────────────────────────────────────────
+    //
+    // Local-only "send queue" — every send routes through this
+    // table first, the SMTP send runs in a spawned drain task.
+    // Rows that drain successfully are removed within the same
+    // tick (sub-second on a healthy network); rows that fail
+    // stay queued and the periodic background-sync drain retries
+    // them.  Surfaces in the UI as a synthetic "Outbox" folder
+    // that only appears in the sidebar when the queue is
+    // non-empty.
+
+    /// Push a fresh outgoing message onto the queue.  Returns the
+    /// generated row id so the caller (`send_email`) can hand it
+    /// to the spawned drain task.
+    pub fn enqueue_outbox(&self, input: &OutboxEnqueue) -> Result<i64, CacheError> {
+        let conn = self.conn()?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO outbox_messages
+               (account_id, outgoing_json, replied_to_json,
+                from_header, to_display, subject,
+                queued_at, attempt_count, last_attempt_at, last_error,
+                skip_sent_copy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL, NULL, ?8)",
+            params![
+                input.account_id,
+                input.outgoing_json,
+                input.replied_to_json,
+                input.from_header,
+                input.to_display,
+                input.subject,
+                now,
+                input.skip_sent_copy as i64,
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Snapshot of one queued message.  Returned by `list_outbox`
+    /// (per-account, for the UI list view) and by
+    /// `take_pending_outbox_drain` (for the retry sweep).
+    pub fn list_outbox(&self, account_id: &str) -> Result<Vec<OutboxRow>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, outgoing_json, replied_to_json,
+                    from_header, to_display, subject,
+                    queued_at, attempt_count, last_attempt_at, last_error,
+                    skip_sent_copy
+             FROM outbox_messages
+             WHERE account_id = ?1
+             ORDER BY queued_at DESC",
+        )?;
+        let rows = stmt.query_map(params![account_id], outbox_row_from_sql)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Every queued row across every account, oldest-first so the
+    /// drain sweep retries in the order the user submitted them.
+    /// Used by the `background_sync_loop` retry pass.
+    pub fn list_all_outbox(&self) -> Result<Vec<OutboxRow>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, outgoing_json, replied_to_json,
+                    from_header, to_display, subject,
+                    queued_at, attempt_count, last_attempt_at, last_error,
+                    skip_sent_copy
+             FROM outbox_messages
+             ORDER BY queued_at ASC",
+        )?;
+        let rows = stmt.query_map(params![], outbox_row_from_sql)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Fetch one queued row by id — used by the drain task (when
+    /// the caller knows the row it just enqueued) and by the
+    /// `edit_outbox_entry` Tauri command.
+    pub fn get_outbox(&self, id: i64) -> Result<Option<OutboxRow>, CacheError> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT id, account_id, outgoing_json, replied_to_json,
+                        from_header, to_display, subject,
+                        queued_at, attempt_count, last_attempt_at, last_error,
+                        skip_sent_copy
+                 FROM outbox_messages
+                 WHERE id = ?1",
+                params![id],
+                outbox_row_from_sql,
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Bookkeeping after a drain attempt failed: bump the count,
+    /// stamp the last attempt time, store the human-readable
+    /// error.  Doesn't delete — the row stays for the next sweep.
+    pub fn record_outbox_failure(&self, id: i64, error: &str) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "UPDATE outbox_messages
+             SET attempt_count = attempt_count + 1,
+                 last_attempt_at = ?2,
+                 last_error = ?3
+             WHERE id = ?1",
+            params![id, now, error],
+        )?;
+        Ok(())
+    }
+
+    /// Drop a queued row.  Called by the drain task on success
+    /// (the SMTP send went through) and by the
+    /// `delete_outbox_entry` Tauri command (user dismissed it).
+    pub fn remove_outbox(&self, id: i64) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM outbox_messages WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Total queued rows across every account.  Cheap aggregate
+    /// for the badge count on the synthetic "Outbox" sidebar
+    /// folder.
+    pub fn count_outbox(&self) -> Result<u32, CacheError> {
+        let conn = self.conn()?;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM outbox_messages", params![], |r| {
+            r.get(0)
+        })?;
+        Ok(n.max(0) as u32)
+    }
+
+    /// Per-account count for the per-account sidebar badge.
+    pub fn count_outbox_for_account(&self, account_id: &str) -> Result<u32, CacheError> {
+        let conn = self.conn()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM outbox_messages WHERE account_id = ?1",
+            params![account_id],
+            |r| r.get(0),
+        )?;
+        Ok(n.max(0) as u32)
+    }
+}
+
+/// Row shape inserted into `outbox_messages` by
+/// `Cache::enqueue_outbox`.  Mirrors the columns of the table —
+/// kept as a separate struct so callers don't have to hand-build
+/// a `params![]` tuple at every enqueue site.
+#[derive(Debug, Clone)]
+pub struct OutboxEnqueue {
+    pub account_id: String,
+    pub outgoing_json: String,
+    pub replied_to_json: Option<String>,
+    pub from_header: String,
+    pub to_display: String,
+    pub subject: String,
+    pub skip_sent_copy: bool,
+}
+
+/// One queued message read out of `outbox_messages`.  Returned by
+/// the `list_outbox` / `get_outbox` / `list_all_outbox` paths.
+#[derive(Debug, Clone)]
+pub struct OutboxRow {
+    pub id: i64,
+    pub account_id: String,
+    pub outgoing_json: String,
+    pub replied_to_json: Option<String>,
+    pub from_header: String,
+    pub to_display: String,
+    pub subject: String,
+    pub queued_at: i64,
+    pub attempt_count: u32,
+    pub last_attempt_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub skip_sent_copy: bool,
+}
+
+/// Shared row-mapping helper used by every outbox SELECT.  The
+/// column order must match the `SELECT` clauses in
+/// `list_outbox` / `list_all_outbox` / `get_outbox`.
+fn outbox_row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
+    Ok(OutboxRow {
+        id: r.get(0)?,
+        account_id: r.get(1)?,
+        outgoing_json: r.get(2)?,
+        replied_to_json: r.get(3)?,
+        from_header: r.get(4)?,
+        to_display: r.get(5)?,
+        subject: r.get(6)?,
+        queued_at: r.get(7)?,
+        attempt_count: r.get::<_, i64>(8)?.max(0) as u32,
+        last_attempt_at: r.get(9)?,
+        last_error: r.get(10)?,
+        skip_sent_copy: r.get::<_, i64>(11)? != 0,
+    })
 }
 
 /// One stored attachment thumbnail.  Returned from
@@ -1363,6 +1740,8 @@ mod tests {
             date: Utc::now() - Duration::minutes(offset_min),
             is_read: false,
             is_starred: false,
+            is_answered: false,
+            replied_kind: None,
             account_id: String::new(),
         }
     }
@@ -1458,6 +1837,85 @@ mod tests {
         let envs = cache.get_envelopes("acc", "INBOX", 5).unwrap();
         assert_eq!(envs.len(), 1);
         assert_eq!(envs[0].uid, 7);
+    }
+
+    #[test]
+    fn outbox_enqueue_list_count_remove_roundtrip() {
+        let cache = open_test_cache();
+        assert_eq!(cache.count_outbox().unwrap(), 0);
+        assert!(cache.list_outbox("acc-a").unwrap().is_empty());
+
+        let id = cache
+            .enqueue_outbox(&OutboxEnqueue {
+                account_id: "acc-a".into(),
+                outgoing_json: r#"{"from":"a@x","to":["b@x"],"cc":[],"bcc":[],"reply_to":null,"subject":"hi","body_text":"hello","body_html":null,"attachments":[]}"#.into(),
+                replied_to_json: None,
+                from_header: "a@x".into(),
+                to_display: "b@x".into(),
+                subject: "hi".into(),
+                skip_sent_copy: false,
+            })
+            .unwrap();
+        assert!(id > 0);
+        assert_eq!(cache.count_outbox().unwrap(), 1);
+        assert_eq!(cache.count_outbox_for_account("acc-a").unwrap(), 1);
+        assert_eq!(cache.count_outbox_for_account("acc-other").unwrap(), 0);
+
+        let rows = cache.list_outbox("acc-a").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].subject, "hi");
+        assert_eq!(rows[0].attempt_count, 0);
+        assert!(rows[0].last_error.is_none());
+
+        // Failure bookkeeping bumps the count + records the error,
+        // but the row stays for the next sweep.
+        cache
+            .record_outbox_failure(id, "Connection refused")
+            .unwrap();
+        let rows = cache.list_outbox("acc-a").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].attempt_count, 1);
+        assert_eq!(rows[0].last_error.as_deref(), Some("Connection refused"));
+        assert!(rows[0].last_attempt_at.is_some());
+
+        // get_outbox returns the same shape by id.
+        let one = cache.get_outbox(id).unwrap().unwrap();
+        assert_eq!(one.id, id);
+        assert_eq!(one.subject, "hi");
+
+        // Removal drops the row + clears the count.
+        cache.remove_outbox(id).unwrap();
+        assert_eq!(cache.count_outbox().unwrap(), 0);
+        assert!(cache.list_outbox("acc-a").unwrap().is_empty());
+        assert!(cache.get_outbox(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn outbox_list_all_orders_oldest_first() {
+        let cache = open_test_cache();
+        let mk = |account: &str, subj: &str| OutboxEnqueue {
+            account_id: account.into(),
+            outgoing_json: "{}".into(),
+            replied_to_json: None,
+            from_header: "x@x".into(),
+            to_display: "y@y".into(),
+            subject: subj.into(),
+            skip_sent_copy: false,
+        };
+        let a = cache.enqueue_outbox(&mk("acc-a", "first")).unwrap();
+        // Sleep one second so the queued_at timestamps differ —
+        // SQLite's strftime resolution is per-second.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let b = cache.enqueue_outbox(&mk("acc-b", "second")).unwrap();
+
+        let all = cache.list_all_outbox().unwrap();
+        assert_eq!(all.len(), 2);
+        // The drain sweep relies on oldest-first so the user's
+        // earlier sends ship before later ones.
+        assert_eq!(all[0].id, a);
+        assert_eq!(all[0].subject, "first");
+        assert_eq!(all[1].id, b);
+        assert_eq!(all[1].subject, "second");
     }
 
     #[test]

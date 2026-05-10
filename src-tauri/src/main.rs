@@ -7,13 +7,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod badge;
+mod geocode;
 
 use nimbus_caldav::{
-    Calendar as CaldavCalendar, RawEvent, build_ics as caldav_build_ics,
-    create_calendar as caldav_create_calendar, create_event as caldav_create_event,
-    delete_calendar as caldav_delete_calendar, delete_event as caldav_delete_event,
-    list_calendars as caldav_list_calendars, sync_calendar as caldav_sync_calendar,
-    update_calendar as caldav_update_calendar, update_event as caldav_update_event,
+    BusyKind as CaldavBusyKind, Calendar as CaldavCalendar, RawEvent,
+    build_ics as caldav_build_ics, create_calendar as caldav_create_calendar,
+    create_event as caldav_create_event, delete_calendar as caldav_delete_calendar,
+    delete_event as caldav_delete_event, list_calendars as caldav_list_calendars,
+    nc_principal_home as caldav_nc_principal_home,
+    probe_calendar_writable as caldav_probe_writable, query_free_busy as caldav_query_free_busy,
+    sync_calendar as caldav_sync_calendar, update_calendar as caldav_update_calendar,
+    update_event as caldav_update_event,
 };
 use nimbus_carddav::{
     Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
@@ -3518,6 +3522,14 @@ struct CalendarSummary {
     /// the coloured swatch in the CalendarView sidebar.
     #[serde(default)]
     muted: bool,
+    /// CalDAV-derived read-only flag (#236).  Mirrors
+    /// `current-user-privilege-set`: `true` when the user can't add
+    /// or modify events on this calendar (typical for shared
+    /// calendars where the owner granted view-only access).  The
+    /// EventEditor hides Delete and removes the calendar from the
+    /// new-event picker when this is set.
+    #[serde(default)]
+    read_only: bool,
 }
 
 /// Summary returned to the UI after a calendar sync run.
@@ -3570,6 +3582,10 @@ async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>,
             // to fully visible is fine.
             hidden: false,
             muted: false,
+            // The discovery path has the privilege-set bit; pass
+            // it through so the setup probe can already gray out
+            // read-only calendars.
+            read_only: c.read_only,
         })
         .collect())
 }
@@ -3595,7 +3611,7 @@ async fn sync_nextcloud_calendars(
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     // ── Phase 1: discovery + reconcile the calendar list ────────
-    let server_calendars = caldav_list_calendars(
+    let mut server_calendars = caldav_list_calendars(
         &account.server_url,
         &account.username,
         &app_password,
@@ -3607,6 +3623,69 @@ async fn sync_nextcloud_calendars(
         server_calendars.len(),
         nc_id
     );
+
+    // #236 follow-up — privilege-set parsing alone misses a few
+    // Sabre/DAV variants (notably some shared-calendar configs
+    // that omit `current-user-privilege-set` entirely or
+    // advertise write privileges that the actual PUT then
+    // refuses with 404).  OPTIONS is similarly unreliable —
+    // some configs return the resource type's full method list
+    // regardless of ACL.  The only signal that reliably matches
+    // what the user hits at save time is an actual PUT, so we
+    // do exactly that: drop a placeholder VEVENT in 1970 (so it
+    // never collides with real data), DELETE it on the way out,
+    // and treat the PUT verdict as canonical.  The probe fires
+    // once per calendar per sync — the cost is one extra
+    // request pair on top of the existing PROPFIND/REPORT
+    // traffic.
+    //
+    // We OR with the privilege-set verdict so a writable
+    // discovery only stands when both signals agree; any
+    // probe failure (network, 5xx) leaves the privilege-set
+    // verdict alone rather than misclassify on a transient
+    // blip.
+    for cal in &mut server_calendars {
+        match caldav_probe_writable(
+            &cal.path,
+            &account.username,
+            &app_password,
+            &account.trusted_certs,
+        )
+        .await
+        {
+            Ok(true) => {
+                // PUT succeeded → calendar accepts writes. The
+                // privilege-set may still have flagged it
+                // read-only (rare); we trust the PUT result and
+                // *clear* the flag so a re-shared calendar that
+                // gets write access back also resurfaces in the
+                // editor.
+                if cal.read_only {
+                    tracing::info!(
+                        "CalDAV: write-probe overrides privilege-set on '{}' \
+                         (PUT succeeded → marking writable)",
+                        cal.path
+                    );
+                }
+                cal.read_only = false;
+            }
+            Ok(false) => {
+                if !cal.read_only {
+                    tracing::info!(
+                        "CalDAV: write-probe marks calendar '{}' read-only (PUT 403/404)",
+                        cal.path
+                    );
+                }
+                cal.read_only = true;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "CalDAV: write-probe for '{}' failed, keeping privilege-set verdict: {e}",
+                    cal.path
+                );
+            }
+        }
+    }
 
     let rows: Vec<CalendarRow> = server_calendars
         .iter()
@@ -3620,6 +3699,12 @@ async fn sync_nextcloud_calendars(
             // updates so existing local toggles survive re-sync.
             hidden: false,
             muted: false,
+            // #236 — server-side privilege-set + OPTIONS probe agree
+            // on whether the editor lets the user write events here.
+            // The upsert refreshes this on every discovery so a calendar
+            // that gets re-shared as read-only between syncs flips
+            // promptly.
+            read_only: c.read_only,
         })
         .collect();
     cache.upsert_calendars(&nc_id, &rows)?;
@@ -3692,6 +3777,28 @@ async fn sync_nextcloud_calendars(
     Ok(report)
 }
 
+/// Single-calendar sync by app-side `calendar_id`.  Used by the
+/// EventEditor to freshen one calendar's events the moment the
+/// user opens an event for editing — narrows the window where a
+/// stale-etag PUT (the "If-Match failed" race) can happen.  Soft-
+/// fails on any error and just propagates it; the caller logs
+/// without surfacing a toast because this is best-effort
+/// freshening, not a user-initiated sync.
+#[tauri::command]
+async fn sync_calendar_by_id(
+    calendar_id: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let (nc_id, path) = cache
+        .get_calendar_server_path(&calendar_id)?
+        .ok_or_else(|| {
+            NimbusError::Other(format!(
+                "calendar '{calendar_id}' is not in the local cache"
+            ))
+        })?;
+    refresh_calendar_cache(&cache, &nc_id, &path).await
+}
+
 /// Cache-only list of calendars for a Nextcloud account. Used by the
 /// sidebar widget on startup so it can paint before the first sync
 /// finishes (or if the user is offline).
@@ -3711,6 +3818,7 @@ fn get_cached_calendars(
             last_synced_at: c.last_synced_at,
             hidden: c.hidden,
             muted: c.muted,
+            read_only: c.read_only,
         })
         .collect())
 }
@@ -3766,6 +3874,10 @@ async fn create_nextcloud_calendar(
         ctag: None,
         hidden: false,
         muted: false,
+        // The user just created this calendar, so they own it and
+        // have full write privileges (#236).  Next discovery cycle
+        // confirms via `current-user-privilege-set` PROPFIND.
+        read_only: false,
     };
     let id = cache.insert_calendar(&nc_id, &row)?;
 
@@ -3777,6 +3889,10 @@ async fn create_nextcloud_calendar(
         last_synced_at: None,
         hidden: false,
         muted: false,
+        // Same reasoning as `insert_calendar` above — fresh
+        // user-created calendar is owned by the user, fully
+        // writable until next discovery says otherwise.
+        read_only: false,
     })
 }
 
@@ -3881,21 +3997,25 @@ fn set_nextcloud_calendar_muted(
 ///    has — so matching an override to its series is O(1).
 /// 3. `nimbus_caldav::expand_event` does the RFC 5545 work: RRULE
 ///    enumeration, EXDATE removal, RDATE insertion, override swap-in.
-#[tauri::command]
-fn get_cached_events(
-    calendar_ids: Vec<String>,
+/// Pull events out of the local cache for `calendar_ids` over
+/// `[range_start, range_end)`, recurrence-expanded.  Shared by
+/// `get_cached_events` (the calendar grid) and
+/// `get_attendee_availability` (the planner's local-cache scan
+/// for external attendees).
+///
+/// Mirrors the expansion pipeline documented on `get_cached_events`:
+/// singletons + recurring masters + overrides → expand each master
+/// against its overrides → sorted chronological list.
+fn expand_calendar_events_in_range(
+    cache: &Cache,
+    calendar_ids: &[String],
     range_start: chrono::DateTime<chrono::Utc>,
     range_end: chrono::DateTime<chrono::Utc>,
-    cache: State<'_, Cache>,
 ) -> Result<Vec<CalendarEvent>, NimbusError> {
     let input = cache
-        .list_events_for_expansion(&calendar_ids, range_start, range_end)
+        .list_events_for_expansion(calendar_ids, range_start, range_end)
         .map_err(NimbusError::from)?;
 
-    // Index overrides by the master prefix that's baked into their id
-    // (`{cal}::{uid}::{epoch}` → `{cal}::{uid}`). Rare uid collisions
-    // across different calendars are already ruled out by the
-    // `{cal}::` segment.
     let mut overrides_by_master: std::collections::HashMap<&str, Vec<&CalendarEvent>> =
         std::collections::HashMap::new();
     for ov in &input.overrides {
@@ -3917,11 +4037,18 @@ fn get_cached_events(
             range_end,
         ));
     }
-    // Expansion doesn't guarantee chronological order across the whole
-    // set (singletons come first, then per-master occurrences). Sort
-    // once at the end so the UI's day-bucket grouping stays coherent.
     out.sort_by_key(|e| e.start);
     Ok(out)
+}
+
+#[tauri::command]
+fn get_cached_events(
+    calendar_ids: Vec<String>,
+    range_start: chrono::DateTime<chrono::Utc>,
+    range_end: chrono::DateTime<chrono::Utc>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<CalendarEvent>, NimbusError> {
+    expand_calendar_events_in_range(&cache, &calendar_ids, range_start, range_end)
 }
 
 /// What the Svelte editor sends for a create or update. Matches the
@@ -3954,6 +4081,14 @@ struct CalendarEventInput {
     attendees: Vec<EventAttendee>,
     #[serde(default)]
     reminders: Vec<EventReminder>,
+    /// `GEO` latitude / longitude (RFC 5545 §3.8.1.6).  Set by the
+    /// EventEditor's location-autocomplete pick (#280); `None`
+    /// when the user typed the location free-text without
+    /// selecting a geocoded match.
+    #[serde(default)]
+    latitude: Option<f64>,
+    #[serde(default)]
+    longitude: Option<f64>,
 }
 
 /// Build a `CalendarEvent` skeleton from form input. Caller fills in
@@ -3991,6 +4126,8 @@ fn input_to_calendar_event(uid: &str, input: &CalendarEventInput) -> CalendarEve
         transparency: input.transparency.clone(),
         attendees: input.attendees.clone(),
         reminders: input.reminders.clone(),
+        latitude: input.latitude,
+        longitude: input.longitude,
     }
 }
 
@@ -4021,6 +4158,8 @@ fn calendar_event_to_row(
         transparency: event.transparency.clone(),
         attendees: event.attendees.clone(),
         reminders: event.reminders.clone(),
+        latitude: event.latitude,
+        longitude: event.longitude,
         ics_raw: ics_raw.to_string(),
     }
 }
@@ -4105,6 +4244,60 @@ fn organizer_local(account: &NextcloudAccount) -> (String, Option<String>) {
 /// Create a new VEVENT in the given calendar.
 ///
 /// Generates a fresh UUID for the UID so callers don't have to.
+/// `calendars-updated` event payload (#236 follow-up).  Fired when
+/// the cache flips a calendar's `read_only` flag — currently the
+/// only writer is the CalDAV-write fallback below, but the event
+/// is generic so other future flips (e.g. a successful re-sync
+/// that rolls a calendar back to writable) can ride the same
+/// channel.  The frontend listens, refetches `get_cached_calendars`,
+/// and refreshes any `EventEditor` already mounted.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarsUpdatedPayload {
+    nextcloud_account_id: Option<String>,
+}
+
+/// Inspect a CalDAV-write error for the 403/404 permission signal
+/// and, if present, mark the affected calendar as `read_only` in
+/// the local cache.  Best-effort: failures here are logged and
+/// dropped — the user already saw the upstream write fail; the
+/// only loss from a missed flip is that they'd see the same
+/// error again on the next attempt.
+///
+/// Emits `calendars-updated` so the EventEditor (already open
+/// with the failed save) refreshes its `calendars` prop and the
+/// `currentCalendarReadOnly` derived flips, hiding Save + Delete.
+fn flag_calendar_read_only_on_forbidden(
+    app: &AppHandle,
+    cache: &Cache,
+    calendar_id: &str,
+    err: &NimbusError,
+) {
+    if !matches!(err, NimbusError::CalDavWriteForbidden(_)) {
+        return;
+    }
+    if let Err(e) = cache.set_calendar_read_only(calendar_id, true) {
+        tracing::warn!(
+            "failed to flip read_only=true on calendar '{calendar_id}' after CalDAV 403/404: {e}"
+        );
+        return;
+    }
+    tracing::info!(
+        "calendar '{calendar_id}' marked read-only locally after CalDAV write was forbidden"
+    );
+    // Resolve the NC account id from the calendar id (`{nc}::{path}`)
+    // so the frontend listener can scope its refresh — costs nothing
+    // to include and lets a future multi-account UI avoid blanket
+    // refetches.
+    let nc_account_id = calendar_id.split_once("::").map(|(nc, _)| nc.to_string());
+    let payload = CalendarsUpdatedPayload {
+        nextcloud_account_id: nc_account_id,
+    };
+    if let Err(e) = app.emit("calendars-updated", &payload) {
+        tracing::warn!("failed to emit calendars-updated event: {e}");
+    }
+}
+
 /// The PUT uses `If-None-Match: *`, so a UID collision surfaces as
 /// a structured error instead of a silent overwrite. On success, the
 /// new event is upserted into the local cache so the UI can render it
@@ -4114,6 +4307,7 @@ async fn create_calendar_event(
     calendar_id: String,
     input: CalendarEventInput,
     cache: State<'_, Cache>,
+    app: AppHandle,
 ) -> Result<CalendarEvent, NimbusError> {
     let (nc_id, calendar_path) =
         cache
@@ -4145,7 +4339,8 @@ async fn create_calendar_event(
         &ics,
         &account.trusted_certs,
     )
-    .await?;
+    .await
+    .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
 
     let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
     cache.upsert_single_event(&calendar_id, &row)?;
@@ -4168,6 +4363,7 @@ async fn update_calendar_event(
     event_id: String,
     input: CalendarEventInput,
     cache: State<'_, Cache>,
+    app: AppHandle,
 ) -> Result<CalendarEvent, NimbusError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
@@ -4185,7 +4381,12 @@ async fn update_calendar_event(
     // another device (NC web, phone) doesn't surface to the
     // user as "refresh and try again" — it transparently syncs
     // and re-PUTs once.
-    let (outcome, handle) = update_event_with_etag_retry(&cache, &event_id, &ics).await?;
+    let outer_calendar_id = handle.calendar_id.clone();
+    let (outcome, handle) = update_event_with_etag_retry(&cache, &event_id, &ics)
+        .await
+        .inspect_err(|e| {
+            flag_calendar_read_only_on_forbidden(&app, &cache, &outer_calendar_id, e)
+        })?;
 
     let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
     cache.upsert_single_event(&handle.calendar_id, &row)?;
@@ -4203,21 +4404,375 @@ async fn update_calendar_event(
 async fn delete_calendar_event(
     event_id: String,
     cache: State<'_, Cache>,
+    app: AppHandle,
 ) -> Result<(), NimbusError> {
     let handle = load_event_handle(&cache, &event_id)?;
-    let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
-
-    caldav_delete_event(
-        &handle.href,
-        &nc_account.username,
-        &app_password,
-        &handle.etag,
-        &nc_account.trusted_certs,
-    )
-    .await?;
+    let calendar_id = handle.calendar_id.clone();
+    delete_event_with_etag_retry(&cache, &event_id, &handle)
+        .await
+        .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
     cache.delete_event_by_id(&event_id)?;
     Ok(())
+}
+
+// ── Scheduling-assistant availability (#137) ─────────────────
+//
+// `get_attendee_availability` powers the EventPlanner UI: given a
+// list of attendee email addresses and a time window, return each
+// person's busy slots so the UI can render a free/busy grid.
+//
+// Resolution order per attendee:
+//
+//   1. **Sharees lookup** — does this address belong to a local NC
+//      user?  If yes, run a CalDAV `free-busy-query` REPORT against
+//      their calendar home.  Returns busy periods only (no event
+//      details), so the privacy story is identical to the standard
+//      Nextcloud / Outlook free-busy lookup users already expect.
+//   2. **Free-busy succeeded** → emit them with `source =
+//      "nc-freebusy"`.  This is the authoritative signal.
+//   3. **Free-busy failed** (server refused, calendar not shared,
+//      network blip) → fall through to the local-cache scan.
+//   4. **Not an NC user, or NC lookup failed** → scan our own
+//      calendars for events where this address is listed as an
+//      attendee.  Surfaces the meetings *we* know about that the
+//      person was invited to.  Issued via `source = "local-cache"`.
+//   5. **Anything else** → empty list with `source = "unknown"`.
+//      The UI renders the row as "no signal — assume free".
+//
+// The local-cache scan piggybacks on the existing recurrence-
+// expanded `expand_calendar_events_in_range` so a series the
+// attendee was invited to surfaces every occurrence in the window.
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttendeeBusyPeriod {
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+    /// One of "busy", "tentative", "unavailable", "free".  The
+    /// planner UI maps these to its own colour palette.
+    kind: String,
+    /// Source event's summary, when the period came from our
+    /// local-cache scan (the user's own calendars where the
+    /// attendee is listed).  CalDAV free-busy responses
+    /// deliberately don't carry titles — privacy — so this
+    /// stays `None` for `nc-freebusy` periods.  Surfacing it
+    /// in the planner is fine because the user already owns
+    /// the event whose title we're showing.
+    summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttendeeAvailability {
+    email: String,
+    display_name: Option<String>,
+    /// "nc-freebusy" | "local-cache" | "unknown" — see resolution
+    /// order in the module-level comment above.
+    source: String,
+    busy_periods: Vec<AttendeeBusyPeriod>,
+}
+
+fn busy_kind_to_string(k: CaldavBusyKind) -> String {
+    match k {
+        CaldavBusyKind::Busy => "busy",
+        CaldavBusyKind::Tentative => "tentative",
+        CaldavBusyKind::Unavailable => "unavailable",
+        CaldavBusyKind::Free => "free",
+    }
+    .to_string()
+}
+
+#[tauri::command]
+async fn get_attendee_availability(
+    nc_id: String,
+    attendee_emails: Vec<String>,
+    range_start: chrono::DateTime<chrono::Utc>,
+    range_end: chrono::DateTime<chrono::Utc>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<AttendeeAvailability>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    // Pre-load the local-cache events once so the per-attendee
+    // scan loop doesn't repeat the SQL + expansion work.
+    let calendar_ids: Vec<String> = cache
+        .list_calendars(&nc_id)?
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    let local_events =
+        expand_calendar_events_in_range(&cache, &calendar_ids, range_start, range_end)?;
+
+    let mut out: Vec<AttendeeAvailability> = Vec::with_capacity(attendee_emails.len());
+
+    for email in attendee_emails {
+        let lower = email.trim().to_ascii_lowercase();
+        if lower.is_empty() {
+            continue;
+        }
+
+        // Step 1: sharees lookup.  Soft-fail (None) on errors so a
+        // single bad lookup doesn't blank out the planner.
+        let nc_match = match nimbus_nextcloud::find_user_by_email(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            &email,
+            &account.trusted_certs,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::info!("sharees lookup for '{email}' failed: {e}");
+                None
+            }
+        };
+
+        // Always pre-compute the local-cache hits — events from
+        // the user's own calendars (which include shared/subscribed
+        // calendars in NC) where this person is listed.  Used both
+        // as the fallback when free-busy fails AND as a title
+        // source to enrich free-busy periods that come back without
+        // names attached.
+        let local_for_attendee: Vec<(
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+            Option<String>,
+        )> = local_events
+            .iter()
+            .filter(|ev| {
+                ev.attendees
+                    .iter()
+                    .any(|a| a.email.to_ascii_lowercase() == lower)
+            })
+            .map(|ev| {
+                (
+                    ev.start,
+                    ev.end,
+                    if ev.summary.trim().is_empty() {
+                        None
+                    } else {
+                        Some(ev.summary.clone())
+                    },
+                )
+            })
+            .collect();
+
+        // Step 2: NC user → free-busy-query.
+        if let Some(m) = nc_match.as_ref() {
+            let principal_url = caldav_nc_principal_home(&account.server_url, &m.user_id);
+            match caldav_query_free_busy(
+                &principal_url,
+                &account.username,
+                &app_password,
+                range_start,
+                range_end,
+                &account.trusted_certs,
+            )
+            .await
+            {
+                Ok(periods) => {
+                    out.push(AttendeeAvailability {
+                        email,
+                        display_name: Some(m.display_name.clone()),
+                        source: "nc-freebusy".into(),
+                        busy_periods: periods
+                            .into_iter()
+                            .map(|p| AttendeeBusyPeriod {
+                                start: p.start,
+                                end: p.end,
+                                kind: busy_kind_to_string(p.kind),
+                                // Free-busy responses themselves
+                                // don't carry titles by design,
+                                // but if we *also* have the same
+                                // event in our local cache (the
+                                // attendee invited us, or their
+                                // calendar is shared with us),
+                                // surface its title — that's not
+                                // a privacy regression because we
+                                // already own the data on our
+                                // side.  Match on start time;
+                                // server-side regeneration of
+                                // free-busy uses the source
+                                // event's DTSTART verbatim.
+                                summary: local_for_attendee
+                                    .iter()
+                                    .find(|(s, _, _)| *s == p.start)
+                                    .and_then(|(_, _, sum)| sum.clone()),
+                            })
+                            .collect(),
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    // Common case: the calendar isn't shared with
+                    // us, so the REPORT 403/404s.  Drop down to the
+                    // local-cache scan.
+                    tracing::info!(
+                        "free-busy-query unavailable for {} ({email}): {e}",
+                        m.user_id
+                    );
+                }
+            }
+        }
+
+        // Step 3: local-cache fallback — events in the user's own
+        // calendars where this person is listed as an attendee.
+        let busy: Vec<AttendeeBusyPeriod> = local_for_attendee
+            .iter()
+            .map(|(start, end, summary)| AttendeeBusyPeriod {
+                start: *start,
+                end: *end,
+                kind: "busy".into(),
+                summary: summary.clone(),
+            })
+            .collect();
+
+        let display_name = nc_match.as_ref().map(|m| m.display_name.clone());
+        let source = if !busy.is_empty() {
+            "local-cache"
+        } else if nc_match.is_some() {
+            // We knew it was an NC user but free-busy failed and
+            // we have no local events for them — leave the row
+            // empty with `unknown` so the UI distinguishes "no
+            // signal" from "confirmed free".
+            "unknown"
+        } else {
+            "local-cache"
+        }
+        .to_string();
+
+        out.push(AttendeeAvailability {
+            email,
+            display_name,
+            source,
+            busy_periods: busy,
+        });
+    }
+
+    Ok(out)
+}
+
+// ── Location autocomplete + map preview (#280) ───────────────
+//
+// The EventEditor's Location field offers two affordances:
+//
+//   1. **Autocomplete** — keystrokes (debounced) call
+//      `geocode_search`, which dedupes against the local
+//      `geocode_cache` table before hitting Nominatim.  Picking
+//      a suggestion stamps the canonical `display_name` plus
+//      `(lat, lon)` onto the in-flight event, which then
+//      round-trips through `LOCATION` + `GEO` in the iCalendar
+//      body.
+//
+//   2. **Inline map preview** — once the event has a `(lat,
+//      lon)`, the UI mounts a small MapLibre canvas pointing at
+//      it.  All tile traffic goes to public OSM-backed tile
+//      services with attribution (see the frontend component).
+//
+// `detect_nc_maps` is informational: it tells the UI whether
+// the user's connected NC has the Maps app enabled so the UI
+// can surface "Using your Nextcloud Maps" in the autocomplete
+// header.  The actual geocoding still goes to Nominatim either
+// way — NC Maps doesn't expose a server-side proxy at present.
+
+#[tauri::command]
+async fn geocode_search(
+    query: String,
+    lang: Option<String>,
+    cache: State<'_, Cache>,
+    settings: State<'_, SharedSettings>,
+) -> Result<Vec<geocode::GeocodeResult>, NimbusError> {
+    // Privacy gate (#280).  Off by default; the user must opt in
+    // via General Settings before any keystroke leaves the
+    // device.  We refuse here as well as in the UI so a
+    // mis-wired component can't accidentally exfiltrate a query
+    // before the toggle's state propagates.
+    //
+    // We snapshot both the toggle and the configurable
+    // `nominatim_base_url` under the same read so a settings
+    // change between the two reads can't have us call out to
+    // a stale endpoint after the toggle was just flipped on.
+    let (enabled, base_url) = {
+        let s = settings.read().await;
+        (s.location_geocoding_enabled, s.nominatim_base_url.clone())
+    };
+    if !enabled {
+        return Ok(Vec::new());
+    }
+
+    let lang = lang.unwrap_or_default();
+    // Cache hit short-circuits the network round-trip.  The
+    // cache itself canonicalises the query (whitespace,
+    // case-folding) so a tiny stylistic typo doesn't burn an
+    // upstream call.
+    if let Some(json) = cache
+        .get_geocode_cache(&query, &lang)
+        .map_err(NimbusError::from)?
+    {
+        if let Ok(hits) = serde_json::from_str::<Vec<geocode::GeocodeResult>>(&json) {
+            return Ok(hits);
+        }
+        // Cache row exists but is corrupt — fall through to a
+        // fresh fetch and let the new payload overwrite it.
+        tracing::warn!("geocode_cache: corrupt row for {query:?}, refetching");
+    }
+
+    let hits = geocode::nominatim_search(&query, &lang, &base_url).await?;
+    let serialised = serde_json::to_string(&hits)
+        .map_err(|e| NimbusError::Other(format!("geocode result serialise: {e}")))?;
+    if let Err(e) = cache.put_geocode_cache(&query, &lang, &serialised) {
+        // Cache write failure is non-fatal — the user still
+        // gets the live result.
+        tracing::warn!("geocode_cache write failed: {e}");
+    }
+    Ok(hits)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextcloudMapsCapability {
+    /// True when the connected NC has the Maps app enabled.
+    available: bool,
+}
+
+#[tauri::command]
+async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    // The capabilities OCS endpoint returns an enabled-apps map
+    // we can scan for `maps` without needing to actually call
+    // any Maps-app endpoints.  Soft-fails to "not available"
+    // on any network blip — the UI just shows the generic
+    // OSM-attribution copy in that case.
+    let server = account.server_url.trim_end_matches('/');
+    let url = format!("{server}/ocs/v2.php/cloud/capabilities?format=json");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| NimbusError::Network(format!("capabilities client: {e}")))?;
+    let resp = client
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(&account.username, Some(&app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("capabilities request: {e}")))?;
+    if !resp.status().is_success() {
+        return Ok(NextcloudMapsCapability { available: false });
+    }
+    // The capabilities body is deeply nested; we just look for
+    // any case-insensitive hint of "maps" inside the
+    // capabilities key.  More precise parsing would tie us to
+    // an NC version's exact JSON shape — this is informational
+    // anyway, and a false negative just means the UI doesn't
+    // show the "via NC Maps" hint.
+    let body = resp.text().await.unwrap_or_default();
+    let available = body.to_ascii_lowercase().contains("\"maps\"");
+    Ok(NextcloudMapsCapability { available })
 }
 
 /// Remove a locally-cached event whose iCalendar `UID` matches
@@ -4931,6 +5486,72 @@ async fn update_event_with_etag_retry(
     }
 }
 
+/// `caldav_delete_event` with the same transparent etag-mismatch
+/// recovery the update path uses.  When the cached etag is stale
+/// (another client edited the event since our last sync) the
+/// PUT comes back as `EtagMismatch` instead of a wordy
+/// "refresh and try again" error; we sync the parent calendar,
+/// reload the handle with the fresh etag, and retry once.  If
+/// the retry comes back 404 (`caldav_delete_event` reports that
+/// as `Ok(())` per RFC 4918 §9.6 — the resource is already
+/// gone, which is the state we wanted), we surface success too.
+///
+/// Caller passes the already-loaded `handle` so we don't repeat
+/// the cache lookup; in the rare two-step retry case we re-load
+/// internally to pick up the fresh href / etag.
+async fn delete_event_with_etag_retry(
+    cache: &Cache,
+    event_id: &str,
+    handle: &CalendarEventServerHandle,
+) -> Result<(), NimbusError> {
+    let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    match caldav_delete_event(
+        &handle.href,
+        &nc_account.username,
+        &app_password,
+        &handle.etag,
+        &nc_account.trusted_certs,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(NimbusError::EtagMismatch(_)) => {
+            tracing::info!("stale etag for delete of {event_id}; refreshing calendar and retrying");
+            let cal_path = cache
+                .get_calendar_server_path(&handle.calendar_id)?
+                .map(|(_, p)| p)
+                .ok_or_else(|| {
+                    NimbusError::Other(format!(
+                        "calendar '{}' is not in the local cache",
+                        handle.calendar_id
+                    ))
+                })?;
+            refresh_calendar_cache(cache, &handle.nextcloud_account_id, &cal_path).await?;
+            // Refresh may have removed the row entirely (someone
+            // else already deleted the event).  Treat that as
+            // success — our intent was "make this event go
+            // away", which is now true.
+            let Some(fresh) = cache
+                .get_event_server_handle(event_id)
+                .map_err(NimbusError::from)?
+            else {
+                return Ok(());
+            };
+            caldav_delete_event(
+                &fresh.href,
+                &nc_account.username,
+                &app_password,
+                &fresh.etag,
+                &nc_account.trusted_certs,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Pull the latest events for one calendar via CalDAV
 /// sync-collection and apply the delta to the local cache.
 /// Same plumbing as `sync_nextcloud_calendars`'s inner loop, but
@@ -5021,6 +5642,8 @@ fn raw_event_to_rows(raw: &RawEvent) -> Vec<CalendarEventRow> {
             transparency: e.transparency.clone(),
             attendees: e.attendees.clone(),
             reminders: e.reminders.clone(),
+            latitude: e.latitude,
+            longitude: e.longitude,
             ics_raw: raw.ics_raw.clone(),
         })
         .collect()
@@ -5552,6 +6175,13 @@ async fn fetch_unified_envelopes(
 /// message.
 struct FolderPollOutcome {
     new_envelopes: Vec<EmailEnvelope>,
+    /// Count of cached envelope rows whose `\Seen` / `\Flagged` /
+    /// `\Answered` flags drifted between polls — typically because
+    /// another mail client (phone, webmail) flipped a flag and we
+    /// just caught up.  Callers use this to fire the
+    /// `mail-flags-updated` Tauri event so the frontend can re-read
+    /// the cache without a manual refresh (#255 follow-up).
+    flag_changes: u32,
 }
 
 /// Fetch+cache+reconcile for one (account, folder) pair.
@@ -5619,7 +6249,14 @@ async fn poll_folder(
             tracing::warn!("cache.set_sync_state (JMAP) failed: {e}");
         }
 
-        return Ok(FolderPollOutcome { new_envelopes });
+        // JMAP cross-client flag refresh isn't wired here yet —
+        // `Email/changes` would be the proper way, but the user's
+        // primary path is IMAP and JMAP cross-client `$answered` is
+        // a follow-up.  Report zero flag changes for now.
+        return Ok(FolderPollOutcome {
+            new_envelopes,
+            flag_changes: 0,
+        });
     }
 
     // ── IMAP path ──────────────────────────────────────────────
@@ -5663,6 +6300,36 @@ async fn poll_folder(
                 "list_all_uids for '{account_id}'/'{folder}' failed (skipping reconcile): {e}"
             );
             Vec::new()
+        }
+    };
+
+    // Flag refresh on the visible window (#255 follow-up).
+    // `fetch_envelopes` above only fetches UIDs strictly newer than
+    // the cache bookmark, so flag flips another client made
+    // (mark-read on a phone, answer from webmail, star elsewhere)
+    // never round-trip into Nimbus.  Cheap catch-up: one
+    // `UID FETCH x,y,z (UID FLAGS)` on the same window the user
+    // sees in the mail list.  Read the recent UIDs from the cache
+    // *before* the upsert below — the freshly-fetched batch will
+    // get its flags through the upsert path, this snapshot covers
+    // everything older than the bookmark.
+    let recent_cached_uids = cache
+        .list_recent_envelope_uids(account_id, folder, limit)
+        .unwrap_or_else(|e| {
+            tracing::warn!("list_recent_envelope_uids failed (skipping flag refresh): {e}");
+            Vec::new()
+        });
+    let flag_snapshots = if recent_cached_uids.is_empty() || uidvalidity_rotated {
+        Vec::new()
+    } else {
+        match client.fetch_flags(folder, &recent_cached_uids).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "fetch_flags for '{account_id}'/'{folder}' failed (skipping flag refresh): {e}"
+                );
+                Vec::new()
+            }
         }
     };
 
@@ -5735,7 +6402,35 @@ async fn poll_folder(
         tracing::warn!("cache.set_sync_state failed: {e}");
     }
 
-    Ok(FolderPollOutcome { new_envelopes })
+    // Apply the flag snapshot we collected before logout.  Done
+    // here (after the envelope upsert) so a UID that was both new
+    // *and* re-flagged won't be flickered between the two writes —
+    // the upsert lands its envelope-derived flags first, the
+    // reconcile then runs against everything else.  `replied_kind`
+    // is preserved by `reconcile_envelope_flags` (Nimbus-only
+    // metadata that IMAP can't carry).
+    let flag_changes = if flag_snapshots.is_empty() {
+        0
+    } else {
+        let tuples: Vec<(u32, bool, bool, bool)> = flag_snapshots
+            .iter()
+            .map(|s| (s.uid, s.is_read, s.is_starred, s.is_answered))
+            .collect();
+        cache
+            .reconcile_envelope_flags(account_id, folder, &tuples)
+            .unwrap_or_else(|e| {
+                tracing::warn!("reconcile_envelope_flags failed: {e}");
+                0
+            })
+    };
+    if flag_changes > 0 {
+        tracing::info!("Reconciled {flag_changes} flag change(s) for '{account_id}'/'{folder}'");
+    }
+
+    Ok(FolderPollOutcome {
+        new_envelopes,
+        flag_changes,
+    })
 }
 
 /// Fetch a full message (headers + body) by folder + UID.
@@ -6448,37 +7143,266 @@ fn pick_archive_folder(account_id: &str, cache: &Cache) -> Option<String> {
 
 // ── SMTP commands ───────────────────────────────────────────────
 
-/// Send an email via the account's configured SMTP server.
+/// Reference to the original message a Compose send is responding to
+/// (#255).  Set by Compose's reply / reply-all / "respond with
+/// meeting" flows so the backend can flip the IMAP `\Answered` flag
+/// (or JMAP `$answered` keyword) on the original and stamp the
+/// per-kind `replied_kind` into the local cache, which drives the
+/// reply-icon prefix on the mail-list row.  `None` for fresh
+/// composes / forwards / drafts — none of which are "answers".
 ///
-/// The frontend builds an `OutgoingEmail` (recipients, subject, body,
-/// attachments) and sends it here. We look up the account to get the
-/// SMTP host/port, retrieve the password from the keychain, and connect.
-/// The `from` field on `email` is authoritative — the UI sets it from
-/// the active account so Compose-from-alias can be added later without
-/// backend changes.
+/// `Serialize` so the Outbox (#276) can stash this alongside the
+/// queued `OutgoingEmail` and replay it on a successful drain
+/// retry.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepliedToRef {
+    folder: String,
+    uid: u32,
+    /// `"reply"` / `"reply-all"` / `"meeting"`.  Anything else falls
+    /// through to a generic answered icon — the validation here is
+    /// loose because the backend treats this as opaque metadata.
+    kind: String,
+}
+
+/// Source row for the edit-from-outbox flow (#276).  Tells
+/// `send_email` "I'm replacing the queued row with this id" —
+/// the row is removed before the new copy is enqueued so the
+/// queue never holds two versions of the same message during a
+/// resend.  Optional on every send; absent for ordinary sends
+/// (compose / reply / forward) and for retries that re-fire
+/// the existing queued row in place.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutboxSourceRef {
+    id: i64,
+}
+
+/// Pre-computed display fields for an Outbox row.  Cheap to render
+/// straight onto the row without re-deserialising the full
+/// `OutgoingEmail` JSON for every list refresh.
+fn outbox_display_fields(email: &OutgoingEmail) -> (String, String, String) {
+    let to_display = email.to.join(", ");
+    (email.from.clone(), to_display, email.subject.clone())
+}
+
+/// Send an email via the account's configured SMTP server (#276).
 ///
-/// After SMTP delivery, the message is appended to the IMAP Sent folder
-/// so the user has a visible record. JMAP handles this server-side.
+/// **Always queue first.**  Every send routes through the local
+/// `outbox_messages` table before touching SMTP.  Validation
+/// (build the lettre `Message`) runs synchronously so the user
+/// still gets a Compose-modal error for malformed addresses; the
+/// row is then enqueued and a Tokio task spawned to attempt the
+/// drain.  On a healthy network the drain finishes in the same
+/// tick and the row never paints in the UI; on failure the row
+/// stays for the periodic retry sweep in `background_sync_loop`.
+///
+/// The post-send work that used to live here (Sent APPEND,
+/// answered-flag flip, JMAP send) is factored into
+/// `try_drain_outbox_entry` — the spawned task and the retry
+/// sweep call into the same helper so the success path is
+/// identical regardless of when the drain fires.
+///
+/// `replied_to` (#255) is preserved through queue + retry so a
+/// reply that takes a few sweeps to land still flips `\Answered`
+/// on the original message.
+///
+/// `outbox_source` (#276 follow-up) carries the id of a queued
+/// row this send is replacing — the edit-from-outbox path.  When
+/// set, the row is removed before the new copy is enqueued so
+/// the queue never briefly holds both versions.  Cancelling
+/// Compose never reaches this command, so the original row stays
+/// put on cancel.
 #[tauri::command]
 async fn send_email(
     account_id: String,
     email: OutgoingEmail,
+    replied_to: Option<RepliedToRef>,
+    outbox_source: Option<OutboxSourceRef>,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
-    let account = load_account(&cache, &account_id)?;
+    app: AppHandle,
+) -> Result<i64, NimbusError> {
+    // Validate up-front: building the lettre Message rejects bad
+    // addresses, missing bodies, etc.  Doing it here means
+    // user-facing input errors still surface in Compose's modal
+    // rather than landing silently in the Outbox.  The IMAP /
+    // JMAP routing decision (uses_jmap) doesn't care — both paths
+    // need a valid OutgoingEmail.
+    let _ = build_outgoing_message(&email)?;
 
-    // JMAP handles sending server-side via EmailSubmission and writes
-    // a copy to Sent itself — no separate SMTP/APPEND needed.
-    if uses_jmap(&account) {
-        let client = connect_jmap(&account).await?;
-        return client.send_email(&email).await;
+    let (from_header, to_display, subject) = outbox_display_fields(&email);
+    let outgoing_json = serde_json::to_string(&email)
+        .map_err(|e| NimbusError::Other(format!("serialize OutgoingEmail for outbox: {e}")))?;
+    let replied_to_json =
+        match replied_to.as_ref() {
+            Some(rt) => Some(serde_json::to_string(rt).map_err(|e| {
+                NimbusError::Other(format!("serialize RepliedToRef for outbox: {e}"))
+            })?),
+            None => None,
+        };
+
+    // #276 follow-up — drop the source row before enqueueing the
+    // edit so the queue holds at most one copy of this message at
+    // any moment.  Idempotent: a `remove_outbox` for an id that's
+    // already drained / been deleted is a no-op (zero rows
+    // affected, no error).  Done before the new INSERT so a
+    // failure in this branch can't leak a duplicate.
+    if let Some(src) = outbox_source.as_ref() {
+        if let Err(e) = cache.remove_outbox(src.id) {
+            tracing::warn!("remove source outbox row {} failed: {e}", src.id);
+        }
     }
 
-    // Build the lettre message once so the same bytes go to both the
-    // SMTP recipients and the IMAP `APPEND` to Sent. Avoids the body
-    // diverging between the two paths if MIME generation ever becomes
-    // non-deterministic.
-    let message = build_outgoing_message(&email)?;
+    let entry_id = cache.enqueue_outbox(&nimbus_store::OutboxEnqueue {
+        account_id: account_id.clone(),
+        outgoing_json,
+        replied_to_json,
+        from_header,
+        to_display,
+        subject,
+        skip_sent_copy: email.skip_sent_copy,
+    })?;
+
+    // Tell the frontend the queue grew so the synthetic Outbox
+    // folder appears in the sidebar (no-op when the drain task
+    // beats us — the row has already been removed by the time the
+    // listener acts).
+    emit_outbox_updated(&app);
+
+    // Kick off the drain attempt immediately on a background
+    // task.  The task captures its own AppHandle clone so it
+    // outlives this command's return.  Cheap: ~tens of
+    // microseconds per spawn.
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let cache = app_clone.state::<Cache>();
+        try_drain_outbox_entry(&app_clone, &cache, entry_id).await;
+    });
+
+    // #276 follow-up: return the new row id so Compose can hand
+    // it to App.svelte's `onsentenqueued` callback.  The
+    // edit-from-outbox path uses it to surface the new (or
+    // still-failing) row in the right pane immediately, so the
+    // user sees their edit in the queue without manually
+    // re-clicking the row.
+    Ok(entry_id)
+}
+
+/// Drive one queued outbox row through SMTP / JMAP.  Removes the
+/// row on success, records the error on failure (the row stays
+/// for the next sweep).  Used by:
+///
+///   * the spawned task `send_email` kicks off after enqueue,
+///   * the `retry_outbox_entry` Tauri command (manual retry from
+///     the UI),
+///   * the periodic drain sweep in `background_sync_loop`.
+///
+/// Best-effort by design: any failure in the post-send Sent
+/// APPEND / answered-flag flip is logged and the row is still
+/// removed (the SMTP succeeded, the user's mail is out, the
+/// missing local-side bookkeeping will reconcile on the next
+/// envelope fetch).
+async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
+    let row = match cache.get_outbox(entry_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => return, // Already removed (manual delete, race with another drain).
+        Err(e) => {
+            tracing::warn!("get_outbox({entry_id}) failed: {e}");
+            return;
+        }
+    };
+
+    let email: OutgoingEmail = match serde_json::from_str(&row.outgoing_json) {
+        Ok(e) => e,
+        Err(e) => {
+            // Hard-failed deserialise — almost certainly a schema
+            // change upstream.  Record the error so the user can
+            // see it on the row and decide to delete; don't keep
+            // retrying forever on a malformed row.
+            let msg = format!("malformed outbox payload: {e}");
+            if let Err(c) = cache.record_outbox_failure(entry_id, &msg) {
+                tracing::warn!("record_outbox_failure failed: {c}");
+            }
+            return;
+        }
+    };
+    let replied_to: Option<RepliedToRef> =
+        row.replied_to_json
+            .as_deref()
+            .and_then(|s| match serde_json::from_str(s) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    tracing::warn!("malformed outbox replied_to_json: {e}");
+                    None
+                }
+            });
+
+    let account = match load_account(cache, &row.account_id) {
+        Ok(a) => a,
+        Err(e) => {
+            // Account was removed while a row was queued.  Drop
+            // the row — there's nowhere to send from.
+            tracing::warn!(
+                "outbox drain dropping row {entry_id}: account '{}' missing: {e}",
+                row.account_id
+            );
+            let _ = cache.remove_outbox(entry_id);
+            emit_outbox_updated(app);
+            return;
+        }
+    };
+
+    let send_result: Result<(), NimbusError> =
+        run_send_pipeline(app, cache, &account, &email, replied_to.as_ref()).await;
+
+    match send_result {
+        Ok(()) => {
+            if let Err(e) = cache.remove_outbox(entry_id) {
+                tracing::warn!("remove_outbox after success failed: {e}");
+            }
+            emit_outbox_updated(app);
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            tracing::info!(
+                "outbox drain for entry {entry_id} (account '{}') failed: {msg}",
+                row.account_id
+            );
+            if let Err(c) = cache.record_outbox_failure(entry_id, &msg) {
+                tracing::warn!("record_outbox_failure failed: {c}");
+            }
+            emit_outbox_updated(app);
+        }
+    }
+}
+
+/// Inner send pipeline shared by `try_drain_outbox_entry` (every
+/// outbox attempt) and any future direct-send caller.  Mirrors the
+/// pre-#276 `send_email` body verbatim — JMAP path returns after
+/// `client.send_email`, IMAP path runs SMTP + best-effort Sent
+/// APPEND + best-effort answered-flag flip.
+async fn run_send_pipeline(
+    app: &AppHandle,
+    cache: &Cache,
+    account: &Account,
+    email: &OutgoingEmail,
+    replied_to: Option<&RepliedToRef>,
+) -> Result<(), NimbusError> {
+    if uses_jmap(account) {
+        let client = connect_jmap(account).await?;
+        client.send_email(email).await?;
+        if let Some(rt) = replied_to {
+            mark_original_answered_jmap(account, cache, &client, rt).await;
+            emit_mail_flags_updated(app, &account.id, &rt.folder);
+        }
+        return Ok(());
+    }
+
+    // Build the lettre message once so the same bytes go to both
+    // the SMTP recipients and the IMAP `APPEND` to Sent.  Avoids
+    // the body diverging between the two paths if MIME generation
+    // ever becomes non-deterministic.
+    let message = build_outgoing_message(email)?;
     let raw = message.formatted();
 
     let password = credentials::get_imap_password(&account.id)?;
@@ -6490,28 +7414,259 @@ async fn send_email(
         &account.trusted_certs,
     )
     .await?;
-    smtp.send(&email).await?;
+    smtp.send(email).await?;
 
-    // Best-effort APPEND to Sent. SMTP succeeded, so the recipients
-    // already have the mail — failing the whole command because we
-    // couldn't update the local Sent view would be worse UX than a
-    // missing copy. We log and move on; the next folder fetch will
-    // catch up if the server still received the SMTP-side delivery.
-    //
-    // Auto-generated calendar mails (the calendar-grid "send invite"
-    // flow + RSVP REPLY) opt out via `skip_sent_copy`: most mail
-    // clients and calendar apps hide that traffic from the sender's
-    // Sent view too — RSVP responses are conceptually meeting
-    // machinery, not user-authored mail.
+    // Best-effort APPEND to Sent (same behaviour as before #276):
+    // the user's mail is already out, a failure here is logged
+    // but doesn't roll the send back.
     if !email.skip_sent_copy
-        && let Err(e) = append_to_sent(&account, &raw, &cache).await
+        && let Err(e) = append_to_sent(account, &raw, cache).await
     {
         tracing::warn!(
             "Sent OK but failed to append a copy to Sent for account '{}': {e}",
             account.id
         );
     }
+
+    if let Some(rt) = replied_to {
+        mark_original_answered_imap(account, cache, rt).await;
+        emit_mail_flags_updated(app, &account.id, &rt.folder);
+    }
     Ok(())
+}
+
+/// `outbox-updated` event payload (#276).  Fires whenever the
+/// queue changes shape (enqueue / drain success / drain failure /
+/// manual delete) so the frontend can re-read counts and refresh
+/// the synthetic Outbox folder.
+#[derive(Debug, Clone, serde::Serialize)]
+struct OutboxUpdatedPayload {
+    /// Total queued rows across every account — drives the
+    /// "show / hide synthetic Outbox folder" decision in the
+    /// sidebar.
+    total: u32,
+}
+
+/// Fire `outbox-updated` so the frontend re-reads the queue.
+/// Best-effort — a dropped event just means the user has to wait
+/// for the next sync tick to see the new state.
+fn emit_outbox_updated(app: &AppHandle) {
+    let total = match app.state::<Cache>().count_outbox() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("count_outbox for event payload failed: {e}");
+            return;
+        }
+    };
+    let payload = OutboxUpdatedPayload { total };
+    if let Err(e) = app.emit("outbox-updated", &payload) {
+        tracing::warn!("failed to emit outbox-updated event: {e}");
+    }
+}
+
+/// Frontend-facing shape of one Outbox row (#276).  The serde
+/// rename keeps the JS side reading camelCase fields without
+/// the Rust side caring about the wire format.  `outgoing` is
+/// the full `OutgoingEmail` re-deserialised from
+/// `outgoing_json` so the frontend can hand it straight back to
+/// Compose for the edit flow without parsing.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutboxRowDto {
+    id: i64,
+    account_id: String,
+    from_header: String,
+    to_display: String,
+    subject: String,
+    queued_at: i64,
+    attempt_count: u32,
+    last_attempt_at: Option<i64>,
+    last_error: Option<String>,
+    skip_sent_copy: bool,
+    /// Full `OutgoingEmail` JSON.  Parsed on the frontend by
+    /// `edit_outbox_entry`'s caller; opaque on the list view.
+    outgoing_json: String,
+    replied_to_json: Option<String>,
+}
+
+fn dto_from_row(row: nimbus_store::OutboxRow) -> OutboxRowDto {
+    OutboxRowDto {
+        id: row.id,
+        account_id: row.account_id,
+        from_header: row.from_header,
+        to_display: row.to_display,
+        subject: row.subject,
+        queued_at: row.queued_at,
+        attempt_count: row.attempt_count,
+        last_attempt_at: row.last_attempt_at,
+        last_error: row.last_error,
+        skip_sent_copy: row.skip_sent_copy,
+        outgoing_json: row.outgoing_json,
+        replied_to_json: row.replied_to_json,
+    }
+}
+
+/// Per-account Outbox list (#276).  Used by the Outbox MailList
+/// variant to render the queue.
+#[tauri::command]
+async fn list_outbox(
+    account_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<OutboxRowDto>, NimbusError> {
+    let rows = cache.list_outbox(&account_id)?;
+    Ok(rows.into_iter().map(dto_from_row).collect())
+}
+
+/// Outbox list across every account (#276).  Used by unified-inbox
+/// mode and by anything that needs the global queue (e.g. a tray
+/// "queued mail" indicator).
+#[tauri::command]
+async fn list_all_outbox(cache: State<'_, Cache>) -> Result<Vec<OutboxRowDto>, NimbusError> {
+    let rows = cache.list_all_outbox()?;
+    Ok(rows.into_iter().map(dto_from_row).collect())
+}
+
+/// Total queued rows across every account.  Cheap aggregate
+/// query — used by the Sidebar's "show synthetic Outbox folder?"
+/// decision.
+#[tauri::command]
+async fn count_outbox(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
+    Ok(cache.count_outbox()?)
+}
+
+/// Force a drain attempt on a specific row (#276).  Used by the
+/// "Retry now" button in the Outbox row UI.  Same code path the
+/// background sweep uses — succeeds, fails, or no-ops if the row
+/// vanished.  Doesn't block: the actual SMTP work runs on a
+/// spawned task so the UI returns instantly.
+#[tauri::command]
+async fn retry_outbox_entry(id: i64, app: AppHandle) -> Result<(), NimbusError> {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let cache = app_clone.state::<Cache>();
+        try_drain_outbox_entry(&app_clone, &cache, id).await;
+    });
+    Ok(())
+}
+
+/// Drop a queued row without sending (#276).  Used by the
+/// "Delete" button in the Outbox row UI.  Idempotent — deleting
+/// a row that's already drained is a no-op.
+#[tauri::command]
+async fn delete_outbox_entry(
+    id: i64,
+    cache: State<'_, Cache>,
+    app: AppHandle,
+) -> Result<(), NimbusError> {
+    cache.remove_outbox(id)?;
+    emit_outbox_updated(&app);
+    Ok(())
+}
+
+/// Pull a queued row's `OutgoingEmail` (and replied-to ref) for
+/// re-opening in Compose (#276).  Removes the row from the queue
+/// — the new send Compose triggers will create a fresh row.  If
+/// the user cancels Compose without sending, the original
+/// content is gone; the user can resend manually if needed.
+#[tauri::command]
+async fn edit_outbox_entry(
+    id: i64,
+    cache: State<'_, Cache>,
+    app: AppHandle,
+) -> Result<OutboxRowDto, NimbusError> {
+    let row = cache
+        .get_outbox(id)?
+        .ok_or_else(|| NimbusError::Other(format!("outbox row {id} not found")))?;
+    cache.remove_outbox(id)?;
+    emit_outbox_updated(&app);
+    Ok(dto_from_row(row))
+}
+
+/// Fire the `mail-flags-updated` Tauri event so the frontend
+/// re-reads the cache and the mail list reflects a flag change
+/// without a manual refresh.  Best-effort — a dropped event just
+/// means the user has to click refresh, which they would have
+/// before this plumbing existed anyway.
+fn emit_mail_flags_updated(app: &AppHandle, account_id: &str, folder: &str) {
+    let payload = MailFlagsUpdatedPayload {
+        account_id: account_id.to_string(),
+        folder: folder.to_string(),
+    };
+    if let Err(e) = app.emit("mail-flags-updated", &payload) {
+        tracing::warn!("failed to emit mail-flags-updated event: {e}");
+    }
+}
+
+/// Best-effort: stamp the local cache row + the IMAP `\Answered`
+/// flag on the original message that a Compose reply just answered
+/// (#255).  Logs on failure rather than propagating — the user's
+/// mail already left the building.
+async fn mark_original_answered_imap(account: &Account, cache: &Cache, rt: &RepliedToRef) {
+    if let Err(e) = cache.mark_envelope_replied(&account.id, &rt.folder, rt.uid, &rt.kind) {
+        tracing::warn!(
+            "answered-cache update failed for account '{}', folder '{}', uid {}: {e}",
+            account.id,
+            rt.folder,
+            rt.uid
+        );
+    }
+
+    let password = match credentials::get_imap_password(&account.id) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("answered-flag IMAP STORE skipped — keychain lookup failed: {e}");
+            return;
+        }
+    };
+    let mut client = match ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("answered-flag IMAP STORE skipped — connect failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = client.mark_as_answered(&rt.folder, rt.uid).await {
+        tracing::warn!(
+            "answered-flag IMAP STORE failed for '{}' uid {}: {e}",
+            rt.folder,
+            rt.uid
+        );
+    }
+    let _ = client.logout().await;
+}
+
+/// JMAP analogue of `mark_original_answered_imap` — uses the
+/// already-connected JMAP client (no second connect needed since
+/// JMAP is HTTPS-pooled, not a long-lived session).
+async fn mark_original_answered_jmap(
+    account: &Account,
+    cache: &Cache,
+    client: &JmapClient,
+    rt: &RepliedToRef,
+) {
+    if let Err(e) = cache.mark_envelope_replied(&account.id, &rt.folder, rt.uid, &rt.kind) {
+        tracing::warn!(
+            "answered-cache update failed for account '{}', folder '{}', uid {}: {e}",
+            account.id,
+            rt.folder,
+            rt.uid
+        );
+    }
+    if let Err(e) = client.mark_as_answered(&rt.folder, rt.uid).await {
+        tracing::warn!(
+            "answered-keyword JMAP set failed for '{}' uid {}: {e}",
+            rt.folder,
+            rt.uid
+        );
+    }
 }
 
 /// Locate the account's Sent folder (via the IMAP `\Sent` attribute,
@@ -7239,6 +8394,24 @@ struct NewMailPayload {
     subject: String,
 }
 
+/// `mail-flags-updated` event payload (#255 follow-up).  Tells the
+/// frontend "the cached envelopes for this (account, folder) had a
+/// flag-only change — please re-read the cache".  Two emit sites:
+///
+///   * Compose's send path, right after stamping `replied_kind` /
+///     flipping `\Answered` on the message we just answered, so the
+///     reply icon appears in the mail list immediately rather than
+///     waiting for the next user-initiated refresh.
+///   * The poll path's catch-up flag refresh, when it detects a
+///     `\Seen` / `\Flagged` / `\Answered` change made on another
+///     mail client.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MailFlagsUpdatedPayload {
+    account_id: String,
+    folder: String,
+}
+
 /// Bring the main window to the front. Called from the tray's
 /// left-click handler, the tray menu's "Open Nimbus" item, and the
 /// `show_main_window` command.
@@ -7285,6 +8458,21 @@ async fn check_mail_now_inner(app: &AppHandle) -> Result<(), NimbusError> {
                         account.id,
                         outcome.new_envelopes.len()
                     );
+                }
+                // #255: when the catch-up flag refresh found a
+                // cross-client `\Seen` / `\Flagged` / `\Answered`
+                // change, signal the frontend to re-read the cache
+                // so the mail list picks it up without a manual
+                // refresh.  Skip when nothing changed — silence is
+                // the point.
+                if outcome.flag_changes > 0 {
+                    let payload = MailFlagsUpdatedPayload {
+                        account_id: account.id.clone(),
+                        folder: "INBOX".to_string(),
+                    };
+                    if let Err(e) = app.emit("mail-flags-updated", &payload) {
+                        tracing::warn!("failed to emit mail-flags-updated event: {e}");
+                    }
                 }
             }
             Err(e) => {
@@ -7556,13 +8744,18 @@ async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError>
     }
 
     // Window: from now back ~tolerance (so a tick that just
-    // crossed the reminder time still catches it) forward 1 day
-    // (covers reminders up to "1 day before", which is the
-    // largest preset the editor offers).
+    // crossed the reminder time still catches it) forward 7 days
+    // (covers reminders up to "1 week before", the largest
+    // preset the editor offers — #236).  An event whose 1-week
+    // reminder is approaching has its `start` 7 days from now,
+    // so the cache filter must include events that far ahead or
+    // the reminder never fires.  Cheap: same per-calendar
+    // expansion path the agenda grid already runs, just with a
+    // wider date range.
     let now = Utc::now();
     let tolerance = chrono::Duration::seconds(EVENT_REMINDER_FIRE_TOLERANCE_SECS);
     let range_start = now - tolerance;
-    let range_end = now + chrono::Duration::days(1) + tolerance;
+    let range_end = now + chrono::Duration::days(7) + tolerance;
 
     let input = match cache.list_events_for_expansion(&calendar_ids, range_start, range_end) {
         Ok(i) => i,
@@ -7944,6 +9137,38 @@ async fn background_sync_loop(app: AppHandle) {
         if let Err(e) = check_event_reminders_inner(&app).await {
             tracing::warn!("background check_event_reminders_inner failed: {e}");
         }
+        // #276: drain the Outbox.  Walks every queued row across
+        // every account and re-attempts the SMTP send.  No-op
+        // when the queue is empty (one COUNT(*) check before any
+        // network work), so a healthy install pays only the cost
+        // of that aggregate per tick.
+        drain_outbox_sweep(&app).await;
+    }
+}
+
+/// Periodic drain pass over `outbox_messages`.  Called from the
+/// `background_sync_loop` on every sync tick.  Each row goes
+/// through `try_drain_outbox_entry` — same code the
+/// `send_email`-spawned task and the manual-retry command use,
+/// so a row eventually drains via whichever path completes
+/// first.  Done sequentially to keep concurrent SMTP connections
+/// to one per account; even a large queue (dozens of rows) is
+/// finished well within a sync interval on a healthy network.
+async fn drain_outbox_sweep(app: &AppHandle) {
+    let cache_state = app.state::<Cache>();
+    let rows = match cache_state.list_all_outbox() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("list_all_outbox during drain sweep failed: {e}");
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+    tracing::info!("outbox drain sweep: {} queued row(s)", rows.len());
+    for row in rows {
+        try_drain_outbox_entry(app, &cache_state, row.id).await;
     }
 }
 
@@ -9588,10 +10813,138 @@ fn restart_app(app: AppHandle) {
     app.restart();
 }
 
+// ── File-association handlers (#254) ────────────────────────────
+//
+// `bundle.fileAssociations` in `tauri.conf.json` registers Nimbus
+// with the OS as an "Open with…" candidate for `.ics` and `.eml`.
+// When the user double-clicks (or `start file.eml`s) one of those
+// the OS launches us with the path as `argv[1]`.  We capture the
+// argument once at startup and stash it in `PENDING_FILE_OPEN`;
+// the frontend polls `take_pending_file_to_open` after mount and
+// routes the path to the right view.
+
+/// One-shot slot for the file the OS handed us at launch time.
+/// Frontend takes ownership on its first read so a refresh of the
+/// main window doesn't loop into the same import flow.
+static PENDING_FILE_OPEN: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+
+fn pending_file_slot() -> &'static Mutex<Option<String>> {
+    PENDING_FILE_OPEN.get_or_init(|| Mutex::new(None))
+}
+
+/// Capture argv[1] at startup if it points at an `.ics` or `.eml`
+/// file we know how to open.  Anything else is ignored — Tauri
+/// passes any `--flag` style argv too and we don't want to
+/// accidentally treat those as paths.
+fn capture_launch_file_arg() {
+    let Some(arg) = std::env::args().nth(1) else {
+        return;
+    };
+    if arg.starts_with('-') {
+        return;
+    }
+    let lower = arg.to_lowercase();
+    if !(lower.ends_with(".ics") || lower.ends_with(".eml")) {
+        return;
+    }
+    if !std::path::Path::new(&arg).is_file() {
+        return;
+    }
+    if let Ok(mut slot) = pending_file_slot().lock() {
+        *slot = Some(arg);
+    }
+}
+
+/// Frontend hook: returns the launch-time file path (if any) and
+/// clears the slot so a window refresh doesn't re-open it.
+#[tauri::command]
+fn take_pending_file_to_open() -> Option<String> {
+    pending_file_slot()
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+}
+
+/// Read an `.eml` file from disk and parse it into the same
+/// `Email` shape `get_mail` returns from the cache.  Used by the
+/// view-only popout when the OS hands us a `.eml` to open.  No
+/// account context — the popout disables reply / forward / archive
+/// because there's no IMAP session to act against.
+#[tauri::command]
+fn parse_eml_file(path: String) -> Result<nimbus_core::models::Email, NimbusError> {
+    let bytes =
+        std::fs::read(&path).map_err(|e| NimbusError::Other(format!("read {path}: {e}")))?;
+    let stem = std::path::Path::new(&path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    nimbus_imap::parse_eml_bytes(&bytes, &format!("file:{stem}"), "", "")
+}
+
+/// Read an `.ics` file from disk and parse it into one or more
+/// `CalendarEvent`s.  Caller (the import-from-disk flow) opens the
+/// first event in the EventEditor so the user can pick a target
+/// calendar and save it via the existing create path.
+#[tauri::command]
+fn parse_ics_file(path: String) -> Result<Vec<nimbus_core::models::CalendarEvent>, NimbusError> {
+    let body = std::fs::read_to_string(&path)
+        .map_err(|e| NimbusError::Other(format!("read {path}: {e}")))?;
+    nimbus_caldav::ical::parse_ics(&body)
+}
+
+/// Cross-platform "open the OS Default Apps panel" — used by the
+/// settings page button so users can mark Nimbus as the default
+/// handler for `.ics` / `.eml` (which OS APIs don't let us do
+/// programmatically without a COM dance on Windows).
+///
+/// - Windows: `start ms-settings:defaultapps` opens the modern
+///   Settings panel directly on the Default-Apps page.
+/// - macOS: no settings deep-link for default apps; we open the
+///   user's home directory in Finder so they can right-click an
+///   `.ics` / `.eml` → Get Info → "Open with" → "Change All".
+/// - Linux: `xdg-mime default` is the canonical CLI; opening a
+///   GUI panel varies wildly across desktops, so we fall back to
+///   doing nothing and let the user run the CLI themselves.
+#[tauri::command]
+fn open_default_apps_settings() -> Result<(), NimbusError> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", "ms-settings:defaultapps"])
+            .spawn()
+            .map_err(|e| NimbusError::Other(format!("open defaults panel: {e}")))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
+            .spawn()
+            .map_err(|e| NimbusError::Other(format!("open defaults panel: {e}")))?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Err(NimbusError::Other(
+            "Default-app registration on Linux is per-desktop; \
+             use `xdg-mime default nimbus-mail.desktop text/calendar message/rfc822` \
+             from a terminal to mark Nimbus as the default handler."
+                .into(),
+        ))
+    }
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 fn main() {
     tracing_subscriber::fmt::init();
+
+    // Pick up the path the OS handed us if Nimbus was invoked as
+    // an `.ics` / `.eml` file handler (#254).  Capturing here —
+    // before the Tauri builder runs — means the slot is populated
+    // by the time the frontend's `take_pending_file_to_open`
+    // ping arrives on first paint.
+    capture_launch_file_arg();
 
     // Open (and migrate) the local mail cache once at startup, then
     // hand it to Tauri as managed state so every command can borrow it.
@@ -10019,6 +11372,12 @@ fn main() {
             mark_as_read,
             set_message_read,
             send_email,
+            list_outbox,
+            list_all_outbox,
+            count_outbox,
+            retry_outbox_entry,
+            delete_outbox_entry,
+            edit_outbox_entry,
             save_draft,
             delete_message,
             archive_message,
@@ -10100,6 +11459,7 @@ fn main() {
             list_nextcloud_addressbooks,
             list_nextcloud_calendars,
             sync_nextcloud_calendars,
+            sync_calendar_by_id,
             get_cached_calendars,
             create_nextcloud_calendar,
             update_nextcloud_calendar,
@@ -10115,6 +11475,9 @@ fn main() {
             get_event_partstat_for_user,
             update_calendar_event,
             delete_calendar_event,
+            get_attendee_availability,
+            geocode_search,
+            detect_nc_maps,
             dismiss_cancelled_event,
             is_event_in_calendar,
             record_cancelled_invite,
@@ -10161,6 +11524,11 @@ fn main() {
             show_main_window_cmd,
             quit_app,
             restart_app,
+            // #254 — file-association entry points
+            take_pending_file_to_open,
+            parse_eml_file,
+            parse_ics_file,
+            open_default_apps_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

@@ -73,6 +73,10 @@
      *  before the event-editor dropdown sees them so the "Add
      *  event" flow matches the CalendarView sidebar. */
     hidden?: boolean
+    /** CalDAV-derived read-only flag (#236).  EventEditor's
+     *  picker filters these out for create-mode so the user
+     *  can't pick a calendar a save would land 403 on. */
+    read_only?: boolean
   }
 
   interface Attachment {
@@ -124,6 +128,20 @@
         the note content with the user's signature *below* it,
         not stranded above an empty body.  Default `false`. */
     bodyAboveSignature?: boolean
+    /** Original-message reference for reply / reply-all / "respond
+        with meeting" flows (#255).  Threads the answer-kind
+        through Compose's send invoke so the backend can flip
+        `\Answered` on the original message and stamp the local
+        cache row's `replied_kind` — that's what drives the small
+        reply icon in front of the subject in the mail list.
+        Unset for fresh composes, forwards, draft-edits, and the
+        calendar-machinery sends. */
+    repliedTo?: {
+      accountId: string
+      folder: string
+      uid: number
+      kind: 'reply' | 'reply-all' | 'meeting'
+    }
     /** When Compose is opened by clicking "Edit" on an existing draft
         in the Drafts folder, this points at the server-side copy we
         opened from. Once the user sends or re-saves, that copy needs
@@ -135,6 +153,20 @@
         the outgoing copy is now headed for. Unset for brand-new
         composes and replies/forwards. */
     draftSource?: { accountId: string; folder: string; uid: number }
+    /** When Compose is opened by clicking "Edit" on a queued
+     *  message in the local Outbox (#276 follow-up), this carries
+     *  the source row id.  Sending replaces the source: the
+     *  backend's `send_email` removes the old row atomically
+     *  with enqueueing the edited copy so the queue holds one
+     *  version.  Cancelling Compose leaves the source row
+     *  alone — no send means no replacement. */
+    outboxSource?: { id: number }
+    /** Skip the automatic signature insertion in
+     *  `initialBodyHtml` (#276 follow-up).  Set on the edit-
+     *  from-outbox path because the queued body already carries
+     *  the signature from the original send; without this we'd
+     *  stack a second one and the user would see two. */
+    skipSignatureInsert?: boolean
   }
 
   /** Payload handed back to the parent when a background send
@@ -172,6 +204,15 @@
         another duplicate) and removes the modal overlay so the
         component fills the whole window. */
     inStandaloneWindow?: boolean
+    /** Fires after `invoke('send_email')` resolves successfully
+     *  with the id of the new Outbox row (#276 follow-up).
+     *  Distinct from `onclose` because the modal closes
+     *  immediately on Send (#156); this callback is the proof
+     *  the user actually went through with the send rather
+     *  than cancelling.  App.svelte uses the row id to look
+     *  the new row up and surface it as the selected Outbox
+     *  preview after an edit-from-outbox send. */
+    onsentenqueued?: (newRowId: number) => void
   }
   let {
     accounts,
@@ -181,6 +222,7 @@
     onsendfailed,
     initialError = '',
     inStandaloneWindow = false,
+    onsentenqueued,
   }: Props = $props()
 
   /**
@@ -560,18 +602,13 @@
       html = ''
     }
 
-    // Signature: best-effort grab of the active account at init
-    // time so replies open with the user's name already attached.
-    // If the account list hasn't loaded yet, we skip and let the
-    // signature `$effect` append on first frame instead.
-    const initSig = signatureBlock(
-      (accounts.find((a) => a.id === accountId) ?? accounts[0])?.signature,
-    )
-    if (initSig) {
-      lead += initSig
-      insertedSignatureHtml = initSig
-    }
-
+    // Integration blocks first — meeting invite, Talk link, NC
+    // file links.  These read as "what I'm sending you" content,
+    // so the signature belongs *after* them: it signs off the
+    // whole message including the cards, not just the empty
+    // typing space.  Reply / "Respond with meeting" flows
+    // depend on the meeting card landing above the signature
+    // (the signature is the bottom of the user's content).
     if (initial?.meetingInvite) lead += meetingInviteHtml(initial.meetingInvite)
     if (initial?.talkLink) lead += talkInviteHtml(initial.talkLink)
     if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
@@ -579,6 +616,32 @@
         .map((l) => `<p>🔗 <a href="${l.url}">${esc(l.filename)}</a></p>`)
         .join('')
       lead += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
+    }
+
+    // Signature: best-effort grab of the active account at init
+    // time so replies open with the user's name already attached.
+    // If the account list hasn't loaded yet, we skip and let the
+    // signature `$effect` append on first frame instead.
+    //
+    // `skipSignatureInsert` (#276) opts out entirely — set on the
+    // edit-from-outbox path because the queued body already
+    // carries the signature from the original send.  We also
+    // pin `insertedSignatureHtml` to the embedded signature so
+    // the late-load `$effect` doesn't try to add a second one
+    // when the accounts list resolves.
+    if (!initial?.skipSignatureInsert) {
+      const initSig = signatureBlock(
+        (accounts.find((a) => a.id === accountId) ?? accounts[0])?.signature,
+      )
+      if (initSig) {
+        lead += initSig
+        insertedSignatureHtml = initSig
+      }
+    } else {
+      const embeddedSig = signatureBlock(
+        (accounts.find((a) => a.id === accountId) ?? accounts[0])?.signature,
+      )
+      if (embeddedSig) insertedSignatureHtml = embeddedSig
     }
 
     return lead + html
@@ -607,13 +670,29 @@
 
     if (insertedSignatureHtml === null) {
       if (!nextSig) return
-      // Splice the signature right after the leading two empty
-      // paragraphs that initialBodyHtml stamps in.  Falls back to
-      // appendHtml when the body shape is unfamiliar (drafts).
+      // Splice the signature into the lead.  Layout target:
+      //   <p></p><p></p>            ← empty typing area
+      //   [meeting / talk / NC integration blocks]
+      //   [signature]                ← here
+      //   [quoted reply / body]
+      //
+      // Prefer the position right BEFORE the quoted-history
+      // wrapper — that pins the signature after any integration
+      // cards the user is sending.  Fall back to the position
+      // right after the empty paragraphs (correct for fresh
+      // composes with no quote and no integrations).  Last
+      // resort: appendHtml when the body shape is unfamiliar
+      // (e.g. an opened draft we can't reason about).
       const leadIdx = bodyHtml.indexOf('<p></p><p></p>')
       if (leadIdx !== -1) {
-        const after = leadIdx + '<p></p><p></p>'.length
-        const replaced = bodyHtml.slice(0, after) + nextSig + bodyHtml.slice(after)
+        const afterLead = leadIdx + '<p></p><p></p>'.length
+        const quoteIdx = bodyHtml.indexOf(
+          '<div data-nimbus-block="quoted-history"',
+          afterLead,
+        )
+        const insertAt = quoteIdx !== -1 ? quoteIdx : afterLead
+        const replaced =
+          bodyHtml.slice(0, insertAt) + nextSig + bodyHtml.slice(insertAt)
         editorApi.setHtml(replaced)
         bodyHtml = replaced
       } else {
@@ -1534,7 +1613,7 @@
     stagedEvent: StagedMeetingEvent | null
   }): Promise<void> {
     try {
-      await invoke('send_email', {
+      const newOutboxId = await invoke<number>('send_email', {
         accountId: snap.fromAccountId,
         email: {
           from: snap.fromHeader,
@@ -1547,7 +1626,25 @@
           body_html: snap.bodyHtml || null,
           attachments: snap.attachments,
         },
+        // #255: lets the backend stamp `\Answered` on the
+        // original + persist `replied_kind` for the mail-list
+        // reply icon.  Only present when this Compose was opened
+        // by a reply / reply-all / "respond with meeting" flow.
+        repliedTo: snap.initialAtSend?.repliedTo ?? null,
+        // #276 follow-up: when this Compose was opened by
+        // editing a queued Outbox row, the source row id rides
+        // through to the backend so it can drop the original
+        // atomically with enqueueing the edited copy.  Cancel
+        // path doesn't reach this invoke, so cancelling leaves
+        // the source row alone — what the user expects.
+        outboxSource: snap.initialAtSend?.outboxSource ?? null,
       })
+      // Send was accepted into the local queue (#276 follow-up).
+      // Hand the new row id to the parent so App.svelte can
+      // surface it as the selected Outbox preview after an
+      // edit-from-outbox send.  Best-effort; a missing
+      // handler is a no-op for non-edit flows.
+      onsentenqueued?.(newOutboxId)
     } catch (e: any) {
       const msg = formatError(e) || 'Failed to send'
       console.warn('send_email failed (modal already closed)', e)
@@ -1561,6 +1658,10 @@
           body: snap.body,
           attachments: snap.attachments,
           in_reply_to: snap.initialAtSend?.in_reply_to ?? null,
+          // Carry the answered-tracking ref into the recovery
+          // draft so a successful retry still flips `\Answered`
+          // on the original (#255).
+          repliedTo: snap.initialAtSend?.repliedTo,
           nextcloudLinks: snap.initialAtSend?.nextcloudLinks,
           talkLink: snap.initialAtSend?.talkLink,
           draftSource: snap.draftSource ?? undefined,

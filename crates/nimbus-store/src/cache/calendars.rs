@@ -64,6 +64,12 @@ pub struct CalendarRow {
     /// on the agenda grid. Local-only — never synced to the server.
     /// Toggled via the coloured swatch button in the CalendarView sidebar.
     pub muted: bool,
+    /// CalDAV `current-user-privilege-set` says the user can only
+    /// read this calendar (#236).  Mirrors the field on the
+    /// discovery `Calendar` struct so a post-discovery upsert can
+    /// stamp it.  When `true`, the EventEditor hides the Delete
+    /// button and removes the calendar from the new-event picker.
+    pub read_only: bool,
 }
 
 /// One VEVENT ready for upsert. Mirrors `nimbus_caldav::RawEvent`'s
@@ -97,6 +103,11 @@ pub struct CalendarEventRow {
     pub attendees: Vec<EventAttendee>,
     /// Parsed `VALARM` blocks.
     pub reminders: Vec<EventReminder>,
+    /// `GEO` latitude (RFC 5545 §3.8.1.6) — populated from the
+    /// EventEditor's location-autocomplete pick (#280).
+    pub latitude: Option<f64>,
+    /// `GEO` longitude — pairs with `latitude`.
+    pub longitude: Option<f64>,
     /// Raw `text/calendar` blob as the server returned it. Kept so
     /// future parser evolutions and the recurrence expander have a
     /// source of truth on disk.
@@ -126,6 +137,8 @@ pub struct CachedCalendar {
     /// appears in the sidebar but its events are skipped on the grid.
     /// Never round-trips to the server.
     pub muted: bool,
+    /// CalDAV-derived read-only flag (#236).  See `CalendarRow`.
+    pub read_only: bool,
 }
 
 /// Sync bookmark for a single calendar. Separate from `CachedCalendar`
@@ -194,14 +207,26 @@ impl Cache {
             // about, so a post-sync upsert must not overwrite what the
             // user picked. On first insert we stamp whatever the row
             // carries (both default to `false` from discovery).
+            //
+            // `read_only` (#236) IS in the UPDATE set — discovery
+            // re-runs the active write-probe (`probe_calendar_
+            // writable`) on every sync, so its verdict is canonical:
+            // if the user's permissions changed server-side
+            // (granted or revoked), the probe reflects that and
+            // the cache should follow.  Earlier we made this
+            // sticky-true to compensate for unreliable
+            // privilege-set / OPTIONS signals; the probe replaces
+            // both, so we can trust `excluded.read_only` directly
+            // again.
             let mut stmt = tx.prepare(
                 "INSERT INTO calendars
-                    (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted, read_only)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (nextcloud_account_id, path) DO UPDATE SET
                     display_name = excluded.display_name,
                     color        = COALESCE(excluded.color, calendars.color),
-                    ctag         = COALESCE(excluded.ctag, calendars.ctag)",
+                    ctag         = COALESCE(excluded.ctag, calendars.ctag),
+                    read_only    = excluded.read_only",
             )?;
             for r in rows {
                 let id = format!("{nc_account_id}::{}", r.path);
@@ -214,6 +239,7 @@ impl Cache {
                     r.ctag,
                     r.hidden as i64,
                     r.muted as i64,
+                    r.read_only as i64,
                 ])?;
             }
         }
@@ -258,8 +284,8 @@ impl Cache {
         let id = format!("{nc_account_id}::{}", row.path);
         conn.execute(
             "INSERT INTO calendars
-                (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted, read_only)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT (nextcloud_account_id, path) DO NOTHING",
             params![
                 id,
@@ -270,6 +296,7 @@ impl Cache {
                 row.ctag,
                 row.hidden as i64,
                 row.muted as i64,
+                row.read_only as i64,
             ],
         )?;
         Ok(id)
@@ -334,13 +361,33 @@ impl Cache {
         Ok(())
     }
 
+    /// Flip a calendar's `read_only` flag (#236 follow-up).  Used
+    /// by the CalDAV write-failure fallback in `main.rs`: when a
+    /// PUT or DELETE returns 403 or 404, we treat that as the
+    /// server saying "no write access" (Sabre/DAV's permission
+    /// masking pattern) and stamp the calendar as read-only
+    /// locally so the EventEditor stops offering Save / Delete
+    /// for this and any other event on it.  Idempotent.
+    pub fn set_calendar_read_only(
+        &self,
+        calendar_id: &str,
+        read_only: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE calendars SET read_only = ?2 WHERE id = ?1",
+            params![calendar_id, read_only as i64],
+        )?;
+        Ok(())
+    }
+
     /// All cached calendars for one Nextcloud account, alphabetised
     /// by display name.
     pub fn list_calendars(&self, nc_account_id: &str) -> Result<Vec<CachedCalendar>, CacheError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, path, display_name, color,
-                    ctag, sync_token, last_synced_at, hidden, muted
+                    ctag, sync_token, last_synced_at, hidden, muted, read_only
              FROM calendars
              WHERE nextcloud_account_id = ?1
              ORDER BY display_name COLLATE NOCASE",
@@ -349,6 +396,7 @@ impl Cache {
             let ts: Option<i64> = r.get(7)?;
             let hidden: i64 = r.get(8)?;
             let muted: i64 = r.get(9)?;
+            let read_only: i64 = r.get(10)?;
             Ok(CachedCalendar {
                 id: r.get(0)?,
                 nextcloud_account_id: r.get(1)?,
@@ -360,6 +408,7 @@ impl Cache {
                 last_synced_at: ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
                 hidden: hidden != 0,
                 muted: muted != 0,
+                read_only: read_only != 0,
             })
         })?;
         let mut out = Vec::new();
@@ -490,9 +539,10 @@ impl Cache {
                     (id, calendar_id, uid, href, etag, summary, description,
                      start_utc, end_utc, location, rrule, rdate_json, exdate_json,
                      recurrence_id, ics_raw, cached_at,
-                     url, transparency, attendees_json, reminders_json)
+                     url, transparency, attendees_json, reminders_json,
+                     latitude, longitude)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                         ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             )?;
             for e in upserts {
                 let id = event_row_id(calendar_id, &e.uid, e.recurrence_id);
@@ -529,6 +579,8 @@ impl Cache {
                     e.transparency,
                     attendees_json,
                     reminders_json,
+                    e.latitude,
+                    e.longitude,
                 ])?;
             }
         }
@@ -800,9 +852,10 @@ impl Cache {
                 (id, calendar_id, uid, href, etag, summary, description,
                  start_utc, end_utc, location, rrule, rdate_json, exdate_json,
                  recurrence_id, ics_raw, cached_at,
-                 url, transparency, attendees_json, reminders_json)
+                 url, transparency, attendees_json, reminders_json,
+                 latitude, longitude)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT (id) DO UPDATE SET
                 href           = excluded.href,
                 etag           = excluded.etag,
@@ -820,7 +873,9 @@ impl Cache {
                 url            = excluded.url,
                 transparency   = excluded.transparency,
                 attendees_json = excluded.attendees_json,
-                reminders_json = excluded.reminders_json",
+                reminders_json = excluded.reminders_json,
+                latitude       = excluded.latitude,
+                longitude      = excluded.longitude",
             params![
                 id,
                 calendar_id,
@@ -842,6 +897,8 @@ impl Cache {
                 row.transparency,
                 attendees_json,
                 reminders_json,
+                row.latitude,
+                row.longitude,
             ],
         )?;
         Ok(())
@@ -986,7 +1043,7 @@ fn event_row_id(calendar_id: &str, uid: &str, recurrence_id: Option<DateTime<Utc
 /// out of sync with individual `SELECT` statements.
 const EVENT_COLUMNS: &str = "id, calendar_id, summary, description, start_utc, end_utc, \
      location, rrule, rdate_json, exdate_json, recurrence_id, \
-     url, transparency, attendees_json, reminders_json";
+     url, transparency, attendees_json, reminders_json, latitude, longitude";
 
 /// `?1, ?2, ?N` placeholder list for binding a slice of calendar ids
 /// into an `IN (…)` clause. `n` is the number of calendar ids the
@@ -1041,6 +1098,8 @@ fn row_to_calendar_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEven
         transparency: r.get(12)?,
         attendees,
         reminders,
+        latitude: r.get(15)?,
+        longitude: r.get(16)?,
     })
 }
 
@@ -1061,6 +1120,7 @@ mod tests {
             ctag: Some(format!("ctag-{path}")),
             hidden: false,
             muted: false,
+            read_only: false,
         }
     }
 
@@ -1083,6 +1143,8 @@ mod tests {
             transparency: None,
             attendees: vec![],
             reminders: vec![],
+            latitude: None,
+            longitude: None,
             ics_raw: format!("BEGIN:VEVENT\r\nUID:{uid}\r\nEND:VEVENT\r\n"),
         }
     }

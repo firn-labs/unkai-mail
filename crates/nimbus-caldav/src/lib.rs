@@ -26,14 +26,17 @@ pub mod calendars;
 pub mod client;
 pub mod discovery;
 pub mod expand;
+pub mod freebusy;
 pub mod ical;
 pub mod sync;
 pub mod write;
 mod xml_util;
 
 pub use calendars::{create_calendar, delete_calendar, update_calendar};
+pub use client::probe_calendar_writable;
 pub use discovery::{Calendar, list_calendars};
 pub use expand::expand_event;
+pub use freebusy::{BusyKind, BusyPeriod, nc_principal_home, query_free_busy};
 pub use ical::{build_ics, parse_ics};
 pub use sync::{CalendarSyncDelta, RawEvent, sync_calendar};
 pub use write::{WriteOutcome, create_event, delete_event, delete_event_silent, update_event};
