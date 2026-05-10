@@ -1155,7 +1155,7 @@
             tabindex="0"
             aria-pressed={selected}
             class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
-              {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
+              {row.isSibling || !env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
               {selected
                 ? 'bg-primary-500/10'
                 : multi
