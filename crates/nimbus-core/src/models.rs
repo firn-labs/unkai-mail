@@ -169,6 +169,31 @@ pub struct AppSettings {
     /// links before the user clicks them.
     #[serde(default = "default_true")]
     pub link_check_enabled: bool,
+    /// Master toggle for the EventEditor's location autocomplete
+    /// + inline map preview (#280).  Default **off** — the
+    /// feature sends each typed query to Nominatim
+    /// (`nominatim.openstreetmap.org`) and the map preview iframe
+    /// loads tiles from `openstreetmap.org`, both third-party
+    /// services outside the user's Nextcloud trust boundary.
+    /// Off-by-default keeps the Location field as a plain text
+    /// input that never leaves the device; flipping it on opts
+    /// the user into the convenience of geocoded suggestions and
+    /// the inline pin.  The cached `geocode_cache` rows are
+    /// preserved when the toggle flips off — they're just not
+    /// consulted — so a later opt-back-in is instant.
+    #[serde(default)]
+    pub location_geocoding_enabled: bool,
+    /// Override base URL for forward-geocoding (#259 follow-up).
+    /// Empty string means "use the built-in default
+    /// `https://nominatim.openstreetmap.org`".  Self-hosters
+    /// can point this at their own Nominatim instance —
+    /// Nominatim's posted usage policy actively recommends a
+    /// private deployment for any volume above casual use.
+    /// We trim trailing slashes at request time and append
+    /// `/search` ourselves; the URL the user enters should be
+    /// the base (e.g. `https://nominatim.example.com`).
+    #[serde(default)]
+    pub nominatim_base_url: String,
 }
 
 fn default_logo_style() -> String {
@@ -258,6 +283,17 @@ impl Default for AppSettings {
             ui_locale: String::new(),
             ui_locale_auto: true,
             link_check_enabled: true,
+            // Off by default — the location autocomplete + map
+            // preview send each typed query to Nominatim and load
+            // tiles from openstreetmap.org, both outside the
+            // user's Nextcloud trust boundary.  Users opt in
+            // explicitly from General Settings (#280).
+            location_geocoding_enabled: false,
+            // Empty = fall back to the public Nominatim
+            // endpoint at request time.  Setting this to a
+            // self-hosted URL routes every typed query through
+            // the user's own Nominatim instead.
+            nominatim_base_url: String::new(),
         }
     }
 }
@@ -1009,6 +1045,19 @@ pub struct CalendarEvent {
     /// events with several alarms round-trip without losing data.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reminders: Vec<EventReminder>,
+    /// `GEO` property latitude (RFC 5545 §3.8.1.6) — stamped by
+    /// the EventEditor's location-autocomplete pick (#280) so the
+    /// inline map preview can drop a pin on the canonical place.
+    /// `None` for events whose `LOCATION` is free-text without a
+    /// geocoded match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    /// `GEO` property longitude — pairs with `latitude`.  Stored
+    /// independently rather than as a tuple so the JSON shape
+    /// surfaces both fields by name (the UI's IPC shape uses
+    /// camelCase getters per field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
 }
 
 /// A single ATTENDEE property on a VEVENT.

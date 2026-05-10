@@ -103,6 +103,11 @@ pub struct CalendarEventRow {
     pub attendees: Vec<EventAttendee>,
     /// Parsed `VALARM` blocks.
     pub reminders: Vec<EventReminder>,
+    /// `GEO` latitude (RFC 5545 §3.8.1.6) — populated from the
+    /// EventEditor's location-autocomplete pick (#280).
+    pub latitude: Option<f64>,
+    /// `GEO` longitude — pairs with `latitude`.
+    pub longitude: Option<f64>,
     /// Raw `text/calendar` blob as the server returned it. Kept so
     /// future parser evolutions and the recurrence expander have a
     /// source of truth on disk.
@@ -534,9 +539,10 @@ impl Cache {
                     (id, calendar_id, uid, href, etag, summary, description,
                      start_utc, end_utc, location, rrule, rdate_json, exdate_json,
                      recurrence_id, ics_raw, cached_at,
-                     url, transparency, attendees_json, reminders_json)
+                     url, transparency, attendees_json, reminders_json,
+                     latitude, longitude)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                         ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             )?;
             for e in upserts {
                 let id = event_row_id(calendar_id, &e.uid, e.recurrence_id);
@@ -573,6 +579,8 @@ impl Cache {
                     e.transparency,
                     attendees_json,
                     reminders_json,
+                    e.latitude,
+                    e.longitude,
                 ])?;
             }
         }
@@ -844,9 +852,10 @@ impl Cache {
                 (id, calendar_id, uid, href, etag, summary, description,
                  start_utc, end_utc, location, rrule, rdate_json, exdate_json,
                  recurrence_id, ics_raw, cached_at,
-                 url, transparency, attendees_json, reminders_json)
+                 url, transparency, attendees_json, reminders_json,
+                 latitude, longitude)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT (id) DO UPDATE SET
                 href           = excluded.href,
                 etag           = excluded.etag,
@@ -864,7 +873,9 @@ impl Cache {
                 url            = excluded.url,
                 transparency   = excluded.transparency,
                 attendees_json = excluded.attendees_json,
-                reminders_json = excluded.reminders_json",
+                reminders_json = excluded.reminders_json,
+                latitude       = excluded.latitude,
+                longitude      = excluded.longitude",
             params![
                 id,
                 calendar_id,
@@ -886,6 +897,8 @@ impl Cache {
                 row.transparency,
                 attendees_json,
                 reminders_json,
+                row.latitude,
+                row.longitude,
             ],
         )?;
         Ok(())
@@ -1030,7 +1043,7 @@ fn event_row_id(calendar_id: &str, uid: &str, recurrence_id: Option<DateTime<Utc
 /// out of sync with individual `SELECT` statements.
 const EVENT_COLUMNS: &str = "id, calendar_id, summary, description, start_utc, end_utc, \
      location, rrule, rdate_json, exdate_json, recurrence_id, \
-     url, transparency, attendees_json, reminders_json";
+     url, transparency, attendees_json, reminders_json, latitude, longitude";
 
 /// `?1, ?2, ?N` placeholder list for binding a slice of calendar ids
 /// into an `IN (…)` clause. `n` is the number of calendar ids the
@@ -1085,6 +1098,8 @@ fn row_to_calendar_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEven
         transparency: r.get(12)?,
         attendees,
         reminders,
+        latitude: r.get(15)?,
+        longitude: r.get(16)?,
     })
 }
 
@@ -1128,6 +1143,8 @@ mod tests {
             transparency: None,
             attendees: vec![],
             reminders: vec![],
+            latitude: None,
+            longitude: None,
             ics_raw: format!("BEGIN:VEVENT\r\nUID:{uid}\r\nEND:VEVENT\r\n"),
         }
     }

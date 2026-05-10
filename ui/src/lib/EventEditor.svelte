@@ -40,6 +40,9 @@
   import Select from './Select.svelte'
   import EmailKindChip from './EmailKindChip.svelte'
   import Toggle from './Toggle.svelte'
+  import EventPlanner from './EventPlanner.svelte'
+  import LocationField from './LocationField.svelte'
+  import MapPreview from './MapPreview.svelte'
   import { m } from '../paraglide/messages'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
@@ -71,6 +74,10 @@
     transparency?: string | null
     attendees?: EventAttendee[]
     reminders?: EventReminder[]
+    /** RFC 5545 GEO (#280) — stamped by the location-autocomplete
+     *  pick.  Both fields are present together or both `null`. */
+    latitude?: number | null
+    longitude?: number | null
   }
   interface CalendarSummary {
     id: string
@@ -200,6 +207,34 @@
   let description = $state(event?.description ?? draft?.description ?? '')
   // svelte-ignore state_referenced_locally
   let location = $state(event?.location ?? draft?.location ?? '')
+  // GEO lat/lon (#280) — stamped by LocationField when the user
+  // picks a geocoded suggestion, cleared if they edit the
+  // location free-text.  Round-trips through CalDAV's GEO
+  // property so other clients see the same pin.
+  // svelte-ignore state_referenced_locally
+  let latitude = $state<number | null>(
+    typeof event?.latitude === 'number' ? event.latitude : null,
+  )
+  // svelte-ignore state_referenced_locally
+  let longitude = $state<number | null>(
+    typeof event?.longitude === 'number' ? event.longitude : null,
+  )
+  /** Tracks the privacy toggle for location autocomplete + map
+   *  preview (#280).  Off by default; flipping it on in General
+   *  Settings opts the user into Nominatim queries and OSM tile
+   *  loads.  Both `LocationField` and `MapPreview` honour this
+   *  flag so a stale pin from a pre-existing event doesn't load
+   *  the iframe behind the user's back. */
+  let geocodingEnabled = $state(false)
+  $effect(() => {
+    void invoke<{ location_geocoding_enabled?: boolean }>('get_app_settings')
+      .then((s) => {
+        geocodingEnabled = s.location_geocoding_enabled === true
+      })
+      .catch(() => {
+        geocodingEnabled = false
+      })
+  })
   // svelte-ignore state_referenced_locally
   let transparency = $state(event?.transparency ?? 'OPAQUE')
 
@@ -396,6 +431,12 @@
       ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'CHAIR')
       : seedRole(draft?.chairAttendees, 'CHAIR'),
   )
+
+  /** True when the EventPlanner modal is open (#137).  Keeps the
+   *  planner unmounted unless the user actually clicked "Find
+   *  time" so its initial-load `get_attendee_availability` IPC
+   *  doesn't fire on every editor open. */
+  let plannerOpen = $state(false)
 
   /** Lower-cased addresses we consider "the user" — the union
    *  of every configured mail-account email.  Used by the RSVP
@@ -1254,6 +1295,11 @@
       transparency: transparency || null,
       attendees: buildAttendees(),
       reminders: buildReminders(),
+      // GEO (#280).  Sent only when the location-autocomplete
+      // pick stamped lat/lon; null elsewhere so the backend
+      // doesn't carry a stale pin forward.
+      latitude,
+      longitude,
     }
   }
 
@@ -1496,6 +1542,22 @@
       read_only_count: calendars.filter((cc) => cc.read_only).length,
     })
   })
+
+  // Best-effort autosync of this event's calendar the moment the
+  // editor opens in edit mode.  Narrows the window where another
+  // client's edit since our last sync would cause our PUT/DELETE
+  // to come back as 412 / "If-Match failed".  The save path's
+  // own etag-retry logic still backs us up if the user clicks
+  // Save before this sync completes; this one just makes that
+  // safety net rarely fire.  Errors are intentionally swallowed
+  // — the editor opens and works regardless.
+  $effect(() => {
+    if (mode !== 'edit') return
+    if (!calendarId) return
+    void invoke('sync_calendar_by_id', { calendarId }).catch((e) => {
+      console.warn('event-editor: autosync_calendar failed', e)
+    })
+  })
 </script>
 
 <!-- Backdrop click closes the editor — same UX pattern as the
@@ -1725,12 +1787,17 @@
            trip when they're attending a meeting they (or someone
            else) scheduled. -->
       <div class="flex items-center gap-2">
-        <input
-          id="event-location"
-          class="input flex-1 px-3 py-2 text-sm rounded-md"
-          bind:value={location}
-          placeholder="Location"
-          aria-label="Location"
+        <LocationField
+          value={location}
+          {latitude}
+          {longitude}
+          enabled={geocodingEnabled}
+          placeholder={m.event_editor_location_placeholder()}
+          onpick={(v, lat, lon) => {
+            location = v
+            latitude = lat
+            longitude = lon
+          }}
         />
         {#if joinMeetingUrl}
           <button
@@ -1760,6 +1827,22 @@
           </button>
         {/if}
       </div>
+
+      <!-- Map preview (#280).  Mounted only when (a) the user
+           opted into location geocoding in General Settings, and
+           (b) the autocomplete pick (or a stored GEO from a
+           previous opt-in) stamped lat/lon on the event.  The
+           privacy gate stops the OSM iframe from loading tiles
+           when the user has the feature off — even an existing
+           event with cached coordinates won't reach out to
+           openstreetmap.org until the toggle is back on. -->
+      {#if geocodingEnabled && latitude !== null && longitude !== null}
+        <MapPreview
+          latitude={latitude}
+          longitude={longitude}
+          caption={location}
+        />
+      {/if}
 
       <!-- Row 6 — Description.  Tall by default — the mockup
            shows it occupying the bulk of the form's middle. -->
@@ -2027,6 +2110,24 @@
       {@render attendeeInput('REQ-PARTICIPANT', 'Required attendees')}
       {@render attendeeInput('OPT-PARTICIPANT', 'Optional attendees')}
 
+      <!-- "Find time" trigger (#137).  Disabled until at least
+           one attendee has been added — without anyone to query,
+           the planner has nothing to render.  Sits between the
+           inputs and the chip list so the user reaches it as
+           soon as they've finished typing names. -->
+      {#if [...chairAttendees, ...requiredAttendees, ...optionalAttendees].length > 0}
+        <div class="flex">
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-primary-500"
+            onclick={() => { plannerOpen = true }}
+          >
+            <Icon name="calendar" size={14} class="inline-block align-text-bottom mr-1.5" />
+            {m.event_editor_find_time()}
+          </button>
+        </div>
+      {/if}
+
       <!-- Section separator + the chip lists grouped by role.
            Each header is faint until there's content under it,
            and `chipList` short-circuits empty buckets so the
@@ -2091,3 +2192,27 @@
     </footer>
   </div>
 </div>
+
+<!-- Scheduling-assistant modal (#137).  Mounted at the document
+     root level so its overlay covers the EventEditor too — the
+     user can apply a slot from the planner and see the editor's
+     time fields update immediately when the planner closes. -->
+{#if plannerOpen}
+  {@const ncId = calendars.find((c) => c.id === calendarId)?.nextcloud_account_id ?? ''}
+  {#if ncId}
+    <EventPlanner
+      open={plannerOpen}
+      {ncId}
+      attendees={[...chairAttendees, ...requiredAttendees, ...optionalAttendees]}
+      proposedStart={fromLocalSplit(startDate, startTime)}
+      proposedEnd={fromLocalSplit(endDate, endTime)}
+      onclose={() => { plannerOpen = false }}
+      onapply={(s, e) => {
+        startDate = toLocalDateInput(s)
+        startTime = toLocalTimeInput(s)
+        endDate = toLocalDateInput(e)
+        endTime = toLocalTimeInput(e)
+      }}
+    />
+  {/if}
+{/if}

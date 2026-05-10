@@ -30,6 +30,7 @@
 
 pub mod calendars;
 pub mod contacts;
+pub mod geocode;
 pub mod key;
 pub mod notes;
 pub mod pool;

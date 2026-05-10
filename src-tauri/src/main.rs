@@ -7,12 +7,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod badge;
+mod geocode;
 
 use nimbus_caldav::{
-    Calendar as CaldavCalendar, RawEvent, build_ics as caldav_build_ics,
-    create_calendar as caldav_create_calendar, create_event as caldav_create_event,
-    delete_calendar as caldav_delete_calendar, delete_event as caldav_delete_event,
-    list_calendars as caldav_list_calendars, probe_calendar_writable as caldav_probe_writable,
+    BusyKind as CaldavBusyKind, Calendar as CaldavCalendar, RawEvent,
+    build_ics as caldav_build_ics, create_calendar as caldav_create_calendar,
+    create_event as caldav_create_event, delete_calendar as caldav_delete_calendar,
+    delete_event as caldav_delete_event, list_calendars as caldav_list_calendars,
+    nc_principal_home as caldav_nc_principal_home,
+    probe_calendar_writable as caldav_probe_writable, query_free_busy as caldav_query_free_busy,
     sync_calendar as caldav_sync_calendar, update_calendar as caldav_update_calendar,
     update_event as caldav_update_event,
 };
@@ -3774,6 +3777,28 @@ async fn sync_nextcloud_calendars(
     Ok(report)
 }
 
+/// Single-calendar sync by app-side `calendar_id`.  Used by the
+/// EventEditor to freshen one calendar's events the moment the
+/// user opens an event for editing — narrows the window where a
+/// stale-etag PUT (the "If-Match failed" race) can happen.  Soft-
+/// fails on any error and just propagates it; the caller logs
+/// without surfacing a toast because this is best-effort
+/// freshening, not a user-initiated sync.
+#[tauri::command]
+async fn sync_calendar_by_id(
+    calendar_id: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let (nc_id, path) = cache
+        .get_calendar_server_path(&calendar_id)?
+        .ok_or_else(|| {
+            NimbusError::Other(format!(
+                "calendar '{calendar_id}' is not in the local cache"
+            ))
+        })?;
+    refresh_calendar_cache(&cache, &nc_id, &path).await
+}
+
 /// Cache-only list of calendars for a Nextcloud account. Used by the
 /// sidebar widget on startup so it can paint before the first sync
 /// finishes (or if the user is offline).
@@ -3972,21 +3997,25 @@ fn set_nextcloud_calendar_muted(
 ///    has — so matching an override to its series is O(1).
 /// 3. `nimbus_caldav::expand_event` does the RFC 5545 work: RRULE
 ///    enumeration, EXDATE removal, RDATE insertion, override swap-in.
-#[tauri::command]
-fn get_cached_events(
-    calendar_ids: Vec<String>,
+/// Pull events out of the local cache for `calendar_ids` over
+/// `[range_start, range_end)`, recurrence-expanded.  Shared by
+/// `get_cached_events` (the calendar grid) and
+/// `get_attendee_availability` (the planner's local-cache scan
+/// for external attendees).
+///
+/// Mirrors the expansion pipeline documented on `get_cached_events`:
+/// singletons + recurring masters + overrides → expand each master
+/// against its overrides → sorted chronological list.
+fn expand_calendar_events_in_range(
+    cache: &Cache,
+    calendar_ids: &[String],
     range_start: chrono::DateTime<chrono::Utc>,
     range_end: chrono::DateTime<chrono::Utc>,
-    cache: State<'_, Cache>,
 ) -> Result<Vec<CalendarEvent>, NimbusError> {
     let input = cache
-        .list_events_for_expansion(&calendar_ids, range_start, range_end)
+        .list_events_for_expansion(calendar_ids, range_start, range_end)
         .map_err(NimbusError::from)?;
 
-    // Index overrides by the master prefix that's baked into their id
-    // (`{cal}::{uid}::{epoch}` → `{cal}::{uid}`). Rare uid collisions
-    // across different calendars are already ruled out by the
-    // `{cal}::` segment.
     let mut overrides_by_master: std::collections::HashMap<&str, Vec<&CalendarEvent>> =
         std::collections::HashMap::new();
     for ov in &input.overrides {
@@ -4008,11 +4037,18 @@ fn get_cached_events(
             range_end,
         ));
     }
-    // Expansion doesn't guarantee chronological order across the whole
-    // set (singletons come first, then per-master occurrences). Sort
-    // once at the end so the UI's day-bucket grouping stays coherent.
     out.sort_by_key(|e| e.start);
     Ok(out)
+}
+
+#[tauri::command]
+fn get_cached_events(
+    calendar_ids: Vec<String>,
+    range_start: chrono::DateTime<chrono::Utc>,
+    range_end: chrono::DateTime<chrono::Utc>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<CalendarEvent>, NimbusError> {
+    expand_calendar_events_in_range(&cache, &calendar_ids, range_start, range_end)
 }
 
 /// What the Svelte editor sends for a create or update. Matches the
@@ -4045,6 +4081,14 @@ struct CalendarEventInput {
     attendees: Vec<EventAttendee>,
     #[serde(default)]
     reminders: Vec<EventReminder>,
+    /// `GEO` latitude / longitude (RFC 5545 §3.8.1.6).  Set by the
+    /// EventEditor's location-autocomplete pick (#280); `None`
+    /// when the user typed the location free-text without
+    /// selecting a geocoded match.
+    #[serde(default)]
+    latitude: Option<f64>,
+    #[serde(default)]
+    longitude: Option<f64>,
 }
 
 /// Build a `CalendarEvent` skeleton from form input. Caller fills in
@@ -4082,6 +4126,8 @@ fn input_to_calendar_event(uid: &str, input: &CalendarEventInput) -> CalendarEve
         transparency: input.transparency.clone(),
         attendees: input.attendees.clone(),
         reminders: input.reminders.clone(),
+        latitude: input.latitude,
+        longitude: input.longitude,
     }
 }
 
@@ -4112,6 +4158,8 @@ fn calendar_event_to_row(
         transparency: event.transparency.clone(),
         attendees: event.attendees.clone(),
         reminders: event.reminders.clone(),
+        latitude: event.latitude,
+        longitude: event.longitude,
         ics_raw: ics_raw.to_string(),
     }
 }
@@ -4359,21 +4407,372 @@ async fn delete_calendar_event(
     app: AppHandle,
 ) -> Result<(), NimbusError> {
     let handle = load_event_handle(&cache, &event_id)?;
-    let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
-
     let calendar_id = handle.calendar_id.clone();
-    caldav_delete_event(
-        &handle.href,
-        &nc_account.username,
-        &app_password,
-        &handle.etag,
-        &nc_account.trusted_certs,
-    )
-    .await
-    .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
+    delete_event_with_etag_retry(&cache, &event_id, &handle)
+        .await
+        .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
     cache.delete_event_by_id(&event_id)?;
     Ok(())
+}
+
+// ── Scheduling-assistant availability (#137) ─────────────────
+//
+// `get_attendee_availability` powers the EventPlanner UI: given a
+// list of attendee email addresses and a time window, return each
+// person's busy slots so the UI can render a free/busy grid.
+//
+// Resolution order per attendee:
+//
+//   1. **Sharees lookup** — does this address belong to a local NC
+//      user?  If yes, run a CalDAV `free-busy-query` REPORT against
+//      their calendar home.  Returns busy periods only (no event
+//      details), so the privacy story is identical to the standard
+//      Nextcloud / Outlook free-busy lookup users already expect.
+//   2. **Free-busy succeeded** → emit them with `source =
+//      "nc-freebusy"`.  This is the authoritative signal.
+//   3. **Free-busy failed** (server refused, calendar not shared,
+//      network blip) → fall through to the local-cache scan.
+//   4. **Not an NC user, or NC lookup failed** → scan our own
+//      calendars for events where this address is listed as an
+//      attendee.  Surfaces the meetings *we* know about that the
+//      person was invited to.  Issued via `source = "local-cache"`.
+//   5. **Anything else** → empty list with `source = "unknown"`.
+//      The UI renders the row as "no signal — assume free".
+//
+// The local-cache scan piggybacks on the existing recurrence-
+// expanded `expand_calendar_events_in_range` so a series the
+// attendee was invited to surfaces every occurrence in the window.
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttendeeBusyPeriod {
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+    /// One of "busy", "tentative", "unavailable", "free".  The
+    /// planner UI maps these to its own colour palette.
+    kind: String,
+    /// Source event's summary, when the period came from our
+    /// local-cache scan (the user's own calendars where the
+    /// attendee is listed).  CalDAV free-busy responses
+    /// deliberately don't carry titles — privacy — so this
+    /// stays `None` for `nc-freebusy` periods.  Surfacing it
+    /// in the planner is fine because the user already owns
+    /// the event whose title we're showing.
+    summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttendeeAvailability {
+    email: String,
+    display_name: Option<String>,
+    /// "nc-freebusy" | "local-cache" | "unknown" — see resolution
+    /// order in the module-level comment above.
+    source: String,
+    busy_periods: Vec<AttendeeBusyPeriod>,
+}
+
+fn busy_kind_to_string(k: CaldavBusyKind) -> String {
+    match k {
+        CaldavBusyKind::Busy => "busy",
+        CaldavBusyKind::Tentative => "tentative",
+        CaldavBusyKind::Unavailable => "unavailable",
+        CaldavBusyKind::Free => "free",
+    }
+    .to_string()
+}
+
+#[tauri::command]
+async fn get_attendee_availability(
+    nc_id: String,
+    attendee_emails: Vec<String>,
+    range_start: chrono::DateTime<chrono::Utc>,
+    range_end: chrono::DateTime<chrono::Utc>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<AttendeeAvailability>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    // Pre-load the local-cache events once so the per-attendee
+    // scan loop doesn't repeat the SQL + expansion work.
+    let calendar_ids: Vec<String> = cache
+        .list_calendars(&nc_id)?
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    let local_events =
+        expand_calendar_events_in_range(&cache, &calendar_ids, range_start, range_end)?;
+
+    let mut out: Vec<AttendeeAvailability> = Vec::with_capacity(attendee_emails.len());
+
+    for email in attendee_emails {
+        let lower = email.trim().to_ascii_lowercase();
+        if lower.is_empty() {
+            continue;
+        }
+
+        // Step 1: sharees lookup.  Soft-fail (None) on errors so a
+        // single bad lookup doesn't blank out the planner.
+        let nc_match = match nimbus_nextcloud::find_user_by_email(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            &email,
+            &account.trusted_certs,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::info!("sharees lookup for '{email}' failed: {e}");
+                None
+            }
+        };
+
+        // Always pre-compute the local-cache hits — events from
+        // the user's own calendars (which include shared/subscribed
+        // calendars in NC) where this person is listed.  Used both
+        // as the fallback when free-busy fails AND as a title
+        // source to enrich free-busy periods that come back without
+        // names attached.
+        let local_for_attendee: Vec<(
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+            Option<String>,
+        )> = local_events
+            .iter()
+            .filter(|ev| {
+                ev.attendees
+                    .iter()
+                    .any(|a| a.email.to_ascii_lowercase() == lower)
+            })
+            .map(|ev| {
+                (
+                    ev.start,
+                    ev.end,
+                    if ev.summary.trim().is_empty() {
+                        None
+                    } else {
+                        Some(ev.summary.clone())
+                    },
+                )
+            })
+            .collect();
+
+        // Step 2: NC user → free-busy-query.
+        if let Some(m) = nc_match.as_ref() {
+            let principal_url = caldav_nc_principal_home(&account.server_url, &m.user_id);
+            match caldav_query_free_busy(
+                &principal_url,
+                &account.username,
+                &app_password,
+                range_start,
+                range_end,
+                &account.trusted_certs,
+            )
+            .await
+            {
+                Ok(periods) => {
+                    out.push(AttendeeAvailability {
+                        email,
+                        display_name: Some(m.display_name.clone()),
+                        source: "nc-freebusy".into(),
+                        busy_periods: periods
+                            .into_iter()
+                            .map(|p| AttendeeBusyPeriod {
+                                start: p.start,
+                                end: p.end,
+                                kind: busy_kind_to_string(p.kind),
+                                // Free-busy responses themselves
+                                // don't carry titles by design,
+                                // but if we *also* have the same
+                                // event in our local cache (the
+                                // attendee invited us, or their
+                                // calendar is shared with us),
+                                // surface its title — that's not
+                                // a privacy regression because we
+                                // already own the data on our
+                                // side.  Match on start time;
+                                // server-side regeneration of
+                                // free-busy uses the source
+                                // event's DTSTART verbatim.
+                                summary: local_for_attendee
+                                    .iter()
+                                    .find(|(s, _, _)| *s == p.start)
+                                    .and_then(|(_, _, sum)| sum.clone()),
+                            })
+                            .collect(),
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    // Common case: the calendar isn't shared with
+                    // us, so the REPORT 403/404s.  Drop down to the
+                    // local-cache scan.
+                    tracing::info!(
+                        "free-busy-query unavailable for {} ({email}): {e}",
+                        m.user_id
+                    );
+                }
+            }
+        }
+
+        // Step 3: local-cache fallback — events in the user's own
+        // calendars where this person is listed as an attendee.
+        let busy: Vec<AttendeeBusyPeriod> = local_for_attendee
+            .iter()
+            .map(|(start, end, summary)| AttendeeBusyPeriod {
+                start: *start,
+                end: *end,
+                kind: "busy".into(),
+                summary: summary.clone(),
+            })
+            .collect();
+
+        let display_name = nc_match.as_ref().map(|m| m.display_name.clone());
+        let source = if !busy.is_empty() {
+            "local-cache"
+        } else if nc_match.is_some() {
+            // We knew it was an NC user but free-busy failed and
+            // we have no local events for them — leave the row
+            // empty with `unknown` so the UI distinguishes "no
+            // signal" from "confirmed free".
+            "unknown"
+        } else {
+            "local-cache"
+        }
+        .to_string();
+
+        out.push(AttendeeAvailability {
+            email,
+            display_name,
+            source,
+            busy_periods: busy,
+        });
+    }
+
+    Ok(out)
+}
+
+// ── Location autocomplete + map preview (#280) ───────────────
+//
+// The EventEditor's Location field offers two affordances:
+//
+//   1. **Autocomplete** — keystrokes (debounced) call
+//      `geocode_search`, which dedupes against the local
+//      `geocode_cache` table before hitting Nominatim.  Picking
+//      a suggestion stamps the canonical `display_name` plus
+//      `(lat, lon)` onto the in-flight event, which then
+//      round-trips through `LOCATION` + `GEO` in the iCalendar
+//      body.
+//
+//   2. **Inline map preview** — once the event has a `(lat,
+//      lon)`, the UI mounts a small MapLibre canvas pointing at
+//      it.  All tile traffic goes to public OSM-backed tile
+//      services with attribution (see the frontend component).
+//
+// `detect_nc_maps` is informational: it tells the UI whether
+// the user's connected NC has the Maps app enabled so the UI
+// can surface "Using your Nextcloud Maps" in the autocomplete
+// header.  The actual geocoding still goes to Nominatim either
+// way — NC Maps doesn't expose a server-side proxy at present.
+
+#[tauri::command]
+async fn geocode_search(
+    query: String,
+    lang: Option<String>,
+    cache: State<'_, Cache>,
+    settings: State<'_, SharedSettings>,
+) -> Result<Vec<geocode::GeocodeResult>, NimbusError> {
+    // Privacy gate (#280).  Off by default; the user must opt in
+    // via General Settings before any keystroke leaves the
+    // device.  We refuse here as well as in the UI so a
+    // mis-wired component can't accidentally exfiltrate a query
+    // before the toggle's state propagates.
+    //
+    // We snapshot both the toggle and the configurable
+    // `nominatim_base_url` under the same read so a settings
+    // change between the two reads can't have us call out to
+    // a stale endpoint after the toggle was just flipped on.
+    let (enabled, base_url) = {
+        let s = settings.read().await;
+        (s.location_geocoding_enabled, s.nominatim_base_url.clone())
+    };
+    if !enabled {
+        return Ok(Vec::new());
+    }
+
+    let lang = lang.unwrap_or_default();
+    // Cache hit short-circuits the network round-trip.  The
+    // cache itself canonicalises the query (whitespace,
+    // case-folding) so a tiny stylistic typo doesn't burn an
+    // upstream call.
+    if let Some(json) = cache
+        .get_geocode_cache(&query, &lang)
+        .map_err(NimbusError::from)?
+    {
+        if let Ok(hits) = serde_json::from_str::<Vec<geocode::GeocodeResult>>(&json) {
+            return Ok(hits);
+        }
+        // Cache row exists but is corrupt — fall through to a
+        // fresh fetch and let the new payload overwrite it.
+        tracing::warn!("geocode_cache: corrupt row for {query:?}, refetching");
+    }
+
+    let hits = geocode::nominatim_search(&query, &lang, &base_url).await?;
+    let serialised = serde_json::to_string(&hits)
+        .map_err(|e| NimbusError::Other(format!("geocode result serialise: {e}")))?;
+    if let Err(e) = cache.put_geocode_cache(&query, &lang, &serialised) {
+        // Cache write failure is non-fatal — the user still
+        // gets the live result.
+        tracing::warn!("geocode_cache write failed: {e}");
+    }
+    Ok(hits)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextcloudMapsCapability {
+    /// True when the connected NC has the Maps app enabled.
+    available: bool,
+}
+
+#[tauri::command]
+async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    // The capabilities OCS endpoint returns an enabled-apps map
+    // we can scan for `maps` without needing to actually call
+    // any Maps-app endpoints.  Soft-fails to "not available"
+    // on any network blip — the UI just shows the generic
+    // OSM-attribution copy in that case.
+    let server = account.server_url.trim_end_matches('/');
+    let url = format!("{server}/ocs/v2.php/cloud/capabilities?format=json");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| NimbusError::Network(format!("capabilities client: {e}")))?;
+    let resp = client
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(&account.username, Some(&app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("capabilities request: {e}")))?;
+    if !resp.status().is_success() {
+        return Ok(NextcloudMapsCapability { available: false });
+    }
+    // The capabilities body is deeply nested; we just look for
+    // any case-insensitive hint of "maps" inside the
+    // capabilities key.  More precise parsing would tie us to
+    // an NC version's exact JSON shape — this is informational
+    // anyway, and a false negative just means the UI doesn't
+    // show the "via NC Maps" hint.
+    let body = resp.text().await.unwrap_or_default();
+    let available = body.to_ascii_lowercase().contains("\"maps\"");
+    Ok(NextcloudMapsCapability { available })
 }
 
 /// Remove a locally-cached event whose iCalendar `UID` matches
@@ -5087,6 +5486,72 @@ async fn update_event_with_etag_retry(
     }
 }
 
+/// `caldav_delete_event` with the same transparent etag-mismatch
+/// recovery the update path uses.  When the cached etag is stale
+/// (another client edited the event since our last sync) the
+/// PUT comes back as `EtagMismatch` instead of a wordy
+/// "refresh and try again" error; we sync the parent calendar,
+/// reload the handle with the fresh etag, and retry once.  If
+/// the retry comes back 404 (`caldav_delete_event` reports that
+/// as `Ok(())` per RFC 4918 §9.6 — the resource is already
+/// gone, which is the state we wanted), we surface success too.
+///
+/// Caller passes the already-loaded `handle` so we don't repeat
+/// the cache lookup; in the rare two-step retry case we re-load
+/// internally to pick up the fresh href / etag.
+async fn delete_event_with_etag_retry(
+    cache: &Cache,
+    event_id: &str,
+    handle: &CalendarEventServerHandle,
+) -> Result<(), NimbusError> {
+    let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    match caldav_delete_event(
+        &handle.href,
+        &nc_account.username,
+        &app_password,
+        &handle.etag,
+        &nc_account.trusted_certs,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(NimbusError::EtagMismatch(_)) => {
+            tracing::info!("stale etag for delete of {event_id}; refreshing calendar and retrying");
+            let cal_path = cache
+                .get_calendar_server_path(&handle.calendar_id)?
+                .map(|(_, p)| p)
+                .ok_or_else(|| {
+                    NimbusError::Other(format!(
+                        "calendar '{}' is not in the local cache",
+                        handle.calendar_id
+                    ))
+                })?;
+            refresh_calendar_cache(cache, &handle.nextcloud_account_id, &cal_path).await?;
+            // Refresh may have removed the row entirely (someone
+            // else already deleted the event).  Treat that as
+            // success — our intent was "make this event go
+            // away", which is now true.
+            let Some(fresh) = cache
+                .get_event_server_handle(event_id)
+                .map_err(NimbusError::from)?
+            else {
+                return Ok(());
+            };
+            caldav_delete_event(
+                &fresh.href,
+                &nc_account.username,
+                &app_password,
+                &fresh.etag,
+                &nc_account.trusted_certs,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Pull the latest events for one calendar via CalDAV
 /// sync-collection and apply the delta to the local cache.
 /// Same plumbing as `sync_nextcloud_calendars`'s inner loop, but
@@ -5177,6 +5642,8 @@ fn raw_event_to_rows(raw: &RawEvent) -> Vec<CalendarEventRow> {
             transparency: e.transparency.clone(),
             attendees: e.attendees.clone(),
             reminders: e.reminders.clone(),
+            latitude: e.latitude,
+            longitude: e.longitude,
             ics_raw: raw.ics_raw.clone(),
         })
         .collect()
@@ -10992,6 +11459,7 @@ fn main() {
             list_nextcloud_addressbooks,
             list_nextcloud_calendars,
             sync_nextcloud_calendars,
+            sync_calendar_by_id,
             get_cached_calendars,
             create_nextcloud_calendar,
             update_nextcloud_calendar,
@@ -11007,6 +11475,9 @@ fn main() {
             get_event_partstat_for_user,
             update_calendar_event,
             delete_calendar_event,
+            get_attendee_availability,
+            geocode_search,
+            detect_nc_maps,
             dismiss_cancelled_event,
             is_event_in_calendar,
             record_cancelled_invite,

@@ -217,6 +217,18 @@
     ui_locale?: string
     /** #190 when true, the locale follows `navigator.language`. */
     ui_locale_auto?: boolean
+    /** #280 master toggle for the EventEditor's location
+     *  autocomplete + inline map preview.  Off (default) keeps
+     *  Location as a plain text input that never leaves the
+     *  device; on opts the user into Nominatim queries and
+     *  OpenStreetMap tile loads.  Non-optional because the Rust
+     *  side serialises a default value on `get_app_settings`. */
+    location_geocoding_enabled: boolean
+    /** #259 follow-up — override URL for forward-geocoding.
+     *  Empty string = use the public default
+     *  (`https://nominatim.openstreetmap.org`).  Self-hosters
+     *  can point this at their own Nominatim instance. */
+    nominatim_base_url: string
   }
   interface CustomThemeRow {
     id: string
@@ -248,7 +260,17 @@
     ui_scale_auto: true,
     ui_locale: '',
     ui_locale_auto: true,
+    location_geocoding_enabled: false,
+    nominatim_base_url: '',
   })
+
+  /** The default Nominatim base URL — surfaced in the settings
+   *  field's placeholder and as the value the Reset button
+   *  restores.  Mirrors `geocode::DEFAULT_NOMINATIM_BASE_URL`
+   *  on the Rust side.  We keep the constant local rather than
+   *  fetching it via IPC because it's stable, public, and
+   *  changing it would be a breaking change in any case. */
+  const DEFAULT_NOMINATIM_BASE_URL = 'https://nominatim.openstreetmap.org'
 
   // ── Logo / app-icon picker (Issue #X) ───────────────────────
   // Each entry is one slug the Rust side knows: the image source
@@ -1164,6 +1186,62 @@
             onchange={() => scheduleSave()}
           />
           <span>After delete / archive, open the next message automatically</span>
+        </div>
+
+        <!-- #280 — location autocomplete + inline map preview.
+             Off by default because each typed query goes to
+             nominatim.openstreetmap.org and the embedded map
+             loads tiles from openstreetmap.org — both outside
+             the user's Nextcloud trust boundary.  Spelling out
+             the dependency in the description lets the user
+             make an informed call. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.location_geocoding_enabled}
+            label={m.settings_location_geocoding_label()}
+            onchange={() => scheduleSave()}
+          />
+          <div class="flex-1">
+            <span>{m.settings_location_geocoding_label()}</span>
+            <p class="text-xs text-surface-400 mt-0.5">
+              {m.settings_location_geocoding_help()}
+            </p>
+            <!-- #259 follow-up — Nominatim self-host override.
+                 Empty = use the public default; the placeholder
+                 surfaces it so the user always knows what
+                 they're departing from.  Reset button clears
+                 the field, which the backend treats as "fall
+                 back to default". -->
+            {#if appSettings.location_geocoding_enabled}
+              <div class="flex items-center gap-2 mt-2">
+                <label class="text-xs text-surface-500 shrink-0" for="nominatim-base-url">
+                  {m.settings_nominatim_base_url_label()}
+                </label>
+                <input
+                  id="nominatim-base-url"
+                  type="url"
+                  class="input flex-1 text-sm py-1 px-2 rounded-md"
+                  placeholder={DEFAULT_NOMINATIM_BASE_URL}
+                  bind:value={appSettings.nominatim_base_url}
+                  onchange={() => scheduleSave()}
+                />
+                <button
+                  type="button"
+                  class="btn btn-sm preset-outlined-surface-500 shrink-0"
+                  disabled={appSettings.nominatim_base_url.trim() === ''}
+                  onclick={() => {
+                    appSettings.nominatim_base_url = ''
+                    scheduleSave()
+                  }}
+                >
+                  {m.settings_nominatim_base_url_reset()}
+                </button>
+              </div>
+              <p class="text-xs text-surface-500 mt-1">
+                {m.settings_nominatim_base_url_hint()}
+              </p>
+            {/if}
+          </div>
         </div>
 
         <!-- Display language (#190).  Auto by default — paraglide

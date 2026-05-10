@@ -959,6 +959,51 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE calendars
         ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v28 → v29: GEO lat/lon on calendar events (#280).
+    //
+    // RFC 5545 §3.8.1.6.  Populated by the EventEditor's
+    // location-autocomplete pick so the inline map preview can
+    // drop a pin on the canonical place; round-trips through
+    // `text/calendar` so other CalDAV clients see the same
+    // geocoded location.  `NULL` for events whose `LOCATION`
+    // is plain text without a geocoded match — pre-#280 rows
+    // start there and stay there until the user re-saves.
+    r#"
+    ALTER TABLE calendar_events
+        ADD COLUMN latitude REAL;
+    ALTER TABLE calendar_events
+        ADD COLUMN longitude REAL;
+
+    -- Local cache for Nominatim geocoding hits.  Hit by the
+    -- LocationField autocomplete (#280) so the same query
+    -- typed twice (or two events to the same address) doesn't
+    -- spend two upstream API calls.  Keyed by the lower-cased
+    -- query text + a canonical language code so a `?cafe`
+    -- search and a separate `cafe ` search dedupe to one row.
+    CREATE TABLE IF NOT EXISTS geocode_cache (
+        query        TEXT NOT NULL,
+        lang         TEXT NOT NULL DEFAULT '',
+        results_json TEXT NOT NULL,
+        cached_at    INTEGER NOT NULL,
+        PRIMARY KEY (query, lang)
+    );
+    "#,
+    // v29 → v30: drop the geocode-cache rows written before
+    // #259 added the `address` block to `GeocodeResult` (#259).
+    //
+    // Pre-#259 cache rows hold a serialised result whose
+    // `address` field is missing entirely (the struct didn't
+    // have it yet).  When the contact form's autocomplete
+    // hits one of those rows the structured-fill path sees
+    // `address: None` and falls back to dumping `display_name`
+    // into the street field — which is the "long string in
+    // street, other fields empty" symptom.  Rather than carry a
+    // cache-version column for what's purely a perf cache,
+    // wipe it once on upgrade and let the next user search
+    // re-populate with the new shape.
+    r#"
+    DELETE FROM geocode_cache;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
