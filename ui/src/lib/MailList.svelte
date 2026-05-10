@@ -131,6 +131,41 @@
     return `__solo:${env.account_id}:${env.uid}`
   }
 
+  /** JWZ-style canonical subject: strip a leading reply / forward
+   *  prefix and collapse whitespace so `"Re: Re: Test 3"` and
+   *  `"Test 3 "` produce the same key (#277).
+   *
+   *  We strip iteratively (`Re: Re: …` happens) and match the
+   *  most common prefixes across locales — `Re:`, `Fwd:`, `Fw:`,
+   *  `AW:` (German), `WG:` (German forward), `SV:` (Swedish). */
+  function canonicalSubject(s: string): string {
+    let out = (s || '').trim()
+    const prefixRe = /^(re|fwd?|aw|wg|sv)\s*(\[\d+\])?\s*:\s*/i
+    while (prefixRe.test(out)) {
+      out = out.replace(prefixRe, '').trim()
+    }
+    // Collapse interior whitespace runs to a single space so
+    // double-spaces from copy-paste don't break matching.
+    return out.replace(/\s+/g, ' ').toLowerCase()
+  }
+
+  /** Subject-based merge of buckets whose explicit-anchor chains
+   *  are broken (#277).  After the first reference-keyed bucketing
+   *  pass, walk the heads of every bucket: if a bucket's head is
+   *  a reply (`subject.startsWith("Re:") || …`) AND its canonical
+   *  subject equals another bucket's head canonical subject, the
+   *  two are very likely the same thread that just lost its
+   *  Message-ID anchor across the wire.  Merge them.
+   *
+   *  Floor of 4 chars on the canonical subject so trivial subjects
+   *  (`"hi"`, `"?"`) don't cause a merge cascade.  Everything else
+   *  Apple Mail / Thunderbird / Outlook also fall back to this
+   *  rule — see [JWZ threading
+   *  §5.B.iii](https://www.jwz.org/doc/threading.html). */
+  function isReplyOrForward(subject: string): boolean {
+    return /^(re|fwd?|aw|wg|sv)\s*(\[\d+\])?\s*:/i.test(subject || '')
+  }
+
   function toggleThread(key: string) {
     // Re-assign so Svelte 5 picks up the mutation — Set
     // mutations alone don't trigger reactivity.
@@ -186,13 +221,81 @@
     for (const arr of groups.values()) {
       arr.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
     }
+
+    // JWZ-style subject-based merge pass (#277).  Some servers
+    // rewrite Message-IDs on delivery (local-SMTP test rigs and
+    // a few Exchange configs we've seen) so the inbox copy
+    // anchors a different ID than the reply's `In-Reply-To`
+    // points at.  This is exactly the case where Thunderbird /
+    // Apple Mail still thread correctly — they fall back to
+    // subject matching.  Match Nimbus to that behaviour.
+    //
+    // For every reply-shaped bucket head (`Re:` / `Fwd:` / …),
+    // look for another bucket whose head has the same canonical
+    // subject; merge the reply bucket into the older bucket.
+    //
+    // `byCanonicalRoot` indexes the *non-reply* heads
+    // (potential thread roots) so the lookup is O(1) per
+    // bucket.  The 4-char floor avoids cascading merges on
+    // trivial subjects like `"hi"`.
+    const byCanonicalRoot = new Map<string, string>() // canon → group key
+    for (const [key, arr] of groups) {
+      const head = arr[arr.length - 1] // oldest in bucket = candidate root
+      if (!head || isReplyOrForward(head.subject)) continue
+      const canon = canonicalSubject(head.subject)
+      if (canon.length < 4) continue
+      // Ties: first non-reply bucket wins; later collisions
+      // stay separate to avoid mass merges on common subjects.
+      if (!byCanonicalRoot.has(canon)) byCanonicalRoot.set(canon, key)
+    }
+    // `keyRedirect` maps a now-merged-away key to its merge
+    // target so the seen-key bookkeeping below still resolves
+    // to a group when an envelope's own `threadKey` was the
+    // merged-away one.
+    const keyRedirect = new Map<string, string>()
+    const mergedAway = new Set<string>()
+    for (const [key, arr] of groups) {
+      if (mergedAway.has(key)) continue
+      const head = arr[arr.length - 1]
+      if (!head || !isReplyOrForward(head.subject)) continue
+      const canon = canonicalSubject(head.subject)
+      if (canon.length < 4) continue
+      const targetKey = byCanonicalRoot.get(canon)
+      if (!targetKey || targetKey === key) continue
+      // Move every envelope into the target bucket.
+      const target = groups.get(targetKey)
+      if (!target) continue
+      target.push(...arr)
+      target.sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+      )
+      mergedAway.add(key)
+      keyRedirect.set(key, targetKey)
+    }
+    for (const key of mergedAway) groups.delete(key)
+
+    /** Resolve an envelope's natural threadKey through the
+     *  redirect chain to the post-merge canonical key. */
+    function effectiveKey(env: EmailEnvelope): string {
+      let key = threadKeyOf(env)
+      // Defensive while-loop in case a redirect chain went two
+      // hops (shouldn't happen with the single-pass merge, but
+      // cheap insurance).
+      let hops = 0
+      while (keyRedirect.has(key) && hops < 8) {
+        key = keyRedirect.get(key)!
+        hops++
+      }
+      return key
+    }
     const out: RenderRow[] = []
     const seen = new Set<string>()
     for (const env of envelopes) {
-      const key = threadKeyOf(env)
+      const key = effectiveKey(env)
       if (seen.has(key)) continue
       seen.add(key)
-      const group = groups.get(key)!
+      const group = groups.get(key)
+      if (!group) continue
       const head = group[0]
       const siblings = group.slice(1)
       out.push({
