@@ -206,10 +206,14 @@ async fn delete_event_inner(
     };
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
-        return Err(NimbusError::Nextcloud(
-            "event was modified on the server since last sync â€” refresh and try again"
-                .to_string(),
-        ));
+        // Programmatically-detectable variant — same shape as
+        // `update_event` so the Tauri layer can transparently
+        // sync + retry instead of surfacing a "refresh and try
+        // again" toast to the user.  See
+        // `delete_event_with_etag_retry` in `src-tauri`.
+        return Err(NimbusError::EtagMismatch(format!(
+            "If-Match failed for DELETE {href} (server etag != cached)"
+        )));
     }
     // 404 is fine â€” already gone is the state we wanted.
     if status == StatusCode::NOT_FOUND {

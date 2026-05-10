@@ -1542,6 +1542,22 @@
       read_only_count: calendars.filter((cc) => cc.read_only).length,
     })
   })
+
+  // Best-effort autosync of this event's calendar the moment the
+  // editor opens in edit mode.  Narrows the window where another
+  // client's edit since our last sync would cause our PUT/DELETE
+  // to come back as 412 / "If-Match failed".  The save path's
+  // own etag-retry logic still backs us up if the user clicks
+  // Save before this sync completes; this one just makes that
+  // safety net rarely fire.  Errors are intentionally swallowed
+  // — the editor opens and works regardless.
+  $effect(() => {
+    if (mode !== 'edit') return
+    if (!calendarId) return
+    void invoke('sync_calendar_by_id', { calendarId }).catch((e) => {
+      console.warn('event-editor: autosync_calendar failed', e)
+    })
+  })
 </script>
 
 <!-- Backdrop click closes the editor — same UX pattern as the
