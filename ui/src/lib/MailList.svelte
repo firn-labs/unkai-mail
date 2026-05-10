@@ -152,20 +152,21 @@
   }
 
   let renderRows = $derived.by((): RenderRow[] => {
-    // Diagnostic for #277 — log a small sample of envelope
-    // threading data so we can see whether the data made it
-    // through to the frontend.  Limit to first 5 envelopes so
-    // the console doesn't flood; that's enough to confirm the
-    // shape.
+    // Diagnostic for #277 — dump every envelope's threading
+    // shape AND its computed thread key.  Grouping requires
+    // parent.threadKey === reply.threadKey, so if envelopes
+    // that should belong together produce different keys, the
+    // log will show it directly.
     if (envelopes.length > 0) {
       console.log(
-        '[mail-list] threading sample',
-        envelopes.slice(0, 5).map((e) => ({
+        '[mail-list] threading dump',
+        envelopes.slice(0, 20).map((e) => ({
           uid: e.uid,
-          subject: e.subject.slice(0, 40),
-          message_id: e.message_id,
-          in_reply_to: e.in_reply_to,
-          refs_len: e.references_ids?.length ?? 0,
+          subject: e.subject.slice(0, 50),
+          message_id: e.message_id ?? null,
+          in_reply_to: e.in_reply_to ?? null,
+          references_ids: e.references_ids ?? [],
+          threadKey: threadKeyOf(e),
         })),
       )
     }
