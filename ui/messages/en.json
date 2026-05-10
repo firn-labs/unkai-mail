@@ -198,6 +198,8 @@
   "map_preview_iframe_title": "Map preview",
   "map_preview_attribution": "© OpenStreetMap contributors",
   "map_preview_open_external": "Open in OpenStreetMap",
-  "settings_location_geocoding_label": "Location autocomplete + map preview",
-  "settings_location_geocoding_help": "Off by default. When on, the event editor's Location field offers geocoded suggestions and shows an inline map. Each typed query goes to OpenStreetMap's Nominatim service and the map loads tiles from openstreetmap.org — both third-party services outside your Nextcloud."
+  "address_suggest_loading": "Searching addresses…",
+  "address_suggest_attribution": "Suggestions © OpenStreetMap contributors",
+  "settings_location_geocoding_label": "Online location and address suggestions",
+  "settings_location_geocoding_help": "Off by default. When on, the event editor's Location field offers geocoded suggestions with an inline map preview, and the contact form's Addresses section suggests matching street addresses as you type. Each typed query goes to OpenStreetMap's Nominatim service and the event-editor map loads tiles from openstreetmap.org — both third-party services outside your Nextcloud."
 }
