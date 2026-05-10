@@ -192,5 +192,10 @@
   "event_planner_apply": "Diesen Zeitraum verwenden",
   "event_planner_cancel": "Abbrechen",
   "event_planner_source_unknown_title": "Keine Verfügbarkeitsdaten — als frei angenommen.",
-  "event_planner_source_local_title": "Aus Ihren eigenen Kalendern (diese Person hat kein Nextcloud-Konto bzw. ihr Kalender wird nicht mit Ihnen geteilt)."
+  "event_planner_source_local_title": "Aus Ihren eigenen Kalendern (diese Person hat kein Nextcloud-Konto bzw. ihr Kalender wird nicht mit Ihnen geteilt).",
+  "event_editor_location_placeholder": "Ort",
+  "location_field_loading": "Suche läuft…",
+  "map_preview_iframe_title": "Kartenvorschau",
+  "map_preview_attribution": "© OpenStreetMap-Mitwirkende",
+  "map_preview_open_external": "In OpenStreetMap öffnen"
 }

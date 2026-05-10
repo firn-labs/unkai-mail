@@ -41,6 +41,8 @@
   import EmailKindChip from './EmailKindChip.svelte'
   import Toggle from './Toggle.svelte'
   import EventPlanner from './EventPlanner.svelte'
+  import LocationField from './LocationField.svelte'
+  import MapPreview from './MapPreview.svelte'
   import { m } from '../paraglide/messages'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
@@ -72,6 +74,10 @@
     transparency?: string | null
     attendees?: EventAttendee[]
     reminders?: EventReminder[]
+    /** RFC 5545 GEO (#280) — stamped by the location-autocomplete
+     *  pick.  Both fields are present together or both `null`. */
+    latitude?: number | null
+    longitude?: number | null
   }
   interface CalendarSummary {
     id: string
@@ -201,6 +207,18 @@
   let description = $state(event?.description ?? draft?.description ?? '')
   // svelte-ignore state_referenced_locally
   let location = $state(event?.location ?? draft?.location ?? '')
+  // GEO lat/lon (#280) — stamped by LocationField when the user
+  // picks a geocoded suggestion, cleared if they edit the
+  // location free-text.  Round-trips through CalDAV's GEO
+  // property so other clients see the same pin.
+  // svelte-ignore state_referenced_locally
+  let latitude = $state<number | null>(
+    typeof event?.latitude === 'number' ? event.latitude : null,
+  )
+  // svelte-ignore state_referenced_locally
+  let longitude = $state<number | null>(
+    typeof event?.longitude === 'number' ? event.longitude : null,
+  )
   // svelte-ignore state_referenced_locally
   let transparency = $state(event?.transparency ?? 'OPAQUE')
 
@@ -1261,6 +1279,11 @@
       transparency: transparency || null,
       attendees: buildAttendees(),
       reminders: buildReminders(),
+      // GEO (#280).  Sent only when the location-autocomplete
+      // pick stamped lat/lon; null elsewhere so the backend
+      // doesn't carry a stale pin forward.
+      latitude,
+      longitude,
     }
   }
 
@@ -1732,12 +1755,16 @@
            trip when they're attending a meeting they (or someone
            else) scheduled. -->
       <div class="flex items-center gap-2">
-        <input
-          id="event-location"
-          class="input flex-1 px-3 py-2 text-sm rounded-md"
-          bind:value={location}
-          placeholder="Location"
-          aria-label="Location"
+        <LocationField
+          value={location}
+          {latitude}
+          {longitude}
+          placeholder={m.event_editor_location_placeholder()}
+          onpick={(v, lat, lon) => {
+            location = v
+            latitude = lat
+            longitude = lon
+          }}
         />
         {#if joinMeetingUrl}
           <button
@@ -1767,6 +1794,20 @@
           </button>
         {/if}
       </div>
+
+      <!-- Map preview (#280).  Mounted only when the location-
+           autocomplete pick stamped lat/lon onto the event; a
+           free-text address without a geocoded match keeps the
+           form compact.  The component is read-only — there's
+           no drag-the-pin gesture; tweaking the location goes
+           through the input above. -->
+      {#if latitude !== null && longitude !== null}
+        <MapPreview
+          latitude={latitude}
+          longitude={longitude}
+          caption={location}
+        />
+      {/if}
 
       <!-- Row 6 — Description.  Tall by default — the mockup
            shows it occupying the bulk of the form's middle. -->
