@@ -959,6 +959,35 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE calendars
         ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v28 → v29: GEO lat/lon on calendar events (#280).
+    //
+    // RFC 5545 §3.8.1.6.  Populated by the EventEditor's
+    // location-autocomplete pick so the inline map preview can
+    // drop a pin on the canonical place; round-trips through
+    // `text/calendar` so other CalDAV clients see the same
+    // geocoded location.  `NULL` for events whose `LOCATION`
+    // is plain text without a geocoded match — pre-#280 rows
+    // start there and stay there until the user re-saves.
+    r#"
+    ALTER TABLE calendar_events
+        ADD COLUMN latitude REAL;
+    ALTER TABLE calendar_events
+        ADD COLUMN longitude REAL;
+
+    -- Local cache for Nominatim geocoding hits.  Hit by the
+    -- LocationField autocomplete (#280) so the same query
+    -- typed twice (or two events to the same address) doesn't
+    -- spend two upstream API calls.  Keyed by the lower-cased
+    -- query text + a canonical language code so a `?cafe`
+    -- search and a separate `cafe ` search dedupe to one row.
+    CREATE TABLE IF NOT EXISTS geocode_cache (
+        query        TEXT NOT NULL,
+        lang         TEXT NOT NULL DEFAULT '',
+        results_json TEXT NOT NULL,
+        cached_at    INTEGER NOT NULL,
+        PRIMARY KEY (query, lang)
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
