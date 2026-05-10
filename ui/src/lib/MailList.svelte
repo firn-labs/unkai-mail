@@ -1200,28 +1200,28 @@
                 {env.subject || '(no subject)'}
               </span>
             </p>
-            <!-- Bottom meta row.  Account label on the left in
-                 unified mode; conversation count + chevron
-                 (#277) tucked to the bottom-right via
-                 `ml-auto`.  Only renders if at least one piece
-                 needs to show; otherwise the row stays compact. -->
+            <!-- Bottom meta row.  Conversation count + chevron
+                 (#277) sits at the bottom-left as a pill badge;
+                 the unified-mode account label, when present,
+                 trails to the right via `ml-auto`.  Only renders
+                 if at least one piece has content; otherwise the
+                 row stays compact. -->
             {#if row.siblingCount > 0 || (unified && env.account_id)}
               <div class="flex items-center gap-2 mt-1 text-[11px] text-surface-500 min-w-0">
-                {#if unified && env.account_id}
-                  <span class="truncate">{accountLabel(env.account_id)}</span>
-                {/if}
                 {#if row.siblingCount > 0}
-                  <!-- Conversation count + chevron (#277).  Click
-                       toggles expansion of the thread below this
-                       row inline.  `stopPropagation` so the row
-                       click (which opens the head message)
-                       doesn't fire alongside.  `ml-auto` pushes
-                       the cluster to the right edge of the meta
-                       row so it sits at the row's bottom-right
-                       corner. -->
+                  <!-- Modern pill badge: rounded-full, soft
+                       primary tint, primary-coloured count, and
+                       an inline SVG chevron that rotates 180° on
+                       expand.  Click toggles the thread below;
+                       `stopPropagation` so the row click (which
+                       opens the head message) doesn't fire
+                       alongside.  Inline SVG instead of an Icon
+                       registry entry — `chevron-down` isn't a
+                       stock icon in Icon.svelte and a 12 px path
+                       is too small to justify a new file. -->
                   <button
                     type="button"
-                    class="shrink-0 ml-auto inline-flex items-center gap-0.5 hover:text-primary-500 px-1 py-0.5 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700"
+                    class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary-500/10 text-primary-600 dark:text-primary-400 hover:bg-primary-500/20 transition-colors"
                     title={expandedThreads.has(row.threadKey)
                       ? 'Collapse conversation'
                       : 'Show full conversation'}
@@ -1231,15 +1231,22 @@
                     }}
                   >
                     <span>{row.siblingCount + 1}</span>
-                    <!-- Unicode chevron — Icon.svelte registry
-                         doesn't carry a chevron-up/down today and
-                         we'd rather not stamp out two new SVGs
-                         for a per-row affordance.  Span keeps the
-                         baseline aligned with the count number. -->
-                    <span class="text-[9px] leading-none">
-                      {expandedThreads.has(row.threadKey) ? '▲' : '▼'}
-                    </span>
+                    <svg
+                      class="w-2.5 h-2.5 transition-transform duration-150 {expandedThreads.has(row.threadKey) ? 'rotate-180' : ''}"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M4 6 L8 10 L12 6" />
+                    </svg>
                   </button>
+                {/if}
+                {#if unified && env.account_id}
+                  <span class="truncate ml-auto">{accountLabel(env.account_id)}</span>
                 {/if}
               </div>
             {/if}
