@@ -535,11 +535,18 @@ impl Cache {
             // *is* refreshed because the IMAP `\Answered` flag is
             // authoritative for "did anyone (incl. another client)
             // answer this".
+            // `references_ids` is serialised to JSON before the
+            // bind so SQLite stores a single TEXT cell (the same
+            // shape we use for `attendees_json` etc.).  Empty
+            // vector → `NULL` so the indexed column stays sparse
+            // for messages that aren't in any thread.
             let mut stmt = tx.prepare(
                 "INSERT INTO messages
                    (account_id, folder, uid, from_addr, subject, internal_date,
-                    is_read, is_starred, is_answered, cached_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    is_read, is_starred, is_answered, cached_at,
+                    message_id, in_reply_to, references_ids)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                         ?11, ?12, ?13)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
@@ -547,9 +554,20 @@ impl Cache {
                    is_read       = excluded.is_read,
                    is_starred    = excluded.is_starred,
                    is_answered   = excluded.is_answered,
-                   cached_at     = excluded.cached_at",
+                   cached_at     = excluded.cached_at,
+                   -- COALESCE so a re-fetch that didn't pick up the
+                   -- threading headers (e.g. an old client path) can't
+                   -- wipe data we successfully extracted earlier.
+                   message_id    = COALESCE(excluded.message_id, messages.message_id),
+                   in_reply_to   = COALESCE(excluded.in_reply_to, messages.in_reply_to),
+                   references_ids = COALESCE(excluded.references_ids, messages.references_ids)",
             )?;
             for env in envelopes {
+                let refs_json: Option<String> = if env.references_ids.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(&env.references_ids).ok()
+                };
                 stmt.execute(params![
                     account_id,
                     env.folder,
@@ -561,6 +579,9 @@ impl Cache {
                     env.is_starred as i64,
                     env.is_answered as i64,
                     now,
+                    env.message_id,
+                    env.in_reply_to,
+                    refs_json,
                 ])?;
             }
         }
