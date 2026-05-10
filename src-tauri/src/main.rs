@@ -4689,7 +4689,16 @@ async fn geocode_search(
     // device.  We refuse here as well as in the UI so a
     // mis-wired component can't accidentally exfiltrate a query
     // before the toggle's state propagates.
-    if !settings.read().await.location_geocoding_enabled {
+    //
+    // We snapshot both the toggle and the configurable
+    // `nominatim_base_url` under the same read so a settings
+    // change between the two reads can't have us call out to
+    // a stale endpoint after the toggle was just flipped on.
+    let (enabled, base_url) = {
+        let s = settings.read().await;
+        (s.location_geocoding_enabled, s.nominatim_base_url.clone())
+    };
+    if !enabled {
         return Ok(Vec::new());
     }
 
@@ -4710,7 +4719,7 @@ async fn geocode_search(
         tracing::warn!("geocode_cache: corrupt row for {query:?}, refetching");
     }
 
-    let hits = geocode::nominatim_search(&query, &lang).await?;
+    let hits = geocode::nominatim_search(&query, &lang, &base_url).await?;
     let serialised = serde_json::to_string(&hits)
         .map_err(|e| NimbusError::Other(format!("geocode result serialise: {e}")))?;
     if let Err(e) = cache.put_geocode_cache(&query, &lang, &serialised) {
