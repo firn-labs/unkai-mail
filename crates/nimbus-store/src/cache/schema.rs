@@ -988,6 +988,22 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (query, lang)
     );
     "#,
+    // v29 → v30: drop the geocode-cache rows written before
+    // #259 added the `address` block to `GeocodeResult` (#259).
+    //
+    // Pre-#259 cache rows hold a serialised result whose
+    // `address` field is missing entirely (the struct didn't
+    // have it yet).  When the contact form's autocomplete
+    // hits one of those rows the structured-fill path sees
+    // `address: None` and falls back to dumping `display_name`
+    // into the street field — which is the "long string in
+    // street, other fields empty" symptom.  Rather than carry a
+    // cache-version column for what's purely a perf cache,
+    // wipe it once on upgrade and let the next user search
+    // re-populate with the new shape.
+    r#"
+    DELETE FROM geocode_cache;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

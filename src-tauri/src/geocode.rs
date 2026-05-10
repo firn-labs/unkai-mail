@@ -76,9 +76,15 @@ pub struct GeocodeResult {
 
 /// Structured address components Nominatim returns under the
 /// `address` key when `addressdetails=1` is requested (#259).
-/// Field names follow Nominatim's snake_case keys; we expose
-/// them via the parent's `rename_all = "camelCase"` to the
-/// frontend so they fit the existing IPC convention.
+///
+/// `rename_all = "camelCase"` is what the frontend sees; the
+/// per-field `alias` directives are what lets serde *also*
+/// accept Nominatim's native snake_case payload during the
+/// inbound deserialise.  Without those aliases the multi-word
+/// fields (`house_number`, `state_district`, `country_code`)
+/// would land here as `None` — which is exactly the "fields
+/// don't fill out, only a long string in `street`" bug the
+/// contact form's autocomplete was hitting before.
 ///
 /// Every field is optional because Nominatim only emits the
 /// keys it has — a forest-only POI returns `country` and
@@ -87,9 +93,10 @@ pub struct GeocodeResult {
 /// fallback list in the frontend because picking the right
 /// locality field is a presentation decision, not a data one.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct GeocodeAddress {
     pub road: Option<String>,
+    #[serde(alias = "house_number")]
     pub house_number: Option<String>,
     pub neighbourhood: Option<String>,
     pub suburb: Option<String>,
@@ -100,10 +107,12 @@ pub struct GeocodeAddress {
     pub municipality: Option<String>,
     pub county: Option<String>,
     pub state: Option<String>,
+    #[serde(alias = "state_district")]
     pub state_district: Option<String>,
     pub region: Option<String>,
     pub postcode: Option<String>,
     pub country: Option<String>,
+    #[serde(alias = "country_code")]
     pub country_code: Option<String>,
 }
 
@@ -311,6 +320,35 @@ mod tests {
         // Pre-#259 hits don't carry an `address` object — make
         // sure the optional default keeps working.
         assert!(hits[0].address.is_none());
+    }
+
+    #[test]
+    fn serialises_address_keys_as_camel_case() {
+        // Frontend reads `houseNumber`, `stateDistrict`,
+        // `countryCode`.  Make sure that's what serde emits —
+        // before the rename_all fix the JSON keys were the
+        // snake_case Rust field names, which silently undefined
+        // those fields on the TS side.
+        let addr = GeocodeAddress {
+            road: Some("Schillerstraße".into()),
+            house_number: Some("12".into()),
+            city: Some("Berlin".into()),
+            state_district: Some("Berlin-Charlottenburg".into()),
+            country: Some("Deutschland".into()),
+            country_code: Some("de".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&addr).unwrap();
+        assert!(json.contains(r#""houseNumber":"12""#), "got: {json}");
+        assert!(
+            json.contains(r#""stateDistrict":"Berlin-Charlottenburg""#),
+            "got: {json}"
+        );
+        assert!(json.contains(r#""countryCode":"de""#), "got: {json}");
+        // Sanity: the snake_case forms are *not* in the output
+        // (otherwise we'd have both, doubling the payload).
+        assert!(!json.contains(r#""house_number""#), "got: {json}");
+        assert!(!json.contains(r#""country_code""#), "got: {json}");
     }
 
     #[test]
