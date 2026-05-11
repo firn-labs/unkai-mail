@@ -38,6 +38,11 @@
         the cache; left empty for envelopes coming straight from the
         IMAP/JMAP clients (those paths don't surface to the UI). */
     account_id: string
+    /** RFC 5322 threading anchors (#277).  Optional — older
+     *  cached envelopes predate the parser. */
+    message_id?: string | null
+    in_reply_to?: string | null
+    references_ids?: string[]
   }
 
   /** Slim account row used to render the account label on each row in
@@ -95,6 +100,211 @@
     onmessagemoved,
     refreshing = $bindable(false),
   }: Props = $props()
+
+  // ── Conversation-view grouping (#277) ───────────────────────
+  // Bundles every envelope that shares an RFC 5322 thread root
+  // into a single inbox row, the way iPhone Mail / Thunderbird
+  // do.  The thread head is the *newest* message; siblings are
+  // hidden until the user clicks the count chevron.
+  //
+  // `threadKeyOf` picks the most-stable identifier we have:
+  //
+  //   1. `references_ids[0]` — the chain's root, when this is a
+  //      reply.  Two messages whose `References:` headers both
+  //      start with `<root>` belong to the same thread, full stop.
+  //   2. `message_id` — for top-of-thread originals.  Future
+  //      replies to this mail will carry it as their first
+  //      `References:` entry, so siblings still resolve correctly.
+  //   3. `__solo:{account}:{uid}` — fallback for envelopes that
+  //      pre-date the v31 schema migration (no parsed headers
+  //      yet) or for one-off mails the server didn't tag.  Each
+  //      gets its own bucket → behaves like the old flat list.
+  let expandedThreads = $state<Set<string>>(new Set())
+
+  function threadKeyOf(env: EmailEnvelope): string {
+    if (env.references_ids && env.references_ids.length > 0) {
+      return env.references_ids[0]
+    }
+    if (env.message_id) {
+      return env.message_id
+    }
+    return `__solo:${env.account_id}:${env.uid}`
+  }
+
+  /** JWZ-style canonical subject: strip a leading reply / forward
+   *  prefix and collapse whitespace so `"Re: Re: Test 3"` and
+   *  `"Test 3 "` produce the same key (#277).
+   *
+   *  We strip iteratively (`Re: Re: …` happens) and match the
+   *  most common prefixes across locales — `Re:`, `Fwd:`, `Fw:`,
+   *  `AW:` (German), `WG:` (German forward), `SV:` (Swedish). */
+  function canonicalSubject(s: string): string {
+    let out = (s || '').trim()
+    const prefixRe = /^(re|fwd?|aw|wg|sv)\s*(\[\d+\])?\s*:\s*/i
+    while (prefixRe.test(out)) {
+      out = out.replace(prefixRe, '').trim()
+    }
+    // Collapse interior whitespace runs to a single space so
+    // double-spaces from copy-paste don't break matching.
+    return out.replace(/\s+/g, ' ').toLowerCase()
+  }
+
+  /** Subject-based merge of buckets whose explicit-anchor chains
+   *  are broken (#277).  After the first reference-keyed bucketing
+   *  pass, walk the heads of every bucket: if a bucket's head is
+   *  a reply (`subject.startsWith("Re:") || …`) AND its canonical
+   *  subject equals another bucket's head canonical subject, the
+   *  two are very likely the same thread that just lost its
+   *  Message-ID anchor across the wire.  Merge them.
+   *
+   *  Floor of 4 chars on the canonical subject so trivial subjects
+   *  (`"hi"`, `"?"`) don't cause a merge cascade.  Everything else
+   *  Apple Mail / Thunderbird / Outlook also fall back to this
+   *  rule — see [JWZ threading
+   *  §5.B.iii](https://www.jwz.org/doc/threading.html). */
+  function isReplyOrForward(subject: string): boolean {
+    return /^(re|fwd?|aw|wg|sv)\s*(\[\d+\])?\s*:/i.test(subject || '')
+  }
+
+  function toggleThread(key: string) {
+    // Re-assign so Svelte 5 picks up the mutation — Set
+    // mutations alone don't trigger reactivity.
+    const next = new Set(expandedThreads)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    expandedThreads = next
+  }
+
+  /** One row to actually paint.  Heads carry `siblingCount`
+   *  and a fresh `threadKey`; siblings carry `siblingCount=0`
+   *  and the same key as their head so the visual indent +
+   *  toggle button can find each other.  `isLastSibling`
+   *  marks the bottom-most child of an expanded thread —
+   *  used to clip the dotted-line connector at the dot
+   *  instead of letting it run to the row's bottom edge. */
+  type RenderRow = {
+    env: EmailEnvelope
+    siblingCount: number
+    isSibling: boolean
+    isLastSibling: boolean
+    threadKey: string
+  }
+
+  let renderRows = $derived.by((): RenderRow[] => {
+    // Bucket envelopes by thread key, preserving the bucket
+    // order in which the *first* member appears (envelopes are
+    // already date-sorted newest-first).
+    const groups = new Map<string, EmailEnvelope[]>()
+    for (const env of envelopes) {
+      const key = threadKeyOf(env)
+      const arr = groups.get(key)
+      if (arr) arr.push(env)
+      else groups.set(key, [env])
+    }
+    // Each bucket newest-first too — usually a no-op because
+    // envelopes are already in that order, but explicit is
+    // safer when an out-of-order arrival lands later.
+    for (const arr of groups.values()) {
+      arr.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    }
+
+    // JWZ-style subject-based merge pass (#277).  Some servers
+    // rewrite Message-IDs on delivery (local-SMTP test rigs and
+    // a few Exchange configs we've seen) so the inbox copy
+    // anchors a different ID than the reply's `In-Reply-To`
+    // points at.  This is exactly the case where Thunderbird /
+    // Apple Mail still thread correctly — they fall back to
+    // subject matching.  Match Nimbus to that behaviour.
+    //
+    // For every reply-shaped bucket head (`Re:` / `Fwd:` / …),
+    // look for another bucket whose head has the same canonical
+    // subject; merge the reply bucket into the older bucket.
+    //
+    // `byCanonicalRoot` indexes the *non-reply* heads
+    // (potential thread roots) so the lookup is O(1) per
+    // bucket.  The 4-char floor avoids cascading merges on
+    // trivial subjects like `"hi"`.
+    const byCanonicalRoot = new Map<string, string>() // canon → group key
+    for (const [key, arr] of groups) {
+      const head = arr[arr.length - 1] // oldest in bucket = candidate root
+      if (!head || isReplyOrForward(head.subject)) continue
+      const canon = canonicalSubject(head.subject)
+      if (canon.length < 4) continue
+      // Ties: first non-reply bucket wins; later collisions
+      // stay separate to avoid mass merges on common subjects.
+      if (!byCanonicalRoot.has(canon)) byCanonicalRoot.set(canon, key)
+    }
+    // `keyRedirect` maps a now-merged-away key to its merge
+    // target so the seen-key bookkeeping below still resolves
+    // to a group when an envelope's own `threadKey` was the
+    // merged-away one.
+    const keyRedirect = new Map<string, string>()
+    const mergedAway = new Set<string>()
+    for (const [key, arr] of groups) {
+      if (mergedAway.has(key)) continue
+      const head = arr[arr.length - 1]
+      if (!head || !isReplyOrForward(head.subject)) continue
+      const canon = canonicalSubject(head.subject)
+      if (canon.length < 4) continue
+      const targetKey = byCanonicalRoot.get(canon)
+      if (!targetKey || targetKey === key) continue
+      // Move every envelope into the target bucket.
+      const target = groups.get(targetKey)
+      if (!target) continue
+      target.push(...arr)
+      target.sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+      )
+      mergedAway.add(key)
+      keyRedirect.set(key, targetKey)
+    }
+    for (const key of mergedAway) groups.delete(key)
+
+    /** Resolve an envelope's natural threadKey through the
+     *  redirect chain to the post-merge canonical key. */
+    function effectiveKey(env: EmailEnvelope): string {
+      let key = threadKeyOf(env)
+      // Defensive while-loop in case a redirect chain went two
+      // hops (shouldn't happen with the single-pass merge, but
+      // cheap insurance).
+      let hops = 0
+      while (keyRedirect.has(key) && hops < 8) {
+        key = keyRedirect.get(key)!
+        hops++
+      }
+      return key
+    }
+    const out: RenderRow[] = []
+    const seen = new Set<string>()
+    for (const env of envelopes) {
+      const key = effectiveKey(env)
+      if (seen.has(key)) continue
+      seen.add(key)
+      const group = groups.get(key)
+      if (!group) continue
+      const head = group[0]
+      const siblings = group.slice(1)
+      out.push({
+        env: head,
+        siblingCount: siblings.length,
+        isSibling: false,
+        isLastSibling: false,
+        threadKey: key,
+      })
+      if (expandedThreads.has(key)) {
+        for (let i = 0; i < siblings.length; i++) {
+          out.push({
+            env: siblings[i],
+            siblingCount: 0,
+            isSibling: true,
+            isLastSibling: i === siblings.length - 1,
+            threadKey: key,
+          })
+        }
+      }
+    }
+    return out
+  })
 
   /** Short label for the per-row account chip in unified mode. We
       prefer the display name and fall back to the email's local part
@@ -922,7 +1132,8 @@
     {:else if envelopes.length === 0}
       <div class="p-6 text-center text-sm text-surface-500">No messages in {folder}.</div>
     {:else}
-      {#each envelopes as env (`${env.account_id}:${env.uid}`)}
+      {#each renderRows as row (`${row.env.account_id}:${row.env.uid}:${row.isSibling ? 's' : 'h'}`)}
+        {@const env = row.env}
         {@const selected = selectedUid === env.uid && (!unified || selectedUid === env.uid)}
         {@const multi = isMulti(env.uid)}
         <!-- Unread visual treatment: a 3px themed accent strip on the
@@ -932,8 +1143,55 @@
              unread tint for the background colour; the accent strip
              stays orthogonal so an unread+selected row keeps both.
              The row is wrapped in a `group` so the inline quick-
-             action icons (#98) reveal on row hover. -->
-        <div class="group relative">
+             action icons (#98) reveal on row hover.
+             Sibling rows of an expanded thread (#277) get an
+             absolutely-positioned thread connector — a vertical
+             dotted line spanning the row's full height plus a
+             solid dot at its midpoint.  When multiple siblings
+             stack the dotted lines join into one continuous
+             vertical track, with one dot per child anchored to
+             the line.  The inner row content shifts right
+             (`pl-12`) to clear the connector; the from / subject
+             columns naturally indent under the head as the user
+             expects. -->
+        <div class="group relative {row.isSibling ? 'bg-surface-50/50 dark:bg-surface-900/30' : ''}">
+          {#if row.isSibling}
+            <!-- Vertical dotted track + dot.
+                 We render the dots via a background-image
+                 (`repeating-linear-gradient`) instead of
+                 `border-dotted` because the latter spaces dots
+                 adaptively to fit the border length — two
+                 stacked rows of different heights produce
+                 different phases, and the line visibly jogs at
+                 every row boundary.
+                 The cycle is expressed as a *percentage*
+                 (`calc(100% / 12)`) instead of a fixed pixel
+                 length so the pattern auto-scales: every
+                 sibling row gets exactly 12 cycles end-to-end
+                 regardless of its rendered height, which means
+                 the last cycle of one row finishes flush with
+                 the first cycle of the next.  No phase break,
+                 no need to constrain row height.
+                 The last sibling's connector spans only the
+                 top half of the row (it stops at the dot),
+                 so it gets 6 cycles instead of 12 — that
+                 keeps the pixel cycle identical to the rows
+                 above it, so density looks uniform.
+                 The element is `w-0.5` (2 px) and uses
+                 `-translate-x-1/2` to centre at `left-6`, the
+                 same x as the dot so the dot sits *on* the
+                 line.  `text-primary-500/60` sets the colour
+                 the gradient picks up via `currentColor`. -->
+            <span
+              class="pointer-events-none absolute left-6 top-0 w-0.5 -translate-x-1/2 text-primary-500/60 {row.isLastSibling ? 'bottom-1/2' : 'bottom-0'}"
+              style="background-image: repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px calc(100% / {row.isLastSibling ? 6 : 12}));"
+              aria-hidden="true"
+            ></span>
+            <span
+              class="pointer-events-none absolute left-6 top-1/2 w-2 h-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary-500"
+              aria-hidden="true"
+            ></span>
+          {/if}
           <!-- Row is a `<div role="button">` rather than a real
                `<button>` because several webview engines (notably
                Edge WebView2 on Windows) refuse to fire
@@ -947,14 +1205,14 @@
             role="button"
             tabindex="0"
             aria-pressed={selected}
-            class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
+            class="w-full text-left {row.isSibling ? 'pl-12' : 'pl-3'} pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
               {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
               {selected
                 ? 'bg-primary-500/10'
                 : multi
                   ? 'bg-primary-500/15 hover:bg-primary-500/20'
                   : !env.is_read
-                    ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
+                    ? 'bg-primary-500/4 dark:bg-primary-500/7 hover:bg-primary-500/10'
                     : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
             draggable="true"
             ondragstart={(e) => onMailDragStart(e, env)}
@@ -973,6 +1231,21 @@
             }}
             oncontextmenu={(e) => openContextMenu(e, env)}
           >
+            <!-- Unread dot.  Pinned to the top-right corner
+                 of the row (above the timestamp) so it sits
+                 in the natural "what's new" zone of the row.
+                 A redundant cue that complements the bold
+                 sender, the primary-tinted accent strip, and
+                 the row-tint, and reads at a glance even when
+                 scanning a long list.  Hidden when the row is
+                 read so a triaged inbox stays calm. -->
+            {#if !env.is_read}
+              <span
+                class="pointer-events-none absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary-500"
+                aria-label="Unread"
+                title="Unread"
+              ></span>
+            {/if}
             <div class="flex items-center justify-between mb-1">
               <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
                 {env.from || '(unknown sender)'}
@@ -993,10 +1266,55 @@
                 {env.subject || '(no subject)'}
               </span>
             </p>
-            {#if unified && env.account_id}
-              <p class="text-[11px] text-surface-500 mt-1 truncate">
-                {accountLabel(env.account_id)}
-              </p>
+            <!-- Bottom meta row.  Conversation count + chevron
+                 (#277) sits at the bottom-left as a pill badge;
+                 the unified-mode account label, when present,
+                 trails to the right via `ml-auto`.  Only renders
+                 if at least one piece has content; otherwise the
+                 row stays compact. -->
+            {#if row.siblingCount > 0 || (unified && env.account_id)}
+              <div class="flex items-center gap-2 mt-1 text-[11px] text-surface-500 min-w-0">
+                {#if row.siblingCount > 0}
+                  <!-- Modern pill badge: rounded-full, soft
+                       primary tint, primary-coloured count, and
+                       an inline SVG chevron that rotates 180° on
+                       expand.  Click toggles the thread below;
+                       `stopPropagation` so the row click (which
+                       opens the head message) doesn't fire
+                       alongside.  Inline SVG instead of an Icon
+                       registry entry — `chevron-down` isn't a
+                       stock icon in Icon.svelte and a 12 px path
+                       is too small to justify a new file. -->
+                  <button
+                    type="button"
+                    class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary-500/10 text-primary-600 dark:text-primary-400 hover:bg-primary-500/20 transition-colors"
+                    title={expandedThreads.has(row.threadKey)
+                      ? 'Collapse conversation'
+                      : 'Show full conversation'}
+                    onclick={(e) => {
+                      e.stopPropagation()
+                      toggleThread(row.threadKey)
+                    }}
+                  >
+                    <span>{row.siblingCount + 1}</span>
+                    <svg
+                      class="w-2.5 h-2.5 transition-transform duration-150 {expandedThreads.has(row.threadKey) ? 'rotate-180' : ''}"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M4 6 L8 10 L12 6" />
+                    </svg>
+                  </button>
+                {/if}
+                {#if unified && env.account_id}
+                  <span class="truncate ml-auto">{accountLabel(env.account_id)}</span>
+                {/if}
+              </div>
             {/if}
           </div>
           <!-- Hover-revealed quick actions (#98).  Anchored to the

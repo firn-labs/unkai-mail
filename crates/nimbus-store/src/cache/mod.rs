@@ -535,11 +535,18 @@ impl Cache {
             // *is* refreshed because the IMAP `\Answered` flag is
             // authoritative for "did anyone (incl. another client)
             // answer this".
+            // `references_ids` is serialised to JSON before the
+            // bind so SQLite stores a single TEXT cell (the same
+            // shape we use for `attendees_json` etc.).  Empty
+            // vector → `NULL` so the indexed column stays sparse
+            // for messages that aren't in any thread.
             let mut stmt = tx.prepare(
                 "INSERT INTO messages
                    (account_id, folder, uid, from_addr, subject, internal_date,
-                    is_read, is_starred, is_answered, cached_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    is_read, is_starred, is_answered, cached_at,
+                    message_id, in_reply_to, references_ids)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                         ?11, ?12, ?13)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
@@ -547,9 +554,20 @@ impl Cache {
                    is_read       = excluded.is_read,
                    is_starred    = excluded.is_starred,
                    is_answered   = excluded.is_answered,
-                   cached_at     = excluded.cached_at",
+                   cached_at     = excluded.cached_at,
+                   -- COALESCE so a re-fetch that didn't pick up the
+                   -- threading headers (e.g. an old client path) can't
+                   -- wipe data we successfully extracted earlier.
+                   message_id    = COALESCE(excluded.message_id, messages.message_id),
+                   in_reply_to   = COALESCE(excluded.in_reply_to, messages.in_reply_to),
+                   references_ids = COALESCE(excluded.references_ids, messages.references_ids)",
             )?;
             for env in envelopes {
+                let refs_json: Option<String> = if env.references_ids.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(&env.references_ids).ok()
+                };
                 stmt.execute(params![
                     account_id,
                     env.folder,
@@ -561,6 +579,9 @@ impl Cache {
                     env.is_starred as i64,
                     env.is_answered as i64,
                     now,
+                    env.message_id,
+                    env.in_reply_to,
+                    refs_json,
                 ])?;
             }
         }
@@ -585,7 +606,8 @@ impl Cache {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT uid, folder, from_addr, subject, internal_date,
-                    is_read, is_starred, is_answered, replied_kind
+                    is_read, is_starred, is_answered, replied_kind,
+                    message_id, in_reply_to, references_ids
              FROM messages
              WHERE account_id = ?1 AND folder = ?2 AND pending_action IS NULL
              ORDER BY internal_date DESC
@@ -594,6 +616,11 @@ impl Cache {
         let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
             let ts: i64 = r.get(4)?;
             let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+            let refs_json: Option<String> = r.get(11)?;
+            let references_ids: Vec<String> = refs_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
             Ok(EmailEnvelope {
                 uid: r.get::<_, i64>(0)? as u32,
                 folder: r.get(1)?,
@@ -605,6 +632,9 @@ impl Cache {
                 is_answered: r.get::<_, i64>(7)? != 0,
                 replied_kind: r.get(8)?,
                 account_id: account_id.to_string(),
+                message_id: r.get(9)?,
+                in_reply_to: r.get(10)?,
+                references_ids,
             })
         })?;
 
@@ -661,7 +691,8 @@ impl Cache {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT account_id, uid, folder, from_addr, subject, internal_date,
-                    is_read, is_starred, is_answered, replied_kind
+                    is_read, is_starred, is_answered, replied_kind,
+                    message_id, in_reply_to, references_ids
              FROM messages
              WHERE folder = ?1 AND pending_action IS NULL
              ORDER BY internal_date DESC
@@ -670,6 +701,11 @@ impl Cache {
         let rows = stmt.query_map(params![folder, limit as i64], |r| {
             let ts: i64 = r.get(5)?;
             let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+            let refs_json: Option<String> = r.get(12)?;
+            let references_ids: Vec<String> = refs_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
             Ok(EmailEnvelope {
                 account_id: r.get(0)?,
                 uid: r.get::<_, i64>(1)? as u32,
@@ -681,6 +717,9 @@ impl Cache {
                 is_starred: r.get::<_, i64>(7)? != 0,
                 is_answered: r.get::<_, i64>(8)? != 0,
                 replied_kind: r.get(9)?,
+                message_id: r.get(10)?,
+                in_reply_to: r.get(11)?,
+                references_ids,
             })
         })?;
 
@@ -1260,7 +1299,8 @@ impl Cache {
                 "SELECT m.from_addr, m.subject, m.internal_date,
                         m.is_read, m.is_starred,
                         b.body_text, b.body_html, b.has_attachments,
-                        b.to_addrs, b.cc_addrs, b.attachments
+                        b.to_addrs, b.cc_addrs, b.attachments,
+                        m.message_id, m.in_reply_to, m.references_ids
                  FROM messages m
                  INNER JOIN message_bodies b USING (account_id, folder, uid)
                  WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
@@ -1271,6 +1311,11 @@ impl Cache {
                     let to_json: String = r.get(8)?;
                     let cc_json: String = r.get(9)?;
                     let attachments_json: String = r.get(10)?;
+                    let refs_json: Option<String> = r.get(13)?;
+                    let references_ids: Vec<String> = refs_json
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default();
                     Ok(Email {
                         id: format!("{folder}:{uid}"),
                         account_id: account_id.to_string(),
@@ -1286,6 +1331,9 @@ impl Cache {
                         is_starred: r.get::<_, i64>(4)? != 0,
                         has_attachments: r.get::<_, i64>(7)? != 0,
                         attachments: serde_json::from_str(&attachments_json).unwrap_or_default(),
+                        message_id: r.get(11)?,
+                        in_reply_to: r.get(12)?,
+                        references_ids,
                     })
                 },
             )
@@ -1743,6 +1791,9 @@ mod tests {
             is_answered: false,
             replied_kind: None,
             account_id: String::new(),
+            message_id: None,
+            in_reply_to: None,
+            references_ids: Vec::new(),
         }
     }
 
@@ -1814,6 +1865,9 @@ mod tests {
             is_starred: false,
             has_attachments: true,
             attachments: vec![],
+            message_id: None,
+            in_reply_to: None,
+            references_ids: Vec::new(),
         }
     }
 
