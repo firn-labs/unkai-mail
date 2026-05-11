@@ -141,6 +141,17 @@
       folder: string
       uid: number
       kind: 'reply' | 'reply-all' | 'meeting'
+      /** Parent's `Message-ID:` (without angle brackets), used to
+       *  set the outgoing `In-Reply-To:` header (#277).  Optional
+       *  because older cached messages predate the header
+       *  parsing — without it the new mail still sends but
+       *  threads as an orphan in other clients. */
+      parentMessageId?: string | null
+      /** Parent's `References:` chain (without angle brackets),
+       *  oldest-first.  The new mail's `References:` becomes
+       *  `[...parentReferences, parentMessageId]` per RFC 5322
+       *  §3.6.4.  Empty array for top-of-thread parents. */
+      parentReferences?: string[]
     }
     /** When Compose is opened by clicking "Edit" on an existing draft
         in the Drafts folder, this points at the server-side copy we
@@ -1613,6 +1624,19 @@
     stagedEvent: StagedMeetingEvent | null
   }): Promise<void> {
     try {
+      // RFC 5322 threading payload for replies (#277).  When
+      // Compose was opened from a parent message we know the
+      // parent's `Message-ID` and `References` chain — combine
+      // them per RFC 5322 §3.6.4 to produce the new message's
+      // `In-Reply-To` (= parent.Message-ID) and `References`
+      // (= parent.References ++ parent.Message-ID).  The SMTP
+      // builder wraps each id in angle brackets when emitting.
+      const repliedToInfo = snap.initialAtSend?.repliedTo
+      const parentMessageId = repliedToInfo?.parentMessageId ?? null
+      const parentReferences = repliedToInfo?.parentReferences ?? []
+      const newReferences: string[] = parentMessageId
+        ? [...parentReferences, parentMessageId]
+        : []
       const newOutboxId = await invoke<number>('send_email', {
         accountId: snap.fromAccountId,
         email: {
@@ -1625,6 +1649,8 @@
           body_text: htmlToText(snap.bodyHtml),
           body_html: snap.bodyHtml || null,
           attachments: snap.attachments,
+          in_reply_to: parentMessageId,
+          references: newReferences,
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list

@@ -232,6 +232,38 @@ pub fn build_outgoing_message(email: &OutgoingEmail) -> Result<Message, NimbusEr
         .from(from_mailbox.clone())
         .subject(&email.subject);
 
+    // RFC 5322 threading headers (#277).
+    //
+    // `Message-ID` is generated for *every* outgoing mail by the
+    // `None` arg below — lettre stamps a `<UUID@hostname>` value.
+    // Without this, every Nimbus reply lands in other clients
+    // (Apple Mail, Thunderbird, Outlook, …) as an orphan because
+    // they have nothing to anchor a thread on.
+    //
+    // `In-Reply-To` and `References` only apply to replies and
+    // are sourced from the parent's Message-ID + References chain
+    // by the Compose / send path; we wrap each ID in the angle
+    // brackets the headers expect.
+    builder = builder.message_id(None);
+    if let Some(parent_id) = &email.in_reply_to {
+        let trimmed = parent_id.trim();
+        if !trimmed.is_empty() {
+            builder = builder.in_reply_to(format!("<{trimmed}>"));
+        }
+    }
+    if !email.references.is_empty() {
+        let chain = email
+            .references
+            .iter()
+            .map(|id| format!("<{}>", id.trim()))
+            .filter(|s| s.len() > 2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !chain.is_empty() {
+            builder = builder.references(chain);
+        }
+    }
+
     for addr in &email.to {
         let clean = sanitise_recipient(addr);
         let mailbox: Mailbox = clean

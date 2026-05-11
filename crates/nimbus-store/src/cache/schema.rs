@@ -1004,6 +1004,48 @@ const MIGRATIONS: &[&str] = &[
     r#"
     DELETE FROM geocode_cache;
     "#,
+    // v30 → v31: RFC 5322 threading headers on cached
+    // messages (#277).
+    //
+    // Three new columns lift the canonical headers out of the
+    // raw body blob so the inbox-grouping path can `JOIN` and
+    // `WHERE` on them without re-parsing per row.  All three
+    // are nullable because the headers themselves are optional
+    // — most messages carry a `Message-ID`, replies carry
+    // `In-Reply-To`, top-of-thread mails have neither — and we
+    // store empty values as `NULL` not `''` so the indexed
+    // lookups stay sparse on threadless mail.
+    //
+    // `references_ids` holds the `References:` header's
+    // ordered list of Message-IDs as JSON (same shape as the
+    // existing `rdate_json` / `attendees_json` patterns) —
+    // simpler than a separate join table for what's a list
+    // attached to one row.
+    //
+    // No back-fill: existing messages keep `NULL` until the
+    // user re-fetches them or new messages arrive.  The
+    // bodies blob still has the raw headers, so a future PR
+    // can add a one-shot back-fill walking the cache if
+    // needed.
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN message_id TEXT;
+    ALTER TABLE messages
+        ADD COLUMN in_reply_to TEXT;
+    ALTER TABLE messages
+        ADD COLUMN references_ids TEXT;
+
+    -- Index on the parent reference so the inbox-grouping path
+    -- can find every reply to a given message in a single
+    -- O(log n) lookup rather than scanning the table.  We
+    -- index `in_reply_to` (the immediate parent) because
+    -- that's what reply-bundling needs; full-thread queries
+    -- walk up via `message_id` separately.
+    CREATE INDEX IF NOT EXISTS idx_messages_in_reply_to
+        ON messages (in_reply_to);
+    CREATE INDEX IF NOT EXISTS idx_messages_message_id
+        ON messages (message_id);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

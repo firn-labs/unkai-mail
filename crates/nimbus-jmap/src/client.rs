@@ -352,6 +352,16 @@ impl JmapClient {
                     // Stamped into the cache by the caller; left empty
                     // here for the same reason as the IMAP path.
                     account_id: String::new(),
+                    // Threading headers (#277) — JMAP carries
+                    // `messageId` / `inReplyTo` / `references` in
+                    // its Email object.  Plumbing those through
+                    // the JMAP types is a follow-up; until then
+                    // JMAP-fetched envelopes thread only via the
+                    // server-side `thread_id` JMAP already
+                    // provides.
+                    message_id: None,
+                    in_reply_to: None,
+                    references_ids: Vec::new(),
                 }
             })
             .collect();
@@ -491,6 +501,14 @@ impl JmapClient {
             // cache uses for older rows. Wiring up JMAP attachments
             // is its own issue once the IMAP side is proven.
             attachments: Vec::new(),
+            // JMAP's `Email` includes `messageId` / `inReplyTo`
+            // / `references` headers, but our `JmapEmail` type
+            // doesn't request them yet — wiring those in is a
+            // follow-up.  For now JMAP-fetched messages thread
+            // only via JMAP's server-side `thread_id`.
+            message_id: None,
+            in_reply_to: None,
+            references_ids: Vec::new(),
         })
     }
 

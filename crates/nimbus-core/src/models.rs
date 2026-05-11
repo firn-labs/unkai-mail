@@ -472,6 +472,28 @@ pub struct EmailEnvelope {
     /// older cached payloads parsing cleanly.
     #[serde(default)]
     pub account_id: String,
+    /// RFC 5322 `Message-ID:` header — the canonical unique
+    /// identifier for this mail across servers (#277).  Populated
+    /// from the FETCH headers; cached to drive thread-grouping
+    /// without re-parsing the body blob.  Round-trips through
+    /// the cache as a separate column for fast index lookups.
+    /// `None` for older cached envelopes that pre-date the v31
+    /// schema migration; the IMAP fetch path back-fills on the
+    /// next sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// RFC 5322 `In-Reply-To:` header — the immediate parent
+    /// of this reply (#277).  Drives the inbox bundling
+    /// (siblings sharing a parent collapse into one row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// RFC 5322 `References:` header parsed into the ordered
+    /// chain of ancestor Message-IDs (oldest-first) (#277).
+    /// Used to find the *root* of a thread (first entry) for
+    /// grouping when `In-Reply-To` is missing or threads
+    /// branched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references_ids: Vec<String>,
 }
 
 /// Represents an email message.
@@ -501,6 +523,20 @@ pub struct Email {
     /// messages from before the attachment metadata landed.
     #[serde(default)]
     pub attachments: Vec<EmailAttachment>,
+    /// RFC 5322 `Message-ID:` (#277). Mirrors the field on
+    /// `EmailEnvelope`; surfaced here so reply / forward flows
+    /// have it without an extra cache lookup.  `None` for older
+    /// cached payloads or when the source mail had no
+    /// Message-ID at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// RFC 5322 `In-Reply-To:` (#277).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// RFC 5322 `References:` parsed into ordered ancestor IDs
+    /// (#277).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references_ids: Vec<String>,
 }
 
 /// Metadata for one attachment on a received email.
@@ -602,6 +638,22 @@ pub struct OutgoingEmail {
     /// mail they typed land in Sent.
     #[serde(default)]
     pub skip_sent_copy: bool,
+    /// `In-Reply-To` value to set on the outgoing message (#277).
+    /// Carries the parent's `Message-ID` *without* angle brackets;
+    /// the SMTP layer adds them.  `None` for original mails (not
+    /// replies); `Some` for any reply / forward where we know
+    /// the parent's Message-ID.  This is what makes other
+    /// clients thread our reply with its parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// `References` chain to set on the outgoing message (#277).
+    /// Ordered oldest-first, *without* angle brackets per element.
+    /// Per RFC 5322 §3.6.4 the new message's References should
+    /// be the parent's References plus the parent's Message-ID,
+    /// so the chain grows by one entry on each reply.  Empty for
+    /// original mails.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body
