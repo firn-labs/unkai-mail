@@ -13,4 +13,4 @@ pub mod nextcloud_store;
 pub mod settings_bundle;
 pub mod settings_sync;
 
-pub use cache::Cache;
+pub use cache::{Cache, OutboxEnqueue, OutboxRow};

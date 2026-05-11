@@ -169,6 +169,31 @@ pub struct AppSettings {
     /// links before the user clicks them.
     #[serde(default = "default_true")]
     pub link_check_enabled: bool,
+    /// Master toggle for the EventEditor's location autocomplete
+    /// + inline map preview (#280).  Default **off** — the
+    /// feature sends each typed query to Nominatim
+    /// (`nominatim.openstreetmap.org`) and the map preview iframe
+    /// loads tiles from `openstreetmap.org`, both third-party
+    /// services outside the user's Nextcloud trust boundary.
+    /// Off-by-default keeps the Location field as a plain text
+    /// input that never leaves the device; flipping it on opts
+    /// the user into the convenience of geocoded suggestions and
+    /// the inline pin.  The cached `geocode_cache` rows are
+    /// preserved when the toggle flips off — they're just not
+    /// consulted — so a later opt-back-in is instant.
+    #[serde(default)]
+    pub location_geocoding_enabled: bool,
+    /// Override base URL for forward-geocoding (#259 follow-up).
+    /// Empty string means "use the built-in default
+    /// `https://nominatim.openstreetmap.org`".  Self-hosters
+    /// can point this at their own Nominatim instance —
+    /// Nominatim's posted usage policy actively recommends a
+    /// private deployment for any volume above casual use.
+    /// We trim trailing slashes at request time and append
+    /// `/search` ourselves; the URL the user enters should be
+    /// the base (e.g. `https://nominatim.example.com`).
+    #[serde(default)]
+    pub nominatim_base_url: String,
 }
 
 fn default_logo_style() -> String {
@@ -258,6 +283,17 @@ impl Default for AppSettings {
             ui_locale: String::new(),
             ui_locale_auto: true,
             link_check_enabled: true,
+            // Off by default — the location autocomplete + map
+            // preview send each typed query to Nominatim and load
+            // tiles from openstreetmap.org, both outside the
+            // user's Nextcloud trust boundary.  Users opt in
+            // explicitly from General Settings (#280).
+            location_geocoding_enabled: false,
+            // Empty = fall back to the public Nominatim
+            // endpoint at request time.  Setting this to a
+            // self-hosted URL routes every typed query through
+            // the user's own Nominatim instead.
+            nominatim_base_url: String::new(),
         }
     }
 }
@@ -407,6 +443,25 @@ pub struct EmailEnvelope {
     pub date: DateTime<Utc>,
     pub is_read: bool,
     pub is_starred: bool,
+    /// Mirrors the IMAP `\Answered` system flag (#255).  Refreshed
+    /// on every envelope re-fetch.  Drives the generic reply icon
+    /// in the mail list for messages the user answered before this
+    /// feature shipped or answered from a different client; the
+    /// per-kind `replied_kind` below takes precedence when set.
+    /// `#[serde(default)]` so older cached payloads deserialise
+    /// cleanly.
+    #[serde(default)]
+    pub is_answered: bool,
+    /// Nimbus-only metadata recording *how* the user replied
+    /// (#255): `"reply"`, `"reply-all"`, or `"meeting"`.  IMAP
+    /// carries one boolean answered bit, but the user's intent
+    /// (which icon to show) is something only we know — we
+    /// stamp this on the original message after Compose's send
+    /// path succeeds.  `None` means we didn't track a reply via
+    /// Nimbus; the UI then falls back to `is_answered` for the
+    /// icon decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replied_kind: Option<String>,
     /// Owning account id. Populated when envelopes are read out of the
     /// cache (where `account_id` is a column on every row) so the UI
     /// can render an account label in unified-inbox mode and route the
@@ -417,6 +472,28 @@ pub struct EmailEnvelope {
     /// older cached payloads parsing cleanly.
     #[serde(default)]
     pub account_id: String,
+    /// RFC 5322 `Message-ID:` header — the canonical unique
+    /// identifier for this mail across servers (#277).  Populated
+    /// from the FETCH headers; cached to drive thread-grouping
+    /// without re-parsing the body blob.  Round-trips through
+    /// the cache as a separate column for fast index lookups.
+    /// `None` for older cached envelopes that pre-date the v31
+    /// schema migration; the IMAP fetch path back-fills on the
+    /// next sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// RFC 5322 `In-Reply-To:` header — the immediate parent
+    /// of this reply (#277).  Drives the inbox bundling
+    /// (siblings sharing a parent collapse into one row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// RFC 5322 `References:` header parsed into the ordered
+    /// chain of ancestor Message-IDs (oldest-first) (#277).
+    /// Used to find the *root* of a thread (first entry) for
+    /// grouping when `In-Reply-To` is missing or threads
+    /// branched.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references_ids: Vec<String>,
 }
 
 /// Represents an email message.
@@ -446,6 +523,20 @@ pub struct Email {
     /// messages from before the attachment metadata landed.
     #[serde(default)]
     pub attachments: Vec<EmailAttachment>,
+    /// RFC 5322 `Message-ID:` (#277). Mirrors the field on
+    /// `EmailEnvelope`; surfaced here so reply / forward flows
+    /// have it without an extra cache lookup.  `None` for older
+    /// cached payloads or when the source mail had no
+    /// Message-ID at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// RFC 5322 `In-Reply-To:` (#277).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// RFC 5322 `References:` parsed into ordered ancestor IDs
+    /// (#277).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references_ids: Vec<String>,
 }
 
 /// Metadata for one attachment on a received email.
@@ -547,6 +638,22 @@ pub struct OutgoingEmail {
     /// mail they typed land in Sent.
     #[serde(default)]
     pub skip_sent_copy: bool,
+    /// `In-Reply-To` value to set on the outgoing message (#277).
+    /// Carries the parent's `Message-ID` *without* angle brackets;
+    /// the SMTP layer adds them.  `None` for original mails (not
+    /// replies); `Some` for any reply / forward where we know
+    /// the parent's Message-ID.  This is what makes other
+    /// clients thread our reply with its parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// `References` chain to set on the outgoing message (#277).
+    /// Ordered oldest-first, *without* angle brackets per element.
+    /// Per RFC 5322 §3.6.4 the new message's References should
+    /// be the parent's References plus the parent's Message-ID,
+    /// so the chain grows by one entry on each reply.  Empty for
+    /// original mails.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body
@@ -990,6 +1097,19 @@ pub struct CalendarEvent {
     /// events with several alarms round-trip without losing data.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reminders: Vec<EventReminder>,
+    /// `GEO` property latitude (RFC 5545 §3.8.1.6) — stamped by
+    /// the EventEditor's location-autocomplete pick (#280) so the
+    /// inline map preview can drop a pin on the canonical place.
+    /// `None` for events whose `LOCATION` is free-text without a
+    /// geocoded match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    /// `GEO` property longitude — pairs with `latitude`.  Stored
+    /// independently rather than as a tuple so the JSON shape
+    /// surfaces both fields by name (the UI's IPC shape uses
+    /// camelCase getters per field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
 }
 
 /// A single ATTENDEE property on a VEVENT.

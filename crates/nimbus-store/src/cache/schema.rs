@@ -874,6 +874,178 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE nextcloud_accounts
         ADD COLUMN trusted_certs_json TEXT NOT NULL DEFAULT '[]';
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v25 → v26: track which messages the user has answered so the
+    // mail list can show a small reply / reply-all / meeting-reply
+    // icon in front of the subject (#255).
+    //
+    // Two columns:
+    //   * `is_answered` — mirrors the IMAP `\Answered` system flag.
+    //     Refreshed on every envelope re-fetch.  `1` is enough to
+    //     show a generic reply icon for messages the user
+    //     answered before this feature shipped (or answered from
+    //     a different client) — IMAP-canonical fallback.
+    //   * `replied_kind` — Nimbus-only metadata recording *how*
+    //     the user replied: `'reply'`, `'reply-all'`, or
+    //     `'meeting'`.  IMAP carries one boolean answered bit;
+    //     the kind is something only we know, so we store it
+    //     locally and never overwrite it on envelope re-fetches.
+    //     `NULL` means "we didn't reply via Nimbus" — fall back
+    //     to `is_answered` for the icon decision.
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN is_answered INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages
+        ADD COLUMN replied_kind TEXT;
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v26 → v27: local-only Outbox folder (#276).
+    //
+    // Every send routes through this table first.  On a healthy
+    // network the row is created and removed within the same tick
+    // (the send-driven drain task handles it sub-second), so the
+    // user never sees the synthetic "Outbox" folder appear.  When
+    // SMTP fails (offline, timeout, server refusal), the row stays
+    // and the periodic `background_sync_loop` retry sweep keeps
+    // attempting on every sync tick until success or the user
+    // manually deletes / edits.
+    //
+    // Stored fields:
+    //   * `outgoing_json` — full `OutgoingEmail` for both edit
+    //     (re-open in Compose) and retry (rebuild lettre Message).
+    //   * `replied_to_json` — optional `RepliedToRef` so a
+    //     successful retry still flips the IMAP `\Answered` flag
+    //     on the original message (#255 follow-up).
+    //   * `from_header` / `to_display` / `subject` — pre-computed
+    //     display fields so the Outbox list view renders without
+    //     re-parsing the JSON for every row.
+    //   * `attempt_count` / `last_attempt_at` / `last_error` — UI
+    //     status, surfaces "Why is this stuck?" inline on the row.
+    //   * `skip_sent_copy` — preserved through retries so calendar
+    //     machinery (RSVP REPLY, grid invites) still skips the
+    //     IMAP APPEND-to-Sent on success, same as today.
+    r#"
+    CREATE TABLE outbox_messages (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id      TEXT NOT NULL,
+        outgoing_json   TEXT NOT NULL,
+        replied_to_json TEXT,
+        from_header     TEXT NOT NULL DEFAULT '',
+        to_display      TEXT NOT NULL DEFAULT '',
+        subject         TEXT NOT NULL DEFAULT '',
+        queued_at       INTEGER NOT NULL,
+        attempt_count   INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at INTEGER,
+        last_error      TEXT,
+        skip_sent_copy  INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX outbox_by_account
+        ON outbox_messages (account_id, queued_at DESC);
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v27 → v28: per-calendar read-only flag (#236).
+    //
+    // Reflects the CalDAV `current-user-privilege-set` PROPFIND
+    // result.  `1` means the user only has read access
+    // (typical for shared calendars where the owner granted
+    // view-only access), so the EventEditor hides the Delete
+    // button and removes the calendar from the new-event picker.
+    // Default `0` keeps existing rows writable until the next
+    // discovery cycle stamps the actual value — preserves the
+    // pre-#236 happy path for servers that don't advertise the
+    // prop at all.
+    r#"
+    ALTER TABLE calendars
+        ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0;
+    "#,
+    // v28 → v29: GEO lat/lon on calendar events (#280).
+    //
+    // RFC 5545 §3.8.1.6.  Populated by the EventEditor's
+    // location-autocomplete pick so the inline map preview can
+    // drop a pin on the canonical place; round-trips through
+    // `text/calendar` so other CalDAV clients see the same
+    // geocoded location.  `NULL` for events whose `LOCATION`
+    // is plain text without a geocoded match — pre-#280 rows
+    // start there and stay there until the user re-saves.
+    r#"
+    ALTER TABLE calendar_events
+        ADD COLUMN latitude REAL;
+    ALTER TABLE calendar_events
+        ADD COLUMN longitude REAL;
+
+    -- Local cache for Nominatim geocoding hits.  Hit by the
+    -- LocationField autocomplete (#280) so the same query
+    -- typed twice (or two events to the same address) doesn't
+    -- spend two upstream API calls.  Keyed by the lower-cased
+    -- query text + a canonical language code so a `?cafe`
+    -- search and a separate `cafe ` search dedupe to one row.
+    CREATE TABLE IF NOT EXISTS geocode_cache (
+        query        TEXT NOT NULL,
+        lang         TEXT NOT NULL DEFAULT '',
+        results_json TEXT NOT NULL,
+        cached_at    INTEGER NOT NULL,
+        PRIMARY KEY (query, lang)
+    );
+    "#,
+    // v29 → v30: drop the geocode-cache rows written before
+    // #259 added the `address` block to `GeocodeResult` (#259).
+    //
+    // Pre-#259 cache rows hold a serialised result whose
+    // `address` field is missing entirely (the struct didn't
+    // have it yet).  When the contact form's autocomplete
+    // hits one of those rows the structured-fill path sees
+    // `address: None` and falls back to dumping `display_name`
+    // into the street field — which is the "long string in
+    // street, other fields empty" symptom.  Rather than carry a
+    // cache-version column for what's purely a perf cache,
+    // wipe it once on upgrade and let the next user search
+    // re-populate with the new shape.
+    r#"
+    DELETE FROM geocode_cache;
+    "#,
+    // v30 → v31: RFC 5322 threading headers on cached
+    // messages (#277).
+    //
+    // Three new columns lift the canonical headers out of the
+    // raw body blob so the inbox-grouping path can `JOIN` and
+    // `WHERE` on them without re-parsing per row.  All three
+    // are nullable because the headers themselves are optional
+    // — most messages carry a `Message-ID`, replies carry
+    // `In-Reply-To`, top-of-thread mails have neither — and we
+    // store empty values as `NULL` not `''` so the indexed
+    // lookups stay sparse on threadless mail.
+    //
+    // `references_ids` holds the `References:` header's
+    // ordered list of Message-IDs as JSON (same shape as the
+    // existing `rdate_json` / `attendees_json` patterns) —
+    // simpler than a separate join table for what's a list
+    // attached to one row.
+    //
+    // No back-fill: existing messages keep `NULL` until the
+    // user re-fetches them or new messages arrive.  The
+    // bodies blob still has the raw headers, so a future PR
+    // can add a one-shot back-fill walking the cache if
+    // needed.
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN message_id TEXT;
+    ALTER TABLE messages
+        ADD COLUMN in_reply_to TEXT;
+    ALTER TABLE messages
+        ADD COLUMN references_ids TEXT;
+
+    -- Index on the parent reference so the inbox-grouping path
+    -- can find every reply to a given message in a single
+    -- O(log n) lookup rather than scanning the table.  We
+    -- index `in_reply_to` (the immediate parent) because
+    -- that's what reply-bundling needs; full-thread queries
+    -- walk up via `message_id` separately.
+    CREATE INDEX IF NOT EXISTS idx_messages_in_reply_to
+        ON messages (in_reply_to);
+    CREATE INDEX IF NOT EXISTS idx_messages_message_id
+        ON messages (message_id);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

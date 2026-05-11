@@ -17,6 +17,7 @@
   import Icon, { type IconName } from './Icon.svelte'
   import Select from './Select.svelte'
   import DateField from './DateField.svelte'
+  import AddressSuggestField from './AddressSuggestField.svelte'
 
   interface Props {
     onclose: () => void
@@ -207,6 +208,23 @@
   let formAccountId = $state('')       // only used for create
   let formAddressbookUrl = $state('')  // only used for create
   let formAddressbookName = $state('') // only used for create
+
+  /** Tracks the privacy toggle for online address suggestions
+   *  (#259, sharing the gate with #280's location autocomplete).
+   *  Off by default; flipping it on in General Settings opts the
+   *  user into Nominatim queries.  `AddressSuggestField` honours
+   *  this flag so a contact form opened with the toggle off
+   *  stays a plain set of inputs that never touch the network. */
+  let geocodingEnabled = $state(false)
+  $effect(() => {
+    void invoke<{ location_geocoding_enabled?: boolean }>('get_app_settings')
+      .then((s) => {
+        geocodingEnabled = s.location_geocoding_enabled === true
+      })
+      .catch(() => {
+        geocodingEnabled = false
+      })
+  })
   // Photo bytes for the selected contact, lazy-loaded via
   // `get_contact_photo`. Only fetched so we can round-trip them
   // through `update_contact` — display uses the `contact-photo://`
@@ -2691,7 +2709,21 @@
                       onclick={() => removeAddress(i)}
                     ><Icon name="trash" size={14} /></button>
                   </div>
-                  <input class="input rounded-md" bind:value={addr.street} placeholder={m.contact_form_placeholder_street()} />
+                  <AddressSuggestField
+                    street={addr.street}
+                    enabled={geocodingEnabled}
+                    placeholder={m.contact_form_placeholder_street()}
+                    onstreetchange={(v) => {
+                      addr.street = v
+                    }}
+                    onpick={(parts) => {
+                      addr.street = parts.street
+                      addr.locality = parts.locality
+                      addr.region = parts.region
+                      addr.postal_code = parts.postal_code
+                      addr.country = parts.country
+                    }}
+                  />
                   <div class="grid grid-cols-2 gap-2">
                     <input class="input rounded-md" bind:value={addr.locality} placeholder={m.contact_form_placeholder_city()} />
                     <input class="input rounded-md" bind:value={addr.region} placeholder={m.contact_form_placeholder_region()} />

@@ -40,6 +40,10 @@
   import Select from './Select.svelte'
   import EmailKindChip from './EmailKindChip.svelte'
   import Toggle from './Toggle.svelte'
+  import EventPlanner from './EventPlanner.svelte'
+  import LocationField from './LocationField.svelte'
+  import MapPreview from './MapPreview.svelte'
+  import { m } from '../paraglide/messages'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
   interface EventAttendee {
@@ -70,6 +74,10 @@
     transparency?: string | null
     attendees?: EventAttendee[]
     reminders?: EventReminder[]
+    /** RFC 5545 GEO (#280) — stamped by the location-autocomplete
+     *  pick.  Both fields are present together or both `null`. */
+    latitude?: number | null
+    longitude?: number | null
   }
   interface CalendarSummary {
     id: string
@@ -77,6 +85,13 @@
     display_name: string
     color: string | null
     last_synced_at: string | null
+    /** CalDAV-derived read-only flag (#236).  Set when the
+     *  user can only view this calendar (typical for shared
+     *  calendars where the owner granted view-only access).
+     *  The picker filters these out for new events and the
+     *  Delete button is hidden when an existing event lives
+     *  on one. */
+    read_only?: boolean
   }
 
   // `stage` — used by Compose's "Add event" button (#152). Captures
@@ -192,6 +207,34 @@
   let description = $state(event?.description ?? draft?.description ?? '')
   // svelte-ignore state_referenced_locally
   let location = $state(event?.location ?? draft?.location ?? '')
+  // GEO lat/lon (#280) — stamped by LocationField when the user
+  // picks a geocoded suggestion, cleared if they edit the
+  // location free-text.  Round-trips through CalDAV's GEO
+  // property so other clients see the same pin.
+  // svelte-ignore state_referenced_locally
+  let latitude = $state<number | null>(
+    typeof event?.latitude === 'number' ? event.latitude : null,
+  )
+  // svelte-ignore state_referenced_locally
+  let longitude = $state<number | null>(
+    typeof event?.longitude === 'number' ? event.longitude : null,
+  )
+  /** Tracks the privacy toggle for location autocomplete + map
+   *  preview (#280).  Off by default; flipping it on in General
+   *  Settings opts the user into Nominatim queries and OSM tile
+   *  loads.  Both `LocationField` and `MapPreview` honour this
+   *  flag so a stale pin from a pre-existing event doesn't load
+   *  the iframe behind the user's back. */
+  let geocodingEnabled = $state(false)
+  $effect(() => {
+    void invoke<{ location_geocoding_enabled?: boolean }>('get_app_settings')
+      .then((s) => {
+        geocodingEnabled = s.location_geocoding_enabled === true
+      })
+      .catch(() => {
+        geocodingEnabled = false
+      })
+  })
   // svelte-ignore state_referenced_locally
   let transparency = $state(event?.transparency ?? 'OPAQUE')
 
@@ -207,8 +250,37 @@
       const parts = event.id.split('::')
       return parts.slice(0, 2).join('::')
     }
-    return draft?.calendarId ?? calendars[0]?.id ?? ''
+    // Default for create-mode: prefer the parent's hint, else
+    // the first writable calendar in the picker (#236 — used to
+    // be `calendars[0]` which could land on a read-only calendar
+    // and immediately fail the save).
+    return (
+      draft?.calendarId ??
+      calendars.find((c) => !c.read_only)?.id ??
+      calendars[0]?.id ??
+      ''
+    )
   }
+
+  /** True when the currently-selected calendar is read-only (#236).
+   *  Drives both "remove the Delete button" and the future
+   *  Save-disabled UX so the user can't issue a write the server
+   *  would reject anyway.  In edit-mode the calendar is fixed to
+   *  the event's home calendar; in create-mode the picker filters
+   *  read-only entries out so this stays `false` by construction. */
+  const currentCalendarReadOnly = $derived.by(() => {
+    const cal = calendars.find((c) => c.id === calendarId)
+    return cal?.read_only === true
+  })
+
+  /** Picker options for create-mode (#236).  Read-only calendars
+   *  are removed from the list entirely — saving would fail
+   *  server-side and there's no point letting the user pick one
+   *  in the first place.  Edit-mode renders the calendar as a
+   *  static label, so this only affects the create flow. */
+  const writableCalendars = $derived(
+    calendars.filter((c) => !c.read_only),
+  )
 
   // Close on Escape.  We attach to `document` so the key works
   // regardless of where focus is — including inside DateField /
@@ -359,6 +431,12 @@
       ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'CHAIR')
       : seedRole(draft?.chairAttendees, 'CHAIR'),
   )
+
+  /** True when the EventPlanner modal is open (#137).  Keeps the
+   *  planner unmounted unless the user actually clicked "Find
+   *  time" so its initial-load `get_attendee_availability` IPC
+   *  doesn't fire on every editor open. */
+  let plannerOpen = $state(false)
 
   /** Lower-cased addresses we consider "the user" — the union
    *  of every configured mail-account email.  Used by the RSVP
@@ -746,9 +824,34 @@
     // contacts so a user who types just the display name and
     // then commits (Enter / comma / blur) without using the
     // dropdown still picks up the matching email automatically.
-    for (const c of contactsByEmail.values()) {
-      if ((c.display_name ?? '').toLowerCase() === trimmed.toLowerCase()) {
-        return { email: primaryEmail(c), common_name: c.display_name, role }
+    //
+    // Guard against the temporal dead zone: this function is
+    // *also* invoked from the initial `$state` seeders for
+    // `requiredAttendees` / `optionalAttendees` / `chairAttendees`
+    // up at the top of the script, which run BEFORE
+    // `contactsByEmail` is declared further down.  Reaching the
+    // for-loop with a bare-email piece (the recipient of an
+    // already-answered thread, for example, where the From header
+    // came back as a plain `user@host`) used to throw
+    // `Cannot access 'contactsByEmail' before initialization` and
+    // crash EventEditor's mount silently.  Skipping the lookup at
+    // init time is harmless: the draft we're seeding from already
+    // carries email addresses, not display names, so the
+    // display-name-to-email match wouldn't help anyway.  User-
+    // typed bare-email pieces (the original use case for this
+    // lookup) reach this function long after init, so the
+    // try/catch falls through to the real Map.
+    let contactsLookup: Map<string, Contact> | null = null
+    try {
+      contactsLookup = contactsByEmail
+    } catch {
+      contactsLookup = null
+    }
+    if (contactsLookup) {
+      for (const c of contactsLookup.values()) {
+        if ((c.display_name ?? '').toLowerCase() === trimmed.toLowerCase()) {
+          return { email: primaryEmail(c), common_name: c.display_name, role }
+        }
       }
     }
     return { email: trimmed, common_name: null, role }
@@ -836,7 +939,9 @@
     | '30'
     | '45'
     | '60'
+    | '120'
     | '1440'
+    | '10080'
     | 'custom'
   // svelte-ignore state_referenced_locally
   let reminderChoice = $state<ReminderChoice>(deriveReminderChoice())
@@ -844,9 +949,23 @@
   const originalReminders = event?.reminders ?? []
   function deriveReminderChoice(): ReminderChoice {
     const list = event?.reminders ?? []
-    if (list.length === 0) return 'none'
+    if (list.length === 0) {
+      // New events default to "15 minutes before" (#236).
+      // Edit-mode events with no VALARM stay on 'none' — the
+      // user explicitly didn't ask for a reminder, and silently
+      // adding one would be a behaviour change for every event
+      // they re-save.
+      return event ? 'none' : '15'
+    }
     if (list.length > 1) return 'custom'
     const m = list[0].trigger_minutes_before
+    // Preset minutes-before values that map cleanly to dropdown
+    // labels.  Anything else falls through to 'custom' and is
+    // round-tripped via `originalReminders` so the user's odd
+    // 17-min reminder doesn't silently become a 15-min one on
+    // re-save.  120 (2h) and 10080 (1w) added in #236 — without
+    // them, existing events with those reminders showed up as
+    // "Custom" and looked like the dropdown wasn't loading.
     if (
       m === 0 ||
       m === 5 ||
@@ -855,7 +974,9 @@
       m === 30 ||
       m === 45 ||
       m === 60 ||
-      m === 1440
+      m === 120 ||
+      m === 1440 ||
+      m === 10080
     ) {
       return String(m) as ReminderChoice
     }
@@ -1174,6 +1295,11 @@
       transparency: transparency || null,
       attendees: buildAttendees(),
       reminders: buildReminders(),
+      // GEO (#280).  Sent only when the location-autocomplete
+      // pick stamped lat/lon; null elsewhere so the backend
+      // doesn't carry a stale pin forward.
+      latitude,
+      longitude,
     }
   }
 
@@ -1286,17 +1412,32 @@
         onsaved()
       }
 
-      // Sync Talk participants + room visibility once the
-      // CalDAV save has stuck.  Only fires when the user
-      // created a Talk room from this editor session and
-      // there's at least one attendee — pure "Talk-but-no-
-      // attendees" rooms behave like personal scratch rooms
-      // and don't need any of this.
-      if (pendingTalkRoom && input.attendees.length > 0) {
-        await syncTalkParticipants(input.attendees)
-      }
-
+      // Dismiss IMMEDIATELY now that the calendar event is
+      // persisted (#255 follow-up).  Awaiting Talk-participant
+      // sync inside the same try-block kept the editor — and the
+      // closure holding `onclose` — alive for the 1-3 s of
+      // sequential NC round-trips, and any late `onclose()` would
+      // race against the parent's next "open editor" gesture
+      // (e.g. a second "Respond with meeting" reply on the same
+      // thread).  The parent's `onsaved` already fired above, so
+      // the editor has done everything it owes the caller; the
+      // Talk-participant sync is post-success housekeeping that
+      // the user shouldn't have to wait on.
       onclose()
+
+      // Fire-and-forget Talk participant sync.  Only fires when
+      // the user created a Talk room from this editor session
+      // and there's at least one attendee — pure "Talk-but-no-
+      // attendees" rooms behave like personal scratch rooms and
+      // don't need any of this.  Errors land in the console; the
+      // calendar event is already saved and the user has moved
+      // on.  Misses get caught the next time the user opens the
+      // event in the editor (the room sync re-runs from there).
+      if (pendingTalkRoom && input.attendees.length > 0) {
+        void syncTalkParticipants(input.attendees).catch((e) =>
+          console.warn('syncTalkParticipants failed (event already saved)', e),
+        )
+      }
     } catch (e) {
       error = formatError(e) || 'Failed to save event'
     } finally {
@@ -1379,8 +1520,44 @@
   }
 
   function currentCalendarLabel(): string {
-    return calendars.find((c) => c.id === calendarId)?.display_name ?? '(unknown)'
+    const c = calendars.find((c) => c.id === calendarId)
+    if (!c) return '(unknown)'
+    return c.display_name
   }
+
+  // Diagnostic for #236 — when EventEditor opens in edit mode,
+  // log the resolved calendar's read_only flag so a missing /
+  // mis-parsed privilege-set surfaces in DevTools instead of
+  // landing as "Delete still shows" with no signal as to why.
+  // Logged once at mount; harmless on every other open.
+  $effect(() => {
+    if (mode !== 'edit') return
+    const c = calendars.find((cc) => cc.id === calendarId)
+    console.log('[event-editor] edit-mode calendar:', {
+      calendarId,
+      found: !!c,
+      display_name: c?.display_name,
+      read_only: c?.read_only,
+      total_calendars: calendars.length,
+      read_only_count: calendars.filter((cc) => cc.read_only).length,
+    })
+  })
+
+  // Best-effort autosync of this event's calendar the moment the
+  // editor opens in edit mode.  Narrows the window where another
+  // client's edit since our last sync would cause our PUT/DELETE
+  // to come back as 412 / "If-Match failed".  The save path's
+  // own etag-retry logic still backs us up if the user clicks
+  // Save before this sync completes; this one just makes that
+  // safety net rarely fire.  Errors are intentionally swallowed
+  // — the editor opens and works regardless.
+  $effect(() => {
+    if (mode !== 'edit') return
+    if (!calendarId) return
+    void invoke('sync_calendar_by_id', { calendarId }).catch((e) => {
+      console.warn('event-editor: autosync_calendar failed', e)
+    })
+  })
 </script>
 
 <!-- Backdrop click closes the editor — same UX pattern as the
@@ -1418,7 +1595,23 @@
       >✕</button>
     </header>
 
-    <div class="flex-1 overflow-y-auto p-5 space-y-3">
+    <!-- #236 follow-up — when the calendar is read-only we want
+         the form to *look* normal (so the user can still read the
+         event details) but be non-interactive (no click, no
+         focus, no typing).  HTML5 `inert` does exactly that
+         without any of the dimming `<fieldset disabled>` triggers
+         and without the layout quirks fieldset introduces inside
+         a flex column.  The Cancel/Close button lives in the
+         footer outside this region so it stays clickable.
+         Split the scroll container (outer div, never inert) from
+         the inert wrapper (inner div) so the scrollbar drag —
+         which registers as a click on the scroll container — keeps
+         working even when the form's contents are locked. -->
+    <div class="flex-1 overflow-y-auto p-5">
+      <div
+        inert={mode === 'edit' && currentCalendarReadOnly}
+        class="space-y-3"
+      >
       <!-- Row 1 — Title spans the row alongside the calendar
            dropdown (mockup #128).  Title gets the lion's share
            of the width; calendar picker tucks into a fixed
@@ -1440,7 +1633,7 @@
               id="event-calendar"
               ariaLabel="Calendar"
               bind:value={calendarId}
-              options={calendars.map((c) => ({ value: c.id, label: c.display_name }))}
+              options={writableCalendars.map((c) => ({ value: c.id, label: c.display_name }))}
               placeholder="Select calendar"
             />
           </div>
@@ -1504,7 +1697,9 @@
               { value: '30', label: '30 minutes before' },
               { value: '45', label: '45 minutes before' },
               { value: '60', label: '1 hour before' },
+              { value: '120', label: '2 hours before' },
               { value: '1440', label: '1 day before' },
+              { value: '10080', label: '1 week before' },
               ...(reminderChoice === 'custom'
                 ? [{ value: 'custom' as const, label: 'Custom (preserved from server)' }]
                 : []),
@@ -1592,12 +1787,17 @@
            trip when they're attending a meeting they (or someone
            else) scheduled. -->
       <div class="flex items-center gap-2">
-        <input
-          id="event-location"
-          class="input flex-1 px-3 py-2 text-sm rounded-md"
-          bind:value={location}
-          placeholder="Location"
-          aria-label="Location"
+        <LocationField
+          value={location}
+          {latitude}
+          {longitude}
+          enabled={geocodingEnabled}
+          placeholder={m.event_editor_location_placeholder()}
+          onpick={(v, lat, lon) => {
+            location = v
+            latitude = lat
+            longitude = lon
+          }}
         />
         {#if joinMeetingUrl}
           <button
@@ -1627,6 +1827,22 @@
           </button>
         {/if}
       </div>
+
+      <!-- Map preview (#280).  Mounted only when (a) the user
+           opted into location geocoding in General Settings, and
+           (b) the autocomplete pick (or a stored GEO from a
+           previous opt-in) stamped lat/lon on the event.  The
+           privacy gate stops the OSM iframe from loading tiles
+           when the user has the feature off — even an existing
+           event with cached coordinates won't reach out to
+           openstreetmap.org until the toggle is back on. -->
+      {#if geocodingEnabled && latitude !== null && longitude !== null}
+        <MapPreview
+          latitude={latitude}
+          longitude={longitude}
+          caption={location}
+        />
+      {/if}
 
       <!-- Row 6 — Description.  Tall by default — the mockup
            shows it occupying the bulk of the form's middle. -->
@@ -1894,6 +2110,24 @@
       {@render attendeeInput('REQ-PARTICIPANT', 'Required attendees')}
       {@render attendeeInput('OPT-PARTICIPANT', 'Optional attendees')}
 
+      <!-- "Find time" trigger (#137).  Disabled until at least
+           one attendee has been added — without anyone to query,
+           the planner has nothing to render.  Sits between the
+           inputs and the chip list so the user reaches it as
+           soon as they've finished typing names. -->
+      {#if [...chairAttendees, ...requiredAttendees, ...optionalAttendees].length > 0}
+        <div class="flex">
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-primary-500"
+            onclick={() => { plannerOpen = true }}
+          >
+            <Icon name="calendar" size={14} class="inline-block align-text-bottom mr-1.5" />
+            {m.event_editor_find_time()}
+          </button>
+        </div>
+      {/if}
+
       <!-- Section separator + the chip lists grouped by role.
            Each header is faint until there's content under it,
            and `chipList` short-circuits empty buckets so the
@@ -1905,27 +2139,80 @@
       {#if error}
         <p class="text-sm text-red-500">{error}</p>
       {/if}
+      </div>
     </div>
 
+    {#if mode === 'edit' && currentCalendarReadOnly}
+      <!-- Read-only banner (#236 follow-up).  Sits just above
+           the footer so the user sees *why* Save / Delete
+           aren't on offer before reaching for them.  The
+           banner appears either because the calendar's
+           privilege-set was parsed at discovery OR because a
+           previous Save attempt got back a 403/404 and the
+           write-failure fallback flipped the flag. -->
+      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 text-xs text-surface-600 dark:text-surface-300 flex items-center gap-2">
+        <Icon name="warning" size={14} />
+        <span>{m.event_editor_readonly_banner()}</span>
+      </div>
+    {/if}
+
     <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-700 flex items-center gap-2">
-      <button class="btn preset-filled-primary-500" disabled={saving || deleting} onclick={save}>
-        {saving
-          ? 'Saving…'
-          : mode === 'create'
-            ? 'Create'
-            : mode === 'stage'
-              ? 'Add to message'
-              : 'Save'}
-      </button>
-      {#if mode === 'edit'}
+      {#if !(mode === 'edit' && currentCalendarReadOnly)}
+        <!-- #236: hide Save when the calendar is read-only.
+             The server would reject the PUT (NC's permission-
+             masking returns 404 instead of 403, our CalDAV
+             write path catches both); offering the button
+             just produces a confusing error toast.  Create-
+             mode never lands here because the calendar
+             picker filters read-only entries out upstream. -->
+        <button class="btn preset-filled-primary-500" disabled={saving || deleting} onclick={save}>
+          {saving
+            ? 'Saving…'
+            : mode === 'create'
+              ? 'Create'
+              : mode === 'stage'
+                ? 'Add to message'
+                : 'Save'}
+        </button>
+      {/if}
+      {#if mode === 'edit' && !currentCalendarReadOnly}
+        <!-- #236: hide Delete when the calendar is read-only.
+             A user can still open such an event to view the
+             details, but the server would reject the
+             `DELETE` so showing the button would just produce
+             a confusing error toast. -->
         <button class="btn preset-outlined-error-500" disabled={saving || deleting} onclick={remove}>
           {deleting ? 'Deleting…' : 'Delete'}
         </button>
       {/if}
       <div class="flex-1"></div>
       <button class="btn preset-outlined-surface-500" disabled={saving || deleting} onclick={() => void cancel()}>
-        Cancel
+        {mode === 'edit' && currentCalendarReadOnly ? m.event_editor_close() : 'Cancel'}
       </button>
     </footer>
   </div>
 </div>
+
+<!-- Scheduling-assistant modal (#137).  Mounted at the document
+     root level so its overlay covers the EventEditor too — the
+     user can apply a slot from the planner and see the editor's
+     time fields update immediately when the planner closes. -->
+{#if plannerOpen}
+  {@const ncId = calendars.find((c) => c.id === calendarId)?.nextcloud_account_id ?? ''}
+  {#if ncId}
+    <EventPlanner
+      open={plannerOpen}
+      {ncId}
+      attendees={[...chairAttendees, ...requiredAttendees, ...optionalAttendees]}
+      proposedStart={fromLocalSplit(startDate, startTime)}
+      proposedEnd={fromLocalSplit(endDate, endTime)}
+      onclose={() => { plannerOpen = false }}
+      onapply={(s, e) => {
+        startDate = toLocalDateInput(s)
+        startTime = toLocalTimeInput(s)
+        endDate = toLocalDateInput(e)
+        endTime = toLocalTimeInput(e)
+      }}
+    />
+  {/if}
+{/if}

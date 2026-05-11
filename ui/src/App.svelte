@@ -33,6 +33,9 @@
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
   import { openReminderInStandaloneWindow } from './lib/reminderPopupWindow'
+  import { openMailFileInStandaloneWindow } from './lib/standaloneMailFileWindow'
+  import OutboxList, { type OutboxRowDto } from './lib/OutboxList.svelte'
+  import OutboxView from './lib/OutboxView.svelte'
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
@@ -211,6 +214,41 @@
   let selectedUid = $state<number | null>(null)
   // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
   let refreshToken = $state(0)
+
+  /** Synthetic local-only Outbox folder name (#276).  Mirror of
+   *  the constant in Sidebar.svelte; same name means selecting
+   *  the synthetic sidebar entry routes through the existing
+   *  `selectedFolder` channel and the template here can branch
+   *  on a string compare. */
+  const OUTBOX_FOLDER = 'Outbox'
+
+  /** Total queued rows in the local Outbox table (#276).  Drives
+   *  the Sidebar's "render the synthetic Outbox folder?"
+   *  decision.  Refreshed via the `outbox-updated` Tauri event
+   *  the backend fires whenever the queue changes shape. */
+  let outboxCount = $state(0)
+  /** Per-component re-fetch nonce for OutboxList — bumped on
+   *  `outbox-updated` so the list reloads even when no other
+   *  state change would have triggered its `$effect`. */
+  let outboxRefreshToken = $state(0)
+  /** Currently-previewed Outbox row (#276 follow-up).  Carries
+   *  the full row snapshot so the right-pane `OutboxView` can
+   *  render straight from it without a second round-trip to
+   *  the backend; falls back to the latest `list_outbox`
+   *  response if the row is updated by a retry / failure
+   *  recording while the user has it open. */
+  let selectedOutboxRow = $state<OutboxRowDto | null>(null)
+  /** Snapshot of "did the currently-open Compose start as an
+   *  edit-from-outbox?".  Captured at `openCompose` time
+   *  because Compose's `onclose` fires immediately on Send
+   *  (#156's instant-close) before its async send pipeline
+   *  reaches `invoke('send_email')` — so by the time we'd want
+   *  to inspect `composeInitial.outboxSource`, the modal has
+   *  already cleared it.  Set on open, consumed by
+   *  `onsentenqueued`, cleared by a fresh `openCompose` of any
+   *  kind so a subsequent non-edit send can't accidentally
+   *  inherit it. */
+  let composeOpenedAsEditOfOutbox = $state(false)
 
   // Bindable mirror of MailList's currently-rendered envelope rows.
   // Used by the auto-advance-after-delete flow (#99) to pick the
@@ -408,6 +446,18 @@
     uid: number
     from: string
     subject: string
+  }
+
+  /** `mail-flags-updated` event payload (#255 follow-up).  Backend
+   *  fires this whenever the cached `\Seen` / `\Flagged` /
+   *  `\Answered` flags change — either Compose's post-send
+   *  marking or the poll path's cross-client catch-up.  We don't
+   *  inspect the fields today (the listener just bumps
+   *  `refreshToken` to re-read the cache), but they're kept on
+   *  the type so per-folder filtering stays an easy follow-up. */
+  type MailFlagsUpdatedPayload = {
+    accountId: string
+    folder: string
   }
 
   type AppPrefs = {
@@ -769,10 +819,58 @@
     let unlistenComposeFromMail: UnlistenFn | null = null
     let unlistenEditDraftFromMail: UnlistenFn | null = null
     let unlistenMailtoFromMail: UnlistenFn | null = null
+    let unlistenMailFlagsUpdated: UnlistenFn | null = null
+    let unlistenOutboxUpdated: UnlistenFn | null = null
     ;(async () => {
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
       )
+      // #255: backend fires this whenever the answered / read /
+      // starred flag on a cached envelope changes (Compose's
+      // post-send marking, plus the cross-client catch-up the
+      // poll path runs).  Bump the refresh token so MailList
+      // re-reads the cache and the row picks up the new flags
+      // without a manual refresh.
+      unlistenMailFlagsUpdated = await listen<MailFlagsUpdatedPayload>(
+        'mail-flags-updated',
+        () => {
+          refreshToken++
+        },
+      )
+      // #276: backend fires `outbox-updated` whenever the queue
+      // changes shape (enqueue / drain success / failure /
+      // delete).  Refresh the count so the Sidebar shows /
+      // hides the synthetic Outbox folder, and bump the
+      // OutboxList's nonce so its rows re-fetch.
+      unlistenOutboxUpdated = await listen<{ total: number }>(
+        'outbox-updated',
+        (e) => {
+          outboxCount = Math.max(0, Math.floor(e.payload.total ?? 0))
+          outboxRefreshToken++
+          // If the user is sitting on the Outbox folder and the
+          // queue just drained empty, route them back to INBOX
+          // — staying on an empty Outbox would just be a blank
+          // surface they have to manually navigate away from.
+          if (outboxCount === 0 && selectedFolder === OUTBOX_FOLDER) {
+            selectedFolder = 'INBOX'
+            selectedUid = null
+            selectedOutboxRow = null
+          }
+          // OutboxList itself re-runs `list_outbox` on this same
+          // event and emits `onselect(updatedRow | null)` —
+          // that's where the preview row gets refreshed (so
+          // attempt counts / last_error stay fresh) or cleared
+          // (when the row drained or got deleted).
+        },
+      )
+      // Seed the count once on startup so a queue carried over
+      // from a previous session is reflected without waiting for
+      // the first poll tick.
+      try {
+        outboxCount = await invoke<number>('count_outbox')
+      } catch (e) {
+        console.warn('count_outbox at startup failed', e)
+      }
       unlistenEventReminder = await listen<EventReminder>(
         'event-reminder',
         (e) => handleEventReminder(e.payload),
@@ -809,7 +907,7 @@
       // and signature state already wired up.
       unlistenComposeFromMail = await listen<{
         kind: 'reply' | 'reply-all' | 'forward'
-        mail: OpenMail
+        mail: ReplyableMail
       }>('compose-from-mail', (e) => {
         const { kind, mail } = e.payload
         if (kind === 'reply') onReply(mail)
@@ -823,6 +921,16 @@
       unlistenMailtoFromMail = await listen<{
         init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }
       }>('mailto-from-mail', (e) => openCompose(e.payload.init))
+
+      // #254 — when Nimbus is launched as the OS handler for an
+      // .ics or .eml file (Windows registry / macOS UTI / Linux
+      // .desktop), the backend stashes the path in a one-shot
+      // slot during process startup.  Pull it now, after the
+      // event listeners are wired so an iCal "Show event" path
+      // can still race past us if it ever overlaps.  Best-effort:
+      // any failure is logged and dropped so a malformed handoff
+      // doesn't keep the user staring at an empty app shell.
+      void processPendingLaunchFile()
     })()
     return () => {
       unlistenNewMail?.()
@@ -833,6 +941,8 @@
       unlistenComposeFromMail?.()
       unlistenEditDraftFromMail?.()
       unlistenMailtoFromMail?.()
+      unlistenMailFlagsUpdated?.()
+      unlistenOutboxUpdated?.()
       if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     }
   })
@@ -1000,6 +1110,14 @@
   function selectFolder(name: string) {
     selectedFolder = name
     selectedUid = null
+    // Clear the Outbox preview when switching away — the
+    // right-pane routing is folder-conditional, but the
+    // selectedOutboxRow value would otherwise linger and
+    // re-show the preview the next time the user lands back
+    // on the Outbox folder.
+    if (name !== OUTBOX_FOLDER) {
+      selectedOutboxRow = null
+    }
   }
 
   // MailView fires this after it successfully marks a message \Seen
@@ -1093,6 +1211,69 @@
     // previous failed background send (#156).
     composeSendError = ''
     composeInitial = initial
+    // Snapshot whether this Compose started life as an
+    // edit-from-outbox — onsentenqueued reads it later (#276
+    // follow-up).  Re-set on every open so a fresh non-edit
+    // compose can't inherit the arming from a previous edit
+    // that the user cancelled.
+    composeOpenedAsEditOfOutbox = initial.outboxSource != null
+  }
+
+  /** Re-open a queued Outbox message in Compose for editing
+   *  (#276).  Peeks at the row without removing it: cancelling
+   *  Compose leaves the original queued copy alone, sending
+   *  routes through `send_email` with `outboxSource: { id }` so
+   *  the backend drops the source row atomically with
+   *  enqueueing the edit.
+   *
+   *  `skipSignatureInsert` is true so Compose doesn't stack a
+   *  second signature on top of the one already embedded in
+   *  the queued body. */
+  function onEditOutbox(row: OutboxRowDto) {
+    let outgoing: {
+      from: string
+      to: string[]
+      cc: string[]
+      bcc: string[]
+      reply_to: string | null
+      subject: string
+      body_text: string | null
+      body_html: string | null
+      attachments: unknown[]
+    }
+    try {
+      outgoing = JSON.parse(row.outgoingJson)
+    } catch (e) {
+      alert(`Stored Outbox payload was unreadable: ${e}`)
+      return
+    }
+    let repliedTo: ComposeInitial['repliedTo']
+    if (row.repliedToJson) {
+      try {
+        const parsed = JSON.parse(row.repliedToJson)
+        if (parsed && typeof parsed === 'object') {
+          repliedTo = {
+            accountId: row.accountId,
+            folder: parsed.folder,
+            uid: parsed.uid,
+            kind: parsed.kind,
+          }
+        }
+      } catch (e) {
+        console.warn('outbox repliedToJson parse failed', e)
+      }
+    }
+    openCompose({
+      to: outgoing.to.join(', '),
+      cc: outgoing.cc.length > 0 ? outgoing.cc.join(', ') : undefined,
+      bcc: outgoing.bcc.length > 0 ? outgoing.bcc.join(', ') : undefined,
+      subject: outgoing.subject,
+      body: outgoing.body_html || outgoing.body_text || '',
+      attachments: outgoing.attachments as never,
+      repliedTo,
+      outboxSource: { id: row.id },
+      skipSignatureInsert: true,
+    })
   }
 
   function closeCompose() {
@@ -1132,6 +1313,46 @@
       } catch (e) {
         console.warn('send-failed notification failed', e)
       }
+    }
+  }
+
+  /** Fires when Compose's send invoke succeeds with the new
+   *  outbox row's id (#276 follow-up).  Distinct from `onclose`
+   *  because the modal closes immediately on Send (#156's
+   *  instant-close UX) — relying on `onclose` alone makes
+   *  cancel and send indistinguishable.
+   *
+   *  When the just-sent Compose started life as an
+   *  edit-from-outbox, look up the new row in the queue and
+   *  surface it as the selected Outbox preview.  Three
+   *  outcomes:
+   *
+   *    * Healthy network: the drain task may have already
+   *      removed the row by the time this lookup runs — the
+   *      list comes back without the id, and we leave the
+   *      selection cleared (the empty-Outbox auto-route in
+   *      `outbox-updated` then takes over).
+   *    * Failed send: the row is still in the queue with a
+   *      `last_error`; we select it so the user can see what
+   *      went wrong without manually clicking the row.
+   *    * Mid-flight: row exists with no error yet — same
+   *      select behaviour, the row's status updates in place
+   *      via the `outbox-updated` listener as the drain
+   *      finishes. */
+  async function onComposeSentEnqueued(newRowId: number) {
+    if (!composeOpenedAsEditOfOutbox) return
+    composeOpenedAsEditOfOutbox = false
+    // Stay on the Outbox folder (the user was here when they
+    // clicked Edit; switching away would be confusing).
+    selectedFolder = OUTBOX_FOLDER
+    selectedUid = null
+    try {
+      const rows = await invoke<OutboxRowDto[]>('list_outbox', {
+        accountId: activeAccountId ?? '',
+      })
+      selectedOutboxRow = rows.find((r) => r.id === newRowId) ?? null
+    } catch (e) {
+      console.warn('list_outbox after edit-send failed', e)
     }
   }
 
@@ -1196,17 +1417,48 @@
     subject: string
     body_text: string | null
     date: string
+    /** RFC 5322 threading anchors (#277).  Optional because
+     *  older cached payloads predate the parser; absent values
+     *  just mean the reply we send won't carry an In-Reply-To
+     *  pointing here. */
+    message_id?: string | null
+    in_reply_to?: string | null
+    references_ids?: string[]
   }
 
-  function onReply(mail: OpenMail) {
+  /** Reply / reply-all / "respond with meeting" need to know
+   *  (account_id, folder, uid) so the answered-tracking flow
+   *  (#255) can flip `\Answered` on the original message after
+   *  a successful send.  MailView passes them through via
+   *  `{...email, uid}`; the standalone-window emit threads the
+   *  same shape across windows. */
+  type ReplyableMail = OpenMail & {
+    account_id: string
+    folder: string
+    uid: number
+  }
+
+  function onReply(mail: ReplyableMail) {
     openCompose({
       to: mail.from,
       subject: replySubject(mail.subject),
       body: quoteBody(mail.from, mail.date, mail.body_text),
+      repliedTo: {
+        accountId: mail.account_id,
+        folder: mail.folder,
+        uid: mail.uid,
+        kind: 'reply',
+        // RFC 5322 threading anchors (#277).  Carrying these on
+        // the reply context lets Compose stamp `In-Reply-To` /
+        // `References` on the outgoing message so other clients
+        // group it with the parent.
+        parentMessageId: mail.message_id ?? null,
+        parentReferences: mail.references_ids ?? [],
+      },
     })
   }
 
-  function onReplyAll(mail: OpenMail) {
+  function onReplyAll(mail: ReplyableMail) {
     const others = [...mail.to, ...mail.cc].filter(
       (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
     )
@@ -1215,6 +1467,14 @@
       cc: others.join(', '),
       subject: replySubject(mail.subject),
       body: quoteBody(mail.from, mail.date, mail.body_text),
+      repliedTo: {
+        accountId: mail.account_id,
+        folder: mail.folder,
+        uid: mail.uid,
+        kind: 'reply-all',
+        parentMessageId: mail.message_id ?? null,
+        parentReferences: mail.references_ids ?? [],
+      },
     })
   }
 
@@ -1340,6 +1600,10 @@
     last_synced_at: string | null
     hidden?: boolean
     muted?: boolean
+    /** CalDAV-derived read-only flag (#236) — passed through
+     *  to EventEditor so the picker / Delete button know not
+     *  to offer writes against read-only shared calendars. */
+    read_only?: boolean
   }
   let meetingDraft = $state<{
     calendars: CalendarSummary[]
@@ -1348,15 +1612,24 @@
       start: Date
       end: Date
       summary: string
+      description?: string
+      location?: string
+      url?: string
       requiredAttendees: string[]
       optionalAttendees: string[]
+      chairAttendees?: string[]
       createTalkRoom: boolean
     }
     /** Original thread the user clicked "Respond with meeting"
      *  on — held here so `onMeetingEditorSaved` can reopen
      *  Compose pre-filled as a reply once the event lands
-     *  (#195). */
-    replyTo: OpenMail
+     *  (#195).  Absent when the editor was opened from a
+     *  source other than an email thread (e.g. an .ics file
+     *  the OS handed us via "Open with…", #254).  Carries the
+     *  `ReplyableMail` shape so the post-save Compose knows the
+     *  (account_id, folder, uid) needed to flip `\Answered`
+     *  (#255). */
+    replyTo?: ReplyableMail
   } | null>(null)
 
   /** Strip an `"Name" <addr>` wrapper down to the bare email. */
@@ -1389,81 +1662,96 @@
     return out
   }
 
-  async function onRespondWithMeeting(mail: OpenMail) {
-    let ncId = ''
+  async function onRespondWithMeeting(mail: ReplyableMail) {
+    // Defensive: if a previous flow left state behind (e.g. a
+    // Compose modal whose overlay would z-index over the new
+    // editor), clear it so the EventEditor lands on top of an
+    // empty surface.
+    meetingDraft = null
+    composeInitial = null
+
+    // Top-level try/catch so any unhandled rejection surfaces as
+    // a visible alert instead of leaving the user staring at a
+    // button that did nothing.  The inner blocks still run their
+    // own try/catch where they can give a more specific message.
     try {
-      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
-      if (list.length === 0) {
-        alert('Connect a Nextcloud account first (Settings → Nextcloud).')
+      let ncId = ''
+      try {
+        const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+        if (list.length === 0) {
+          alert('Connect a Nextcloud account first (Settings → Nextcloud).')
+          return
+        }
+        ncId = list[0].id
+      } catch (e) {
+        alert(`Failed to load Nextcloud accounts: ${e}`)
         return
       }
-      ncId = list[0].id
-    } catch (e) {
-      alert(`Failed to load Nextcloud accounts: ${e}`)
-      return
-    }
 
-    let calendars: CalendarSummary[] = []
-    try {
-      calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
-    } catch (e) {
-      alert(`Failed to load calendars: ${e}`)
-      return
-    }
-    const visible = calendars.filter((c) => !c.hidden)
-    if (visible.length === 0) {
-      alert('No writable calendars found on your Nextcloud account.')
-      return
-    }
-    let initialCalendarId = visible[0].id
-    try {
-      const s = await invoke<{ default_calendar_id: string | null }>('get_app_settings')
-      if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
-        initialCalendarId = s.default_calendar_id!
+      let calendars: CalendarSummary[] = []
+      try {
+        calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+      } catch (e) {
+        alert(`Failed to load calendars: ${e}`)
+        return
       }
-    } catch {}
+      const visible = calendars.filter((c) => !c.hidden)
+      if (visible.length === 0) {
+        alert('No writable calendars found on your Nextcloud account.')
+        return
+      }
+      let initialCalendarId = visible[0].id
+      try {
+        const s = await invoke<{ default_calendar_id: string | null }>('get_app_settings')
+        if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
+          initialCalendarId = s.default_calendar_id!
+        }
+      } catch {}
 
-    // Split the thread's participants — From + To go required,
-    // Cc goes optional.  Skip the active account (the user is the
-    // organizer; the editor adds them as CHAIR).  De-dupe across
-    // buckets so an address that appears in both To and Cc only
-    // shows up once in the higher-priority bucket.
-    const self = activeAccountEmail.toLowerCase()
-    const seen = new Set<string>()
-    const required: string[] = []
-    for (const piece of [mail.from, ...mail.to]) {
-      const addr = bareEmail(piece)
-      if (!addr) continue
-      const key = addr.toLowerCase()
-      if (key === self || seen.has(key)) continue
-      seen.add(key)
-      required.push(piece)
-    }
-    const optional: string[] = []
-    for (const piece of mail.cc) {
-      const addr = bareEmail(piece)
-      if (!addr) continue
-      const key = addr.toLowerCase()
-      if (key === self || seen.has(key)) continue
-      seen.add(key)
-      optional.push(piece)
-    }
+      // Split the thread's participants — From + To go required,
+      // Cc goes optional.  Skip the active account (the user is the
+      // organizer; the editor adds them as CHAIR).  De-dupe across
+      // buckets so an address that appears in both To and Cc only
+      // shows up once in the higher-priority bucket.
+      const self = activeAccountEmail.toLowerCase()
+      const seen = new Set<string>()
+      const required: string[] = []
+      for (const piece of [mail.from, ...mail.to]) {
+        const addr = bareEmail(piece)
+        if (!addr) continue
+        const key = addr.toLowerCase()
+        if (key === self || seen.has(key)) continue
+        seen.add(key)
+        required.push(piece)
+      }
+      const optional: string[] = []
+      for (const piece of mail.cc) {
+        const addr = bareEmail(piece)
+        if (!addr) continue
+        const key = addr.toLowerCase()
+        if (key === self || seen.has(key)) continue
+        seen.add(key)
+        optional.push(piece)
+      }
 
-    const start = nextHalfHour(new Date())
-    const end = new Date(start.getTime() + 30 * 60 * 1000)
+      const start = nextHalfHour(new Date())
+      const end = new Date(start.getTime() + 30 * 60 * 1000)
 
-    meetingDraft = {
-      calendars: visible,
-      draft: {
-        calendarId: initialCalendarId,
-        start,
-        end,
-        summary: meetingSubject(mail.subject),
-        requiredAttendees: required,
-        optionalAttendees: optional,
-        createTalkRoom: true,
-      },
-      replyTo: mail,
+      meetingDraft = {
+        calendars: visible,
+        draft: {
+          calendarId: initialCalendarId,
+          start,
+          end,
+          summary: meetingSubject(mail.subject),
+          requiredAttendees: required,
+          optionalAttendees: optional,
+          createTalkRoom: true,
+        },
+        replyTo: mail,
+      }
+    } catch (e) {
+      alert(`Failed to open meeting editor: ${e}`)
     }
   }
 
@@ -1496,6 +1784,12 @@
       talkUrl: isUrl ? loc : null,
     }
 
+    // No source thread (e.g. the editor was opened from an .ics
+    // file we got handed via the OS, #254) — just save the event
+    // and bow out.  No reply Compose makes sense without an
+    // email to reply to.
+    if (!ctx.replyTo) return
+
     // Open Compose as a reply to the original thread, with the
     // styled meeting card pre-filled into the body.  Existing
     // reply ergonomics (To from From, Re: subject prefix, quoted
@@ -1513,7 +1807,193 @@
       // which prepends `meetingInvite`-rendered HTML.
       body: quoteBody(original.from, original.date, original.body_text),
       meetingInvite,
+      // #255 — flag the original as `\Answered` once the meeting
+      // reply lands.  The icon distinguishes "respond with
+      // meeting" from a plain reply or reply-all.
+      repliedTo: {
+        accountId: original.account_id,
+        folder: original.folder,
+        uid: original.uid,
+        kind: 'meeting',
+      },
     })
+  }
+
+  // ── OS file-association handoff (#254) ─────────────────────────
+  // When the user launches Nimbus by double-clicking an .ics /
+  // .eml file (or via "Open with… → Nimbus"), the OS hands the
+  // path to the process as `argv[1]`.  The Rust side stashes it
+  // in a one-shot slot during process startup; we drain it here
+  // and dispatch by extension:
+  //
+  //   .eml → spawn a view-only popout window (read-only by
+  //          design — no account context, no folder, so reply /
+  //          archive don't make sense)
+  //   .ics → load the user's calendars, parse the file into
+  //          our CalendarEvent shape, prefill EventEditor in
+  //          create-mode so the user can adjust the title /
+  //          time / attendees and save into a calendar of their
+  //          choice (per the user's directive — NOT read-only)
+
+  /** Lift a `CalendarEvent.attendees` list into the
+   *  required / optional / chair buckets EventEditor's draft
+   *  prop expects.  Each attendee is rendered as `"Name" <addr>`
+   *  when CN is present, or just the bare address otherwise —
+   *  matches `parseAddress` everywhere else. */
+  function bucketAttendeesByRole(
+    attendees: { email: string; common_name?: string | null; role?: string | null }[],
+    self: string,
+  ): {
+    required: string[]
+    optional: string[]
+    chair: string[]
+  } {
+    const required: string[] = []
+    const optional: string[] = []
+    const chair: string[] = []
+    const selfAddr = self.toLowerCase()
+    for (const a of attendees) {
+      const email = (a.email || '').replace(/^mailto:/i, '').trim()
+      if (!email) continue
+      if (email.toLowerCase() === selfAddr) continue
+      const piece = a.common_name ? `"${a.common_name}" <${email}>` : email
+      const role = (a.role || 'REQ-PARTICIPANT').toUpperCase()
+      if (role === 'OPT-PARTICIPANT') optional.push(piece)
+      else if (role === 'CHAIR') chair.push(piece)
+      else required.push(piece)
+    }
+    return { required, optional, chair }
+  }
+
+  /** Drain the one-shot launch-file slot in the Rust backend
+   *  and dispatch the path by extension.  Called once during
+   *  the main app's startup `$effect`. */
+  async function processPendingLaunchFile() {
+    let path: string | null = null
+    try {
+      path = await invoke<string | null>('take_pending_file_to_open')
+    } catch (e) {
+      console.warn('take_pending_file_to_open failed', e)
+      return
+    }
+    if (!path) return
+
+    const lower = path.toLowerCase()
+    if (lower.endsWith('.eml')) {
+      try {
+        await openMailFileInStandaloneWindow(path)
+      } catch (e) {
+        console.warn('openMailFileInStandaloneWindow failed', e)
+      }
+      return
+    }
+    if (lower.endsWith('.ics')) {
+      await openIcsFileInEditor(path)
+      return
+    }
+    console.warn('pending file has unsupported extension:', path)
+  }
+
+  /** Subset of the Rust `CalendarEvent` shape we read off of
+   *  `parse_ics_file`.  EventEditor and CalendarView each
+   *  define their own internal interface for the same data;
+   *  rather than reach in and import a non-exported type, we
+   *  stamp out the fields we actually need here. */
+  interface ImportedIcsEvent {
+    summary: string
+    description?: string | null
+    start: string
+    end: string
+    location?: string | null
+    url?: string | null
+    attendees?: { email: string; common_name?: string | null; role?: string | null }[]
+  }
+
+  /** Parse an .ics on disk and open EventEditor in create-mode
+   *  pre-filled with the parsed event's data.  Multiple VEVENTs
+   *  in one file are uncommon for hand-shared invites — we use
+   *  the first one and let the user save it; the others are
+   *  ignored.  The user picks the calendar in the editor. */
+  async function openIcsFileInEditor(path: string) {
+    let events: ImportedIcsEvent[] = []
+    try {
+      events = await invoke<ImportedIcsEvent[]>('parse_ics_file', { path })
+    } catch (e) {
+      alert(`Could not parse the calendar file: ${e}`)
+      return
+    }
+    if (events.length === 0) {
+      alert('The calendar file did not contain any events.')
+      return
+    }
+    const ev = events[0]
+
+    // Calendars come from the user's first connected Nextcloud
+    // account (same source the "Respond with meeting" flow
+    // uses).  Without an NC account there's nowhere to save
+    // the event, so we surface that and bail.
+    let ncId = ''
+    try {
+      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      if (list.length === 0) {
+        alert(
+          'Connect a Nextcloud account first (Settings → Nextcloud) so this event has a calendar to land in.',
+        )
+        return
+      }
+      ncId = list[0].id
+    } catch (e) {
+      alert(`Failed to load Nextcloud accounts: ${e}`)
+      return
+    }
+
+    let calendars: CalendarSummary[] = []
+    try {
+      calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+    } catch (e) {
+      alert(`Failed to load calendars: ${e}`)
+      return
+    }
+    const visible = calendars.filter((c) => !c.hidden)
+    if (visible.length === 0) {
+      alert('No writable calendars found on your Nextcloud account.')
+      return
+    }
+    let initialCalendarId = visible[0].id
+    try {
+      const s = await invoke<{ default_calendar_id: string | null }>(
+        'get_app_settings',
+      )
+      if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
+        initialCalendarId = s.default_calendar_id!
+      }
+    } catch {}
+
+    const buckets = bucketAttendeesByRole(ev.attendees ?? [], activeAccountEmail)
+
+    meetingDraft = {
+      calendars: visible,
+      draft: {
+        calendarId: initialCalendarId,
+        start: new Date(ev.start),
+        end: new Date(ev.end),
+        summary: ev.summary || '',
+        description: ev.description ?? undefined,
+        location: ev.location ?? undefined,
+        url: ev.url ?? undefined,
+        requiredAttendees: buckets.required,
+        optionalAttendees: buckets.optional,
+        chairAttendees: buckets.chair,
+        // Don't auto-mint a Talk room for a third-party invite
+        // we just imported — the original file may already have
+        // a join URL in LOCATION or URL, and creating a fresh
+        // room would muddy the invite.
+        createTalkRoom: false,
+      },
+      // No source thread — this is a file the user opened, not
+      // a reply path.  `onMeetingEditorSaved` skips its Compose
+      // step when this is absent.
+    }
   }
 
   /** "Save as note" handler — issue #67's email→note bridge. Builds
@@ -1692,6 +2172,7 @@
         selectedFolder={selectedFolder}
         refreshToken={refreshToken}
         unified={unifiedMode}
+        outboxCount={outboxCount}
         onselectfolder={selectFolder}
         oncompose={() => openCompose()}
         onaccountschanged={checkAccounts}
@@ -1705,11 +2186,19 @@
            active account, which is the safer default than silently
            returning nothing. -->
       <div class="flex flex-col w-80 shrink-0 border-r border-surface-200 dark:border-surface-700">
-        <SearchBar
-          accountId={activeAccountId}
-          currentFolder={selectedFolder}
-          onsearch={onSearch}
-        />
+        {#if selectedFolder !== OUTBOX_FOLDER}
+          <!-- Hide the search input when the user is sitting on the
+               local-only Outbox folder (#276) — there's nothing
+               IMAP-side to search there, and the queue's own
+               status banner / row text already reads what the
+               user needs.  Mounting the search bar would just
+               imply a feature that doesn't exist yet. -->
+          <SearchBar
+            accountId={activeAccountId}
+            currentFolder={selectedFolder}
+            onsearch={onSearch}
+          />
+        {/if}
         <div class="flex-1 min-h-0 flex">
           {#if searchActive}
             <SearchResults
@@ -1720,6 +2209,22 @@
               filters={searchFilters}
               selectedUid={selectedUid}
               onselect={onSelectSearchHit}
+            />
+          {:else if selectedFolder === OUTBOX_FOLDER}
+            <!-- #276: Outbox is a local-only folder so we mount a
+                 dedicated component instead of feeding synthetic
+                 envelopes through MailList.  Same column width;
+                 the row template, status banner, and per-row
+                 retry/edit/delete actions all live in
+                 OutboxList.  Selecting any other folder swaps
+                 back to MailList automatically. -->
+            <OutboxList
+              accountId={activeAccountId ?? ''}
+              unified={unifiedMode}
+              accounts={accounts}
+              refreshToken={outboxRefreshToken}
+              selectedId={selectedOutboxRow?.id ?? null}
+              onselect={(row) => (selectedOutboxRow = row)}
             />
           {:else}
             <MailList
@@ -1737,26 +2242,38 @@
           {/if}
         </div>
       </div>
-      <MailView
-        accountId={selectedMessageAccountId ?? activeAccountId}
-        folder={selectedFolder}
-        uid={selectedUid}
-        forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
-        autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
-        linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
-        onread={onMessageRead}
-        onreply={onReply}
-        onreplyall={onReplyAll}
-        onforward={onForward}
-        onrespondwithmeeting={onRespondWithMeeting}
-        onsavenote={onSaveMailAsNote}
-        isDraftsFolder={isDraftsFolder}
-        isSentFolder={isSentFolder}
-        oneditdraft={onEditDraft}
-        onmessageremoved={onMessageRemoved}
-        onmailto={(init) => openCompose(init)}
-        bind:refreshing={mailViewRefreshing}
-      />
+      {#if selectedFolder === OUTBOX_FOLDER && selectedOutboxRow !== null}
+        <!-- #276 follow-up: clicking a queued row routes the
+             right pane to OutboxView, which renders the
+             message's headers + sanitised body so the user can
+             see what's about to be sent.  Read-only — the
+             retry / edit / delete actions stay on the row in
+             OutboxList. -->
+        <div class="flex-1 min-w-0">
+          <OutboxView row={selectedOutboxRow} onedit={onEditOutbox} />
+        </div>
+      {:else}
+        <MailView
+          accountId={selectedMessageAccountId ?? activeAccountId}
+          folder={selectedFolder}
+          uid={selectedUid}
+          forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
+          autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
+          linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
+          onread={onMessageRead}
+          onreply={onReply}
+          onreplyall={onReplyAll}
+          onforward={onForward}
+          onrespondwithmeeting={onRespondWithMeeting}
+          onsavenote={onSaveMailAsNote}
+          isDraftsFolder={isDraftsFolder}
+          isSentFolder={isSentFolder}
+          oneditdraft={onEditDraft}
+          onmessageremoved={onMessageRemoved}
+          onmailto={(init) => openCompose(init)}
+          bind:refreshing={mailViewRefreshing}
+        />
+      {/if}
     {/if}
 
     {#if composeInitial !== null}
@@ -1770,6 +2287,7 @@
           closeCompose()
         }}
         onsendfailed={onComposeSendFailed}
+        onsentenqueued={onComposeSentEnqueued}
       />
     {/if}
   </div>

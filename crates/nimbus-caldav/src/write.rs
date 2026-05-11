@@ -57,6 +57,15 @@ pub async fn create_event(
             "event with UID {uid} already exists on the server"
         )));
     }
+    // 403 / 404 on the create-side PUT is the same permission
+    // signal as on update — flag it so the caller can mark the
+    // calendar read-only locally instead of letting the user
+    // attempt the same write again (#236 follow-up).
+    if status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND {
+        return Err(NimbusError::CalDavWriteForbidden(format!(
+            "PUT new event {href} returned HTTP {status}"
+        )));
+    }
     if !status.is_success() {
         return Err(NimbusError::Nextcloud(format!(
             "PUT new event returned HTTP {status}"
@@ -104,6 +113,18 @@ pub async fn update_event(
         // never sees a "refresh and try again" toast.
         return Err(NimbusError::EtagMismatch(format!(
             "If-Match failed for {href} (server etag != cached)"
+        )));
+    }
+    // 403 Forbidden / 404 Not Found on a PUT to an existing
+    // event href is the server saying "no write access"
+    // (#236 follow-up).  Sabre/DAV — NC's CalDAV stack —
+    // returns 404 instead of 403 for forbidden resources as
+    // a permission-masking pattern; we treat both the same so
+    // the caller can flip the calendar's `read_only` flag and
+    // stop the EventEditor offering writes on it.
+    if status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND {
+        return Err(NimbusError::CalDavWriteForbidden(format!(
+            "PUT {href} returned HTTP {status}"
         )));
     }
     if !status.is_success() {
@@ -185,13 +206,29 @@ async fn delete_event_inner(
     };
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
-        return Err(NimbusError::Nextcloud(
-            "event was modified on the server since last sync â€” refresh and try again"
-                .to_string(),
-        ));
+        // Programmatically-detectable variant — same shape as
+        // `update_event` so the Tauri layer can transparently
+        // sync + retry instead of surfacing a "refresh and try
+        // again" toast to the user.  See
+        // `delete_event_with_etag_retry` in `src-tauri`.
+        return Err(NimbusError::EtagMismatch(format!(
+            "If-Match failed for DELETE {href} (server etag != cached)"
+        )));
     }
     // 404 is fine â€” already gone is the state we wanted.
-    if !status.is_success() && status != StatusCode::NOT_FOUND {
+    if status == StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    // 403 Forbidden on DELETE → calendar is read-only on the
+    // server side (#236 follow-up).  Same permission-masking
+    // signal the PUT path uses; the caller flips the local
+    // `read_only` flag so the editor stops offering writes.
+    if status == StatusCode::FORBIDDEN {
+        return Err(NimbusError::CalDavWriteForbidden(format!(
+            "DELETE {href} returned HTTP {status}"
+        )));
+    }
+    if !status.is_success() {
         return Err(NimbusError::Nextcloud(format!(
             "DELETE event returned HTTP {status}"
         )));

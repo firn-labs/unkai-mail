@@ -217,6 +217,18 @@
     ui_locale?: string
     /** #190 when true, the locale follows `navigator.language`. */
     ui_locale_auto?: boolean
+    /** #280 master toggle for the EventEditor's location
+     *  autocomplete + inline map preview.  Off (default) keeps
+     *  Location as a plain text input that never leaves the
+     *  device; on opts the user into Nominatim queries and
+     *  OpenStreetMap tile loads.  Non-optional because the Rust
+     *  side serialises a default value on `get_app_settings`. */
+    location_geocoding_enabled: boolean
+    /** #259 follow-up — override URL for forward-geocoding.
+     *  Empty string = use the public default
+     *  (`https://nominatim.openstreetmap.org`).  Self-hosters
+     *  can point this at their own Nominatim instance. */
+    nominatim_base_url: string
   }
   interface CustomThemeRow {
     id: string
@@ -248,7 +260,17 @@
     ui_scale_auto: true,
     ui_locale: '',
     ui_locale_auto: true,
+    location_geocoding_enabled: false,
+    nominatim_base_url: '',
   })
+
+  /** The default Nominatim base URL — surfaced in the settings
+   *  field's placeholder and as the value the Reset button
+   *  restores.  Mirrors `geocode::DEFAULT_NOMINATIM_BASE_URL`
+   *  on the Rust side.  We keep the constant local rather than
+   *  fetching it via IPC because it's stable, public, and
+   *  changing it would be a breaking change in any case. */
+  const DEFAULT_NOMINATIM_BASE_URL = 'https://nominatim.openstreetmap.org'
 
   // ── Logo / app-icon picker (Issue #X) ───────────────────────
   // Each entry is one slug the Rust side knows: the image source
@@ -321,6 +343,12 @@
     color: string | null
     last_synced_at: string | null
     hidden?: boolean
+    /** CalDAV-derived read-only flag (#236).  The default-
+     *  calendar picker still lists these so the user can pick
+     *  a shared calendar as their default, but EventEditor's
+     *  create-mode picker filters them out and falls back to
+     *  the first writable calendar. */
+    read_only?: boolean
   }
   let calendarsForPicker = $state<CalendarRow[]>([])
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
@@ -562,6 +590,24 @@
       // Roll the checkbox state back so the UI matches reality.
       appSettings.autostart_enabled = !next
       prefsSaveStatus = 'error'
+    }
+  }
+
+  /** Open the OS's default-apps settings page so the user can
+   *  pick Nimbus as the default handler for .ics / .eml (#254).
+   *  Nimbus is *eligible* once installed thanks to the
+   *  `bundle.fileAssociations` declarations, but on Windows
+   *  marking it as the *default* requires user consent in the
+   *  Settings panel — programmatic association without the
+   *  user clicking through is locked down by Windows for
+   *  anti-hijacking reasons.  The Rust command shell-execs the
+   *  appropriate OS surface (`ms-settings:defaultapps` /
+   *  `~/Library/Preferences` / xdg-mime hint). */
+  async function openDefaultAppsSettings() {
+    try {
+      await invoke('open_default_apps_settings')
+    } catch (e) {
+      alert(`Could not open the default-apps settings page: ${e}`)
     }
   }
 
@@ -1142,6 +1188,62 @@
           <span>After delete / archive, open the next message automatically</span>
         </div>
 
+        <!-- #280 — location autocomplete + inline map preview.
+             Off by default because each typed query goes to
+             nominatim.openstreetmap.org and the embedded map
+             loads tiles from openstreetmap.org — both outside
+             the user's Nextcloud trust boundary.  Spelling out
+             the dependency in the description lets the user
+             make an informed call. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.location_geocoding_enabled}
+            label={m.settings_location_geocoding_label()}
+            onchange={() => scheduleSave()}
+          />
+          <div class="flex-1">
+            <span>{m.settings_location_geocoding_label()}</span>
+            <p class="text-xs text-surface-400 mt-0.5">
+              {m.settings_location_geocoding_help()}
+            </p>
+            <!-- #259 follow-up — Nominatim self-host override.
+                 Empty = use the public default; the placeholder
+                 surfaces it so the user always knows what
+                 they're departing from.  Reset button clears
+                 the field, which the backend treats as "fall
+                 back to default". -->
+            {#if appSettings.location_geocoding_enabled}
+              <div class="flex items-center gap-2 mt-2">
+                <label class="text-xs text-surface-500 shrink-0" for="nominatim-base-url">
+                  {m.settings_nominatim_base_url_label()}
+                </label>
+                <input
+                  id="nominatim-base-url"
+                  type="url"
+                  class="input flex-1 text-sm py-1 px-2 rounded-md"
+                  placeholder={DEFAULT_NOMINATIM_BASE_URL}
+                  bind:value={appSettings.nominatim_base_url}
+                  onchange={() => scheduleSave()}
+                />
+                <button
+                  type="button"
+                  class="btn btn-sm preset-outlined-surface-500 shrink-0"
+                  disabled={appSettings.nominatim_base_url.trim() === ''}
+                  onclick={() => {
+                    appSettings.nominatim_base_url = ''
+                    scheduleSave()
+                  }}
+                >
+                  {m.settings_nominatim_base_url_reset()}
+                </button>
+              </div>
+              <p class="text-xs text-surface-500 mt-1">
+                {m.settings_nominatim_base_url_hint()}
+              </p>
+            {/if}
+          </div>
+        </div>
+
         <!-- Display language (#190).  Auto by default — paraglide
              picks from `navigator.language` (the OS-reported
              language) on launch.  The dropdown forces a specific
@@ -1240,6 +1342,33 @@
             {m.settings_general_language_hint()}
           </p>
         {/if}
+
+        <!-- File associations (#254).  Nimbus is registered as an
+             eligible handler for .ics / .eml during install via
+             the bundle.fileAssociations entries in
+             tauri.conf.json — but on Windows, "eligible" doesn't
+             mean "default".  The user has to flip the toggle in
+             the OS settings panel themselves; we provide a
+             shortcut button instead of asking them to dig
+             through Settings → Apps → Default apps by hand. -->
+        <div class="pt-2 border-t border-surface-300/40 dark:border-surface-700/40">
+          <div class="flex items-start justify-between gap-3">
+            <div class="text-sm">
+              <div>{m.settings_general_file_assoc_label()}</div>
+              <div class="text-xs text-surface-500 mt-0.5">
+                {m.settings_general_file_assoc_hint()}
+              </div>
+            </div>
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-500 shrink-0 inline-flex items-center gap-1.5"
+              onclick={openDefaultAppsSettings}
+            >
+              <Icon name="open-link" size={14} />
+              {m.settings_general_file_assoc_button()}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
     {/if}

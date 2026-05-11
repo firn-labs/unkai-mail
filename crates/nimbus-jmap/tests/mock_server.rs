@@ -406,6 +406,8 @@ async fn test_send_email() {
         attachments: vec![],
         calendar_part: None,
         skip_sent_copy: false,
+        in_reply_to: None,
+        references: vec![],
     };
 
     client
