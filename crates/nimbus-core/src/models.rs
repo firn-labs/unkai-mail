@@ -195,13 +195,13 @@ pub struct AppSettings {
     #[serde(default)]
     pub nominatim_base_url: String,
     /// What happens when the user clicks a `mail://acc/folder/uid`
-    /// reference embedded in a note (#260).  `Popup` (default) spawns
-    /// a standalone webview window with the message — the user keeps
-    /// their place in the Notes view.  `Switch` flips the main view
-    /// over to the inbox, scoped to the referenced account / folder /
-    /// UID, the way clicking a row in the mail list does.
+    /// reference embedded in a note (#260).  Default `false` opens
+    /// the message in a standalone reader window so the user keeps
+    /// their place in the Notes view; flipping it on routes the
+    /// click through the main app's view-switch instead (lands in
+    /// the inbox at that message).
     #[serde(default)]
-    pub notes_mail_link_open: NotesMailLinkBehavior,
+    pub notes_mail_open_in_view: bool,
 }
 
 fn default_logo_style() -> String {
@@ -258,18 +258,6 @@ pub enum ThemeMode {
     Dark,
 }
 
-/// What happens when the user clicks a `mail://acc/folder/uid`
-/// reference embedded in a note (#260).  Default `Popup` so the
-/// click never yanks the user out of the editor they were just
-/// working in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum NotesMailLinkBehavior {
-    #[default]
-    Popup,
-    Switch,
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -314,11 +302,11 @@ impl Default for AppSettings {
             // self-hosted URL routes every typed query through
             // the user's own Nominatim instead.
             nominatim_base_url: String::new(),
-            // Default to the popup so a `mail://` click in a note
-            // never tears the user out of the editor.  Users who
-            // prefer the old "switch to inbox" behaviour can flip
-            // this in Settings.
-            notes_mail_link_open: NotesMailLinkBehavior::Popup,
+            // Default off — `mail://` clicks in a note open a
+            // standalone reader so the user keeps their place in
+            // the editor.  Flipping this on routes the click
+            // through the main view-switch instead.
+            notes_mail_open_in_view: false,
         }
     }
 }

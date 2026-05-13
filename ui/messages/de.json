@@ -205,8 +205,6 @@
   "settings_nominatim_base_url_label": "Nominatim-Endpunkt",
   "settings_nominatim_base_url_reset": "Zurücksetzen",
   "settings_nominatim_base_url_hint": "Leer lassen, um den öffentlichen OpenStreetMap-Nominatim-Dienst zu verwenden. Um Anfragen stattdessen über eine selbst gehostete Nominatim-Instanz zu leiten, deren Basis-URL eintragen (z. B. https://nominatim.example.com).",
-  "settings_notes_mail_link_open_label": "Mail-Links in Notizen öffnen",
-  "settings_notes_mail_link_open_popup": "In neuem Fenster öffnen (in Notizen bleiben)",
-  "settings_notes_mail_link_open_switch": "Zur Mail-Ansicht wechseln",
-  "settings_notes_mail_link_open_help": "Wenn du auf einen mail://-Verweis in einer Notiz klickst, legt diese Einstellung fest, ob die Nachricht in einem eigenständigen Lesefenster geöffnet wird (die Notizen-Ansicht bleibt erhalten) oder ob die Hauptansicht zur entsprechenden Nachricht im Posteingang springt."
+  "settings_notes_mail_open_in_view_label": "Mails in der Mail-Ansicht öffnen",
+  "settings_notes_mail_open_in_view_hint": "Wenn aktiviert, wechselt ein Klick auf einen Mail-Link in einer Notiz zur Mail-Ansicht und öffnet die Nachricht dort. Wenn deaktiviert (Standard), wird die Nachricht in einem eigenständigen Lesefenster geöffnet, sodass die Notizen-Ansicht erhalten bleibt."
 }
