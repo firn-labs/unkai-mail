@@ -78,6 +78,23 @@ by default, and renders attachments inline where it makes sense.
 - **Calendar** (CalDAV) — RSVP to meeting invites inline. The "Respond
   with meeting" action drops a styled invite card into your reply with
   the time, location, notes, and an optional Talk room.
+- **Notes** — full sync with the Nextcloud Notes app. Real markdown
+  end-to-end (no HTML serializer in the middle) with a side-by-side
+  preview pane. Two cross-feature autocomplete triggers live in the
+  editor:
+  - Type **`@`** followed by a name — a popup opens with matching
+    contacts from your address book. Pick one and a clickable
+    contact reference (`[Name](mailto:address)`) is inserted at the
+    cursor.
+  - Type **`/mail`** *then a space* — a popup opens that searches
+    your cached mail (cross-folder) as you type, with a server-side
+    fallback for the active account's inbox. Pick a message and a
+    clickable mail reference (`[Subject](mail://account/folder/uid)`)
+    is inserted.
+  Mail references opened from a note pop out into a standalone
+  reader window by default so the editor stays put; flip **"Open
+  mails in mail view"** in Settings → General if you'd rather the
+  main view jump to the message instead.
 
 <!--
   GIF: nextcloud-talk
@@ -322,7 +339,6 @@ Tracked in [GitHub Issues](https://github.com/Videothek/nimbus-mail/issues).
 - End-to-end mail encryption (S/MIME + OpenPGP)
 - Calendar invites + RSVP polish
 - AI-assisted reply drafting + RAG over mail
-- Nextcloud Notes integration
 - Drag-and-drop messages between folders
 - HTML body renderer with per-sender remote-image trust
 
