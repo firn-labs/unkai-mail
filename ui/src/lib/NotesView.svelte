@@ -69,8 +69,24 @@
     onclose: () => void
     /** Open Compose with the given prefill (used for "Send as email"). */
     oncompose: (initial: ComposeInitial) => void
+    /** Active *mail* account id (#260).  Distinct from the Notes
+     *  view's own `accountId`, which is a Nextcloud account.  The
+     *  editor's `/mail` picker uses this to scope the IMAP-server
+     *  fallback to whichever inbox the user is currently working
+     *  with.  Null when no mail account is configured / active. */
+    mailAccountId?: string | null
+    /** `mail://acc/folder/uid` link handler (#260).  Called when
+     *  the user clicks an in-Note Nimbus mail reference in the
+     *  preview pane; the parent composes the corresponding view /
+     *  account / folder / message state changes. */
+    onopenmail?: (accountId: string, folder: string, uid: number) => void
   }
-  const { onclose, oncompose }: Props = $props()
+  const {
+    onclose,
+    oncompose,
+    mailAccountId = null,
+    onopenmail,
+  }: Props = $props()
 
   // ── State ───────────────────────────────────────────────────
   let accounts = $state<NextcloudAccount[]>([])
@@ -1290,6 +1306,8 @@
               bind:value={draftContent}
               onchange={() => scheduleSave()}
               {showPreview}
+              accountId={mailAccountId}
+              {onopenmail}
             />
           {/if}
         {/if}
