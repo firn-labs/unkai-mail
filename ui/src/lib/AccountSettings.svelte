@@ -229,13 +229,13 @@
      *  (`https://nominatim.openstreetmap.org`).  Self-hosters
      *  can point this at their own Nominatim instance. */
     nominatim_base_url: string
-    /** #260 — behaviour when the user clicks a `mail://` link
-     *  embedded in a note.  `"popup"` (default) opens the
-     *  referenced message in a standalone reader window;
-     *  `"switch"` navigates the main view to the inbox at that
-     *  message.  Optional because older settings bundles won't
-     *  carry the key. */
-    notes_mail_link_open?: 'popup' | 'switch'
+    /** #260 — when true, a `mail://` click in a note routes
+     *  through the main view-switch so the inbox lands on that
+     *  message.  When false (default) the click opens a
+     *  standalone reader window and the Notes view stays put.
+     *  Optional because older settings bundles won't carry the
+     *  key. */
+    notes_mail_open_in_view?: boolean
   }
   interface CustomThemeRow {
     id: string
@@ -269,7 +269,7 @@
     ui_locale_auto: true,
     location_geocoding_enabled: false,
     nominatim_base_url: '',
-    notes_mail_link_open: 'popup',
+    notes_mail_open_in_view: false,
   })
 
   /** The default Nominatim base URL — surfaced in the settings
@@ -1196,30 +1196,23 @@
           <span>After delete / archive, open the next message automatically</span>
         </div>
 
-        <!-- #260 — what `mail://` links inside a note do when
-             clicked.  Default opens a standalone reader window so
-             the user keeps their place in Notes; the alternate
-             flips the main view over to the inbox at that
-             message.  Wired as a select rather than a toggle
-             because the two options aren't on / off — they're
-             two equally valid behaviours.  Sized + spaced to
-             match the Display-language dropdown above so the
-             two controls read as a row of related preferences. -->
-        <div>
-          <label class="flex items-center gap-2 text-sm">
-            <span class="shrink-0">{m.settings_notes_mail_link_open_label()}</span>
-            <select
-              class="select px-2 py-1 text-sm rounded-md flex-1 max-w-65"
-              bind:value={appSettings.notes_mail_link_open}
-              onchange={() => scheduleSave()}
-            >
-              <option value="popup">{m.settings_notes_mail_link_open_popup()}</option>
-              <option value="switch">{m.settings_notes_mail_link_open_switch()}</option>
-            </select>
-          </label>
-          <p class="text-xs text-surface-500 mt-1">
-            {m.settings_notes_mail_link_open_help()}
-          </p>
+        <!-- #260 — toggle: when a `mail://` reference inside a
+             note is clicked, ON routes through the main view-
+             switch so the inbox lands on that message; OFF
+             (default) opens a standalone reader window and the
+             Notes view stays put. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.notes_mail_open_in_view as boolean}
+            label={m.settings_notes_mail_open_in_view_label()}
+            onchange={() => scheduleSave()}
+          />
+          <span>
+            {m.settings_notes_mail_open_in_view_label()}
+            <span class="block text-xs text-surface-500">
+              {m.settings_notes_mail_open_in_view_hint()}
+            </span>
+          </span>
         </div>
 
         <!-- #280 — location autocomplete + inline map preview.

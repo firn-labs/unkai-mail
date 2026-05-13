@@ -515,12 +515,11 @@
      *  safety pill and unsafe clicks confirm.  When false,
      *  links open without interception. */
     link_check_enabled?: boolean
-    /** #260: what happens when the user clicks a `mail://` link
-     *  embedded in a note.  `"popup"` (default) spawns a
-     *  standalone reader window so the user stays in the Notes
-     *  view; `"switch"` flips the main app to the mail view,
-     *  scoped to the referenced message. */
-    notes_mail_link_open?: 'popup' | 'switch'
+    /** #260: when true, clicking a `mail://` link in a note
+     *  flips the main view to the inbox at that message.
+     *  When false (default) the link opens a standalone reader
+     *  window so the user keeps their place in the Notes view. */
+    notes_mail_open_in_view?: boolean
   }
   type CustomTheme = {
     id: string
@@ -1086,27 +1085,24 @@
   }
 
   /** `mail://acc/folder/uid` deep-link handler invoked from the
-   *  Notes preview pane (#260).  Two behaviours, picked by the
-   *  user's `notes_mail_link_open` preference:
+   *  Notes preview pane (#260).  Two behaviours gated by the
+   *  user's `notes_mail_open_in_view` toggle:
    *
-   *    - `"popup"` (default): spawn a standalone reader window
-   *      via the same helper the MailList double-click and the
+   *    - **Off (default)**: spawn a standalone reader window via
+   *      the same helper the MailList double-click and the
    *      MailView pop-out button use.  The user stays in Notes;
    *      the referenced mail opens in its own window.
    *
-   *    - `"switch"`: flip the main view over to the inbox,
-   *      scoped to the referenced account / folder / UID.  Same
-   *      shape as the account switch in `selectAccount`, minus
-   *      the auto-poll — we're opening a known message, not
-   *      asking the server for fresh state.
-   *
-   *  `refreshToken` is bumped in the switch path so MailList
-   *  re-fetches even when the user was already viewing the same
-   *  account / folder (the UID we want may not be in the
-   *  currently-rendered window). */
+   *    - **On**: flip the main view over to the inbox, scoped to
+   *      the referenced account / folder / UID.  Same shape as
+   *      the account switch in `selectAccount`, minus the auto-
+   *      poll — we're opening a known message, not asking the
+   *      server for fresh state.  `refreshToken` is bumped so
+   *      MailList re-fetches even when the user was already
+   *      viewing the same account / folder (the UID we want may
+   *      not be in the currently-rendered window). */
   function openMailRef(accId: string, folder: string, uid: number): void {
-    const mode = appPrefs?.notes_mail_link_open ?? 'popup'
-    if (mode === 'popup') {
+    if (!appPrefs?.notes_mail_open_in_view) {
       void openMailInStandaloneWindow(accId, folder, uid)
       return
     }
