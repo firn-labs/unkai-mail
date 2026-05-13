@@ -85,12 +85,24 @@ function isBoundary(prev: string | null): boolean {
   return /\s|[>([\]]/.test(prev)
 }
 
+/** Trigger metadata before coords are attached.  Split out so the
+ *  inexpensive regex pass can run inside the `update` phase while
+ *  the coords read — which CM6 forbids during update because the
+ *  DOM measure pass hasn't run yet — is deferred to
+ *  `requestMeasure` and stitched on top. */
+interface PartialContext {
+  type: MentionType
+  query: string
+  from: number
+  to: number
+}
+
 /** Run both trigger regexes against the line ending at the cursor;
  *  return the first match that survives the boundary check.  We
  *  prefer the `/mail` match over `@` because `/mail` is a longer
  *  literal and there's no overlap, but the boundary check makes
  *  this academic. */
-function detect(view: EditorView): MentionContext | null {
+function detectPartial(view: EditorView): PartialContext | null {
   const { state } = view
   const sel = state.selection.main
   // Only fire on a collapsed cursor — multi-char selections aren't
@@ -109,16 +121,11 @@ function detect(view: EditorView): MentionContext | null {
     const start = upToCursor.length - mailMatch[0].length
     const prev = start > 0 ? upToCursor[start - 1] : null
     if (isBoundary(prev)) {
-      const from = line.from + start
-      const to = head
-      const coords = view.coordsAtPos(from)
-      if (!coords) return null
       return {
         type: 'mail',
         query: mailMatch[2],
-        from,
-        to,
-        coords: { left: coords.left, top: coords.top, bottom: coords.bottom },
+        from: line.from + start,
+        to: head,
       }
     }
   }
@@ -128,48 +135,88 @@ function detect(view: EditorView): MentionContext | null {
     const start = upToCursor.length - contactMatch[0].length
     const prev = start > 0 ? upToCursor[start - 1] : null
     if (isBoundary(prev)) {
-      const from = line.from + start
-      const to = head
-      const coords = view.coordsAtPos(from)
-      if (!coords) return null
       return {
         type: 'contact',
         query: contactMatch[2],
-        from,
-        to,
-        coords: { left: coords.left, top: coords.top, bottom: coords.bottom },
+        from: line.from + start,
+        to: head,
       }
     }
   }
   return null
 }
 
+function samePartial(
+  a: PartialContext | null,
+  b: PartialContext | null,
+): boolean {
+  if (a === null || b === null) return a === b
+  return (
+    a.type === b.type &&
+    a.query === b.query &&
+    a.from === b.from &&
+    a.to === b.to
+  )
+}
+
 /** Build the CM6 extension.  One ViewPlugin per editor instance
- *  (each Notes editor gets its own).  The plugin keeps a small
- *  "last emitted" cache so we don't fire the callback on
- *  cursor-only moves that don't change the trigger context. */
+ *  (each Notes editor gets its own).  Two layers of de-dupe:
+ *  `lastPartial` short-circuits identical regex results so we
+ *  don't bother scheduling a measure read, and `last` short-
+ *  circuits emits when the resulting coords haven't moved either. */
 export function createMentionExtension(opts: PluginOpts): Extension {
   return ViewPlugin.define((view) => {
     let last: MentionContext | null = null
-    function maybeEmit(): void {
-      const next = detect(view)
-      // Diagnostic logging (#260): leave a trail so a missing
-      // popup is visible in DevTools rather than mysterious.
-      // Remove once the picker is confirmed working end-to-end.
-      console.debug('[notes-mention] detect →', next)
-      if (sameContext(last, next)) return
-      last = next
-      opts.onContextChange(next)
+    let lastPartial: PartialContext | null = null
+    function scheduleEmit(): void {
+      const partial = detectPartial(view)
+      if (samePartial(lastPartial, partial)) return
+      lastPartial = partial
+      if (!partial) {
+        if (last !== null) {
+          last = null
+          opts.onContextChange(null)
+        }
+        return
+      }
+      // Defer the coords read to the measure phase — CM6 throws
+      // "Reading the editor layout isn't allowed during an update"
+      // if we call `coordsAtPos` synchronously from `update`.
+      view.requestMeasure({
+        read(v) {
+          const coords = v.coordsAtPos(partial.from)
+          if (!coords) {
+            if (last !== null) {
+              last = null
+              opts.onContextChange(null)
+            }
+            return
+          }
+          const next: MentionContext = {
+            type: partial.type,
+            query: partial.query,
+            from: partial.from,
+            to: partial.to,
+            coords: {
+              left: coords.left,
+              top: coords.top,
+              bottom: coords.bottom,
+            },
+          }
+          if (sameContext(last, next)) return
+          last = next
+          opts.onContextChange(next)
+        },
+      })
     }
     // Fire once on construction so the popup is in sync with the
     // initial state — usually a no-op (cursor at start of empty
     // doc), but cheap.
-    console.debug('[notes-mention] ViewPlugin mounted')
-    maybeEmit()
+    scheduleEmit()
     return {
       update(u: ViewUpdate) {
         if (u.docChanged || u.selectionSet || u.geometryChanged) {
-          maybeEmit()
+          scheduleEmit()
         }
       },
     }
