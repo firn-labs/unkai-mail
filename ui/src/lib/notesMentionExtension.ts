@@ -153,6 +153,10 @@ export function createMentionExtension(opts: PluginOpts): Extension {
     let last: MentionContext | null = null
     function maybeEmit(): void {
       const next = detect(view)
+      // Diagnostic logging (#260): leave a trail so a missing
+      // popup is visible in DevTools rather than mysterious.
+      // Remove once the picker is confirmed working end-to-end.
+      console.debug('[notes-mention] detect →', next)
       if (sameContext(last, next)) return
       last = next
       opts.onContextChange(next)
@@ -160,6 +164,7 @@ export function createMentionExtension(opts: PluginOpts): Extension {
     // Fire once on construction so the popup is in sync with the
     // initial state — usually a no-op (cursor at start of empty
     // doc), but cheap.
+    console.debug('[notes-mention] ViewPlugin mounted')
     maybeEmit()
     return {
       update(u: ViewUpdate) {

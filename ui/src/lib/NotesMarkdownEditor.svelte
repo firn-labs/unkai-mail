@@ -238,6 +238,8 @@
         // mention token; we hand it to the data resolver below.
         createMentionExtension({
           onContextChange: (ctx) => {
+            // Diagnostic logging — remove once verified working.
+            console.debug('[notes-mention] context →', ctx)
             mentionCtx = ctx
             resolvePickerItems(ctx)
           },
