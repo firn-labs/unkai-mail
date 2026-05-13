@@ -1078,6 +1078,32 @@
     currentView = 'setup'
   }
 
+  /** `mail://acc/folder/uid` deep-link handler invoked from the
+   *  Notes preview pane (#260).  Composes the state changes that
+   *  the user would normally have to do by hand (switch back to
+   *  mail view, flip to the referenced account, open the folder,
+   *  select the UID).  Lives next to `selectAccount` because the
+   *  state surface — `currentView`, `unifiedMode`, `activeAccountId`,
+   *  `selectedFolder`, `selectedUid`, `selectedMessageAccountId` —
+   *  is the same; the only difference is that we land on a
+   *  specific message instead of the inbox top.
+   *
+   *  `refreshToken` is bumped so MailList re-fetches even when the
+   *  user was already viewing the same account/folder (the UID we
+   *  want may not be in the currently-rendered window). */
+  function openMailRef(accId: string, folder: string, uid: number): void {
+    currentView = 'inbox'
+    unifiedMode = false
+    activeAccountId = accId
+    selectedFolder = folder
+    selectedUid = uid
+    selectedMessageAccountId = accId
+    searchQuery = ''
+    searchScope = {}
+    searchFilters = {}
+    refreshToken++
+  }
+
   /** IconRail nav click. Maps the rail's view enum directly to the
    *  router's `currentView` — the old `onSelectIntegration` took
    *  string labels like "Contacts" / "Nextcloud Talk" because the
@@ -2175,7 +2201,12 @@
       </div>
     {:else if currentView === 'notes'}
       <div class="flex-1 min-w-0">
-        <NotesView onclose={goToInbox} oncompose={openCompose} />
+        <NotesView
+          onclose={goToInbox}
+          oncompose={openCompose}
+          mailAccountId={activeAccountId}
+          onopenmail={openMailRef}
+        />
       </div>
     {:else}
       <!-- Mail view: Sidebar (folders) + mail-list column + MailView.
