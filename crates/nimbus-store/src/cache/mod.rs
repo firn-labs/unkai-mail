@@ -1605,6 +1605,34 @@ impl Cache {
         )?;
         Ok(n.max(0) as u32)
     }
+
+    /// Queued-row counts grouped by account (#290).  Drives the
+    /// per-account decision of "render the synthetic Outbox folder
+    /// in this sidebar?" — the previous global count caused the
+    /// folder to leak into every account's sidebar whenever any
+    /// account had a pending send.  Accounts with zero queued
+    /// rows are omitted so the caller can `?? 0` without an
+    /// "Outbox (0)" badge showing up.
+    pub fn count_outbox_by_account(
+        &self,
+    ) -> Result<std::collections::HashMap<String, u32>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT account_id, COUNT(*) FROM outbox_messages GROUP BY account_id")?;
+        let rows = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
+            let n: i64 = r.get(1)?;
+            Ok((id, n.max(0) as u32))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for r in rows {
+            let (id, n) = r?;
+            if n > 0 {
+                out.insert(id, n);
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Row shape inserted into `outbox_messages` by
@@ -1914,6 +1942,10 @@ mod tests {
         assert_eq!(cache.count_outbox().unwrap(), 1);
         assert_eq!(cache.count_outbox_for_account("acc-a").unwrap(), 1);
         assert_eq!(cache.count_outbox_for_account("acc-other").unwrap(), 0);
+        // Per-account map: acc-a present with 1, acc-other omitted.
+        let by_acc = cache.count_outbox_by_account().unwrap();
+        assert_eq!(by_acc.get("acc-a").copied(), Some(1));
+        assert!(by_acc.get("acc-other").is_none());
 
         let rows = cache.list_outbox("acc-a").unwrap();
         assert_eq!(rows.len(), 1);
@@ -1942,6 +1974,7 @@ mod tests {
         assert_eq!(cache.count_outbox().unwrap(), 0);
         assert!(cache.list_outbox("acc-a").unwrap().is_empty());
         assert!(cache.get_outbox(id).unwrap().is_none());
+        assert!(cache.count_outbox_by_account().unwrap().is_empty());
     }
 
     #[test]
