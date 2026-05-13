@@ -1280,28 +1280,6 @@
               </button>
             </div>
 
-            <!-- Category picker — small unobtrusive row above the
-                 textarea so the user can move the note between
-                 folders without leaving the editor. -->
-            <div class="px-5 py-2 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2 text-xs">
-              <span class="text-surface-500">Folder:</span>
-              <input
-                class="input flex-1 text-xs px-2 py-1 rounded-md"
-                placeholder="(none) — type a folder path, e.g. Work/Project A"
-                bind:value={draftCategory}
-                oninput={scheduleSave}
-                list="notes-folder-suggestions"
-              />
-              <datalist id="notes-folder-suggestions">
-                {#each Array.from(new Set(notes.map((n) => n.category).filter(Boolean))) as cat (cat)}
-                  <option value={cat}></option>
-                {/each}
-                {#each pendingFolders as p (p)}
-                  <option value={p}></option>
-                {/each}
-              </datalist>
-            </div>
-
             <NotesMarkdownEditor
               bind:value={draftContent}
               onchange={() => scheduleSave()}
