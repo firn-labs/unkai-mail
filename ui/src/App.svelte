@@ -222,11 +222,22 @@
    *  on a string compare. */
   const OUTBOX_FOLDER = 'Outbox'
 
-  /** Total queued rows in the local Outbox table (#276).  Drives
-   *  the Sidebar's "render the synthetic Outbox folder?"
-   *  decision.  Refreshed via the `outbox-updated` Tauri event
-   *  the backend fires whenever the queue changes shape. */
-  let outboxCount = $state(0)
+  /** Queued-row counts per account (#290).  Drives the Sidebar's
+   *  "render the synthetic Outbox folder?" decision *per active
+   *  account* — previously a single global counter caused the
+   *  Outbox folder to leak into every account's sidebar whenever
+   *  any account had a pending send.  Refreshed via the
+   *  `outbox-updated` Tauri event the backend fires whenever the
+   *  queue changes shape; accounts with zero queued rows are
+   *  omitted from the map. */
+  let outboxCountByAccount = $state<Record<string, number>>({})
+  /** Queued-row count for the *currently active* account.  Drives
+   *  both the Sidebar prop and the "drain → bounce back to INBOX"
+   *  redirect below.  Derived (rather than a separate $state) so
+   *  it can never drift out of sync with the map. */
+  let outboxCount = $derived(
+    activeAccountId ? (outboxCountByAccount[activeAccountId] ?? 0) : 0,
+  )
   /** Per-component re-fetch nonce for OutboxList — bumped on
    *  `outbox-updated` so the list reloads even when no other
    *  state change would have triggered its `$effect`. */
@@ -837,39 +848,43 @@
           refreshToken++
         },
       )
-      // #276: backend fires `outbox-updated` whenever the queue
-      // changes shape (enqueue / drain success / failure /
-      // delete).  Refresh the count so the Sidebar shows /
-      // hides the synthetic Outbox folder, and bump the
-      // OutboxList's nonce so its rows re-fetch.
-      unlistenOutboxUpdated = await listen<{ total: number }>(
-        'outbox-updated',
-        (e) => {
-          outboxCount = Math.max(0, Math.floor(e.payload.total ?? 0))
-          outboxRefreshToken++
-          // If the user is sitting on the Outbox folder and the
-          // queue just drained empty, route them back to INBOX
-          // — staying on an empty Outbox would just be a blank
-          // surface they have to manually navigate away from.
-          if (outboxCount === 0 && selectedFolder === OUTBOX_FOLDER) {
-            selectedFolder = 'INBOX'
-            selectedUid = null
-            selectedOutboxRow = null
-          }
-          // OutboxList itself re-runs `list_outbox` on this same
-          // event and emits `onselect(updatedRow | null)` —
-          // that's where the preview row gets refreshed (so
-          // attempt counts / last_error stay fresh) or cleared
-          // (when the row drained or got deleted).
-        },
-      )
-      // Seed the count once on startup so a queue carried over
-      // from a previous session is reflected without waiting for
-      // the first poll tick.
+      // #276 / #290: backend fires `outbox-updated` whenever the
+      // queue changes shape (enqueue / drain success / failure /
+      // delete).  The payload now carries a *per-account* map so
+      // the Sidebar can decide whether to show the synthetic
+      // Outbox folder for the active account specifically,
+      // instead of leaking it into every account's sidebar.
+      unlistenOutboxUpdated = await listen<{
+        total: number
+        byAccount: Record<string, number>
+      }>('outbox-updated', (e) => {
+        outboxCountByAccount = e.payload.byAccount ?? {}
+        outboxRefreshToken++
+        // If the user is sitting on the Outbox folder for the
+        // *active* account and that account's queue just
+        // drained empty, route them back to INBOX — staying on
+        // an empty Outbox would just be a blank surface they
+        // have to manually navigate away from.  Other accounts
+        // draining is irrelevant to the current view.
+        if (outboxCount === 0 && selectedFolder === OUTBOX_FOLDER) {
+          selectedFolder = 'INBOX'
+          selectedUid = null
+          selectedOutboxRow = null
+        }
+        // OutboxList itself re-runs `list_outbox` on this same
+        // event and emits `onselect(updatedRow | null)` —
+        // that's where the preview row gets refreshed (so
+        // attempt counts / last_error stay fresh) or cleared
+        // (when the row drained or got deleted).
+      })
+      // Seed the per-account map once on startup so a queue
+      // carried over from a previous session is reflected
+      // without waiting for the first poll tick.
       try {
-        outboxCount = await invoke<number>('count_outbox')
+        outboxCountByAccount =
+          (await invoke<Record<string, number>>('count_outbox_by_account')) ?? {}
       } catch (e) {
-        console.warn('count_outbox at startup failed', e)
+        console.warn('count_outbox_by_account at startup failed', e)
       }
       unlistenEventReminder = await listen<EventReminder>(
         'event-reminder',

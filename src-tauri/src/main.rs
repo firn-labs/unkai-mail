@@ -7440,25 +7440,33 @@ async fn run_send_pipeline(
 /// manual delete) so the frontend can re-read counts and refresh
 /// the synthetic Outbox folder.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OutboxUpdatedPayload {
-    /// Total queued rows across every account — drives the
-    /// "show / hide synthetic Outbox folder" decision in the
-    /// sidebar.
+    /// Total queued rows across every account.  Retained so anything
+    /// reading the unscoped count (tray indicators, future global
+    /// badges) keeps working without a follow-up call.
     total: u32,
+    /// Per-account count map (#290).  Drives the sidebar's "render
+    /// the synthetic Outbox folder?" decision per account so the
+    /// folder no longer leaks into accounts that have nothing
+    /// queued.  Accounts with zero queued rows are omitted.
+    by_account: std::collections::HashMap<String, u32>,
 }
 
 /// Fire `outbox-updated` so the frontend re-reads the queue.
 /// Best-effort — a dropped event just means the user has to wait
 /// for the next sync tick to see the new state.
 fn emit_outbox_updated(app: &AppHandle) {
-    let total = match app.state::<Cache>().count_outbox() {
-        Ok(n) => n,
+    let cache = app.state::<Cache>();
+    let by_account = match cache.count_outbox_by_account() {
+        Ok(m) => m,
         Err(e) => {
-            tracing::warn!("count_outbox for event payload failed: {e}");
+            tracing::warn!("count_outbox_by_account for event payload failed: {e}");
             return;
         }
     };
-    let payload = OutboxUpdatedPayload { total };
+    let total = by_account.values().copied().sum();
+    let payload = OutboxUpdatedPayload { total, by_account };
     if let Err(e) = app.emit("outbox-updated", &payload) {
         tracing::warn!("failed to emit outbox-updated event: {e}");
     }
@@ -7527,11 +7535,23 @@ async fn list_all_outbox(cache: State<'_, Cache>) -> Result<Vec<OutboxRowDto>, N
 }
 
 /// Total queued rows across every account.  Cheap aggregate
-/// query — used by the Sidebar's "show synthetic Outbox folder?"
-/// decision.
+/// query — retained for callers that want the global figure
+/// (tray indicators, future global badges).
 #[tauri::command]
 async fn count_outbox(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
     Ok(cache.count_outbox()?)
+}
+
+/// Queued-row counts grouped by `account_id` (#290).  Used as the
+/// startup seed for the Sidebar's per-account "render synthetic
+/// Outbox folder?" decision so a queue carried over from a prior
+/// session shows up without waiting for the first `outbox-updated`
+/// event.  Accounts with zero queued rows are omitted.
+#[tauri::command]
+async fn count_outbox_by_account(
+    cache: State<'_, Cache>,
+) -> Result<std::collections::HashMap<String, u32>, NimbusError> {
+    Ok(cache.count_outbox_by_account()?)
 }
 
 /// Force a drain attempt on a specific row (#276).  Used by the
@@ -11375,6 +11395,7 @@ fn main() {
             list_outbox,
             list_all_outbox,
             count_outbox,
+            count_outbox_by_account,
             retry_outbox_entry,
             delete_outbox_entry,
             edit_outbox_entry,
