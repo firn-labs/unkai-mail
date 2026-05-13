@@ -229,6 +229,13 @@
      *  (`https://nominatim.openstreetmap.org`).  Self-hosters
      *  can point this at their own Nominatim instance. */
     nominatim_base_url: string
+    /** #260 — behaviour when the user clicks a `mail://` link
+     *  embedded in a note.  `"popup"` (default) opens the
+     *  referenced message in a standalone reader window;
+     *  `"switch"` navigates the main view to the inbox at that
+     *  message.  Optional because older settings bundles won't
+     *  carry the key. */
+    notes_mail_link_open?: 'popup' | 'switch'
   }
   interface CustomThemeRow {
     id: string
@@ -262,6 +269,7 @@
     ui_locale_auto: true,
     location_geocoding_enabled: false,
     nominatim_base_url: '',
+    notes_mail_link_open: 'popup',
   })
 
   /** The default Nominatim base URL — surfaced in the settings
@@ -1186,6 +1194,33 @@
             onchange={() => scheduleSave()}
           />
           <span>After delete / archive, open the next message automatically</span>
+        </div>
+
+        <!-- #260 — what `mail://` links inside a note do when
+             clicked.  Default opens a standalone reader window so
+             the user keeps their place in Notes; the alternate
+             flips the main view over to the inbox at that
+             message.  Wired as a select rather than a toggle
+             because the two options aren't on / off — they're
+             two equally valid behaviours. -->
+        <div class="flex items-start gap-3">
+          <div class="flex-1">
+            <label class="block text-sm font-medium mb-1" for="notes-mail-link-open">
+              {m.settings_notes_mail_link_open_label()}
+            </label>
+            <select
+              id="notes-mail-link-open"
+              class="select"
+              bind:value={appSettings.notes_mail_link_open}
+              onchange={() => scheduleSave()}
+            >
+              <option value="popup">{m.settings_notes_mail_link_open_popup()}</option>
+              <option value="switch">{m.settings_notes_mail_link_open_switch()}</option>
+            </select>
+            <p class="text-xs text-surface-500 mt-1">
+              {m.settings_notes_mail_link_open_help()}
+            </p>
+          </div>
         </div>
 
         <!-- #280 — location autocomplete + inline map preview.
