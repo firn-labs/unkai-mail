@@ -204,5 +204,9 @@
   "settings_location_geocoding_help": "Standardmäßig deaktiviert. Wenn aktiviert, schlägt das Standortfeld im Termin-Editor passende Orte mit Karten-Vorschau vor, und im Kontakte-Formular werden zur Eingabe passende Adressen vorgeschlagen. Jede eingegebene Suche wird an den Nominatim-Dienst von OpenStreetMap gesendet, die Karte lädt Kacheln von openstreetmap.org — beides Dritt-Anbieter außerhalb Ihrer Nextcloud.",
   "settings_nominatim_base_url_label": "Nominatim-Endpunkt",
   "settings_nominatim_base_url_reset": "Zurücksetzen",
-  "settings_nominatim_base_url_hint": "Leer lassen, um den öffentlichen OpenStreetMap-Nominatim-Dienst zu verwenden. Um Anfragen stattdessen über eine selbst gehostete Nominatim-Instanz zu leiten, deren Basis-URL eintragen (z. B. https://nominatim.example.com)."
+  "settings_nominatim_base_url_hint": "Leer lassen, um den öffentlichen OpenStreetMap-Nominatim-Dienst zu verwenden. Um Anfragen stattdessen über eine selbst gehostete Nominatim-Instanz zu leiten, deren Basis-URL eintragen (z. B. https://nominatim.example.com).",
+  "settings_notes_mail_link_open_label": "Mail-Links in Notizen öffnen",
+  "settings_notes_mail_link_open_popup": "In neuem Fenster öffnen (in Notizen bleiben)",
+  "settings_notes_mail_link_open_switch": "Zur Mail-Ansicht wechseln",
+  "settings_notes_mail_link_open_help": "Wenn du auf einen mail://-Verweis in einer Notiz klickst, legt diese Einstellung fest, ob die Nachricht in einem eigenständigen Lesefenster geöffnet wird (die Notizen-Ansicht bleibt erhalten) oder ob die Hauptansicht zur entsprechenden Nachricht im Posteingang springt."
 }

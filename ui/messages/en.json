@@ -204,5 +204,9 @@
   "settings_location_geocoding_help": "Off by default. When on, the event editor's Location field offers geocoded suggestions with an inline map preview, and the contact form's Addresses section suggests matching street addresses as you type. Each typed query goes to OpenStreetMap's Nominatim service and the event-editor map loads tiles from openstreetmap.org — both third-party services outside your Nextcloud.",
   "settings_nominatim_base_url_label": "Nominatim endpoint",
   "settings_nominatim_base_url_reset": "Reset",
-  "settings_nominatim_base_url_hint": "Leave empty to use the public OpenStreetMap Nominatim service. To route queries through your own self-hosted Nominatim instead, paste its base URL (e.g. https://nominatim.example.com)."
+  "settings_nominatim_base_url_hint": "Leave empty to use the public OpenStreetMap Nominatim service. To route queries through your own self-hosted Nominatim instead, paste its base URL (e.g. https://nominatim.example.com).",
+  "settings_notes_mail_link_open_label": "Open mail links inside notes",
+  "settings_notes_mail_link_open_popup": "Open in a new window (stay in Notes)",
+  "settings_notes_mail_link_open_switch": "Switch to the mail view",
+  "settings_notes_mail_link_open_help": "When you click a mail:// reference inside a note, this controls whether the message opens in a standalone reader window (keeping the Notes view open) or whether the main app jumps to the inbox at that message."
 }
