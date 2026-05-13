@@ -1143,14 +1143,6 @@
           {:else if prefsSaveStatus === 'error'}
             <span class="text-xs text-error-500">Save failed</span>
           {/if}
-          <button
-            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
-            disabled={checkNowBusy}
-            onclick={runCheckMailNow}
-          >
-            <Icon name={checkNowBusy ? 'loading' : 'sync'} size={14} />
-            {checkNowBusy ? 'Checking…' : 'Check Mail Now'}
-          </button>
         </div>
       </div>
 
