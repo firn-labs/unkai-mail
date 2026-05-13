@@ -644,4 +644,24 @@
     font-family: ui-monospace, SFMono-Regular, monospace;
     font-size: 0.85em;
   }
+  /* Render every link — `mailto:`, `mail://`, http(s), NC files —
+     in the theme's primary colour with a soft underline so the
+     user can tell at a glance that the text is clickable.
+     `var(--color-primary-500)` is the Skeleton theme token; it
+     swaps with the active theme automatically.  `text-decoration-
+     color` matches at 60 % alpha to keep the underline calm in
+     long paragraphs, then deepens on hover to invite the click. */
+  :global(.markdown-editor-preview a) {
+    color: var(--color-primary-500);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--color-primary-500) 60%, transparent);
+    text-underline-offset: 2px;
+    transition:
+      text-decoration-color 100ms ease,
+      text-decoration-thickness 100ms ease;
+  }
+  :global(.markdown-editor-preview a:hover) {
+    text-decoration-color: var(--color-primary-500);
+    text-decoration-thickness: 2px;
+  }
 </style>
