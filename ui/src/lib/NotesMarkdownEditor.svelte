@@ -220,6 +220,14 @@
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         highlightActiveLine(),
         markdown(),
+        // Soft-wrap long lines at the editor's right edge instead
+        // of letting them scroll horizontally — markdown notes are
+        // prose first, code second, and a horizontal scrollbar in
+        // a note feels wrong.  Inserted markdown links (especially
+        // `mail://acc/folder/uid` references) can easily overflow
+        // a narrow Notes pane; wrapping keeps the whole link
+        // readable without forcing a scroll.
+        EditorView.lineWrapping,
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         themeCompartment.of(editorTheme),
         // Dispatch every doc-changing transaction back up to the
