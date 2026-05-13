@@ -1202,25 +1202,24 @@
              flips the main view over to the inbox at that
              message.  Wired as a select rather than a toggle
              because the two options aren't on / off — they're
-             two equally valid behaviours. -->
-        <div class="flex items-start gap-3">
-          <div class="flex-1">
-            <label class="block text-sm font-medium mb-1" for="notes-mail-link-open">
-              {m.settings_notes_mail_link_open_label()}
-            </label>
+             two equally valid behaviours.  Sized + spaced to
+             match the Display-language dropdown above so the
+             two controls read as a row of related preferences. -->
+        <div>
+          <label class="flex items-center gap-2 text-sm">
+            <span class="shrink-0">{m.settings_notes_mail_link_open_label()}</span>
             <select
-              id="notes-mail-link-open"
-              class="select"
+              class="select px-2 py-1 text-sm rounded-md flex-1 max-w-65"
               bind:value={appSettings.notes_mail_link_open}
               onchange={() => scheduleSave()}
             >
               <option value="popup">{m.settings_notes_mail_link_open_popup()}</option>
               <option value="switch">{m.settings_notes_mail_link_open_switch()}</option>
             </select>
-            <p class="text-xs text-surface-500 mt-1">
-              {m.settings_notes_mail_link_open_help()}
-            </p>
-          </div>
+          </label>
+          <p class="text-xs text-surface-500 mt-1">
+            {m.settings_notes_mail_link_open_help()}
+          </p>
         </div>
 
         <!-- #280 — location autocomplete + inline map preview.
