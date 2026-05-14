@@ -208,5 +208,7 @@
   "settings_notes_mail_open_in_view_label": "Mails in der Mail-Ansicht öffnen",
   "settings_notes_mail_open_in_view_hint": "Wenn aktiviert, wechselt ein Klick auf einen Mail-Link in einer Notiz zur Mail-Ansicht und öffnet die Nachricht dort. Wenn deaktiviert (Standard), wird die Nachricht in einem eigenständigen Lesefenster geöffnet, sodass die Notizen-Ansicht erhalten bleibt.",
 
-  "chrome_sidebar_resize_handle_label": "Seitenleiste anpassen"
+  "chrome_sidebar_resize_handle_label": "Seitenleiste anpassen",
+
+  "mail_view_message_gone": "Diese Nachricht existiert nicht mehr auf dem Server."
 }

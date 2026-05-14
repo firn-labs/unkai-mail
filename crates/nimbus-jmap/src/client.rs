@@ -411,11 +411,14 @@ impl JmapClient {
         let result: GetResult<JmapEmail> = serde_json::from_value(args.clone())
             .map_err(|e| NimbusError::Protocol(format!("Failed to parse Email/get: {e}")))?;
 
+        // No Email/get hit means the message was deleted/moved
+        // between resolve_jmap_id and the body fetch — surface
+        // `MessageGone` so the Tauri layer can evict the dead row.
         let email = result
             .list
             .into_iter()
             .next()
-            .ok_or_else(|| NimbusError::Protocol(format!("No email with ID '{jmap_id}'")))?;
+            .ok_or(NimbusError::MessageGone)?;
 
         let from = email
             .from
@@ -912,11 +915,12 @@ impl JmapClient {
             .enumerate()
             .find(|(i, e)| synthetic_uid(&e.id, *i) == uid)
             .map(|(_, e)| e.id.clone())
-            .ok_or_else(|| {
-                NimbusError::Protocol(format!(
-                    "No JMAP email found for synthetic UID {uid} in '{folder}'"
-                ))
-            })
+            // The synthetic UID didn't resolve to any JMAP ID — the
+            // server's view of the mailbox no longer contains this
+            // message.  `MessageGone` so the Tauri layer can evict
+            // the dead envelope rather than surfacing a raw protocol
+            // string to the user.
+            .ok_or(NimbusError::MessageGone)
     }
 
     /// Find the JMAP Identity ID for a given email address.

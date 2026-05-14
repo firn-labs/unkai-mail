@@ -13,6 +13,7 @@
   import { save } from '@tauri-apps/plugin-dialog'
   import DOMPurify from 'dompurify'
   import { formatError } from './errors'
+  import { m } from '../paraglide/messages'
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
@@ -355,7 +356,23 @@
         email = fresh
       }
     } catch (e: any) {
-      if (email == null) {
+      // `MessageGone` (#288 sibling): the cached envelope is a
+      // ghost — the message no longer exists on the server.  The
+      // backend has already evicted the cache row and fired
+      // `mail-flags-updated`; we hand the gone UID up so the parent
+      // auto-advances to the next neighbour (App.svelte's
+      // `onMessageRemoved` does the splice + selection move).  The
+      // cached body, if any, is now misleading — clear it so the
+      // user doesn't see "(deleted) reply to this thread" affordances
+      // on a dead message.  Pane briefly shows the friendly note
+      // until the parent picks the next UID.
+      if (e === 'MessageGone') {
+        email = null
+        error = m.mail_view_message_gone()
+        if (id === accountId && f === folder && u === uid) {
+          onmessageremoved?.(u)
+        }
+      } else if (email == null) {
         error = formatError(e) || 'Failed to load message'
       } else {
         console.warn('fetch_message failed (showing cached):', e)

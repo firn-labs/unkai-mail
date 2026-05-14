@@ -744,10 +744,13 @@ impl ImapClient {
             .await
             .map_err(|e| NimbusError::Protocol(format!("Failed to read UID FETCH: {e}")))?;
 
+        // No fetch row back means the server's expunged this UID
+        // since we cached the envelope — surface `MessageGone` so the
+        // Tauri layer can evict the dead row + the UI can auto-advance.
         let fetch = fetches
             .into_iter()
             .next()
-            .ok_or_else(|| NimbusError::Protocol(format!("No message with UID {uid}")))?;
+            .ok_or(NimbusError::MessageGone)?;
 
         let raw = fetch
             .body()
