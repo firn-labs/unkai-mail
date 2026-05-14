@@ -22,6 +22,7 @@
   import { formatError } from './errors'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import { resizableSidebar } from './resizableSidebar'
 
   interface Folder {
     name: string
@@ -795,7 +796,10 @@
   )
 </script>
 
-<aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
+<aside
+  class="shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col"
+  use:resizableSidebar={{ key: 'mail.folderSidebar', defaultWidth: 224, min: 160, max: 480 }}
+>
   <!-- Compose CTA. Emoji makes the primary action visually anchored —
        matches Nick's ask for "nice emoji" on the button. -->
   <div class="p-3">

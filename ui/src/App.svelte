@@ -40,6 +40,7 @@
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
   import { openMailInStandaloneWindow } from './lib/standaloneMailWindow'
+  import { resizableSidebar } from './lib/resizableSidebar'
   import EventEditor, { type SavedEvent } from './lib/EventEditor.svelte'
   import { quotedHistoryHtml, type MeetingInvite } from './lib/inviteHtml'
   import SearchBar, {
@@ -2245,7 +2246,10 @@
            searching while unified is enabled scopes back to the
            active account, which is the safer default than silently
            returning nothing. -->
-      <div class="flex flex-col w-80 shrink-0 border-r border-surface-200 dark:border-surface-700">
+      <div
+        class="flex flex-col shrink-0 border-r border-surface-200 dark:border-surface-700"
+        use:resizableSidebar={{ key: 'mail.listColumn', defaultWidth: 320, min: 240, max: 600 }}
+      >
         {#if selectedFolder !== OUTBOX_FOLDER}
           <!-- Hide the search input when the user is sitting on the
                local-only Outbox folder (#276) — there's nothing
