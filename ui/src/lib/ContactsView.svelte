@@ -18,6 +18,7 @@
   import Select from './Select.svelte'
   import DateField from './DateField.svelte'
   import AddressSuggestField from './AddressSuggestField.svelte'
+  import { resizableSidebar } from './resizableSidebar'
 
   interface Props {
     onclose: () => void
@@ -1482,7 +1483,10 @@
        sidebar stays mounted on the Mailing lists tab so the
        tab strip + heading don't move; only the navigation
        sections collapse. ───────────────────────────────────── -->
-  <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
+  <aside
+    class="shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col"
+    use:resizableSidebar={{ key: 'contacts.navSidebar', defaultWidth: 224, min: 160, max: 480 }}
+  >
     <!-- Primary action — same shape + filled-primary preset as
          the mail Compose CTA / Notes' "New note" button.  Back
          navigation lives in the app-wide IconRail; the per-tab
@@ -1869,7 +1873,10 @@
   <!-- ── Middle column: contact list / mailing-list catalogue.
        The shell heading + tab strip moved into the sidebar
        above, so this column's job is just the list itself. ─ -->
-  <aside class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col">
+  <aside
+    class="shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col"
+    use:resizableSidebar={{ key: 'contacts.listColumn', defaultWidth: 320, min: 240, max: 600 }}
+  >
     {#if activeTab === 'contacts'}
     <!-- Search bar — same shape as `SearchBar.svelte` in the mail
          view + the Notes UI: pill `.input` field with a magnifier

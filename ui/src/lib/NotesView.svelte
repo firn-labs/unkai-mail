@@ -36,6 +36,7 @@
   import type { ComposeInitial } from './Compose.svelte'
   import Icon from './Icon.svelte'
   import NotesMarkdownEditor from './NotesMarkdownEditor.svelte'
+  import { resizableSidebar } from './resizableSidebar'
 
   interface NextcloudAccount {
     id: string
@@ -903,7 +904,10 @@
     <!-- Sidebar: New-note CTA + virtuals + folder tree + add-folder.
          Layout mirrors the mail Sidebar (Compose at top, navigation
          tree below) so the two views feel coherent. -->
-    <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col text-sm">
+    <aside
+      class="shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col text-sm"
+      use:resizableSidebar={{ key: 'notes.navSidebar', defaultWidth: 224, min: 160, max: 480 }}
+    >
       <!-- Primary action — same shape + filled-primary preset as
            the mail Compose CTA.  Plus glyph matches the per-row
            "+ Add …" pattern used elsewhere in the app (no
@@ -1077,7 +1081,10 @@
     <!-- List pane: account picker + refresh strip + scrollable
          note list.  Account picker only shows when more than one
          NC account is connected; refresh is always there. -->
-    <div class="w-72 shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col">
+    <div
+      class="shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col"
+      use:resizableSidebar={{ key: 'notes.listColumn', defaultWidth: 288, min: 220, max: 600 }}
+    >
       <!-- Search bar — same shape as `SearchBar.svelte` in the
            mail view: pill `.input` field with the magnifier
            icon as a left adornment and a clear-X on the right

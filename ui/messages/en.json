@@ -206,5 +206,7 @@
   "settings_nominatim_base_url_reset": "Reset",
   "settings_nominatim_base_url_hint": "Leave empty to use the public OpenStreetMap Nominatim service. To route queries through your own self-hosted Nominatim instead, paste its base URL (e.g. https://nominatim.example.com).",
   "settings_notes_mail_open_in_view_label": "Open mails in mail view",
-  "settings_notes_mail_open_in_view_hint": "When on, clicking a mail link inside a note flips the main view to the inbox at that message. When off (default), the message opens in a standalone reader window so the Notes view stays put."
+  "settings_notes_mail_open_in_view_hint": "When on, clicking a mail link inside a note flips the main view to the inbox at that message. When off (default), the message opens in a standalone reader window so the Notes view stays put.",
+
+  "chrome_sidebar_resize_handle_label": "Resize sidebar"
 }

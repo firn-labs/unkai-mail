@@ -36,6 +36,7 @@
   import Icon from './Icon.svelte'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import Select from './Select.svelte'
+  import { resizableSidebar } from './resizableSidebar'
 
   interface Props {
     onclose: () => void
@@ -1285,8 +1286,13 @@
            coloured swatch is the calendar's own colour from Nextcloud,
            so it matches the event blocks 1:1. -->
       <aside
-        class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 overflow-y-auto p-3"
+        class="shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 flex flex-col"
+        use:resizableSidebar={{ key: 'calendar.calendarsSidebar', defaultWidth: 224, min: 160, max: 480 }}
       >
+        <!-- Inner scroll container so the aside-level resize handle
+             stays pinned to the right edge instead of scrolling with
+             the calendar list. -->
+        <div class="flex-1 overflow-y-auto p-3">
         <!-- Section header. The `+` mirrors the Mail sidebar's
              "new folder" affordance so the add-calendar UX lives
              where the user already expects to look for it. Clicking
@@ -1389,6 +1395,7 @@
         {#if calendarOpError}
           <p class="mt-2 px-1 text-xs text-red-500 wrap-break-word">{calendarOpError}</p>
         {/if}
+        </div>
       </aside>
 
       <!-- Main grid area. Both header and time grid live in a single
