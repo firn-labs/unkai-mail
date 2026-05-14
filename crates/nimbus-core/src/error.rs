@@ -18,6 +18,16 @@ pub enum NimbusError {
     #[error("Protocol error: {0}")]
     Protocol(String),
 
+    /// Fetch (IMAP/JMAP) returned no results for a UID we asked for —
+    /// the message no longer exists on the server (deleted by another
+    /// client, expunged by a server-side rule, or invalidated by a
+    /// UIDVALIDITY reset).  Distinct from `Protocol` so the Tauri
+    /// command layer can evict the dead envelope from the cache + the
+    /// frontend can auto-advance to the next neighbour instead of
+    /// surfacing a raw "No message with UID 3056" string.
+    #[error("Message no longer exists on the server")]
+    MessageGone,
+
     #[error("Storage error: {0}")]
     Storage(String),
 

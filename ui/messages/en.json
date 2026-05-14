@@ -208,5 +208,7 @@
   "settings_notes_mail_open_in_view_label": "Open mails in mail view",
   "settings_notes_mail_open_in_view_hint": "When on, clicking a mail link inside a note flips the main view to the inbox at that message. When off (default), the message opens in a standalone reader window so the Notes view stays put.",
 
-  "chrome_sidebar_resize_handle_label": "Resize sidebar"
+  "chrome_sidebar_resize_handle_label": "Resize sidebar",
+
+  "mail_view_message_gone": "This message no longer exists on the server."
 }

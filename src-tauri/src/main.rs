@@ -6434,8 +6434,17 @@ async fn poll_folder(
 }
 
 /// Fetch a full message (headers + body) by folder + UID.
+///
+/// When the inner call returns `MessageGone` — meaning the server has
+/// no message under this UID anymore (deleted/moved/expunged by
+/// another client, or UIDVALIDITY reset) — we evict the dead envelope
+/// from the local cache and fire `mail-flags-updated` so MailList
+/// drops the stale row.  The error still propagates to the frontend
+/// so MailView can route it through its existing `onmessageremoved`
+/// auto-advance flow.
 #[tauri::command]
 async fn fetch_message(
+    app: AppHandle,
     account_id: String,
     folder: String,
     uid: u32,
@@ -6443,6 +6452,17 @@ async fn fetch_message(
 ) -> Result<Email, NimbusError> {
     match fetch_message_inner(&account_id, &folder, uid, &cache).await {
         Ok(email) => Ok(email),
+        Err(NimbusError::MessageGone) => {
+            tracing::info!(
+                "fetch_message: UID {uid} in '{account_id}'/'{folder}' is gone on the server; \
+                 evicting cached envelope"
+            );
+            if let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
+                tracing::warn!("remove_envelope after MessageGone failed: {e}");
+            }
+            emit_mail_flags_updated(&app, &account_id, &folder);
+            Err(NimbusError::MessageGone)
+        }
         Err(e) => {
             tracing::error!("fetch_message failed: {e}");
             Err(e)
