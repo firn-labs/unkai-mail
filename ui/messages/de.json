@@ -77,6 +77,14 @@
   "compose_attachment_warning_body": "Fügen Sie vor dem Senden eine Datei hinzu oder schließen Sie diese Warnung, falls es ein Fehlalarm ist.",
   "compose_attachment_warning_dismiss": "Schließen",
 
+  "compose_button_minimize_aria_label": "Minimieren",
+  "compose_button_minimize_title": "Entwurf in die Leiste minimieren",
+  "compose_minimized_bar_aria_label": "Minimierte Entwürfe",
+  "compose_minimized_no_subject": "(kein Betreff)",
+  "compose_minimized_item_title": "Entwurf wiederherstellen: {subject}",
+  "compose_minimized_item_close_aria_label": "Entwurf verwerfen",
+  "compose_minimized_item_close_title": "Diesen Entwurf verwerfen",
+
   "contact_form_avatar_title": "Zum Hochladen eines Fotos klicken",
   "contact_form_avatar_aria": "Kontaktfoto ändern",
   "contact_form_avatar_overlay": "Hochladen",

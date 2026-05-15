@@ -77,6 +77,14 @@
   "compose_attachment_warning_body": "Add a file before sending, or dismiss this warning if it's a false alarm.",
   "compose_attachment_warning_dismiss": "Dismiss",
 
+  "compose_button_minimize_aria_label": "Minimize",
+  "compose_button_minimize_title": "Minimize draft to bar",
+  "compose_minimized_bar_aria_label": "Minimized drafts",
+  "compose_minimized_no_subject": "(no subject)",
+  "compose_minimized_item_title": "Restore draft: {subject}",
+  "compose_minimized_item_close_aria_label": "Discard draft",
+  "compose_minimized_item_close_title": "Discard this draft",
+
   "contact_form_avatar_title": "Click to upload a photo",
   "contact_form_avatar_aria": "Change contact photo",
   "contact_form_avatar_overlay": "Upload",
