@@ -10971,6 +10971,33 @@ fn pending_file_slot() -> &'static Mutex<Option<String>> {
     PENDING_FILE_OPEN.get_or_init(|| Mutex::new(None))
 }
 
+/// Cold-start buffer for `mailto:` URLs that arrived before the
+/// frontend was ready to receive events (#294).  Populated by:
+///   - `capture_launch_mailto_arg()` at process start, for cold
+///     launches where the OS handed us a mailto as argv[1];
+///   - the deep-link plugin's `on_open_url` callback for the
+///     very first URL that fires before the webview mounts;
+///   - the single-instance plugin when a second launch beats the
+///     deep-link path on slower OSes.
+/// Always a `Vec`, never a single slot, because on a cold start
+/// it's plausible (though unusual) for multiple paths to deliver
+/// the same URL — the frontend dedups by drainging the whole list
+/// and parsing each one fresh.
+static PENDING_MAILTO_URLS: std::sync::OnceLock<Mutex<Vec<String>>> = std::sync::OnceLock::new();
+
+fn pending_mailto_slot() -> &'static Mutex<Vec<String>> {
+    PENDING_MAILTO_URLS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Stash a `mailto:` URL in the cold-start buffer.  No-op if the
+/// mutex is poisoned — losing one URL to a worker-thread panic is
+/// strictly better than panicking the main thread on lock recovery.
+fn buffer_mailto_url(url: &str) {
+    if let Ok(mut slot) = pending_mailto_slot().lock() {
+        slot.push(url.to_string());
+    }
+}
+
 /// Capture argv[1] at startup if it points at an `.ics` or `.eml`
 /// file we know how to open.  Anything else is ignored — Tauri
 /// passes any `--flag` style argv too and we don't want to
@@ -10994,6 +11021,22 @@ fn capture_launch_file_arg() {
     }
 }
 
+/// Capture argv at startup if any argument is a `mailto:` URL.
+/// On Windows the OS hands the protocol URL as `argv[1]` when we
+/// are the registered handler; on macOS the URL is delivered via
+/// the deep-link plugin (which sets up an Apple Event handler);
+/// on Linux behaviour depends on the desktop file's `Exec=` line
+/// (typically `%u` or `%U` substitution → argv).  Scanning all of
+/// argv (not just argv[1]) handles the edge case where a wrapper
+/// or shell prepends flags.
+fn capture_launch_mailto_arg() {
+    for arg in std::env::args().skip(1) {
+        if arg.to_lowercase().starts_with("mailto:") {
+            buffer_mailto_url(&arg);
+        }
+    }
+}
+
 /// Frontend hook: returns the launch-time file path (if any) and
 /// clears the slot so a window refresh doesn't re-open it.
 #[tauri::command]
@@ -11002,6 +11045,19 @@ fn take_pending_file_to_open() -> Option<String> {
         .lock()
         .ok()
         .and_then(|mut slot| slot.take())
+}
+
+/// Frontend hook: drains the cold-start `mailto:` URL buffer
+/// (#294).  Returns the URLs collected so far and clears the
+/// buffer — a refresh of the main window won't re-open them.
+/// Live URLs arriving after this point are delivered via the
+/// `nimbus://mailto` Tauri event instead.
+#[tauri::command]
+fn take_pending_mailto_urls() -> Vec<String> {
+    pending_mailto_slot()
+        .lock()
+        .map(|mut slot| std::mem::take(&mut *slot))
+        .unwrap_or_default()
 }
 
 /// Read an `.eml` file from disk and parse it into the same
@@ -11085,6 +11141,15 @@ fn main() {
     // ping arrives on first paint.
     capture_launch_file_arg();
 
+    // Same idea for `mailto:` URLs (#294).  On Windows the OS
+    // hands the URL through argv, and registering as the default
+    // mailto handler at the OS level only takes effect after the
+    // deep-link plugin's first run — we still want a cold-start
+    // launch with a mailto in argv to land in Compose, so the
+    // argv-scan path stays independent of the plugin's runtime
+    // registration.
+    capture_launch_mailto_arg();
+
     // Open (and migrate) the local mail cache once at startup, then
     // hand it to Tauri as managed state so every command can borrow it.
     // A failure here is fatal: without the cache the write-through path
@@ -11155,6 +11220,31 @@ fn main() {
     let shared_settings: SharedSettings = Arc::new(RwLock::new(settings));
 
     tauri::Builder::default()
+        // single-instance MUST come before any plugin that cares
+        // about second-launch argv (here: deep-link).  With the
+        // `deep-link` feature on, the plugin's callback routes the
+        // forwarded argv through deep-link's own dispatcher, so
+        // any `mailto:` URL hits the same `on_open_url` listener
+        // whether it came from the fresh-launch or
+        // second-launch path.  We still surface the window in the
+        // callback so a mailto click from another app raises
+        // Nimbus to the foreground even before the URL hops
+        // through deep-link.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            tracing::debug!("single-instance argv received: {argv:?}");
+            for arg in &argv {
+                if arg.to_lowercase().starts_with("mailto:") {
+                    buffer_mailto_url(arg);
+                    if let Err(e) = app.emit("nimbus://mailto", arg.clone()) {
+                        tracing::warn!("emit single-instance mailto failed: {e}");
+                    }
+                }
+            }
+            if let Err(e) = show_main_window(app) {
+                tracing::warn!("single-instance window raise failed: {e}");
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         // #131 follow-up: cross-platform "launch on login".
@@ -11193,6 +11283,80 @@ fn main() {
             // "PowerShell".
             #[cfg(windows)]
             set_app_user_model_id();
+
+            // ── `mailto:` deep-link wiring (#294) ──────────────
+            //
+            // Three things happen here:
+            //
+            //   1. Register `mailto` as a handled URI scheme at
+            //      runtime.  The bundle config registers it at
+            //      install time, but `register()` is what writes
+            //      the per-user registry keys on Windows (and the
+            //      per-user `.desktop` association on Linux) for
+            //      dev / portable launches that never run an
+            //      installer.  Idempotent — safe to call every
+            //      boot.
+            //   2. Drain `get_current()` into our cold-start
+            //      buffer.  Tauri exposes the URL the OS used to
+            //      spawn us here; without this, a fresh launch
+            //      from a mailto link delivers the URL *before*
+            //      the frontend has registered an event listener
+            //      and we'd silently drop it.
+            //   3. Subscribe to `on_open_url` for any live URL
+            //      that arrives after the webview is up.  We emit
+            //      a `nimbus://mailto` Tauri event with the raw
+            //      URL; the frontend parses it with the same
+            //      `parseMailtoUrl` helper the in-app body
+            //      handler uses and opens Compose pre-filled.
+            //
+            // The deep-link plugin is `cfg(desktop)`-gated on
+            // mobile by Tauri itself, so wrapping our calls in
+            // `cfg!(desktop)` would be redundant — on iOS /
+            // Android the plugin trait isn't even present.
+            use tauri_plugin_deep_link::DeepLinkExt;
+            let dl = app.deep_link();
+            if let Err(e) = dl.register("mailto") {
+                tracing::warn!(
+                    "deep-link mailto registration failed (OS will not route mailto links here \
+                     until next launch / installer run): {e}"
+                );
+            }
+            match dl.get_current() {
+                Ok(Some(urls)) => {
+                    for u in urls {
+                        let s = u.to_string();
+                        if s.to_lowercase().starts_with("mailto:") {
+                            buffer_mailto_url(&s);
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("deep-link get_current failed: {e}"),
+            }
+            let handle_for_links = app.handle().clone();
+            dl.on_open_url(move |event| {
+                for url in event.urls() {
+                    let s = url.to_string();
+                    if !s.to_lowercase().starts_with("mailto:") {
+                        continue;
+                    }
+                    // Buffer + emit covers the race where the OS
+                    // delivers the URL after `setup` returns but
+                    // before App.svelte's `onMount` has wired up
+                    // the listener: the buffer catches it and the
+                    // frontend's `take_pending_mailto_urls` poll
+                    // drains it on mount.  Live arrivals from a
+                    // user who is already in the app go through
+                    // the event path.
+                    buffer_mailto_url(&s);
+                    if let Err(e) = handle_for_links.emit("nimbus://mailto", s.clone()) {
+                        tracing::warn!("emit deep-link mailto failed: {e}");
+                    }
+                    if let Err(e) = show_main_window(&handle_for_links) {
+                        tracing::warn!("deep-link window raise failed: {e}");
+                    }
+                }
+            });
 
             // Drop the app icon onto disk once and stash its path
             // in managed state so the JS layer can pass it to
@@ -11670,6 +11834,8 @@ fn main() {
             parse_eml_file,
             parse_ics_file,
             open_default_apps_settings,
+            // #294 — OS-level mailto handler cold-start drain
+            take_pending_mailto_urls,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

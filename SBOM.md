@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-15 (`vitest` added for frontend pure-function tests, #295 — MIT, devDependency only, no licence pressure).
+Last manual reconciliation: 2026-05-15 (`tauri-plugin-deep-link` + `tauri-plugin-single-instance` added so Nimbus can register as the OS mailto handler and de-dup second-instance launches, #294 — both MIT OR Apache-2.0, no licence pressure).
 
 ---
 
@@ -170,6 +170,8 @@ us, that's GPL-3.0 via `rrule`.
 | `tauri-plugin-notification` | MIT OR Apache-2.0 | OS notifications. |
 | `tauri-plugin-dialog` | MIT OR Apache-2.0 | Native file dialogs. |
 | `tauri-plugin-autostart` | MIT OR Apache-2.0 | Run-on-login registration. |
+| `tauri-plugin-deep-link` | MIT OR Apache-2.0 | `mailto:` protocol-handler registration (#294). |
+| `tauri-plugin-single-instance` | MIT OR Apache-2.0 | Forwards a second-launch `mailto:` argv to the running instance (#294). |
 | `notify-rust` | MIT OR Apache-2.0 | Cross-platform desktop notifications. |
 | `windows` (winapi) | MIT OR Apache-2.0 | Windows API bindings (taskbar overlay). |
 

@@ -42,6 +42,20 @@ tauri-plugin-dialog = "2"
 # and we sync it to the OS via the plugin's enable() / disable()
 # IPCs.
 tauri-plugin-autostart = "2"
+# OS-level `mailto:` handling (#294).  Registers Nimbus as the
+# system's default mail-protocol handler so a mailto link clicked
+# in any other app (browser, calendar, document) launches us with
+# the URL — either as a fresh process (cold start) or as a
+# second-instance argv (handled below via single-instance).
+tauri-plugin-deep-link = "2"
+# Cross-platform "second launch forwards to the running one"
+# (#294).  When Nimbus is already running and the OS spawns it
+# again with a `mailto:` argv, this plugin shuttles the argv to
+# the existing instance instead of starting a duplicate process.
+# The deep-link plugin then re-emits the URL through its normal
+# `on_open_url` event, so the rest of the handling code stays
+# single-pathed.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 # Used by `custom_themes_dir()` to locate the user's config root
 # the same way the rest of the app's per-platform persistence
 # does.  Workspace dep so we share the same major version.

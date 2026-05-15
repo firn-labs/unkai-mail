@@ -32,6 +32,7 @@
     getSenderAddress,
     isSenderTrusted,
   } from './trustedSenders'
+  import { parseMailtoUrl } from './mailtoUrl'
 
   interface EmailAttachment {
     filename: string
@@ -950,56 +951,6 @@
     }
     e.preventDefault()
     void invoke('open_url', { url: href })
-  }
-
-  /** Parse a `mailto:` URL into ComposeInitial-shaped fields per
-   *  RFC 6068.  Tolerant: missing pieces just stay undefined so
-   *  the caller's defaults take over. */
-  function parseMailtoUrl(raw: string): {
-    to?: string
-    cc?: string
-    bcc?: string
-    subject?: string
-    body?: string
-  } {
-    const stripped = raw.replace(/^mailto:/i, '')
-    const qIdx = stripped.indexOf('?')
-    const recipientsPart = qIdx === -1 ? stripped : stripped.slice(0, qIdx)
-    const queryPart = qIdx === -1 ? '' : stripped.slice(qIdx + 1)
-    const decode = (s: string) => {
-      try {
-        return decodeURIComponent(s.replace(/\+/g, '%20'))
-      } catch {
-        return s
-      }
-    }
-    const out: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string } = {}
-    if (recipientsPart) out.to = decode(recipientsPart)
-    if (!queryPart) return out
-    for (const pair of queryPart.split('&')) {
-      if (!pair) continue
-      const eq = pair.indexOf('=')
-      const key = (eq === -1 ? pair : pair.slice(0, eq)).toLowerCase()
-      const val = eq === -1 ? '' : decode(pair.slice(eq + 1))
-      switch (key) {
-        case 'to':
-          out.to = out.to ? `${out.to}, ${val}` : val
-          break
-        case 'cc':
-          out.cc = out.cc ? `${out.cc}, ${val}` : val
-          break
-        case 'bcc':
-          out.bcc = out.bcc ? `${out.bcc}, ${val}` : val
-          break
-        case 'subject':
-          out.subject = val
-          break
-        case 'body':
-          out.body = val
-          break
-      }
-    }
-    return out
   }
 
   /** Single dispatch point for any user-driven attachment open
