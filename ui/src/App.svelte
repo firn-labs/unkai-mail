@@ -217,6 +217,28 @@
   // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
   let refreshToken = $state(0)
 
+  /** UIDs of every member of the thread the currently-open message
+   *  belongs to (#289 follow-up), but **only when the open message
+   *  is the head row** (the one carrying the count badge).  `null`
+   *  for non-head rows, single-row messages, or no selection.
+   *  Threaded through to MailView so its archive button can sweep
+   *  the whole conversation in one batched IMAP move.  Same-folder
+   *  guarantee holds today because cross-folder threading isn't in
+   *  scope yet — if/when it lands, this derivation may need to
+   *  filter by folder before returning. */
+  let currentThreadMemberUids = $derived.by((): number[] | null => {
+    if (selectedUid == null) return null
+    const accId = selectedMessageAccountId ?? activeAccountId
+    const fld = selectedFolder
+    const key = `${accId}::${fld}::${selectedUid}`
+    const members = mailListThreadMembers.get(key)
+    if (!members || members.length <= 1) return null
+    // Only expand for the head row — opening a sibling and
+    // archiving it shouldn't pull the rest of the thread along.
+    if (members[0].uid !== selectedUid) return null
+    return members.map((m) => m.uid)
+  })
+
   /** Synthetic local-only Outbox folder name (#276).  Mirror of
    *  the constant in Sidebar.svelte; same name means selecting
    *  the synthetic sidebar entry routes through the existing
@@ -281,6 +303,12 @@
     account_id: string
   }
   let mailListEnvelopes = $state<MailListEnvelope[]>([])
+  /** Mirror of MailList's post-merge thread membership map (#289
+   *  follow-up).  Used to give MailView's archive button the full
+   *  set of member UIDs when the open mail is a thread head, so a
+   *  single archive click sweeps the whole conversation.  Keyed by
+   *  `${account_id}::${folder}::${uid}`. */
+  let mailListThreadMembers = $state<Map<string, MailListEnvelope[]>>(new Map())
 
   // Network-refresh state for the IconRail's active-account
   // avatar spinner (#161).  Each child component (MailList,
@@ -2301,6 +2329,7 @@
               onselect={selectMessage}
               bind:envelopes={mailListEnvelopes}
               bind:refreshing={mailListRefreshing}
+              bind:threadMembersByEnv={mailListThreadMembers}
               onmessagemoved={onMessageRemoved}
             />
           {/if}
@@ -2324,6 +2353,7 @@
           forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
           autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
           linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
+          threadMemberUids={currentThreadMemberUids}
           onread={onMessageRead}
           onreply={onReply}
           onreplyall={onReplyAll}

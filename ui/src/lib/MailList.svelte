@@ -87,6 +87,16 @@
      *  the active-account avatar in the IconRail (#161) — the
      *  inline "Refreshing…" strip used to live here. */
     refreshing?: boolean
+    /** Bindable mirror of the post-merge thread membership map
+     *  (#289 follow-up).  Keyed by `${account_id}::${folder}::${uid}`,
+     *  value is every envelope in that thread's bucket newest-first
+     *  (head is `[0]`).  App.svelte reads this to give MailView's
+     *  archive button the thread member UIDs when the open mail is
+     *  a thread head, so a single archive click can sweep the whole
+     *  conversation.  Bindable rather than callback so the parent
+     *  always sees the latest map without one-shot fire-and-forget
+     *  semantics. */
+    threadMembersByEnv?: Map<string, EmailEnvelope[]>
   }
   let {
     accounts = [],
@@ -99,6 +109,7 @@
     envelopes = $bindable([]),
     onmessagemoved,
     refreshing = $bindable(false),
+    threadMembersByEnv = $bindable(new Map<string, EmailEnvelope[]>()),
   }: Props = $props()
 
   // ── Conversation-view grouping (#277) ───────────────────────
@@ -380,7 +391,14 @@
   })
 
   let renderRows = $derived(threadView.rows)
-  let threadMembersByEnv = $derived(threadView.threadMembersByEnv)
+  // Mirror the derived map into the bindable prop so App.svelte sees
+  // each fresh bucketing pass.  `$effect` (not `$derived`) because
+  // we already declared `threadMembersByEnv` as a bindable prop
+  // above — derive-into-prop isn't supported, but a one-line effect
+  // achieves the same observable behaviour.
+  $effect(() => {
+    threadMembersByEnv = threadView.threadMembersByEnv
+  })
 
   /** Short label for the per-row account chip in unified mode. We
       prefer the display name and fall back to the email's local part

@@ -7129,6 +7129,105 @@ async fn move_messages(
     Ok(uids)
 }
 
+/// Batch variant of `archive_message` (#289 follow-up): every message
+/// in `uids` is archived from the same source folder in a single IMAP
+/// session, so dragging an archive action on a thread head can
+/// archive every member of the conversation in one round-trip.
+///
+/// Mechanically identical to `move_messages` once the destination is
+/// known — the only thing this command adds is the up-front
+/// `pick_archive_folder` resolution.  Returns the list of UIDs the
+/// server confirmed gone so the frontend's optimistic-flow rollback
+/// has a definite success set to work against.
+#[tauri::command]
+async fn archive_messages(
+    account_id: String,
+    folder: String,
+    uids: Vec<u32>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<u32>, NimbusError> {
+    if uids.is_empty() {
+        return Ok(vec![]);
+    }
+    let account = load_account(&cache, &account_id)?;
+
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Archive via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    let archive = match pick_archive_folder(&account_id, &cache) {
+        Some(name) => name,
+        None => {
+            return Err(NimbusError::Other(
+                "No archive folder found on this account — cannot archive.".into(),
+            ));
+        }
+    };
+
+    if archive.eq_ignore_ascii_case(&folder) {
+        // Archive-to-self: already there.  No-op rather than tripping
+        // the IMAP server with a move that would either bump UIDs
+        // pointlessly or be rejected outright.
+        return Ok(vec![]);
+    }
+
+    let password = credentials::get_imap_password(&account.id)?;
+
+    // Optimistic-UI tombstones — same shape as the move-batch path,
+    // marking each row pending before the IMAP round-trip means a
+    // folder switch mid-batch won't briefly resurrect the archived
+    // rows in their old folder.
+    let pending = format!("move:{archive}");
+    for uid in &uids {
+        if let Err(e) = cache.mark_message_pending(&account_id, &folder, *uid, &pending) {
+            tracing::warn!("mark_message_pending(archive-batch) failed: {e}");
+        }
+    }
+
+    let connect_result = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            for uid in &uids {
+                if let Err(c) = cache.clear_message_pending(&account_id, &folder, *uid) {
+                    tracing::warn!(
+                        "clear_message_pending after archive-batch connect failure: {c}"
+                    );
+                }
+            }
+            return Err(e);
+        }
+    };
+    let result = client.move_messages_batch(&folder, &uids, &archive).await;
+    let _ = client.logout().await;
+
+    if let Err(e) = result {
+        for uid in &uids {
+            if let Err(c) = cache.clear_message_pending(&account_id, &folder, *uid) {
+                tracing::warn!("clear_message_pending after archive-batch failure: {c}");
+            }
+        }
+        return Err(e);
+    }
+
+    for uid in &uids {
+        if let Err(e) = cache.remove_envelope(&account_id, &folder, *uid) {
+            tracing::warn!("remove_envelope after archive_messages failed: {e}");
+        }
+    }
+
+    Ok(uids)
+}
+
 /// Locate the account's Archive folder via the IMAP `\Archive`
 /// special-use attribute or a name-based fallback. Same strategy as
 /// `pick_sent_folder` / `pick_drafts_folder`.
@@ -11422,6 +11521,7 @@ fn main() {
             save_draft,
             delete_message,
             archive_message,
+            archive_messages,
             move_message,
             move_messages,
             get_cached_envelopes,
