@@ -1296,6 +1296,55 @@ impl ImapClient {
         Ok(())
     }
 
+    /// Look up the UID of a just-APPENDed message by its `Message-ID`
+    /// header.
+    ///
+    /// The `APPEND` command in `async-imap` 0.10 doesn't surface the
+    /// server's `APPENDUID` response, so we can't learn the assigned
+    /// UID directly from the APPEND result. For the minimize-as-draft
+    /// flow (#292) we need that UID so a subsequent save can use
+    /// `replaceSource` to atomically supersede the previous copy in
+    /// place of leaving a trail of duplicate drafts behind.
+    ///
+    /// `Message-ID` works as a stable handle because lettre stamps
+    /// every outgoing message with a UUID-anchored `<uuid@host>` value
+    /// (see `build_outgoing_message`), so the search criterion is
+    /// effectively unique. Returns the highest matching UID — on the
+    /// unlikely event of a collision the most recent server-assigned
+    /// UID is the one we just wrote.
+    ///
+    /// `message_id` is the bare header value including the angle
+    /// brackets (e.g. `<abc@host>`), matching what the IMAP server
+    /// stored.
+    pub async fn find_uid_by_message_id(
+        &mut self,
+        folder: &str,
+        message_id: &str,
+    ) -> Result<Option<u32>, NimbusError> {
+        let _ = self.select_folder(folder).await?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // IMAP quoted strings only need to escape `\` and `"` — the
+        // Message-ID's `<uuid@host>` shape contains neither, but
+        // escape defensively anyway in case a future caller passes
+        // a less well-behaved value through.
+        let escaped = message_id.replace('\\', "\\\\").replace('"', "\\\"");
+        let criterion = format!("HEADER \"Message-ID\" \"{escaped}\"");
+        let uids: Vec<u32> = session
+            .uid_search(&criterion)
+            .await
+            .map_err(|e| {
+                NimbusError::Protocol(format!("UID SEARCH HEADER Message-ID failed: {e}"))
+            })?
+            .into_iter()
+            .collect();
+
+        Ok(uids.into_iter().max())
+    }
+
     /// Move a message between folders via `UID COPY` + delete.
     ///
     /// Why not `UID MOVE` (RFC 6851)? MOVE is cleaner but requires the

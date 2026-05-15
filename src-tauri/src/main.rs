@@ -7422,6 +7422,28 @@ async fn send_email(
 /// missing local-side bookkeeping will reconcile on the next
 /// envelope fetch).
 async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
+    // Claim the row before doing any real work (#292 follow-up).
+    // Without this guard, the spawned drain `send_email` kicks off
+    // and the periodic `drain_outbox_sweep` can both reach this
+    // function for the same `entry_id` — each reads the row, each
+    // pushes it through SMTP + APPEND-to-Sent, and the recipient
+    // receives the same mail twice.  A 30 s TTL is comfortable for
+    // any healthy SMTP roundtrip and short enough that a crashed
+    // drain stops blocking retries quickly.
+    match cache.claim_outbox_for_drain(entry_id, 30) {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::debug!(
+                "try_drain_outbox_entry: skipping entry {entry_id}, claim held by another drain"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("claim_outbox_for_drain({entry_id}) failed: {e}");
+            return;
+        }
+    }
+
     let row = match cache.get_outbox(entry_id) {
         Ok(Some(r)) => r,
         Ok(None) => return, // Already removed (manual delete, race with another drain).
@@ -7847,6 +7869,54 @@ struct DraftReplaceSource {
     uid: u32,
 }
 
+/// What `save_draft` reports back to the caller (#292).
+///
+/// `folder` is the IMAP folder we APPENDed into (either the
+/// `replace_source.folder` when editing, or the result of
+/// `pick_drafts_folder` for a fresh draft). `uid` is the new
+/// server-assigned UID discovered via a `UID SEARCH HEADER
+/// Message-ID` round-trip after the APPEND — `None` when the
+/// search failed or returned no hits, in which case the caller
+/// has to treat the next save as a fresh APPEND and accept that
+/// the previous copy will remain in Drafts as a duplicate.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedDraft {
+    folder: String,
+    uid: Option<u32>,
+}
+
+/// Pull the `Message-ID` header value out of a raw RFC 822 message.
+///
+/// Returns the bare bracketed form (e.g. `<uuid@host>`) so the
+/// caller can hand it straight to `find_uid_by_message_id`, which
+/// SEARCHes on the literal header value the IMAP server stored.
+///
+/// Tolerant of casing variants (`Message-ID:` / `Message-Id:` /
+/// `message-id:`) since RFC 5322 header field names are case-
+/// insensitive. Folded continuation lines aren't expected for
+/// Message-ID values (lettre emits a single short line) but the
+/// scanner stops at the first match and bails on the first blank
+/// line, which is the conventional header/body separator.
+fn extract_message_id(raw: &[u8]) -> Option<String> {
+    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let headers = std::str::from_utf8(&raw[..header_end]).ok()?;
+    for line in headers.split("\r\n") {
+        let prefix_len = if line.len() >= "Message-ID:".len()
+            && line[..="Message-ID:".len() - 1].eq_ignore_ascii_case("Message-ID:")
+        {
+            "Message-ID:".len()
+        } else {
+            continue;
+        };
+        let value = line[prefix_len..].trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 /// Save an in-progress message to the account's IMAP Drafts folder.
 ///
 /// Mirrors `send_email` structurally (same `OutgoingEmail` input, same
@@ -7870,7 +7940,7 @@ async fn save_draft(
     email: OutgoingEmail,
     replace_source: Option<DraftReplaceSource>,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<SavedDraft, NimbusError> {
     let account = load_account(&cache, &account_id)?;
 
     if uses_jmap(&account) {
@@ -7881,6 +7951,11 @@ async fn save_draft(
 
     let message = build_outgoing_message(&email)?;
     let raw = message.formatted();
+    // Pulled before APPEND so the post-APPEND SEARCH has a value
+    // to match against even if some later step (e.g. the replace
+    // delete) panics — `None` here just means we can't dedup the
+    // next save, not that the user's draft was lost.
+    let message_id = extract_message_id(&raw);
 
     // Prefer the source folder when replacing an existing draft so
     // APPEND and DELETE both target the folder the user actually
@@ -7893,15 +7968,53 @@ async fn save_draft(
         })?,
     };
 
+    // Optimistic-UI tombstone (#292 follow-up): mark the source
+    // draft as pending-delete BEFORE the IMAP roundtrip so any
+    // mid-flight `fetch_envelopes` (folder switch, sync tick) sees
+    // the cached row already filtered out.  Without this the
+    // frontend's `mergeEnvelopes` keeps the old UID alive in
+    // `existing` (it preserves rows the fresh batch didn't return,
+    // to support pagination) so the user briefly sees both copies
+    // until the eventual sync evicts the stale one.  Mirrors the
+    // pattern in `delete_message`.
+    //
+    // `upsert_message_pending` (not plain `mark_message_pending`)
+    // because chained minimize-saves leave the source UID without
+    // a corresponding cache row: the first minimize APPENDs uid N
+    // but never writes the envelope into the cache, so a second
+    // minimize trying to tombstone uid N as a UPDATE finds zero
+    // rows and silently misses.  A concurrent `poll_folder` mid-
+    // save then inserts the row from IMAP with `pending_action`
+    // NULL and the draft pops back into the visible list.
+    if let Some(src) = replace_source.as_ref()
+        && let Err(e) = cache.upsert_message_pending(&account_id, &src.folder, src.uid, "delete")
+    {
+        tracing::warn!("save_draft upsert_message_pending(delete) failed: {e}");
+    }
+
     let password = credentials::get_imap_password(&account.id)?;
-    let mut client = ImapClient::connect(
+    let connect_result = ImapClient::connect(
         &account.imap_host,
         account.imap_port,
         &account.email,
         &password,
         &account.trusted_certs,
     )
-    .await?;
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            // IMAP unreachable: un-tombstone the row so the user
+            // doesn't lose sight of their existing draft while
+            // we couldn't even attempt the replace.
+            if let Some(src) = replace_source.as_ref()
+                && let Err(c) = cache.clear_message_pending(&account_id, &src.folder, src.uid)
+            {
+                tracing::warn!("clear_message_pending after save_draft connect failure: {c}");
+            }
+            return Err(e);
+        }
+    };
 
     // `\Draft` marks the message as an unfinished draft. `\Seen`
     // keeps it out of the unread badge — there's no point notifying
@@ -7909,6 +8022,16 @@ async fn save_draft(
     let append_result = client
         .append_message(&target_folder, &raw, &["\\Draft", "\\Seen"])
         .await;
+
+    // APPEND failure: the new copy never landed, so the old draft
+    // is still authoritative — un-tombstone it so the user can
+    // see (and retry from) their unchanged source.
+    if append_result.is_err()
+        && let Some(src) = replace_source.as_ref()
+        && let Err(c) = cache.clear_message_pending(&account_id, &src.folder, src.uid)
+    {
+        tracing::warn!("clear_message_pending after save_draft APPEND failure: {c}");
+    }
 
     // Only attempt the delete if the APPEND actually succeeded —
     // otherwise a flaky APPEND would have us destroy the user's
@@ -7918,13 +8041,25 @@ async fn save_draft(
     // envelope left over from a previous expunge) — either way the
     // cached row is wrong and hanging onto it just makes the next
     // edit attempt fail the same way.
-    let result = if append_result.is_ok() {
-        if let Some(src) = replace_source {
+    let delete_result = if append_result.is_ok() {
+        if let Some(src) = replace_source.as_ref() {
             let delete_result = client.delete_message(&src.folder, src.uid).await;
-            if should_clean_cache_for_delete(&delete_result)
-                && let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid)
+            let should_clean = should_clean_cache_for_delete(&delete_result);
+            if should_clean && let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid)
             {
                 tracing::warn!("remove_envelope after save_draft replace failed: {e}");
+            }
+            // Real DELETE failure (not the stale-UID case the cleanup
+            // heuristic absorbs): the old draft is still on the
+            // server even though APPEND succeeded.  Un-tombstone so
+            // the user sees it again — the new copy is also in
+            // place, so the result is two visible drafts and the
+            // user can manually discard whichever they want.
+            if !should_clean
+                && delete_result.is_err()
+                && let Err(c) = cache.clear_message_pending(&account_id, &src.folder, src.uid)
+            {
+                tracing::warn!("clear_message_pending after save_draft DELETE failure: {c}");
             }
             match delete_result {
                 Ok(()) => Ok(()),
@@ -7940,8 +8075,181 @@ async fn save_draft(
         append_result
     };
 
+    // SEARCH the target folder for the just-APPENDed message by
+    // Message-ID so the caller can pass the new UID as
+    // `replace_source` on the next save (#292) — keeps Drafts
+    // pruned to one copy per in-flight Compose instead of letting
+    // every minimize stack a fresh duplicate. Best-effort: a
+    // missing Message-ID, a server that rejects the SEARCH, or a
+    // server that hasn't yet indexed the new mail all collapse
+    // back to `uid: None`, and the caller treats the next save as
+    // a fresh APPEND.
+    let new_uid = if delete_result.is_ok() {
+        match &message_id {
+            Some(id) => match client.find_uid_by_message_id(&target_folder, id).await {
+                Ok(uid) => uid,
+                Err(e) => {
+                    tracing::warn!("SEARCH after save_draft APPEND failed: {e}");
+                    None
+                }
+            },
+            None => {
+                tracing::warn!(
+                    "save_draft: could not extract Message-ID from raw bytes; \
+                     next save will not be able to replace this copy"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let _ = client.logout().await;
-    result
+    delete_result.map(|()| SavedDraft {
+        folder: target_folder,
+        uid: new_uid,
+    })
+}
+
+/// Synchronously tombstone a Drafts row that's about to be expunged
+/// by the send pipeline (#292 follow-up).
+///
+/// Compose's `send()` closes the modal immediately (#156's instant-
+/// close UX) and bumps `refreshToken` via the parent's
+/// `closeCompose`.  That bump triggers MailList's `load()` BEFORE
+/// the background `runSendPipeline` reaches its
+/// `invoke('delete_message')` call — so without an upfront
+/// tombstone, the fresh fetch returns the source draft and
+/// `mergeEnvelopes` puts it back in the visible list, where it
+/// hangs around until the next sync evicts it.
+///
+/// Calling this from the frontend BEFORE `onclose()` plants the
+/// tombstone in time: `get_cached_envelopes` filters on
+/// `pending_action IS NULL`, and `upsert_envelopes_for_account`
+/// doesn't include `pending_action` in its ON CONFLICT UPDATE list,
+/// so a concurrent sync writing the same row preserves the
+/// tombstone.  The eventual `delete_message` call still does the
+/// real IMAP work and either removes the row entirely (success)
+/// or clears the tombstone (real failure) — same semantics as
+/// calling `delete_message` alone, just split so the cache flag
+/// lands before the visible refresh.
+#[tauri::command]
+async fn tombstone_draft_for_expunge(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    // `upsert_message_pending` (not plain `mark_message_pending`)
+    // because a minimize-saved draft lives on the IMAP server
+    // without a corresponding cache row — `save_draft` only
+    // touches the cache on the replace path.  Without the upsert,
+    // an UPDATE-only tombstone would miss those UIDs entirely
+    // and the next poll would re-insert them sans `pending_action`,
+    // flashing the row back into the visible list (#292 follow-up).
+    cache
+        .upsert_message_pending(&account_id, &folder, uid, "delete")
+        .map_err(Into::into)
+}
+
+/// Permanently expunge a Drafts UID after the user sent its
+/// contents (#292 follow-up).
+///
+/// Different from the user-facing `delete_message` command in two
+/// important ways:
+///
+/// 1. **Skips move-to-Trash.**  `delete_message` routes "delete from
+///    a non-Trash folder" through a `UID COPY` to Trash followed by
+///    an EXPUNGE of the source.  That's right for a manual delete
+///    (user can recover from Trash) but wrong here: the draft was
+///    *consumed* by the send, depositing a duplicate in Trash
+///    would just clutter the user's mailbox.  Matches the inline
+///    expunge the `save_draft` replace path uses for the same
+///    reason.
+///
+/// 2. **Keeps the tombstone on IMAP failure.**  `delete_message`
+///    clears `pending_action` on real failures so the row reappears
+///    on the next poll — which is correct for a delete that the
+///    user can retry from the visible list, but produces the
+///    "draft flicks back into Drafts after sending" symptom here:
+///    the mail itself shipped, so the user expects the draft to
+///    be gone whether or not the cleanup IMAP DELETE landed.  We
+///    leave the tombstone in place; if the row really survived on
+///    the server, a folder-wipe reconcile or a fresh poll will
+///    eventually re-surface it, but the immediate post-send
+///    experience is correct.
+#[tauri::command]
+async fn expunge_draft_after_send(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Expunging drafts via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    // Tombstone the row (creating a placeholder if absent — the
+    // minimize-saved UID case where the cache row doesn't exist
+    // yet) so any concurrent poll keeps the row hidden across the
+    // IMAP roundtrip.
+    if let Err(e) = cache.upsert_message_pending(&account_id, &folder, uid, "delete") {
+        tracing::warn!("expunge_draft_after_send upsert_message_pending failed: {e}");
+    }
+
+    let password = credentials::get_imap_password(&account.id)?;
+    let connect_result = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            // No tombstone clear here — see fn docs for the
+            // post-send UX rationale.  The user already shipped
+            // the mail; surfacing a half-deleted source draft
+            // doesn't help them.
+            return Err(e);
+        }
+    };
+
+    let delete_result = client.delete_message(&folder, uid).await;
+    let _ = client.logout().await;
+
+    // Deliberately *not* dropping the cache row on success here
+    // (#292 follow-up).  Some IMAP servers (Gmail, certain
+    // Exchange variants) take a moment to propagate an EXPUNGE
+    // to fresh sessions — long enough that a `poll_folder` racing
+    // ahead of the propagation will re-fetch the just-deleted UID,
+    // and if the row is already gone from the cache the INSERT
+    // path of `upsert_envelopes_for_account` writes a fresh row
+    // *without* `pending_action`, so the draft pops back into the
+    // visible list.  Leaving the tombstone planted keeps the row
+    // hidden across that window — the next reconcile pass in
+    // `poll_folder` removes it cleanly once the server confirms
+    // it's gone from `list_all_uids`.
+    //
+    // The stale-UID case ("isn't in folder") is also fine to
+    // leave tombstoned: the row already isn't on the server, so
+    // reconcile will drop it on the next poll.
+    //
+    // Real IMAP failure (server unreachable mid-EXPUNGE,
+    // permission error, etc.) → tombstone also stays.  The
+    // user already shipped the mail; surfacing a half-deleted
+    // source draft would just confuse.  If the server really
+    // never removed the message, a future poll's reconcile keeps
+    // the row cached and tombstoned; that's a soft leak but
+    // user-invisible.
+    delete_result
 }
 
 /// Pick the most likely Drafts folder name from the cached folder list.
@@ -11683,6 +11991,8 @@ fn main() {
             delete_outbox_entry,
             edit_outbox_entry,
             save_draft,
+            tombstone_draft_for_expunge,
+            expunge_draft_after_send,
             delete_message,
             archive_message,
             archive_messages,

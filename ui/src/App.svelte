@@ -30,6 +30,7 @@
     type ComposeInitial,
     type SendFailurePayload,
   } from './lib/Compose.svelte'
+  import ShrunkenComposesBar from './lib/ShrunkenComposesBar.svelte'
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
   import { openReminderInStandaloneWindow } from './lib/reminderPopupWindow'
@@ -208,9 +209,55 @@
   // the row's `account_id` so MailView opens the right message even
   // though the folder picker isn't pointing at that account.
   let selectedMessageAccountId = $state<string | null>(null)
-  // Compose modal: `null` = closed. When open, carries a (possibly empty)
-  // initial prefill for reply / reply-all / forward.
-  let composeInitial = $state<ComposeInitial | null>(null)
+  // Compose modals (#292).  Each user-triggered Compose pushes a
+  // new entry; the entry with `id === activeComposeId` is the one
+  // currently rendered as a full-screen modal, everyone else sits
+  // dormant (display:none) so their Tiptap editor, attachments,
+  // Talk-room token, and share-link bookkeeping survive the
+  // minimise round-trip without re-mount.  When `activeComposeId`
+  // is null every entry is minimised — the shrunken-composes bar
+  // surfaces them as buttons in the mail view's bottom-right.
+  interface ComposeEntry {
+    id: string
+    accountId: string
+    initial: ComposeInitial
+    initialError: string
+    /** Live mirror of the Compose's subject field (#292).  Seeded
+     *  from `initial.subject`, then kept in sync via Compose's
+     *  `onsubjectchange` callback so the shrunken-bar tab label
+     *  follows the user's typing.  Reading from `initial.subject`
+     *  alone would freeze the label at open time. */
+    currentSubject: string
+    /** Stable handle on this Compose's internal `cancel` function
+     *  (#292).  Wired up by `oncancelref` at mount.  Lets the
+     *  shrunken-bar × discard a draft without restoring the modal
+     *  first — `cancel` runs the Talk-room delete + share-link
+     *  cleanup + draft-source expunge that a naive entry-removal
+     *  would skip. */
+    cancelFn?: () => void
+    /** Live mirror of the Compose's internal `currentDraftSource`
+     *  pointer (#292 follow-up).  Seeded from `initial.draftSource`
+     *  and updated via Compose's `ondraftsourcechange` after every
+     *  successful save.  Lets `openCompose` dedup against existing
+     *  entries when "Edit draft" is invoked on a UID that's
+     *  already represented by an in-flight Compose — without this,
+     *  re-opening a minimised draft from the Drafts folder pushes
+     *  a second Compose for the same UID, and the next minimise
+     *  on either copy creates a duplicate in IMAP. */
+    currentDraftSource:
+      | { accountId: string; folder: string; uid: number }
+      | null
+    /** Snapshot of "did this Compose start as an edit-from-outbox?"
+     *  captured at open time.  Compose's `onclose` fires
+     *  immediately on Send (#156's instant-close) before the async
+     *  send pipeline reaches `invoke('send_email')`, so by the
+     *  time `onsentenqueued` fires the entry has already been
+     *  removed from `composes` via the per-instance closure — we
+     *  close over this flag rather than relying on lookup. */
+    openedAsEditOfOutbox: boolean
+  }
+  let composes = $state<ComposeEntry[]>([])
+  let activeComposeId = $state<string | null>(null)
   // Default to INBOX — the Sidebar replaces this as soon as the user
   // picks a folder, or could switch it automatically if INBOX is absent.
   let selectedFolder = $state<string>('INBOX')
@@ -274,17 +321,10 @@
    *  response if the row is updated by a retry / failure
    *  recording while the user has it open. */
   let selectedOutboxRow = $state<OutboxRowDto | null>(null)
-  /** Snapshot of "did the currently-open Compose start as an
-   *  edit-from-outbox?".  Captured at `openCompose` time
-   *  because Compose's `onclose` fires immediately on Send
-   *  (#156's instant-close) before its async send pipeline
-   *  reaches `invoke('send_email')` — so by the time we'd want
-   *  to inspect `composeInitial.outboxSource`, the modal has
-   *  already cleared it.  Set on open, consumed by
-   *  `onsentenqueued`, cleared by a fresh `openCompose` of any
-   *  kind so a subsequent non-edit send can't accidentally
-   *  inherit it. */
-  let composeOpenedAsEditOfOutbox = $state(false)
+  // The per-Compose edit-from-outbox snapshot now lives on each
+  // ComposeEntry (see `openedAsEditOfOutbox` in `composes` above),
+  // captured at open time and consumed by `onsentenqueued` via a
+  // per-instance closure on the mount block.
 
   // Bindable mirror of MailList's currently-rendered envelope rows.
   // Used by the auto-advance-after-delete flow (#99) to pick the
@@ -1316,19 +1356,119 @@
     // the genuine refresh path; this one's purely local.
   }
 
-  // Open the Compose modal. Called with no arg for a blank new message,
-  // or with a prefill for reply/reply-all/forward.
-  function openCompose(initial: ComposeInitial = {}) {
-    // A fresh open shouldn't carry over the error banner from a
-    // previous failed background send (#156).
-    composeSendError = ''
-    composeInitial = initial
-    // Snapshot whether this Compose started life as an
-    // edit-from-outbox — onsentenqueued reads it later (#276
-    // follow-up).  Re-set on every open so a fresh non-edit
-    // compose can't inherit the arming from a previous edit
-    // that the user cancelled.
-    composeOpenedAsEditOfOutbox = initial.outboxSource != null
+  /** A Compose has told us it's about to expunge a Drafts UID —
+   *  either the replaceSource path of save_draft, or the post-send
+   *  draft cleanup (#292 follow-up).  Optimistically splice the
+   *  row out of MailList's bound state so the user doesn't briefly
+   *  see the about-to-be-deleted row alongside its successor.  The
+   *  splice is only meaningful when the user is currently viewing
+   *  the same folder + account the draft lives in — otherwise the
+   *  bound list isn't showing that folder anyway, so the call is
+   *  a no-op (and could even mis-evict an unrelated row that
+   *  happens to share the UID in another folder, since UIDs are
+   *  per-folder). */
+  function onDraftExpunged(src: {
+    accountId: string
+    folder: string
+    uid: number
+  }) {
+    if (selectedFolder !== src.folder) return
+    if (
+      !unifiedMode
+      && selectedMessageAccountId !== src.accountId
+      && activeAccountId !== src.accountId
+    ) {
+      return
+    }
+    onMessageRemoved(src.uid)
+  }
+
+  // Open a Compose modal.  Called with no arg for a blank new
+  // message, or with a prefill for reply / reply-all / forward /
+  // edit-draft / mailto / etc.  Each call pushes a new entry and
+  // makes it the active (visible) modal — any previously-active
+  // Compose gets auto-minimised into the shrunken-composes bar
+  // (#292), preserving its draft.
+  //
+  // `options` covers the two paths that need to override defaults:
+  //   - `accountId`: the send-failure recovery flow re-opens with
+  //     the original sending account, which may differ from the
+  //     current `activeAccountId` (the user could have switched
+  //     accounts in the meantime);
+  //   - `initialError`: same flow, surfaces the failure reason in
+  //     the modal's banner the moment it re-appears.
+  function openCompose(
+    initial: ComposeInitial = {},
+    options: { accountId?: string; initialError?: string } = {},
+  ): string {
+    // Dedup the "Edit draft from the Drafts folder while a Compose
+    // for that exact UID is already mounted" case (#292 follow-up).
+    // Without this guard the user ends up with two Compose
+    // instances both pointing at the same Drafts UID; the next
+    // minimise on either one APPENDs a fresh copy and the
+    // server-side dedup falls apart.  We compare against each
+    // entry's *live* `currentDraftSource` (post-save UID), not
+    // its frozen `initial.draftSource`, so the match still works
+    // after an in-flight save has assigned a new UID.
+    if (initial.draftSource) {
+      const existing = composes.find(
+        (c) =>
+          c.currentDraftSource &&
+          c.currentDraftSource.accountId ===
+            initial.draftSource!.accountId &&
+          c.currentDraftSource.folder === initial.draftSource!.folder &&
+          c.currentDraftSource.uid === initial.draftSource!.uid,
+      )
+      if (existing) {
+        activeComposeId = existing.id
+        return existing.id
+      }
+    }
+
+    const id = crypto.randomUUID()
+    composes.push({
+      id,
+      accountId: options.accountId ?? activeAccountId ?? '',
+      initial,
+      initialError: options.initialError ?? '',
+      currentSubject: initial.subject ?? '',
+      currentDraftSource: initial.draftSource ?? null,
+      openedAsEditOfOutbox: initial.outboxSource != null,
+    })
+    activeComposeId = id
+    return id
+  }
+
+  /** Shrink the given Compose into the bar — only the active one
+   *  has a visible surface, so this just clears `activeComposeId`
+   *  when the caller matches.  The component stays mounted so its
+   *  internal state survives. */
+  function minimizeCompose(id: string) {
+    if (activeComposeId === id) activeComposeId = null
+  }
+
+  /** Restore a minimised Compose: make it the active one.  Any
+   *  previously-active Compose flips to minimised automatically
+   *  on the next render because the modal-vs-minimised state is
+   *  derived from `id === activeComposeId`. */
+  function restoreCompose(id: string) {
+    activeComposeId = id
+  }
+
+  /** Close-from-bar (#292): hit the × on a minimised tab.  Routes
+   *  through Compose's own `cancel` so Talk-room delete + share-
+   *  link cleanup + draft-source expunge all run, just like the
+   *  modal-header × button does.  Defensive fallback to
+   *  `closeCompose` covers the rare race where the entry exists
+   *  but its `cancelFn` hasn't been wired yet (component is mid-
+   *  mount) — better to drop the entry than to leak the click. */
+  function closeComposeFromBar(id: string) {
+    const entry = composes.find((c) => c.id === id)
+    if (entry?.cancelFn) {
+      entry.cancelFn()
+    } else {
+      closeCompose(id)
+    }
   }
 
   /** Re-open a queued Outbox message in Compose for editing
@@ -1388,8 +1528,9 @@
     })
   }
 
-  function closeCompose() {
-    composeInitial = null
+  function closeCompose(id: string) {
+    composes = composes.filter((c) => c.id !== id)
+    if (activeComposeId === id) activeComposeId = null
     // Force the mail list + sidebar to re-query the server. Compose's
     // save-draft / send paths modify the Drafts and Sent folders
     // (APPEND + expunge) without touching the envelope cache, so the
@@ -1404,13 +1545,28 @@
   // submission fails after the modal is gone we surface the
   // error here AND re-open Compose pre-filled with the user's
   // draft so they can retry without retyping.
-  let composeSendError = $state<string>('')
-  function onComposeSendFailed(payload: SendFailurePayload) {
-    composeSendError = payload.errorMessage
-    // Re-open Compose with the original draft.  Setting
-    // `composeInitial` triggers the mount in the same shell-
-    // level branch the original Compose lived in.
-    composeInitial = payload.draft
+  //
+  // `failedOpenedAsEditOfOutbox` rides through from the per-instance
+  // closure that wraps the original Compose's `onsendfailed` —
+  // preserves the outbox-edit arming across the recovery push so a
+  // successful retry still routes to the OutboxView (#276
+  // follow-up).
+  function onComposeSendFailed(
+    failedOpenedAsEditOfOutbox: boolean,
+    payload: SendFailurePayload,
+  ) {
+    const newId = openCompose(payload.draft, {
+      accountId: payload.fromAccountId,
+      initialError: payload.errorMessage,
+    })
+    // Re-arm the outbox-edit flag on the recovery entry when the
+    // failed one was itself an outbox edit.  The draft snapshot
+    // doesn't carry `outboxSource` (Compose's runSendPipeline
+    // omits it), so we can't recover this from the draft alone.
+    if (failedOpenedAsEditOfOutbox) {
+      const entry = composes.find((c) => c.id === newId)
+      if (entry) entry.openedAsEditOfOutbox = true
+    }
     // Try to also fire an OS-level notification so the user
     // notices the failure even if their attention has drifted
     // off the Nimbus window.  Best-effort — silently ignore on
@@ -1451,9 +1607,11 @@
    *      select behaviour, the row's status updates in place
    *      via the `outbox-updated` listener as the drain
    *      finishes. */
-  async function onComposeSentEnqueued(newRowId: number) {
-    if (!composeOpenedAsEditOfOutbox) return
-    composeOpenedAsEditOfOutbox = false
+  async function onComposeSentEnqueued(
+    entry: ComposeEntry,
+    newRowId: number,
+  ) {
+    if (!entry.openedAsEditOfOutbox) return
     // Stay on the Outbox folder (the user was here when they
     // clicked Edit; switching away would be confusing).
     selectedFolder = OUTBOX_FOLDER
@@ -1671,6 +1829,12 @@
       body: mail.body_html ?? mail.body_text ?? '',
       attachments,
       draftSource: { accountId: mail.account_id, folder: mail.folder, uid },
+      // The saved draft body already carries the signature Compose
+      // appended on its previous save — re-stamping a fresh one
+      // here would stack signatures on every edit/save round-trip
+      // (#292 follow-up).  Same idiom the edit-from-outbox path
+      // uses (#276): treat the persisted body as authoritative.
+      skipSignatureInsert: true,
     })
   }
 
@@ -1777,10 +1941,13 @@
   async function onRespondWithMeeting(mail: ReplyableMail) {
     // Defensive: if a previous flow left state behind (e.g. a
     // Compose modal whose overlay would z-index over the new
-    // editor), clear it so the EventEditor lands on top of an
-    // empty surface.
+    // editor), drop the *active* one out of view so the
+    // EventEditor lands on top of an empty surface.  We don't
+    // tear the Compose entries down — any minimised drafts the
+    // user has stashed in the shrunken-composes bar (#292)
+    // remain alive and reachable once the meeting editor closes.
     meetingDraft = null
-    composeInitial = null
+    activeComposeId = null
 
     // Top-level try/catch so any unhandled rejection surfaces as
     // a visible alert instead of leaving the user staring at a
@@ -2455,22 +2622,49 @@
           bind:refreshing={mailViewRefreshing}
         />
       {/if}
+
+      <!-- Shrunken-composes bar (#292).  Lives inside the mail-view
+           branch so it disappears the moment the user navigates to
+           Calendar / Contacts / Settings etc.  The minimised
+           Compose components themselves remain mounted at the
+           app-level overlay below, so the user can still find
+           their drafts on return. -->
+      {#if composes.some((c) => c.id !== activeComposeId)}
+        <ShrunkenComposesBar
+          items={composes
+            .filter((c) => c.id !== activeComposeId)
+            .map((c) => ({ id: c.id, subject: c.currentSubject }))}
+          onrestore={restoreCompose}
+          onclose={closeComposeFromBar}
+        />
+      {/if}
     {/if}
 
-    {#if composeInitial !== null}
+    <!-- Compose overlays (#292).  Every open Compose stays mounted —
+         the one with `id === activeComposeId` is visible, the rest
+         render with `display:none` so their Tiptap editor and
+         in-flight state survive the minimise round-trip.  Per-
+         instance closures wrap the callbacks so each Compose's
+         outbox-edit snapshot and recovery-push routing stay tied
+         to *that* instance, not whoever happens to be active when
+         the async send pipeline resolves. -->
+    {#each composes as c (c.id)}
       <Compose
         accounts={accounts}
-        accountId={activeAccountId ?? ''}
-        initial={composeInitial}
-        initialError={composeSendError}
-        onclose={() => {
-          composeSendError = ''
-          closeCompose()
-        }}
-        onsendfailed={onComposeSendFailed}
-        onsentenqueued={onComposeSentEnqueued}
+        accountId={c.accountId}
+        initial={c.initial}
+        initialError={c.initialError}
+        minimized={c.id !== activeComposeId}
+        onminimize={() => minimizeCompose(c.id)}
+        onclose={() => closeCompose(c.id)}
+        onsendfailed={(p) => onComposeSendFailed(c.openedAsEditOfOutbox, p)}
+        onsentenqueued={(rowId) => onComposeSentEnqueued(c, rowId)}
+        onsubjectchange={(s) => (c.currentSubject = s)}
+        oncancelref={(fn) => (c.cancelFn = fn)}
+        ondraftsourcechange={(src) => (c.currentDraftSource = src)}
+        ondraftexpunged={onDraftExpunged}
       />
-    {/if}
+    {/each}
   </div>
 {/if}
 

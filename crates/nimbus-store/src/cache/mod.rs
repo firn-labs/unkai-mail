@@ -861,6 +861,70 @@ impl Cache {
         Ok(())
     }
 
+    /// Same as [`mark_message_pending`] but creates a placeholder
+    /// row when the target UID isn't cached yet (#292 follow-up).
+    ///
+    /// The minimize-save path APPENDs to IMAP without writing the
+    /// new envelope into the cache — `save_draft` only invokes
+    /// `remove_envelope` on the replaced source, never `upsert` on
+    /// the freshly-APPENDed copy.  A subsequent send that targets
+    /// the minimize-saved UID hits a tombstone-via-UPDATE that
+    /// silently misses (zero rows updated), so the next
+    /// `poll_folder` re-fetches the row from IMAP and INSERTs it
+    /// without a `pending_action`, causing the row to flash back
+    /// into the visible list until the real IMAP DELETE catches
+    /// up.
+    ///
+    /// This variant guarantees the tombstone lands: UPDATE first,
+    /// and if no row matched, INSERT a placeholder carrying the
+    /// pending flag.  `get_envelopes` filters out any row with
+    /// `pending_action IS NOT NULL`, so the placeholder is
+    /// invisible.  When `poll_folder`'s upsert later writes the
+    /// real envelope, the `ON CONFLICT … DO UPDATE` clause
+    /// deliberately *doesn't* touch `pending_action`, so the
+    /// tombstone survives the merge.  On IMAP success the row
+    /// gets dropped entirely via `remove_envelope`; on IMAP
+    /// failure `clear_message_pending` un-tombstones, which
+    /// briefly exposes the placeholder's empty fields — accepted
+    /// as a rare edge case since the next poll fills them in.
+    pub fn upsert_message_pending(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        action: &str,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        let updated = conn.execute(
+            "UPDATE messages SET pending_action = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, action],
+        )?;
+        if updated > 0 {
+            return Ok(());
+        }
+        // Row missing — insert a placeholder.  `INSERT OR IGNORE`
+        // covers the race where a concurrent poll inserts the
+        // real row between our UPDATE-found-nothing and this
+        // INSERT; in that case we'd need a second UPDATE to flip
+        // pending_action on, so we re-run the UPDATE
+        // unconditionally below.
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT OR IGNORE INTO messages
+                (account_id, folder, uid, internal_date, cached_at, pending_action)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![account_id, folder, uid as i64, now, now, action],
+        )?;
+        conn.execute(
+            "UPDATE messages SET pending_action = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3
+                   AND pending_action IS NULL",
+            params![account_id, folder, uid as i64, action],
+        )?;
+        Ok(())
+    }
+
     /// Reverse of `mark_message_pending` — called when the IMAP
     /// action errors so the row reappears in the next list pull
     /// without the user having to restart anything.
@@ -1471,6 +1535,40 @@ impl Cache {
     /// Push a fresh outgoing message onto the queue.  Returns the
     /// generated row id so the caller (`send_email`) can hand it
     /// to the spawned drain task.
+    /// Atomic claim of a queued outbox row for the duration of a
+    /// single drain attempt (#292 follow-up).
+    ///
+    /// Both [`send_email`]'s spawned drain task and the periodic
+    /// `drain_outbox_sweep` operate on the same `outbox_messages`
+    /// table, and `try_drain_outbox_entry` was previously a plain
+    /// read-then-act with no exclusion.  If those two paths
+    /// happened to overlap (e.g. the user clicked Send a few
+    /// seconds before a sweep tick), both would read the row,
+    /// both would push the message through SMTP + APPEND-to-Sent,
+    /// and the recipient would receive the same mail twice.
+    ///
+    /// This is a CAS: bump `last_attempt_at` to `now` only when
+    /// no other drain has touched the row inside the last
+    /// `claim_ttl_secs` seconds.  Returns `true` when the caller
+    /// won the claim and should proceed, `false` when another
+    /// drain holds the row.  The TTL means that even if a drain
+    /// task panics or the process dies mid-send the row isn't
+    /// permanently stuck — the next sweep past the TTL boundary
+    /// reclaims it.
+    pub fn claim_outbox_for_drain(&self, id: i64, claim_ttl_secs: i64) -> Result<bool, CacheError> {
+        let conn = self.conn()?;
+        let now = Utc::now().timestamp();
+        let threshold = now - claim_ttl_secs;
+        let updated = conn.execute(
+            "UPDATE outbox_messages
+             SET last_attempt_at = ?1
+             WHERE id = ?2
+               AND (last_attempt_at IS NULL OR last_attempt_at < ?3)",
+            params![now, id, threshold],
+        )?;
+        Ok(updated > 0)
+    }
+
     pub fn enqueue_outbox(&self, input: &OutboxEnqueue) -> Result<i64, CacheError> {
         let conn = self.conn()?;
         let now = Utc::now().timestamp();
