@@ -27,6 +27,11 @@
     isPdfAttachment,
     openAttachment,
   } from './attachmentOpen'
+  import {
+    addTrustedSender,
+    getSenderAddress,
+    isSenderTrusted,
+  } from './trustedSenders'
 
   interface EmailAttachment {
     filename: string
@@ -436,37 +441,6 @@
   // ── Per-sender image trust (persisted in localStorage) ──────────────
   // senders the user has chosen "always show images from" live here.
   // Key format: ["user@example.com", ...] — lower-cased bare addresses.
-
-  const TRUSTED_SENDERS_KEY = 'nimbus-trusted-senders'
-
-  function getSenderAddress(from: string): string {
-    const m = from.match(/<([^>]+)>/)
-    return (m ? m[1] : from).trim().toLowerCase()
-  }
-
-  function isSenderTrusted(from: string): boolean {
-    try {
-      const raw = localStorage.getItem(TRUSTED_SENDERS_KEY)
-      const list: string[] = raw ? JSON.parse(raw) : []
-      return list.includes(getSenderAddress(from))
-    } catch {
-      return false
-    }
-  }
-
-  function addTrustedSender(from: string) {
-    try {
-      const raw = localStorage.getItem(TRUSTED_SENDERS_KEY)
-      const list: string[] = raw ? JSON.parse(raw) : []
-      const addr = getSenderAddress(from)
-      if (!list.includes(addr)) {
-        list.push(addr)
-        localStorage.setItem(TRUSTED_SENDERS_KEY, JSON.stringify(list))
-      }
-    } catch {
-      console.warn('Failed to persist trusted sender')
-    }
-  }
 
   // Per-message "Show images" toggle; reset to false on every new message.
   let showImagesForMessage = $state(false)

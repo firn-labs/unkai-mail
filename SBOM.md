@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-06 (CodeMirror 6 + `marked` added for the Notes UI overhaul, #138 — both MIT, no licence pressure).
+Last manual reconciliation: 2026-05-15 (`vitest` added for frontend pure-function tests, #295 — MIT, devDependency only, no licence pressure).
 
 ---
 
@@ -224,6 +224,7 @@ don't affect distribution. Still worth knowing what's in the toolchain:
 | `tailwindcss` | MIT | CSS framework. |
 | `typescript` | Apache-2.0 | TS compiler. |
 | `vite` | MIT | Build tool / dev server. |
+| `vitest` | MIT | Frontend unit-test runner (#295). Runs pure-function tests via `npm test`; not wired into CI yet — local-only smoke for now. |
 
 ---
 

@@ -41,6 +41,10 @@
     uploadBundle,
     type SettingsSyncStateView,
   } from './settingsBundle'
+  import {
+    listTrustedSenders,
+    removeTrustedSender,
+  } from './trustedSenders'
 
   // Friendly labels for the locale picker.  Keep the codes in
   // lockstep with `project.inlang/settings.json`.  Native
@@ -279,6 +283,21 @@
    *  fetching it via IPC because it's stable, public, and
    *  changing it would be a breaking change in any case. */
   const DEFAULT_NOMINATIM_BASE_URL = 'https://nominatim.openstreetmap.org'
+
+  // ── Trusted senders (#295) ──────────────────────────────────
+  // Mirrors the localStorage allow-list maintained by
+  // `trustedSenders.ts`.  Loaded once on mount and refreshed
+  // after each remove — the list is small (typically a handful
+  // of entries) so a full re-read is cheaper than threading a
+  // subscription through.
+  let trustedSenders = $state<string[]>([])
+  $effect(() => {
+    trustedSenders = listTrustedSenders()
+  })
+  function onRemoveTrustedSender(addr: string) {
+    removeTrustedSender(addr)
+    trustedSenders = listTrustedSenders()
+  }
 
   // ── Logo / app-icon picker (Issue #X) ───────────────────────
   // Each entry is one slug the Rust side knows: the image source
@@ -1416,29 +1435,6 @@
         </div>
       </div>
       <div class="space-y-3 text-sm">
-        <!-- Auto-load remote images (#197).  Off by default —
-             every loaded remote image is a tracking signal back
-             to the sender ("yes, this address is alive and the
-             user read it at $time").  When on, the per-message
-             "Remote images are blocked" banner is hidden and
-             every HTML mail renders with its remote images
-             loaded. Per-message "Show images" and per-sender
-             trust still work the same way regardless. -->
-        <div class="flex items-start gap-3">
-          <Toggle
-            bind:checked={appSettings.auto_load_remote_images}
-            label="Auto-load remote images in HTML mail"
-            onchange={() => scheduleSave()}
-          />
-          <div>
-            <span>Auto-load remote images in HTML mail</span>
-            <p class="text-xs text-surface-400 mt-0.5">
-              Off (default) blocks remote images and shows a "Show images" banner per message — protects against tracking pixels.
-              On loads every image automatically and hides the banner.
-            </p>
-          </div>
-        </div>
-
         <!-- #165 — URLhaus link checker.  When on, every link in
              a rendered email gets a green "Safe" / red "Unsafe"
              pill, and a click on an Unsafe link goes through a
@@ -1522,6 +1518,65 @@
             onchange={() => scheduleSave()}
           />
           <span>Show desktop notifications for new mail</span>
+        </div>
+
+        <!-- Auto-load remote images (#197).  Off by default —
+             every loaded remote image is a tracking signal back
+             to the sender ("yes, this address is alive and the
+             user read it at $time").  When on, the per-message
+             "Remote images are blocked" banner is hidden and
+             every HTML mail renders with its remote images
+             loaded. Per-message "Show images" and per-sender
+             trust still work the same way regardless.  Sits
+             directly above the trusted-senders list so the two
+             remote-image controls read as a pair. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.auto_load_remote_images}
+            label="Auto-load remote images in HTML mail"
+            onchange={() => scheduleSave()}
+          />
+          <div>
+            <span>Auto-load remote images in HTML mail</span>
+            <p class="text-xs text-surface-400 mt-0.5">
+              Off (default) blocks remote images and shows a "Show images" banner per message — protects against tracking pixels.
+              On loads every image automatically and hides the banner.
+            </p>
+          </div>
+        </div>
+
+        <!-- Trusted senders (#295).  Per-sender allow-list driven
+             by the "Always show from X" button on the in-message
+             blocked-images banner.  Listing the entries here lets
+             users review what they've trusted and revoke individual
+             addresses without having to reset the whole list. -->
+        <div class="pt-2">
+          <h3 class="text-sm font-medium mb-1">Trusted senders</h3>
+          <p class="text-xs text-surface-400 mb-2">
+            Addresses you've chosen "Always show from" for.  Remote images
+            from these senders load automatically even when the auto-load
+            toggle is off.
+          </p>
+          {#if trustedSenders.length === 0}
+            <p class="text-xs text-surface-500 italic">
+              No trusted senders yet.  Open a message with blocked images
+              and use "Always show from [sender]" on the banner to add one.
+            </p>
+          {:else}
+            <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-md border border-surface-200 dark:border-surface-700 max-w-xl">
+              {#each trustedSenders as addr (addr)}
+                <li class="flex items-center gap-3 px-3 py-2">
+                  <span class="flex-1 min-w-0 truncate text-sm font-mono">{addr}</span>
+                  <button
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                    title="Remove trusted sender"
+                    aria-label="Remove trusted sender {addr}"
+                    onclick={() => onRemoveTrustedSender(addr)}
+                  ><Icon name="trash" size={14} /></button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </div>
       </div>
     </div>
@@ -1914,21 +1969,19 @@
                   </div>
                 </div>
               </div>
-              <div class="flex flex-col items-end gap-1">
+              <div class="flex items-center gap-1">
                 <button
-                  class="btn btn-sm preset-outlined-surface-500 px-2 py-1 inline-flex items-center justify-center"
+                  class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                   title="Connection settings — edit server hostnames, ports, password, and trust certificates"
                   aria-label="Connection settings"
                   onclick={() => openServerEdit(account)}
-                >
-                  <Icon name="settings" size={18} />
-                </button>
+                ><Icon name="settings" size={16} /></button>
                 <button
-                  class="btn btn-sm preset-outlined-error-500"
+                  class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                  title="Remove account"
+                  aria-label="Remove account {account.email}"
                   onclick={() => removeAccount(account.id, account.email)}
-                >
-                  Remove
-                </button>
+                ><Icon name="trash" size={16} /></button>
               </div>
             </div>
 
