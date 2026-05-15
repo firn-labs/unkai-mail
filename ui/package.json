@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "npm run paraglide:compile && svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "paraglide:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/paraglide"
+    "paraglide:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/paraglide",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@inlang/paraglide-js": "^2.18.0",
@@ -24,7 +25,8 @@
     "svelte-check": "^4.4.6",
     "tailwindcss": "^4.2.2",
     "typescript": "~6.0.2",
-    "vite": "^8.0.4"
+    "vite": "^8.0.4",
+    "vitest": "^4.1.6"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.2",

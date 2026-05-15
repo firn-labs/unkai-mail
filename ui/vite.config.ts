@@ -1,4 +1,8 @@
-import { defineConfig } from 'vite'
+// `defineConfig` from `vitest/config` is a thin superset of vite's
+// — it adds the `test` field's type so the tsc step in `npm run
+// check` accepts our test config block.  Behaves identically to
+// vite's `defineConfig` for the build / dev paths.
+import { defineConfig } from 'vitest/config'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { paraglideVitePlugin } from '@inlang/paraglide-js'
@@ -30,5 +34,13 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+  },
+  // Vitest config — pure-function tests only.  Stays on node
+  // (no jsdom) and stubs `globalThis.localStorage` per test;
+  // adding component tests later would need a DOM environment
+  // opted in via `// @vitest-environment` comments.
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
   },
 })
