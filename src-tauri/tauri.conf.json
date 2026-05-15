@@ -43,5 +43,13 @@
         "role": "Viewer"
       }
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [],
+      "desktop": {
+        "schemes": ["mailto"]
+      }
+    }
   }
 }

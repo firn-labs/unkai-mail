@@ -44,7 +44,8 @@ The following packages are distributed under the MIT License:
 `quick-xml`, `ical`, `base64`, `aes-gcm`, `pbkdf2`, `hmac`, `uuid`,
 `hickory-resolver`, `font-kit`, `tauri`, `tauri-build`,
 `tauri-plugin-notification`, `tauri-plugin-dialog`,
-`tauri-plugin-autostart`, `notify-rust`, `windows`.
+`tauri-plugin-autostart`, `tauri-plugin-deep-link`,
+`tauri-plugin-single-instance`, `notify-rust`, `windows`.
 
 **npm packages**: `@tauri-apps/api`, `@tauri-apps/plugin-autostart`,
 `@tauri-apps/plugin-dialog`, `@tauri-apps/plugin-notification`,
@@ -105,7 +106,8 @@ with downstream consumers who require it):
 `rustls-pki-types`, `mail-parser`, `ical`, `base64`, `aes-gcm`,
 `pbkdf2`, `hmac`, `uuid`, `hickory-resolver`, `font-kit`, `tauri`,
 `tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
-`tauri-plugin-autostart`, `notify-rust`, `windows`.
+`tauri-plugin-autostart`, `tauri-plugin-deep-link`,
+`tauri-plugin-single-instance`, `notify-rust`, `windows`.
 
 **Vendored libraries**: OpenSSL (statically linked through
 `rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature).

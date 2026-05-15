@@ -1293,6 +1293,7 @@
               {showPreview}
               accountId={mailAccountId}
               {onopenmail}
+              onmailto={(init) => oncompose(init)}
             />
           {/if}
         {/if}

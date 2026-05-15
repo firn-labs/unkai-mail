@@ -43,6 +43,7 @@
   import { resizableSidebar } from './lib/resizableSidebar'
   import EventEditor, { type SavedEvent } from './lib/EventEditor.svelte'
   import { quotedHistoryHtml, type MeetingInvite } from './lib/inviteHtml'
+  import { parseMailtoUrl } from './lib/mailtoUrl'
   import SearchBar, {
     type SearchScope,
     type SearchFilters,
@@ -865,6 +866,7 @@
     let unlistenComposeFromMail: UnlistenFn | null = null
     let unlistenEditDraftFromMail: UnlistenFn | null = null
     let unlistenMailtoFromMail: UnlistenFn | null = null
+    let unlistenMailtoDeepLink: UnlistenFn | null = null
     let unlistenMailFlagsUpdated: UnlistenFn | null = null
     let unlistenOutboxUpdated: UnlistenFn | null = null
     ;(async () => {
@@ -972,6 +974,23 @@
         init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }
       }>('mailto-from-mail', (e) => openCompose(e.payload.init))
 
+      // #294 — OS-level `mailto:` handler.  When Nimbus is the
+      // registered system handler for the `mailto:` scheme the
+      // Rust side forwards each URL through this event (both for
+      // cold-start launches that arrive after `onMount` runs and
+      // for second-instance launches relayed by the single-
+      // instance plugin).  We parse the raw URL with the same RFC
+      // 6068 helper the in-app body and notes handlers use, then
+      // open Compose against the user's primary account.
+      unlistenMailtoDeepLink = await listen<string>(
+        'nimbus://mailto',
+        (e) => {
+          if (typeof e.payload === 'string') {
+            void openComposeFromMailtoUrl(e.payload)
+          }
+        },
+      )
+
       // #254 — when Nimbus is launched as the OS handler for an
       // .ics or .eml file (Windows registry / macOS UTI / Linux
       // .desktop), the backend stashes the path in a one-shot
@@ -981,6 +1000,14 @@
       // any failure is logged and dropped so a malformed handoff
       // doesn't keep the user staring at an empty app shell.
       void processPendingLaunchFile()
+      // #294 — same idea for cold-start `mailto:` URLs.  The
+      // backend buffers every URL that arrived before this
+      // listener was wired (argv scan + the deep-link plugin's
+      // `get_current()` drain); we replay each one through the
+      // same Compose entry point so a single user gesture in
+      // another app reliably lands in Compose, regardless of how
+      // the URL was delivered.
+      void processPendingMailtoUrls()
     })()
     return () => {
       unlistenNewMail?.()
@@ -991,6 +1018,7 @@
       unlistenComposeFromMail?.()
       unlistenEditDraftFromMail?.()
       unlistenMailtoFromMail?.()
+      unlistenMailtoDeepLink?.()
       unlistenMailFlagsUpdated?.()
       unlistenOutboxUpdated?.()
       if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
@@ -1976,6 +2004,65 @@
       return
     }
     console.warn('pending file has unsupported extension:', path)
+  }
+
+  /** Drain the backend's cold-start `mailto:` buffer and hand
+   *  each URL to the same Compose entry point a live event would
+   *  hit.  Called once after the deep-link event listener is
+   *  wired — anything that landed before the listener attached
+   *  is in the buffer, anything after goes through the event.
+   *  Best-effort: a malformed URL or a missing account just logs
+   *  a warning so the user isn't held hostage by a half-broken
+   *  handoff. */
+  async function processPendingMailtoUrls() {
+    let urls: string[] = []
+    try {
+      urls = await invoke<string[]>('take_pending_mailto_urls')
+    } catch (e) {
+      console.warn('take_pending_mailto_urls failed', e)
+      return
+    }
+    for (const url of urls) {
+      await openComposeFromMailtoUrl(url)
+    }
+  }
+
+  /** Open Compose pre-filled from an RFC 6068 `mailto:` URL,
+   *  switching the active account to the user's #1 account in
+   *  the sidebar / account-settings order (#294).  We deliberately
+   *  do *not* honour `activeAccountId` here: a mailto launched
+   *  from another app is a fresh, top-of-funnel send and the
+   *  user's "primary" identity is the right default — matching
+   *  the order they curated in Settings → Accounts (drag-to-
+   *  reorder writes the `sort_order` field, same one IconRail
+   *  reads). */
+  async function openComposeFromMailtoUrl(url: string) {
+    if (accounts.length === 0) {
+      // Empty-state.  We could buffer and replay after the user
+      // adds their first account, but the only way to be here
+      // *and* have a mailto in flight is if the user clicked a
+      // mailto link in another app while Nimbus was mid-setup —
+      // surfacing that they need an account first is more useful
+      // than silently swallowing the click.
+      console.warn(
+        'mailto received but no accounts configured — drop the URL',
+      )
+      return
+    }
+    const sorted = [...accounts].sort((a, b) => {
+      const ao = a.sort_order ?? 0
+      const bo = b.sort_order ?? 0
+      if (ao !== bo) return ao - bo
+      return a.id.localeCompare(b.id)
+    })
+    const primaryId = sorted[0].id
+    if (activeAccountId !== primaryId) activeAccountId = primaryId
+    // Pull the view back to the inbox so the Compose modal opens
+    // over a familiar surface rather than the Settings / Notes /
+    // Calendar pane the user was sitting on when the mailto
+    // arrived from another app.
+    if (currentView !== 'inbox') currentView = 'inbox'
+    openCompose(parseMailtoUrl(url))
   }
 
   /** Subset of the Rust `CalendarEvent` shape we read off of
