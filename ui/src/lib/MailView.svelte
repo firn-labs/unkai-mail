@@ -131,6 +131,16 @@
      *  MailList's flag and shows a calm spinner on the
      *  IconRail's active-account avatar (#161). */
     refreshing?: boolean
+    /** UIDs of every member of the thread the open message
+     *  belongs to (#289 follow-up).  Populated only when the
+     *  open message is the *head* of a multi-member thread
+     *  (the row that carries the count badge in MailList); `null`
+     *  otherwise.  When non-null, the archive button sweeps the
+     *  whole conversation in a single batched IMAP move instead
+     *  of archiving only the head row.  Move-to-folder is handled
+     *  in MailList already (via `affectedEnvelopes`), so this
+     *  prop only drives archive here. */
+    threadMemberUids?: number[] | null
   }
   let {
     accountId,
@@ -152,6 +162,7 @@
     linkCheckEnabled = true,
     onmailto,
     refreshing = $bindable(false),
+    threadMemberUids = null,
   }: Props = $props()
 
   let email = $state<Email | null>(null)
@@ -1289,6 +1300,32 @@
     const removedUid = uid
     const acc = email.account_id
     const fld = email.folder
+    // Whole-thread archive (#289 follow-up): when the parent's
+    // selection-aware derivation has handed us a member-UID list,
+    // the open message is the head of a multi-member thread and a
+    // single archive click should sweep every member.  We fire
+    // `onmessageremoved` for each UID FIRST (so MailList's
+    // bound-envelope splice and the auto-advance logic both run
+    // against the still-populated list), then dispatch the batched
+    // backend call.  Falls back to the single-UID path otherwise
+    // — no need to invoke the batch IPC for a single message.
+    const members =
+      threadMemberUids && threadMemberUids.length > 1
+        ? threadMemberUids
+        : null
+    if (members) {
+      for (const u of members) onmessageremoved?.(u)
+      try {
+        await invoke('archive_messages', {
+          accountId: acc,
+          folder: fld,
+          uids: members,
+        })
+      } catch (e) {
+        error = formatError(e) || 'Failed to archive'
+      }
+      return
+    }
     onmessageremoved?.(removedUid)
     try {
       await invoke('archive_message', {
