@@ -190,7 +190,16 @@
     threadKey: string
   }
 
-  let renderRows = $derived.by((): RenderRow[] => {
+  /** Stable identity key for an envelope across the bound list.  UID
+   *  alone collides across folders / accounts in unified mode, so we
+   *  combine all three.  Used by `threadMembersByEnv` lookups in
+   *  `affectedEnvelopes` (#289 follow-up). */
+  function envKey(e: EmailEnvelope): string {
+    return `${e.account_id}::${e.folder}::${e.uid}`
+  }
+
+  const threadView = $derived.by(():
+    | { rows: RenderRow[]; threadMembersByEnv: Map<string, EmailEnvelope[]> } => {
     // Bucket envelopes by thread key, preserving the bucket
     // order in which the *first* member appears (envelopes are
     // already date-sorted newest-first).
@@ -354,8 +363,24 @@
         }
       }
     }
-    return out
+    // Build a side-map from envelope identity to its post-merge
+    // bucket (#289 follow-up).  `affectedEnvelopes` consults this
+    // when the user drags or right-clicks a thread head so the
+    // move expands to every member of the thread, not just the
+    // visible head row.  The map is built in the same pass as the
+    // rows so we don't pay a second bucketing for the side
+    // affordance.
+    const threadMembersByEnv = new Map<string, EmailEnvelope[]>()
+    for (const env of envelopes) {
+      const key = effectiveKey(env)
+      const bucket = groups.get(key)
+      if (bucket) threadMembersByEnv.set(envKey(env), bucket)
+    }
+    return { rows: out, threadMembersByEnv }
   })
+
+  let renderRows = $derived(threadView.rows)
+  let threadMembersByEnv = $derived(threadView.threadMembersByEnv)
 
   /** Short label for the per-row account chip in unified mode. We
       prefer the display name and fall back to the email's local part
@@ -437,15 +462,62 @@
   }
 
   /** Envelopes that should be acted on for an operation triggered
-   *  on `env`.  When `env` is part of a multi-select group with
-   *  more than one row, we operate on the whole group; otherwise
-   *  it's just `env` (this matches the standard mail-client
-   *  right-click + drag behaviour). */
-  function affectedEnvelopes(env: EmailEnvelope): EmailEnvelope[] {
-    if (multiSelectedUids.size > 1 && multiSelectedUids.has(env.uid)) {
-      return envelopes.filter((e) => multiSelectedUids.has(e.uid))
+   *  on `env`.  Two affordances stack:
+   *
+   *  1. **Multi-select expansion** — when `env` is part of a
+   *     multi-select group with more than one row, we operate on the
+   *     whole group, matching the standard mail-client right-click
+   *     + drag behaviour.
+   *  2. **Thread-head expansion** (#289 follow-up) — when
+   *     `opts.expandThread` is true and the targeted envelope is the
+   *     head of a multi-member thread (the row that carries the
+   *     count badge), we expand to every member of that thread so a
+   *     move-via-drag or move-via-picker on the head moves the whole
+   *     conversation, not just the visible row.  Layered on top of
+   *     multi-select: each selected head's thread is expanded in
+   *     turn, deduped by `(account_id, folder, uid)` so a sibling
+   *     that's also separately selected isn't moved twice.
+   *
+   *  `expandThread` defaults to `false` so destructive paths (delete)
+   *  and per-row toggles (read / unread) keep the previous one-row-
+   *  at-a-time semantics.  Move-shaped paths (drag, right-click "Move
+   *  to folder") opt in. */
+  function affectedEnvelopes(
+    env: EmailEnvelope,
+    opts: { expandThread?: boolean } = {},
+  ): EmailEnvelope[] {
+    const expand = opts.expandThread === true
+    /** Walk an envelope's thread membership and decide whether to
+     *  expand: only when the envelope is the head (members[0]) of
+     *  a multi-member bucket.  Returns the bucket when expanding,
+     *  `[env]` otherwise.  Reference equality on `members[0]` is
+     *  safe because the bucket holds the same envelope references
+     *  from the bound list. */
+    const expandIfHead = (e: EmailEnvelope): EmailEnvelope[] => {
+      if (!expand) return [e]
+      const members = threadMembersByEnv.get(envKey(e))
+      if (members && members.length > 1 && members[0] === e) {
+        return members
+      }
+      return [e]
     }
-    return [env]
+
+    if (multiSelectedUids.size > 1 && multiSelectedUids.has(env.uid)) {
+      const selected = envelopes.filter((e) => multiSelectedUids.has(e.uid))
+      if (!expand) return selected
+      const out: EmailEnvelope[] = []
+      const seen = new Set<string>()
+      for (const e of selected) {
+        for (const m of expandIfHead(e)) {
+          const k = envKey(m)
+          if (seen.has(k)) continue
+          seen.add(k)
+          out.push(m)
+        }
+      }
+      return out
+    }
+    return expandIfHead(env)
   }
 
   // ── Move-to-folder picker (#89) — opened via the right-click
@@ -552,7 +624,15 @@
     // user.  The affectedEnvelopes() rule already does the right
     // thing: it only expands to the group when the dragged row is
     // a member.
-    const group = affectedEnvelopes(env)
+    //
+    // Dragging a thread head, however, should sweep the whole
+    // conversation into the move (#289 follow-up) — the head row
+    // is the user's primary handle for the thread, and dragging
+    // it without its siblings would silently leave them behind in
+    // the source folder.  `expandThread: true` opts this drag into
+    // that behaviour; multi-drag preview's "[+] N" badge then
+    // reflects the actual total moved.
+    const group = affectedEnvelopes(env, { expandThread: true })
     const payload = group.map((g) => {
       const { accountId: src, folder: srcFolder } = srcCoordinates(g)
       return { accountId: src, folder: srcFolder, uid: g.uid }
@@ -1146,8 +1226,10 @@
     // quick-action move is just a 1-element group from its
     // perspective.  affectedEnvelopes does the right thing here:
     // when this row is part of a multi-select group, the picker
-    // moves the whole group; otherwise just the one row.
-    movingGroup = affectedEnvelopes(env)
+    // moves the whole group; otherwise just the one row.  When the
+    // targeted row is a thread head, expand to all members so the
+    // picker move sweeps the whole conversation (#289 follow-up).
+    movingGroup = affectedEnvelopes(env, { expandThread: true })
   }
 
   async function toggleEnvelopeRead(env: EmailEnvelope) {
@@ -1440,8 +1522,23 @@
 </div>
 
 {#if contextMenu}
+  <!-- Two affordance scopes per right-click row (#289 follow-up):
+       • `ctxGroup` — multi-select expansion only.  Drives read /
+         unread (per-row toggle that converges on the right-clicked
+         row's state) and Delete (which stays per-row by user
+         preference — a stray whole-thread delete is hard to undo).
+       • `ctxGroupForMove` — also expands a thread head to its
+         full member list.  Drives "Move to folder…" so the user
+         can sweep an entire conversation into another folder by
+         right-clicking the head row.
+       The two coexist because move is the only action where
+       whole-thread expansion is the natural expectation. -->
   {@const ctxGroup = affectedEnvelopes(contextMenu.env)}
+  {@const ctxGroupForMove = affectedEnvelopes(contextMenu.env, {
+    expandThread: true,
+  })}
   {@const groupSize = ctxGroup.length}
+  {@const moveGroupSize = ctxGroupForMove.length}
   <!-- Right-click menu. Stop propagation so a click *inside* the menu
        doesn't reach the window-level dismiss listener and close it
        before the action handler runs. `role="menu"` keeps screen
@@ -1491,14 +1588,14 @@
       class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
       onclick={() => {
         if (!contextMenu) return
-        movingGroup = ctxGroup
+        movingGroup = ctxGroupForMove
         closeContextMenu()
       }}
     >
       <Icon name="move-to-folder" size={16} />
       <span>
-        {#if groupSize > 1}
-          Move {groupSize} messages to folder…
+        {#if moveGroupSize > 1}
+          Move {moveGroupSize} messages to folder…
         {:else}
           Move to folder…
         {/if}
