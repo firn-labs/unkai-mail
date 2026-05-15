@@ -103,9 +103,9 @@
 
   // ── Conversation-view grouping (#277) ───────────────────────
   // Bundles every envelope that shares an RFC 5322 thread root
-  // into a single inbox row, the way iPhone Mail / Thunderbird
-  // do.  The thread head is the *newest* message; siblings are
-  // hidden until the user clicks the count chevron.
+  // into a single inbox row — the standard conversation-view
+  // pattern.  The thread head is the *newest* message; siblings
+  // are hidden until the user clicks the count chevron.
   //
   // `threadKeyOf` picks the most-stable identifier we have:
   //
@@ -158,9 +158,9 @@
    *  Message-ID anchor across the wire.  Merge them.
    *
    *  Floor of 4 chars on the canonical subject so trivial subjects
-   *  (`"hi"`, `"?"`) don't cause a merge cascade.  Everything else
-   *  Apple Mail / Thunderbird / Outlook also fall back to this
-   *  rule — see [JWZ threading
+   *  (`"hi"`, `"?"`) don't cause a merge cascade.  This is the
+   *  same subject-fallback rule every major conversation grouper
+   *  implements — see [JWZ threading
    *  §5.B.iii](https://www.jwz.org/doc/threading.html). */
   function isReplyOrForward(subject: string): boolean {
     return /^(re|fwd?|aw|wg|sv)\s*(\[\d+\])?\s*:/i.test(subject || '')
@@ -212,9 +212,9 @@
     // rewrite Message-IDs on delivery (local-SMTP test rigs and
     // a few Exchange configs we've seen) so the inbox copy
     // anchors a different ID than the reply's `In-Reply-To`
-    // points at.  This is exactly the case where Thunderbird /
-    // Apple Mail still thread correctly — they fall back to
-    // subject matching.  Match Nimbus to that behaviour.
+    // points at.  Standard practice in conversation groupers is
+    // to fall back to subject matching when the header chain
+    // breaks — Nimbus does the same.
     //
     // For every reply-shaped bucket head (`Re:` / `Fwd:` / …),
     // look for another bucket whose head has the same canonical
@@ -259,6 +259,57 @@
       keyRedirect.set(key, targetKey)
     }
     for (const key of mergedAway) groups.delete(key)
+
+    // Orphan-reply merge pass (#289).  The pass above only fires
+    // when there's a non-reply head to anchor the canonical-subject
+    // group on.  When the original got archived or deleted on the
+    // server, every remaining bucket head is a reply (`Re: Foo`) and
+    // none of them get picked as the byCanonicalRoot anchor, so
+    // two genuinely-same-thread reply buckets stay separate even
+    // though their canonical subjects match.  Fix: walk the
+    // surviving buckets, and for any canonical subject that appears
+    // on multiple reply-shaped heads, pick the *oldest* bucket
+    // (largest internal date span — the one most likely to be the
+    // closest-to-root surviving copy) as the anchor and fold the
+    // rest into it.  Same ≥4-char floor; we still skip canon
+    // subjects that already won an anchor in the first pass, so
+    // trivial subjects never cascade.
+    const orphanAnchor = new Map<string, string>() // canon → group key
+    for (const [key, arr] of groups) {
+      const head = arr[arr.length - 1]
+      if (!head || !isReplyOrForward(head.subject)) continue
+      const canon = canonicalSubject(head.subject)
+      if (canon.length < 4) continue
+      if (byCanonicalRoot.has(canon)) continue // pass-1 already handled this canon
+      const existing = orphanAnchor.get(canon)
+      if (!existing) {
+        orphanAnchor.set(canon, key)
+        continue
+      }
+      // Pick the bucket whose oldest member is older — that's the
+      // surviving anchor; merge the other into it.
+      const existingArr = groups.get(existing)
+      if (!existingArr) {
+        orphanAnchor.set(canon, key)
+        continue
+      }
+      const existingOldest = new Date(
+        existingArr[existingArr.length - 1].date,
+      ).getTime()
+      const candidateOldest = new Date(arr[arr.length - 1].date).getTime()
+      const anchorKey = candidateOldest < existingOldest ? key : existing
+      const mergeKey = anchorKey === key ? existing : key
+      const anchorArr = groups.get(anchorKey)
+      const mergeArr = groups.get(mergeKey)
+      if (!anchorArr || !mergeArr) continue
+      anchorArr.push(...mergeArr)
+      anchorArr.sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+      )
+      groups.delete(mergeKey)
+      keyRedirect.set(mergeKey, anchorKey)
+      orphanAnchor.set(canon, anchorKey)
+    }
 
     /** Resolve an envelope's natural threadKey through the
      *  redirect chain to the post-merge canonical key. */
@@ -1279,12 +1330,16 @@
                        primary tint, primary-coloured count, and
                        an inline SVG chevron that rotates 180° on
                        expand.  Click toggles the thread below;
-                       `stopPropagation` so the row click (which
-                       opens the head message) doesn't fire
-                       alongside.  Inline SVG instead of an Icon
-                       registry entry — `chevron-down` isn't a
-                       stock icon in Icon.svelte and a 12 px path
-                       is too small to justify a new file. -->
+                       `stopPropagation` on click AND dblclick so
+                       neither the row's click (which opens the
+                       head message) nor its dblclick (which pops
+                       the message out to a standalone window) fire
+                       through the button — the count badge is for
+                       expanding the thread, full stop.
+                       Inline SVG instead of an Icon registry entry —
+                       `chevron-down` isn't a stock icon in
+                       Icon.svelte and a 12 px path is too small
+                       to justify a new file. -->
                   <button
                     type="button"
                     class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary-500/10 text-primary-600 dark:text-primary-400 hover:bg-primary-500/20 transition-colors"
@@ -1295,6 +1350,7 @@
                       e.stopPropagation()
                       toggleThread(row.threadKey)
                     }}
+                    ondblclick={(e) => e.stopPropagation()}
                   >
                     <span>{row.siblingCount + 1}</span>
                     <svg
