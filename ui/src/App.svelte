@@ -32,6 +32,7 @@
   } from './lib/Compose.svelte'
   import ShrunkenComposesBar from './lib/ShrunkenComposesBar.svelte'
   import ContactsView from './lib/ContactsView.svelte'
+  import { contactsStore } from './lib/contactsStore.svelte'
   import CalendarView from './lib/CalendarView.svelte'
   import { openReminderInStandaloneWindow } from './lib/reminderPopupWindow'
   import { openMailFileInStandaloneWindow } from './lib/standaloneMailFileWindow'
@@ -1150,6 +1151,13 @@
       const list = await invoke<Account[]>('get_accounts')
       accounts = list
       if (list.length > 0) {
+        // Warm the shared contact cache (#305) so MailList rows
+        // can render sender avatars on first paint instead of
+        // waiting for the user to visit ContactsView.  Fires once
+        // accounts are confirmed so we don't bother on the
+        // first-launch setup path.  Failures stay silent — store
+        // falls back to empty + initials.
+        void contactsStore.load()
         // Keep the current selection if it still exists (e.g. after
         // adding another account); otherwise fall back to the
         // visually-first account.  `list` is in insertion order; the
