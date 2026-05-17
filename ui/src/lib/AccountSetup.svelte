@@ -2,14 +2,14 @@
   /**
    * AccountSetup — a step-by-step wizard for adding a new email account.
    *
-   * This is the first thing users see when they launch Nimbus for the
+   * This is the first thing users see when they launch Unkai for the
    * first time (no accounts configured yet). It collects:
    *   1. Display name + email address
    *   2. IMAP server settings (incoming mail)
    *   3. SMTP server settings (outgoing mail)
    *
    * On submit it calls the `add_account` Tauri command, which persists
-   * the account to disk via nimbus-store.
+   * the account to disk via unkai-store.
    *
    * The component fires an `oncomplete` callback when setup succeeds
    * so the parent (App.svelte) can switch to the inbox view.  When

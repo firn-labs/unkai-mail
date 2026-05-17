@@ -1,4 +1,4 @@
-//! Nimbus — a modern mail client with Nextcloud integration.
+//! Unkai — a modern mail client with Nextcloud integration.
 //!
 //! This is the Tauri application entry point. It registers Tauri
 //! commands (the IPC bridge between Rust and Svelte) and launches
@@ -9,7 +9,15 @@
 mod badge;
 mod geocode;
 
-use nimbus_caldav::{
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, UriSchemeContext, WindowEvent};
+use tokio::sync::RwLock;
+use unkai_caldav::{
     BusyKind as CaldavBusyKind, Calendar as CaldavCalendar, RawEvent,
     build_ics as caldav_build_ics, create_calendar as caldav_create_calendar,
     create_event as caldav_create_event, delete_calendar as caldav_delete_calendar,
@@ -19,38 +27,30 @@ use nimbus_caldav::{
     sync_calendar as caldav_sync_calendar, update_calendar as caldav_update_calendar,
     update_event as caldav_update_event,
 };
-use nimbus_carddav::{
+use unkai_carddav::{
     Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
     delete_contact as carddav_delete_contact, list_addressbooks, sync_addressbook,
     update_contact as carddav_update_contact,
 };
-use nimbus_core::NimbusError;
-use nimbus_core::models::{
+use unkai_core::UnkaiError;
+use unkai_core::models::{
     Account, AppSettings, CalendarEvent, Contact, CustomTheme, Email, EmailEnvelope, EventAttendee,
     EventReminder, Folder, NextcloudAccount, OutgoingEmail,
 };
-use nimbus_imap::ImapClient;
-use nimbus_jmap::JmapClient;
-use nimbus_nextcloud::{
+use unkai_imap::ImapClient;
+use unkai_jmap::JmapClient;
+use unkai_nextcloud::{
     FileEntry, LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
 };
-use nimbus_smtp::{SmtpClient, build_outgoing_message};
-use nimbus_store::cache::{
+use unkai_smtp::{SmtpClient, build_outgoing_message};
+use unkai_store::cache::{
     CalendarEventRow, CalendarEventServerHandle, CalendarRow, ContactRow, ContactServerHandle,
     SearchFilters, SearchHit, SearchScope, SyncState,
 };
-use nimbus_store::{
+use unkai_store::{
     Cache, account_store, app_settings, credentials, link_check, nextcloud_store, settings_bundle,
     settings_sync,
 };
-use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, UriSchemeContext, WindowEvent};
-use tokio::sync::RwLock;
 
 /// Shared, mutable app preferences. Held as Tauri managed state so the
 /// background loop can snapshot under a read lock on every tick while
@@ -81,32 +81,28 @@ struct TrayBaseIconBitmap {
 /// small enough that all 7 styles together add < 100 KB to the
 /// binary.
 mod logo_assets {
-    pub const STORM: &[u8] = include_bytes!("../../logos/nimbus-logo/png/storm/nimbus-256.png");
-    pub const DAWN: &[u8] = include_bytes!("../../logos/nimbus-logo/png/dawn/nimbus-256.png");
-    pub const MINT: &[u8] = include_bytes!("../../logos/nimbus-logo/png/mint/nimbus-256.png");
-    pub const SKY: &[u8] = include_bytes!("../../logos/nimbus-logo/png/sky/nimbus-256.png");
-    pub const TWILIGHT: &[u8] =
-        include_bytes!("../../logos/nimbus-logo/png/twilight/nimbus-256.png");
+    pub const STORM: &[u8] = include_bytes!("../../logos/unkai-logo/png/storm/unkai-256.png");
+    pub const DAWN: &[u8] = include_bytes!("../../logos/unkai-logo/png/dawn/unkai-256.png");
+    pub const MINT: &[u8] = include_bytes!("../../logos/unkai-logo/png/mint/unkai-256.png");
+    pub const SKY: &[u8] = include_bytes!("../../logos/unkai-logo/png/sky/unkai-256.png");
+    pub const TWILIGHT: &[u8] = include_bytes!("../../logos/unkai-logo/png/twilight/unkai-256.png");
     pub const MONO_BLACK: &[u8] =
-        include_bytes!("../../logos/nimbus-logo/png/monochrome/nimbus-mono-black.png");
+        include_bytes!("../../logos/unkai-logo/png/monochrome/unkai-mono-black.png");
     pub const MONO_WHITE: &[u8] =
-        include_bytes!("../../logos/nimbus-logo/png/monochrome/nimbus-mono-white.png");
+        include_bytes!("../../logos/unkai-logo/png/monochrome/unkai-mono-white.png");
 
     // ── v2 logo set (added in #197 follow-up) ────────────────────
     // Same 256 px naming convention as v1; lives under the
-    // separate `nimbus-logo-v2` folder so the original art and
+    // separate `unkai-logo-v2` folder so the original art and
     // the new pack stay independently swappable.
-    pub const COPPER: &[u8] =
-        include_bytes!("../../logos/nimbus-logo-v2/png/copper/nimbus-256.png");
-    pub const FOREST: &[u8] =
-        include_bytes!("../../logos/nimbus-logo-v2/png/forest/nimbus-256.png");
+    pub const COPPER: &[u8] = include_bytes!("../../logos/unkai-logo-v2/png/copper/unkai-256.png");
+    pub const FOREST: &[u8] = include_bytes!("../../logos/unkai-logo-v2/png/forest/unkai-256.png");
     pub const MIDNIGHT: &[u8] =
-        include_bytes!("../../logos/nimbus-logo-v2/png/midnight/nimbus-256.png");
-    pub const OCEAN: &[u8] = include_bytes!("../../logos/nimbus-logo-v2/png/ocean/nimbus-256.png");
-    pub const ROSE: &[u8] = include_bytes!("../../logos/nimbus-logo-v2/png/rose/nimbus-256.png");
-    pub const SLATE: &[u8] = include_bytes!("../../logos/nimbus-logo-v2/png/slate/nimbus-256.png");
-    pub const SUNSET: &[u8] =
-        include_bytes!("../../logos/nimbus-logo-v2/png/sunset/nimbus-256.png");
+        include_bytes!("../../logos/unkai-logo-v2/png/midnight/unkai-256.png");
+    pub const OCEAN: &[u8] = include_bytes!("../../logos/unkai-logo-v2/png/ocean/unkai-256.png");
+    pub const ROSE: &[u8] = include_bytes!("../../logos/unkai-logo-v2/png/rose/unkai-256.png");
+    pub const SLATE: &[u8] = include_bytes!("../../logos/unkai-logo-v2/png/slate/unkai-256.png");
+    pub const SUNSET: &[u8] = include_bytes!("../../logos/unkai-logo-v2/png/sunset/unkai-256.png");
 }
 
 /// Map a style slug to the embedded PNG bytes.  Unknown slug →
@@ -137,9 +133,9 @@ fn logo_bytes_for(style: &str) -> &'static [u8] {
 /// `tauri::image::Image::new` and our badge compositor both want.
 /// Reuses Tauri's bundled PNG decoder so we don't pull a separate
 /// `image` crate just for this.
-fn decode_logo_png(bytes: &[u8]) -> Result<TrayBaseIconBitmap, NimbusError> {
+fn decode_logo_png(bytes: &[u8]) -> Result<TrayBaseIconBitmap, UnkaiError> {
     let img = tauri::image::Image::from_bytes(bytes)
-        .map_err(|e| NimbusError::Other(format!("failed to decode logo PNG: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("failed to decode logo PNG: {e}")))?;
     Ok(TrayBaseIconBitmap {
         rgba: img.rgba().to_vec(),
         width: img.width(),
@@ -165,18 +161,18 @@ const NOTIFICATION_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
 /// Write the embedded icon to a stable temp-dir path and return it.
 /// Idempotent — overwriting on every launch is cheap (~10 KB) and
 /// keeps the file in sync with whatever's currently bundled.
-fn install_notification_icon() -> Result<std::path::PathBuf, NimbusError> {
+fn install_notification_icon() -> Result<std::path::PathBuf, UnkaiError> {
     // The file is the bundled app icon (a static asset, identical
     // for all installs).  Predictable name in the per-user temp
     // dir is intentional — Windows' notification API needs a
     // stable on-disk path to reference.  No secret data here.
     // nosemgrep: rust.lang.security.temp-dir.temp-dir
-    let dir = std::env::temp_dir().join("nimbus-mail");
+    let dir = std::env::temp_dir().join("unkai-mail");
     std::fs::create_dir_all(&dir)
-        .map_err(|e| NimbusError::Other(format!("notification icon mkdir failed: {e}")))?;
-    let path = dir.join("nimbus-mail-icon.png");
+        .map_err(|e| UnkaiError::Other(format!("notification icon mkdir failed: {e}")))?;
+    let path = dir.join("unkai-mail-icon.png");
     std::fs::write(&path, NOTIFICATION_ICON_PNG)
-        .map_err(|e| NimbusError::Other(format!("notification icon write failed: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("notification icon write failed: {e}")))?;
     Ok(path)
 }
 
@@ -205,13 +201,13 @@ fn send_native_notification(
     title: String,
     body: String,
     icon: State<'_, NotificationIconPath>,
-) -> Result<bool, NimbusError> {
+) -> Result<bool, UnkaiError> {
     use notify_rust::{Hint, Notification};
     let mut n = Notification::new();
     n.summary(&title)
         .body(&body)
-        .appname("Nimbus Mail")
-        .hint(Hint::DesktopEntry("com.nimbus.mail".to_string()))
+        .appname("Unkai Mail")
+        .hint(Hint::DesktopEntry("com.unkai.mail".to_string()))
         .hint(Hint::Category("email".to_string()));
     let icon_path = icon.0.to_string_lossy();
     if !icon_path.is_empty() {
@@ -219,7 +215,7 @@ fn send_native_notification(
     }
     n.show()
         .map(|_| true)
-        .map_err(|e| NimbusError::Other(format!("notify-rust failed: {e}")))
+        .map_err(|e| UnkaiError::Other(format!("notify-rust failed: {e}")))
 }
 
 /// Stub on non-Linux platforms — the JS side is expected to fall
@@ -228,7 +224,7 @@ fn send_native_notification(
 /// without needing to ask the OS layer about the platform.
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
-fn send_native_notification(_title: String, _body: String) -> Result<bool, NimbusError> {
+fn send_native_notification(_title: String, _body: String) -> Result<bool, UnkaiError> {
     Ok(false)
 }
 
@@ -240,14 +236,14 @@ fn send_native_notification(_title: String, _body: String) -> Result<bool, Nimbu
 /// The string MUST match the AUMID baked into the installer's
 /// Start-Menu shortcut for the toast's display name + icon to
 /// resolve correctly in installed builds; we use the same bundle
-/// identifier (`com.nimbus.mail`) the Tauri config sets so the two
+/// identifier (`com.unkai.mail`) the Tauri config sets so the two
 /// stay in lockstep.
 #[cfg(windows)]
 fn set_app_user_model_id() {
     use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows::core::HSTRING;
 
-    let aumid = HSTRING::from("com.nimbus.mail");
+    let aumid = HSTRING::from("com.unkai.mail");
     // SAFETY: the function takes a PCWSTR derived from a live
     // HSTRING; the call has no preconditions beyond a valid
     // null-terminated wide string, which `HSTRING` guarantees.
@@ -265,12 +261,12 @@ fn set_app_user_model_id() {
 // Svelte frontend via `invoke("command_name", { args })`.
 //
 // Tauri serialises the return value as JSON and sends it to the
-// frontend. Errors must implement `Serialize` (which NimbusError
+// frontend. Errors must implement `Serialize` (which UnkaiError
 // does) so Tauri can send them back as structured error objects.
 
 /// Return all configured accounts.
 #[tauri::command]
-fn get_accounts(cache: State<'_, Cache>) -> Result<Vec<Account>, NimbusError> {
+fn get_accounts(cache: State<'_, Cache>) -> Result<Vec<Account>, UnkaiError> {
     account_store::load_accounts(&cache)
 }
 
@@ -286,7 +282,7 @@ fn add_account(
     password: String,
     cache: State<'_, Cache>,
     notify: State<'_, SettingsSyncNotify>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     credentials::store_imap_password(&account.id, &password)?;
     account_store::add_account(&cache, account)?;
     notify.0.notify_one();
@@ -305,7 +301,7 @@ fn remove_account(
     id: String,
     cache: State<'_, Cache>,
     notify: State<'_, SettingsSyncNotify>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     credentials::delete_imap_password(&id)?;
     // Best-effort: a failure here leaves orphaned cache rows but doesn't
     // block account removal. Log and continue.
@@ -323,7 +319,7 @@ fn update_account(
     account: Account,
     cache: State<'_, Cache>,
     notify: State<'_, SettingsSyncNotify>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     account_store::update_account(&cache, account)?;
     // #168: any account-metadata edit (signature, folder→emoji
     // overrides, sort order, …) is part of the bundle, so wake
@@ -339,9 +335,9 @@ fn update_account(
 /// `store_imap_password` overwrites in place, so the same call
 /// covers initial setup and rotation.
 #[tauri::command]
-fn set_account_password(id: String, password: String) -> Result<(), NimbusError> {
+fn set_account_password(id: String, password: String) -> Result<(), UnkaiError> {
     if password.is_empty() {
-        return Err(NimbusError::Other("password must not be empty".into()));
+        return Err(UnkaiError::Other("password must not be empty".into()));
     }
     credentials::store_imap_password(&id, &password)
 }
@@ -363,7 +359,7 @@ fn set_folder_icon(
     icon: Option<String>,
     cache: State<'_, Cache>,
     notify: State<'_, SettingsSyncNotify>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let mut account = load_account(&cache, &account_id)?;
     match icon {
         Some(e) if !e.trim().is_empty() => {
@@ -393,12 +389,12 @@ fn set_folder_icon(
 #[tauri::command]
 async fn discover_account_settings(
     email: String,
-) -> Result<Option<nimbus_discovery::DiscoveredAccount>, NimbusError> {
-    match nimbus_discovery::discover(&email).await {
+) -> Result<Option<unkai_discovery::DiscoveredAccount>, UnkaiError> {
+    match unkai_discovery::discover(&email).await {
         Ok(found) => Ok(Some(found)),
-        Err(nimbus_discovery::DiscoveryError::NotFound) => Ok(None),
-        Err(nimbus_discovery::DiscoveryError::Parse(msg)) => Err(NimbusError::Other(msg)),
-        Err(nimbus_discovery::DiscoveryError::Network(msg)) => Err(NimbusError::Network(msg)),
+        Err(unkai_discovery::DiscoveryError::NotFound) => Ok(None),
+        Err(unkai_discovery::DiscoveryError::Parse(msg)) => Err(UnkaiError::Other(msg)),
+        Err(unkai_discovery::DiscoveryError::Network(msg)) => Err(UnkaiError::Network(msg)),
     }
 }
 
@@ -436,12 +432,12 @@ struct ProbedCert {
 /// traffic — the connection is dropped immediately after the
 /// handshake. The user explicitly chooses whether to trust them.
 #[tauri::command]
-async fn probe_server_certificate(host: String, port: u16) -> Result<ProbedCert, NimbusError> {
-    let chain_der = nimbus_imap::probe_server_certificate(&host, port).await?;
+async fn probe_server_certificate(host: String, port: u16) -> Result<ProbedCert, UnkaiError> {
+    let chain_der = unkai_imap::probe_server_certificate(&host, port).await?;
     let chain = chain_der
         .into_iter()
         .map(|der| {
-            let sha256 = nimbus_core::tls::fingerprint_sha256(&der);
+            let sha256 = unkai_core::tls::fingerprint_sha256(&der);
             ProbedCertEntry { der, sha256 }
         })
         .collect();
@@ -452,7 +448,7 @@ async fn probe_server_certificate(host: String, port: u16) -> Result<ProbedCert,
 ///
 /// The setup wizard calls this before it asks the store to persist the
 /// account — an early TCP/TLS/LOGIN round-trip surfaces wrong hostnames,
-/// wrong ports, and bad passwords as a structured `NimbusError` with a
+/// wrong ports, and bad passwords as a structured `UnkaiError` with a
 /// specific variant (`Network`, `Auth`, `Protocol`) so the UI can phrase
 /// the failure clearly instead of saving a dead account and confusing
 /// the user on first fetch.
@@ -465,8 +461,8 @@ async fn test_connection(
     port: u16,
     username: String,
     password: String,
-    trusted_certs: Option<Vec<nimbus_core::models::TrustedCert>>,
-) -> Result<String, NimbusError> {
+    trusted_certs: Option<Vec<unkai_core::models::TrustedCert>>,
+) -> Result<String, UnkaiError> {
     tracing::info!("Testing IMAP connection to {host}:{port} as {username}");
     let trusted = trusted_certs.unwrap_or_default();
     let client = ImapClient::connect(&host, port, &username, &password, &trusted).await?;
@@ -491,8 +487,8 @@ async fn test_connection(
 #[tauri::command]
 async fn start_nextcloud_login(
     server_url: String,
-    trusted_certs: Option<Vec<nimbus_core::models::TrustedCert>>,
-) -> Result<LoginFlowInit, NimbusError> {
+    trusted_certs: Option<Vec<unkai_core::models::TrustedCert>>,
+) -> Result<LoginFlowInit, UnkaiError> {
     // Login Flow v2 runs before an account exists locally, so the
     // trust list comes from the in-flight setup wizard (#253) rather
     // than the persisted account record.  Frontend default is an
@@ -516,8 +512,8 @@ async fn start_nextcloud_login(
 async fn poll_nextcloud_login(
     poll_endpoint: String,
     poll_token: String,
-    trusted_certs: Option<Vec<nimbus_core::models::TrustedCert>>,
-) -> Result<Option<NextcloudAccount>, NimbusError> {
+    trusted_certs: Option<Vec<unkai_core::models::TrustedCert>>,
+) -> Result<Option<NextcloudAccount>, UnkaiError> {
     // Use the wizard-supplied trust list (#253) for both the polling
     // call and the post-login capabilities probe.  Saved into the
     // account record so every subsequent sync uses the same trust.
@@ -570,7 +566,7 @@ async fn poll_nextcloud_login(
 
 /// List all saved Nextcloud connections.
 #[tauri::command]
-fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
+fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, UnkaiError> {
     nextcloud_store::load_accounts(global_cache()?)
 }
 
@@ -583,7 +579,7 @@ fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
 /// account's previously-cached capabilities unchanged rather than
 /// erroring out the whole settings panel.
 #[tauri::command]
-async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccount, NimbusError> {
+async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccount, UnkaiError> {
     let mut account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     match fetch_capabilities(
@@ -616,10 +612,10 @@ async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccoun
 /// or when the OCS lookup fails — caller should fall back to a
 /// reasonable default (e.g. the first mail account).
 #[tauri::command]
-async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, NimbusError> {
+async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    match nimbus_nextcloud::user::fetch_current_user(
+    match unkai_nextcloud::user::fetch_current_user(
         &account.server_url,
         &account.username,
         &app_password,
@@ -654,9 +650,9 @@ async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, Nimbu
 #[tauri::command]
 fn update_nextcloud_account_trusted_certs(
     nc_id: String,
-    trusted_certs: Vec<nimbus_core::models::TrustedCert>,
+    trusted_certs: Vec<unkai_core::models::TrustedCert>,
     cache: State<'_, Cache>,
-) -> Result<NextcloudAccount, NimbusError> {
+) -> Result<NextcloudAccount, UnkaiError> {
     let mut account = load_nextcloud_account(&nc_id)?;
     account.trusted_certs = trusted_certs;
     nextcloud_store::upsert_account(&cache, account.clone())?;
@@ -670,7 +666,7 @@ fn update_nextcloud_account_trusted_certs(
 /// this account; a best-effort failure there is logged but doesn't
 /// block removal.
 #[tauri::command]
-fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
+fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     credentials::delete_nextcloud_password(&id)?;
     if let Err(e) = cache.wipe_nextcloud_contacts(&id) {
         tracing::warn!("failed to wipe contacts for NC account '{id}': {e}");
@@ -691,8 +687,8 @@ fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), N
 /// browser can handle any SSO / IdP redirects the user's NC is wired
 /// up with (Keycloak, OIDC, SAML, etc.).
 #[tauri::command]
-fn open_url(url: String) -> Result<(), NimbusError> {
-    open::that(&url).map_err(|e| NimbusError::Other(format!("failed to open '{url}': {e}")))
+fn open_url(url: String) -> Result<(), UnkaiError> {
+    open::that(&url).map_err(|e| UnkaiError::Other(format!("failed to open '{url}': {e}")))
 }
 
 // ── Nextcloud Files (browse + download) ────────────────────────
@@ -709,10 +705,10 @@ fn open_url(url: String) -> Result<(), NimbusError> {
 /// Returns directories and files mixed, in the order the server sent
 /// them — the UI sorts if it wants a particular display order.
 #[tauri::command]
-async fn list_nextcloud_files(nc_id: String, path: String) -> Result<Vec<FileEntry>, NimbusError> {
+async fn list_nextcloud_files(nc_id: String, path: String) -> Result<Vec<FileEntry>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::list_directory(
+    unkai_nextcloud::list_directory(
         &account.server_url,
         &account.username,
         &app_password,
@@ -729,10 +725,10 @@ async fn list_nextcloud_files(nc_id: String, path: String) -> Result<Vec<FileEnt
 /// for now — matches how locally-picked attachments work. A streaming
 /// path is a separate future issue once compose itself streams.
 #[tauri::command]
-async fn download_nextcloud_file(nc_id: String, path: String) -> Result<Vec<u8>, NimbusError> {
+async fn download_nextcloud_file(nc_id: String, path: String) -> Result<Vec<u8>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::download_file(
+    unkai_nextcloud::download_file(
         &account.server_url,
         &account.username,
         &app_password,
@@ -753,11 +749,11 @@ async fn nextcloud_file_preview(
     nc_id: String,
     path: String,
     size: Option<u32>,
-) -> Result<Option<Vec<u8>>, NimbusError> {
+) -> Result<Option<Vec<u8>>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let s = size.unwrap_or(96);
-    match nimbus_nextcloud::fetch_preview(
+    match unkai_nextcloud::fetch_preview(
         &account.server_url,
         &account.username,
         &app_password,
@@ -770,7 +766,7 @@ async fn nextcloud_file_preview(
         Ok(bytes) => Ok(Some(bytes)),
         // The 404 ("no preview available") path is legitimate —
         // surface as None so the picker just shows the icon.
-        Err(NimbusError::Nextcloud(_)) => Ok(None),
+        Err(UnkaiError::Nextcloud(_)) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -808,17 +804,17 @@ async fn create_nextcloud_share(
     password: Option<String>,
     label: Option<String>,
     permissions: Option<u8>,
-) -> Result<NextcloudShareResult, NimbusError> {
+) -> Result<NextcloudShareResult, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let share = nimbus_nextcloud::create_public_share(
+    let share = unkai_nextcloud::create_public_share(
         &account.server_url,
         &account.username,
         &app_password,
         &path,
         password.as_deref(),
         label.as_deref(),
-        permissions.unwrap_or(nimbus_nextcloud::shares::PERM_READ_ONLY),
+        permissions.unwrap_or(unkai_nextcloud::shares::PERM_READ_ONLY),
         &account.trusted_certs,
     )
     .await?;
@@ -838,10 +834,10 @@ async fn update_nextcloud_share_label(
     nc_id: String,
     share_id: String,
     label: String,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::update_share_label(
+    unkai_nextcloud::update_share_label(
         &account.server_url,
         &account.username,
         &app_password,
@@ -860,10 +856,10 @@ async fn update_nextcloud_share_label(
 /// list with no associated mail.  Save-draft / send paths leave
 /// shares intact (the recipient still needs them).
 #[tauri::command]
-async fn delete_nextcloud_share(nc_id: String, share_id: String) -> Result<(), NimbusError> {
+async fn delete_nextcloud_share(nc_id: String, share_id: String) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::delete_share(
+    unkai_nextcloud::delete_share(
         &account.server_url,
         &account.username,
         &app_password,
@@ -873,7 +869,7 @@ async fn delete_nextcloud_share(nc_id: String, share_id: String) -> Result<(), N
     .await
 }
 
-/// Pull every `<a data-nimbus-share-id="…" data-nimbus-share-nc="…">`
+/// Pull every `<a data-unkai-share-id="…" data-unkai-share-nc="…">`
 /// marker out of an HTML string (#193).  Compose stamps these
 /// onto every share-link anchor it inserts into a draft body so
 /// the delete-message pipeline can map a `https://…/s/<token>`
@@ -916,8 +912,8 @@ fn extract_managed_shares(html: &str) -> Vec<(String, String)> {
         // Slice into the *original* html (case-preserved) so
         // captured attribute values keep their original case.
         let tag = &html[i..tag_end];
-        let share_id = read_attr(tag, "data-nimbus-share-id");
-        let nc_id = read_attr(tag, "data-nimbus-share-nc");
+        let share_id = read_attr(tag, "data-unkai-share-id");
+        let nc_id = read_attr(tag, "data-unkai-share-nc");
         if let (Some(s), Some(n)) = (share_id, nc_id)
             && !s.is_empty()
             && !n.is_empty()
@@ -954,12 +950,12 @@ fn read_attr(tag: &str, name: &str) -> Option<String> {
 /// already at that path — the native save dialog already asked the
 /// user about overwrites, so we don't need a second confirmation.
 #[tauri::command]
-async fn save_bytes_to_path(path: String, data: Vec<u8>) -> Result<(), NimbusError> {
+async fn save_bytes_to_path(path: String, data: Vec<u8>) -> Result<(), UnkaiError> {
     // `write` is synchronous and the payload is typically a few MB — the
     // Tauri command runtime already runs us on a worker thread, so we
     // don't need to spawn_blocking.
     std::fs::write(&path, &data)
-        .map_err(|e| NimbusError::Other(format!("Failed to write {path}: {e}")))
+        .map_err(|e| UnkaiError::Other(format!("Failed to write {path}: {e}")))
 }
 
 /// Read a small text file (a settings bundle, typically ~kilobytes)
@@ -968,9 +964,9 @@ async fn save_bytes_to_path(path: String, data: Vec<u8>) -> Result<(), NimbusErr
 /// absolute path, and hands it here for the actual read so we
 /// don't need a separate filesystem plugin in `package.json`.
 #[tauri::command]
-async fn read_text_from_path(path: String) -> Result<String, NimbusError> {
+async fn read_text_from_path(path: String) -> Result<String, UnkaiError> {
     std::fs::read_to_string(&path)
-        .map_err(|e| NimbusError::Other(format!("Failed to read {path}: {e}")))
+        .map_err(|e| UnkaiError::Other(format!("Failed to read {path}: {e}")))
 }
 
 /// Upload raw bytes to a file in the user's Nextcloud.
@@ -985,10 +981,10 @@ async fn upload_to_nextcloud(
     path: String,
     data: Vec<u8>,
     content_type: Option<String>,
-) -> Result<String, NimbusError> {
+) -> Result<String, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::upload_file(
+    unkai_nextcloud::upload_file(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1008,10 +1004,10 @@ async fn upload_to_nextcloud(
 /// inside the currently-open directory; on success the picker re-lists
 /// the parent so the new entry shows up.
 #[tauri::command]
-async fn create_nextcloud_directory(nc_id: String, path: String) -> Result<(), NimbusError> {
+async fn create_nextcloud_directory(nc_id: String, path: String) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::create_directory(
+    unkai_nextcloud::create_directory(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1031,18 +1027,18 @@ async fn create_nextcloud_directory(nc_id: String, path: String) -> Result<(), N
 // connect-time to clean up anything left behind by a crash mid-edit.
 //
 // Folder layout:
-//   /Nimbus Mail/temp/<uuid>-<filename>
+//   /Unkai Mail/temp/<uuid>-<filename>
 //
 // The UUID prefix lets concurrent edits coexist without filename
 // collisions and gives the sweeper an obvious "is-this-ours" gate
 // (only delete files inside the temp folder).
 
-/// Root path for Nimbus's per-user temp area on the user's
+/// Root path for Unkai's per-user temp area on the user's
 /// Nextcloud. Files-app-visible (no leading dot) so the user can
 /// recover anything we somehow lose track of, but tucked under our
 /// app's branded folder so the home screen stays uncluttered.
-const NIMBUS_TEMP_ROOT: &str = "/Nimbus Mail";
-const NIMBUS_TEMP_DIR: &str = "/Nimbus Mail/temp";
+const UNKAI_TEMP_ROOT: &str = "/Unkai Mail";
+const UNKAI_TEMP_DIR: &str = "/Unkai Mail/temp";
 
 /// Result of `office_open_attachment` — the URL the frontend opens
 /// in a fresh webview window plus the temp path it should pass back
@@ -1061,17 +1057,14 @@ struct OfficeOpenResult {
     temp_path: String,
 }
 
-/// Best-effort `MKCOL` of `/Nimbus Mail` and `/Nimbus Mail/temp`.
+/// Best-effort `MKCOL` of `/Unkai Mail` and `/Unkai Mail/temp`.
 /// Both are idempotent: `create_directory` returns "folder already
-/// exists" as `NimbusError::Nextcloud` which we swallow so a
+/// exists" as `UnkaiError::Nextcloud` which we swallow so a
 /// pre-existing folder doesn't fail the open. Anything else
 /// propagates so quota / 401 / network errors surface to the user.
-async fn ensure_temp_dir(
-    account: &NextcloudAccount,
-    app_password: &str,
-) -> Result<(), NimbusError> {
-    for dir in [NIMBUS_TEMP_ROOT, NIMBUS_TEMP_DIR] {
-        match nimbus_nextcloud::create_directory(
+async fn ensure_temp_dir(account: &NextcloudAccount, app_password: &str) -> Result<(), UnkaiError> {
+    for dir in [UNKAI_TEMP_ROOT, UNKAI_TEMP_DIR] {
+        match unkai_nextcloud::create_directory(
             &account.server_url,
             &account.username,
             app_password,
@@ -1081,7 +1074,7 @@ async fn ensure_temp_dir(
         .await
         {
             Ok(()) => {}
-            Err(NimbusError::Nextcloud(msg)) if msg.contains("already exists") => {}
+            Err(UnkaiError::Nextcloud(msg)) if msg.contains("already exists") => {}
             Err(e) => return Err(e),
         }
     }
@@ -1098,7 +1091,7 @@ async fn office_open_attachment(
     filename: String,
     data: Vec<u8>,
     content_type: Option<String>,
-) -> Result<OfficeOpenResult, NimbusError> {
+) -> Result<OfficeOpenResult, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -1108,9 +1101,9 @@ async fn office_open_attachment(
     // viewer windows, and gives the sweeper a way to recognise our
     // own files without a metadata round-trip.
     let safe_name = filename.replace(['/', '\\'], "_");
-    let temp_path = format!("{}/{}-{}", NIMBUS_TEMP_DIR, uuid::Uuid::new_v4(), safe_name);
+    let temp_path = format!("{}/{}-{}", UNKAI_TEMP_DIR, uuid::Uuid::new_v4(), safe_name);
 
-    nimbus_nextcloud::upload_file(
+    unkai_nextcloud::upload_file(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1127,7 +1120,7 @@ async fn office_open_attachment(
     // hands `.docx` etc. to Collabora, `.pdf` to the PDF viewer,
     // so the same code path works for both document types without
     // app-specific URL templating on our side.
-    let file_id = nimbus_nextcloud::propfind_fileid(
+    let file_id = unkai_nextcloud::propfind_fileid(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1147,10 +1140,10 @@ async fn office_open_attachment(
 /// the frontend logs and moves on — leftover files get caught by
 /// `office_sweep_temp` at next connect.
 #[tauri::command]
-async fn office_close_attachment(nc_id: String, temp_path: String) -> Result<(), NimbusError> {
+async fn office_close_attachment(nc_id: String, temp_path: String) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::delete_path(
+    unkai_nextcloud::delete_path(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1174,7 +1167,7 @@ struct PdfOpenResult {
 /// Open a PDF attachment in Nextcloud's built-in PDF viewer.
 /// Same temp-upload + cleanup-on-close machinery as the Office flow:
 ///
-///   - Bytes go to `/Nimbus Mail/temp/<uuid>-<filename>` on the user's
+///   - Bytes go to `/Unkai Mail/temp/<uuid>-<filename>` on the user's
 ///     Nextcloud.
 ///   - We use the same `index.php/f/<fileid>` deep link the Office
 ///     viewer uses; Files routes the fileid to its registered
@@ -1190,16 +1183,16 @@ async fn pdf_open_attachment(
     filename: String,
     data: Vec<u8>,
     content_type: Option<String>,
-) -> Result<PdfOpenResult, NimbusError> {
+) -> Result<PdfOpenResult, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     ensure_temp_dir(&account, &app_password).await?;
 
     let safe_name = filename.replace(['/', '\\'], "_");
-    let temp_path = format!("{}/{}-{}", NIMBUS_TEMP_DIR, uuid::Uuid::new_v4(), safe_name);
+    let temp_path = format!("{}/{}-{}", UNKAI_TEMP_DIR, uuid::Uuid::new_v4(), safe_name);
 
-    nimbus_nextcloud::upload_file(
+    unkai_nextcloud::upload_file(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1210,7 +1203,7 @@ async fn pdf_open_attachment(
     )
     .await?;
 
-    let file_id = nimbus_nextcloud::propfind_fileid(
+    let file_id = unkai_nextcloud::propfind_fileid(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1228,10 +1221,10 @@ async fn pdf_open_attachment(
 /// Office — kept as its own command so the frontend's per-viewer
 /// dispatch stays straightforward.
 #[tauri::command]
-async fn pdf_close_attachment(nc_id: String, temp_path: String) -> Result<(), NimbusError> {
+async fn pdf_close_attachment(nc_id: String, temp_path: String) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::delete_path(
+    unkai_nextcloud::delete_path(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1241,31 +1234,31 @@ async fn pdf_close_attachment(nc_id: String, temp_path: String) -> Result<(), Ni
     .await
 }
 
-/// Clean up anything stuck in `/Nimbus Mail/temp` from a previous
-/// session — say the user closed Nimbus mid-edit, or `office_close_
+/// Clean up anything stuck in `/Unkai Mail/temp` from a previous
+/// session — say the user closed Unkai mid-edit, or `office_close_
 /// attachment` errored on the way out. We list the directory and
 /// DELETE every entry whose `last_modified` is older than the cutoff,
-/// so an in-flight viewer window in another Nimbus instance doesn't
+/// so an in-flight viewer window in another Unkai instance doesn't
 /// have its file pulled out from under it.
 #[tauri::command]
-async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
+async fn office_sweep_temp(nc_id: String) -> Result<u32, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     // If the temp dir doesn't exist yet (fresh install / first
     // attachment click) treat that as "nothing to sweep". Anything
     // else propagates.
-    let entries = match nimbus_nextcloud::list_directory(
+    let entries = match unkai_nextcloud::list_directory(
         &account.server_url,
         &account.username,
         &app_password,
-        NIMBUS_TEMP_DIR,
+        UNKAI_TEMP_DIR,
         &account.trusted_certs,
     )
     .await
     {
         Ok(e) => e,
-        Err(NimbusError::Nextcloud(msg)) if msg.contains("not found") => return Ok(0),
+        Err(UnkaiError::Nextcloud(msg)) if msg.contains("not found") => return Ok(0),
         Err(e) => return Err(e),
     };
 
@@ -1276,8 +1269,8 @@ async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
         if !stale {
             continue;
         }
-        let target = format!("{NIMBUS_TEMP_DIR}/{}", entry.name);
-        match nimbus_nextcloud::delete_path(
+        let target = format!("{UNKAI_TEMP_DIR}/{}", entry.name);
+        match unkai_nextcloud::delete_path(
             &account.server_url,
             &account.username,
             &app_password,
@@ -1319,14 +1312,14 @@ async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
 /// The temp file is kept for 10 minutes so the user has time
 /// to actually print before we clean up.
 #[tauri::command]
-async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), NimbusError> {
+async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), UnkaiError> {
     // Per-call subdir name is a UUID v4 — not a predictable
     // path, which is exactly what the lint is meant to catch.
     // nosemgrep: rust.lang.security.temp-dir.temp-dir
     let mut dir = std::env::temp_dir();
-    dir.push(format!("nimbus-print-{}", uuid::Uuid::new_v4()));
+    dir.push(format!("unkai-print-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir)
-        .map_err(|e| NimbusError::Other(format!("create print temp dir: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("create print temp dir: {e}")))?;
 
     // Strip path separators / NUL from the filename so the spooler
     // sees a flat name in our temp dir, not a path traversal.
@@ -1345,15 +1338,15 @@ async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), Nimbu
     let mut path = dir.clone();
     path.push(&safe_name);
     std::fs::write(&path, &bytes)
-        .map_err(|e| NimbusError::Other(format!("write print temp file: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("write print temp file: {e}")))?;
 
     // `open::that_detached` is the cross-platform "default verb"
     // launcher: ShellExecute open on Windows, `open` on macOS,
     // `xdg-open` (and friends) on Linux. `_detached` so we don't
-    // hold a child handle the user could orphan by closing Nimbus.
+    // hold a child handle the user could orphan by closing Unkai.
     if let Err(e) = open::that_detached(&path) {
         let _ = std::fs::remove_dir_all(&dir);
-        return Err(NimbusError::Other(format!(
+        return Err(UnkaiError::Other(format!(
             "failed to open '{}' for printing: {e}",
             path.display()
         )));
@@ -1377,7 +1370,7 @@ async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), Nimbu
 //
 // Three commands, mirroring the file/share pattern: each call loads
 // the account + app password from local state and forwards to the
-// matching `nimbus_nextcloud::talk::*` function. We don't cache the
+// matching `unkai_nextcloud::talk::*` function. We don't cache the
 // room list — Talk's `/room` is cheap and unread counts go stale the
 // moment a colleague sends a message anyway. The sidebar polls on a
 // timer instead.
@@ -1385,10 +1378,10 @@ async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), Nimbu
 /// List every Talk room the connected Nextcloud user is a participant
 /// of. Drives the sidebar's "Talk Rooms" group.
 #[tauri::command]
-async fn list_talk_rooms(nc_id: String) -> Result<Vec<nimbus_nextcloud::TalkRoom>, NimbusError> {
+async fn list_talk_rooms(nc_id: String) -> Result<Vec<unkai_nextcloud::TalkRoom>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::list_rooms(
+    unkai_nextcloud::list_rooms(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1421,20 +1414,20 @@ async fn list_talk_rooms(nc_id: String) -> Result<Vec<nimbus_nextcloud::TalkRoom
 async fn create_talk_room(
     nc_id: String,
     room_name: String,
-    participants: Vec<nimbus_nextcloud::ParticipantSource>,
+    participants: Vec<unkai_nextcloud::ParticipantSource>,
     object_type: Option<String>,
     object_id: Option<String>,
     room_type: Option<u8>,
-) -> Result<nimbus_nextcloud::TalkRoom, NimbusError> {
+) -> Result<unkai_nextcloud::TalkRoom, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::create_room(
+    unkai_nextcloud::create_room(
         &account.server_url,
         &account.username,
         &app_password,
         &room_name,
         &participants,
-        nimbus_nextcloud::CreateRoomOptions {
+        unkai_nextcloud::CreateRoomOptions {
             room_type,
             object_type: object_type.as_deref(),
             object_id: object_id.as_deref(),
@@ -1463,7 +1456,7 @@ async fn rsvp_existing_event(
     partstat: String,
     attendee_hint: Option<String>,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let calendar_id = handle.calendar_id.clone();
     let raw_ics = handle.ics_raw.clone();
@@ -1481,10 +1474,10 @@ async fn set_talk_room_public(
     nc_id: String,
     room_token: String,
     public: bool,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::set_room_public(
+    unkai_nextcloud::set_room_public(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1513,10 +1506,10 @@ struct NextcloudUserLookup {
 async fn find_nextcloud_user_by_email(
     nc_id: String,
     email: String,
-) -> Result<Option<NextcloudUserLookup>, NimbusError> {
+) -> Result<Option<NextcloudUserLookup>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let m = nimbus_nextcloud::find_user_by_email(
+    let m = unkai_nextcloud::find_user_by_email(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1547,10 +1540,10 @@ async fn promote_email_to_user_if_internal(
     server_url: &str,
     username: &str,
     app_password: &str,
-    src: &nimbus_nextcloud::ParticipantSource,
-    cache: &mut std::collections::HashMap<String, nimbus_nextcloud::ParticipantSource>,
-) -> nimbus_nextcloud::ParticipantSource {
-    use nimbus_nextcloud::ParticipantSource;
+    src: &unkai_nextcloud::ParticipantSource,
+    cache: &mut std::collections::HashMap<String, unkai_nextcloud::ParticipantSource>,
+) -> unkai_nextcloud::ParticipantSource {
+    use unkai_nextcloud::ParticipantSource;
     let addr = match src {
         ParticipantSource::User(_) => return src.clone(),
         ParticipantSource::Email(a) => a,
@@ -1560,7 +1553,7 @@ async fn promote_email_to_user_if_internal(
         return hit.clone();
     }
     let resolved =
-        match nimbus_nextcloud::find_user_by_email(server_url, username, app_password, addr, &[])
+        match unkai_nextcloud::find_user_by_email(server_url, username, app_password, addr, &[])
             .await
         {
             Ok(Some(m)) => ParticipantSource::User(m.user_id),
@@ -1586,8 +1579,8 @@ async fn promote_email_to_user_if_internal(
 async fn add_talk_participant(
     nc_id: String,
     room_token: String,
-    participant: nimbus_nextcloud::ParticipantSource,
-) -> Result<(), NimbusError> {
+    participant: unkai_nextcloud::ParticipantSource,
+) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let mut cache = std::collections::HashMap::new();
@@ -1599,7 +1592,7 @@ async fn add_talk_participant(
         &mut cache,
     )
     .await;
-    nimbus_nextcloud::add_participant(
+    unkai_nextcloud::add_participant(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1624,8 +1617,8 @@ async fn add_talk_participant(
 async fn add_talk_participants(
     nc_id: String,
     room_token: String,
-    participants: Vec<nimbus_nextcloud::ParticipantSource>,
-) -> Result<(), NimbusError> {
+    participants: Vec<unkai_nextcloud::ParticipantSource>,
+) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let mut cache = std::collections::HashMap::new();
@@ -1638,7 +1631,7 @@ async fn add_talk_participants(
             &mut cache,
         )
         .await;
-        nimbus_nextcloud::add_participant(
+        unkai_nextcloud::add_participant(
             &account.server_url,
             &account.username,
             &app_password,
@@ -1656,10 +1649,10 @@ async fn add_talk_participants(
 /// in the session — without it, the room would dangle empty in the
 /// user's Talk list with no context.
 #[tauri::command]
-async fn delete_talk_room(nc_id: String, room_token: String) -> Result<(), NimbusError> {
+async fn delete_talk_room(nc_id: String, room_token: String) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::delete_room(
+    unkai_nextcloud::delete_room(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1677,10 +1670,10 @@ async fn rename_talk_room(
     nc_id: String,
     room_token: String,
     new_name: String,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::rename_room(
+    unkai_nextcloud::rename_room(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1693,7 +1686,7 @@ async fn rename_talk_room(
 
 // ── Nextcloud Notes (issue #67) ────────────────────────────────
 //
-// Five thin commands wrapping `nimbus_nextcloud::notes`. Same
+// Five thin commands wrapping `unkai_nextcloud::notes`. Same
 // shape as the Talk block above: each call loads the chosen NC
 // account + app password and forwards. The Notes API is plain
 // REST under `/index.php/apps/notes/api/v1/notes`, so there's no
@@ -1704,13 +1697,13 @@ async fn rename_talk_room(
 // user just typed there without a sync-roundtrip dance. Cost is
 // one HTTP call per list-refresh, which is cheap.
 
-/// Convert the wire-shape `nimbus_nextcloud::Note` (which doesn't
-/// know about accounts) into the canonical `nimbus_core::models::Note`
+/// Convert the wire-shape `unkai_nextcloud::Note` (which doesn't
+/// know about accounts) into the canonical `unkai_core::models::Note`
 /// we cache and ship to the UI.  Stamping the account id at the
 /// boundary keeps the `Note` type a single source of truth across
 /// the codebase.
-fn nc_note_to_core(nc_id: &str, n: nimbus_nextcloud::Note) -> nimbus_core::models::Note {
-    nimbus_core::models::Note {
+fn nc_note_to_core(nc_id: &str, n: unkai_nextcloud::Note) -> unkai_core::models::Note {
+    unkai_core::models::Note {
         id: n.id,
         nextcloud_account_id: nc_id.to_string(),
         etag: n.etag,
@@ -1730,7 +1723,7 @@ fn nc_note_to_core(nc_id: &str, n: nimbus_nextcloud::Note) -> nimbus_core::model
 fn list_nextcloud_notes(
     nc_id: String,
     cache: State<'_, Cache>,
-) -> Result<Vec<nimbus_core::models::Note>, NimbusError> {
+) -> Result<Vec<unkai_core::models::Note>, UnkaiError> {
     cache.list_notes(&nc_id).map_err(Into::into)
 }
 
@@ -1743,17 +1736,17 @@ fn list_nextcloud_notes(
 async fn sync_nextcloud_notes(
     nc_id: String,
     cache: State<'_, Cache>,
-) -> Result<Vec<nimbus_core::models::Note>, NimbusError> {
+) -> Result<Vec<unkai_core::models::Note>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let server = nimbus_nextcloud::list_notes(
+    let server = unkai_nextcloud::list_notes(
         &account.server_url,
         &account.username,
         &app_password,
         &account.trusted_certs,
     )
     .await?;
-    let notes: Vec<nimbus_core::models::Note> = server
+    let notes: Vec<unkai_core::models::Note> = server
         .into_iter()
         .map(|n| nc_note_to_core(&nc_id, n))
         .collect();
@@ -1770,10 +1763,10 @@ async fn get_nextcloud_note(
     nc_id: String,
     note_id: u64,
     cache: State<'_, Cache>,
-) -> Result<nimbus_core::models::Note, NimbusError> {
+) -> Result<unkai_core::models::Note, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let server = nimbus_nextcloud::get_note(
+    let server = unkai_nextcloud::get_note(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1797,14 +1790,14 @@ async fn create_nextcloud_note(
     content: String,
     category: String,
     cache: State<'_, Cache>,
-) -> Result<nimbus_core::models::Note, NimbusError> {
+) -> Result<unkai_core::models::Note, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let server = nimbus_nextcloud::create_note(
+    let server = unkai_nextcloud::create_note(
         &account.server_url,
         &account.username,
         &app_password,
-        &nimbus_nextcloud::NewNote {
+        &unkai_nextcloud::NewNote {
             title: &title,
             content: &content,
             category: &category,
@@ -1832,16 +1825,16 @@ async fn update_nextcloud_note(
     category: Option<String>,
     favorite: Option<bool>,
     cache: State<'_, Cache>,
-) -> Result<nimbus_core::models::Note, NimbusError> {
+) -> Result<unkai_core::models::Note, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let server = nimbus_nextcloud::update_note(
+    let server = unkai_nextcloud::update_note(
         &account.server_url,
         &account.username,
         &app_password,
         note_id,
         &etag,
-        &nimbus_nextcloud::NoteUpdate {
+        &unkai_nextcloud::NoteUpdate {
             title: title.as_deref(),
             content: content.as_deref(),
             category: category.as_deref(),
@@ -1863,10 +1856,10 @@ async fn delete_nextcloud_note(
     nc_id: String,
     note_id: u64,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::delete_note(
+    unkai_nextcloud::delete_note(
         &account.server_url,
         &account.username,
         &app_password,
@@ -1917,11 +1910,11 @@ struct SyncContactsReport {
 async fn sync_nextcloud_contacts(
     nc_id: String,
     cache: State<'_, Cache>,
-) -> Result<SyncContactsReport, NimbusError> {
+) -> Result<SyncContactsReport, UnkaiError> {
     let account = nextcloud_store::load_accounts(&cache)?
         .into_iter()
         .find(|a| a.id == nc_id)
-        .ok_or_else(|| NimbusError::Other(format!("no Nextcloud account with id '{nc_id}'")))?;
+        .ok_or_else(|| UnkaiError::Other(format!("no Nextcloud account with id '{nc_id}'")))?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     let books = list_addressbooks(
@@ -2001,7 +1994,7 @@ async fn sync_nextcloud_contacts(
 fn get_contacts(
     nc_id: Option<String>,
     cache: State<'_, Cache>,
-) -> Result<Vec<Contact>, NimbusError> {
+) -> Result<Vec<Contact>, UnkaiError> {
     cache.list_contacts(nc_id.as_deref()).map_err(Into::into)
 }
 
@@ -2013,7 +2006,7 @@ fn search_contacts(
     query: String,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<Contact>, NimbusError> {
+) -> Result<Vec<Contact>, UnkaiError> {
     cache.search_contacts(&query, limit).map_err(Into::into)
 }
 
@@ -2038,12 +2031,12 @@ struct SyncStatus {
 fn get_contacts_sync_status(
     nc_id: String,
     cache: State<'_, Cache>,
-) -> Result<SyncStatus, NimbusError> {
+) -> Result<SyncStatus, UnkaiError> {
     let last = cache
         .latest_addressbook_sync_at(&nc_id)
-        .map_err(NimbusError::from)?
+        .map_err(UnkaiError::from)?
         .map(|t| t.to_rfc3339());
-    let count = cache.count_contacts(&nc_id).map_err(NimbusError::from)?;
+    let count = cache.count_contacts(&nc_id).map_err(UnkaiError::from)?;
     Ok(SyncStatus {
         last_synced_at: last,
         count,
@@ -2054,10 +2047,10 @@ fn get_contacts_sync_status(
 fn get_calendars_sync_status(
     nc_id: String,
     cache: State<'_, Cache>,
-) -> Result<SyncStatus, NimbusError> {
+) -> Result<SyncStatus, UnkaiError> {
     let last = cache
         .latest_calendar_sync_at(&nc_id)
-        .map_err(NimbusError::from)?
+        .map_err(UnkaiError::from)?
         .map(|t| t.to_rfc3339());
     let count = cache
         .list_calendars(&nc_id)
@@ -2083,10 +2076,10 @@ struct ContactPhoto {
 fn get_contact_photo(
     contact_id: String,
     cache: State<'_, Cache>,
-) -> Result<Option<ContactPhoto>, NimbusError> {
+) -> Result<Option<ContactPhoto>, UnkaiError> {
     Ok(cache
         .get_contact_photo(&contact_id)
-        .map_err(NimbusError::from)?
+        .map_err(UnkaiError::from)?
         .map(|(mime, data)| ContactPhoto { mime, data }))
 }
 
@@ -2103,7 +2096,7 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
         emails: c
             .emails
             .iter()
-            .map(|e| nimbus_core::models::ContactEmail {
+            .map(|e| unkai_core::models::ContactEmail {
                 kind: e.kind.clone(),
                 value: e.value.clone(),
             })
@@ -2111,7 +2104,7 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
         phones: c
             .phones
             .iter()
-            .map(|p| nimbus_core::models::ContactPhone {
+            .map(|p| unkai_core::models::ContactPhone {
                 kind: p.kind.clone(),
                 value: p.value.clone(),
             })
@@ -2125,7 +2118,7 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
         addresses: c
             .addresses
             .iter()
-            .map(|a| nimbus_core::models::ContactAddress {
+            .map(|a| unkai_core::models::ContactAddress {
                 kind: a.kind.clone(),
                 street: a.street.clone(),
                 locality: a.locality.clone(),
@@ -2167,8 +2160,8 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
 #[derive(Debug, Clone, Deserialize)]
 struct ContactInput {
     display_name: String,
-    emails: Vec<nimbus_core::models::ContactEmail>,
-    phones: Vec<nimbus_core::models::ContactPhone>,
+    emails: Vec<unkai_core::models::ContactEmail>,
+    phones: Vec<unkai_core::models::ContactPhone>,
     organization: Option<String>,
     photo_mime: Option<String>,
     photo_data: Option<Vec<u8>>,
@@ -2179,12 +2172,12 @@ struct ContactInput {
     #[serde(default)]
     note: Option<String>,
     #[serde(default)]
-    addresses: Option<Vec<nimbus_core::models::ContactAddress>>,
+    addresses: Option<Vec<unkai_core::models::ContactAddress>>,
     #[serde(default)]
     urls: Option<Vec<String>>,
     // ── #143: vCard 4 fields surfaced in the redesigned form ─────
     #[serde(default)]
-    structured_name: Option<nimbus_core::models::StructuredName>,
+    structured_name: Option<unkai_core::models::StructuredName>,
     #[serde(default)]
     nickname: Option<String>,
     #[serde(default)]
@@ -2192,7 +2185,7 @@ struct ContactInput {
     #[serde(default)]
     gender: Option<String>,
     #[serde(default)]
-    impp: Option<Vec<nimbus_core::models::ContactImpp>>,
+    impp: Option<Vec<unkai_core::models::ContactImpp>>,
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
@@ -2229,7 +2222,7 @@ async fn create_contact(
     addressbook_name: String,
     input: ContactInput,
     cache: State<'_, Cache>,
-) -> Result<Contact, NimbusError> {
+) -> Result<Contact, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -2251,7 +2244,7 @@ async fn create_contact(
     let row = parsed_to_row(&outcome.href, &outcome.etag, &uid, &parsed, vcard);
     cache
         .upsert_single_contact(&nc_id, &addressbook_name, &row)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
 
     Ok(row_to_contact(&nc_id, &addressbook_name, &row))
 }
@@ -2265,7 +2258,7 @@ async fn update_contact(
     contact_id: String,
     input: ContactInput,
     cache: State<'_, Cache>,
-) -> Result<Contact, NimbusError> {
+) -> Result<Contact, UnkaiError> {
     let handle = load_contact_handle(&cache, &contact_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
@@ -2274,7 +2267,7 @@ async fn update_contact(
     // the edit form doesn't surface (addresses, birthday, urls, note,
     // title, …) round-trip instead of being silently wiped on every
     // edit. The form-editable fields below replace whatever was there.
-    let mut parsed = match nimbus_carddav::parse_vcard(&handle.vcard_raw) {
+    let mut parsed = match unkai_carddav::parse_vcard(&handle.vcard_raw) {
         Ok(p) => p,
         Err(_) => ParsedVcard {
             uid: handle.vcard_uid.clone(),
@@ -2286,7 +2279,7 @@ async fn update_contact(
     parsed.emails = input
         .emails
         .iter()
-        .map(|e| nimbus_carddav::VcardEmail {
+        .map(|e| unkai_carddav::VcardEmail {
             kind: e.kind.clone(),
             value: e.value.clone(),
         })
@@ -2294,7 +2287,7 @@ async fn update_contact(
     parsed.phones = input
         .phones
         .iter()
-        .map(|p| nimbus_carddav::VcardPhone {
+        .map(|p| unkai_carddav::VcardPhone {
             kind: p.kind.clone(),
             value: p.value.clone(),
         })
@@ -2322,7 +2315,7 @@ async fn update_contact(
     if let Some(addrs) = &input.addresses {
         parsed.addresses = addrs
             .iter()
-            .map(|a| nimbus_carddav::VcardAddress {
+            .map(|a| unkai_carddav::VcardAddress {
                 kind: a.kind.clone(),
                 street: a.street.clone(),
                 locality: a.locality.clone(),
@@ -2342,7 +2335,7 @@ async fn update_contact(
     // intact so a UI that doesn't surface the field can still
     // round-trip it.
     if let Some(sn) = &input.structured_name {
-        parsed.structured_name = nimbus_carddav::VcardStructuredName {
+        parsed.structured_name = unkai_carddav::VcardStructuredName {
             family: sn.family.clone(),
             given: sn.given.clone(),
             additional: sn.additional.clone(),
@@ -2362,7 +2355,7 @@ async fn update_contact(
     if let Some(impp) = &input.impp {
         parsed.impp = impp
             .iter()
-            .map(|i| nimbus_carddav::VcardImpp {
+            .map(|i| unkai_carddav::VcardImpp {
                 kind: i.kind.clone(),
                 value: i.value.clone(),
             })
@@ -2411,7 +2404,7 @@ async fn update_contact(
     );
     cache
         .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
 
     Ok(row_to_contact(
         &handle.nextcloud_account_id,
@@ -2425,7 +2418,7 @@ async fn update_contact(
 /// leave the cache row alone so the UI can show the user the
 /// fresh state on the next sync.
 #[tauri::command]
-async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
+async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     let handle = load_contact_handle(&cache, &contact_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
@@ -2441,7 +2434,7 @@ async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(
 
     cache
         .delete_contact_by_id(&contact_id)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     Ok(())
 }
 
@@ -2480,16 +2473,16 @@ struct ContactCategoryView {
 #[tauri::command]
 fn list_contact_categories(
     cache: State<'_, Cache>,
-) -> Result<Vec<ContactCategoryView>, NimbusError> {
+) -> Result<Vec<ContactCategoryView>, UnkaiError> {
     let _ = cache.backfill_categories(|raw| {
-        nimbus_carddav::parse_vcard(raw)
+        unkai_carddav::parse_vcard(raw)
             .map(|p| p.categories)
             .unwrap_or_default()
     });
-    let cats = cache.list_contact_categories().map_err(NimbusError::from)?;
+    let cats = cache.list_contact_categories().map_err(UnkaiError::from)?;
     let suppressed = cache
         .get_mailing_list_suppressed()
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     Ok(cats
         .into_iter()
         .filter(|(name, _)| name != MAILING_LISTS_CATEGORY)
@@ -2510,11 +2503,11 @@ fn set_category_use_as_mailing_list(
     name: String,
     enabled: bool,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let id = format!("cat:{name}");
     cache
         .set_mailing_list_suppressed(&id, !enabled)
-        .map_err(NimbusError::from)
+        .map_err(UnkaiError::from)
 }
 
 /// Add a CATEGORIES tag to one contact's vCard, sync to the
@@ -2525,7 +2518,7 @@ async fn add_contact_to_category(
     contact_id: String,
     category: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     rewrite_contact_categories(&contact_id, &cache, |cats| {
         if !cats.iter().any(|c| c == &category) {
             cats.push(category.clone());
@@ -2543,7 +2536,7 @@ async fn remove_contact_from_category(
     contact_id: String,
     category: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     rewrite_contact_categories(&contact_id, &cache, |cats| {
         let before = cats.len();
         cats.retain(|c| c != &category);
@@ -2562,14 +2555,14 @@ async fn rename_contact_category(
     old: String,
     new: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let new = new.trim().to_string();
     if new.is_empty() {
-        return Err(NimbusError::Other("new category name is empty".into()));
+        return Err(UnkaiError::Other("new category name is empty".into()));
     }
     let contacts = cache
         .list_contacts_with_category(&old)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     for c in contacts {
         if let Err(e) = rewrite_contact_categories_inner(&c.id, &cache, |cats| {
             let mut changed = false;
@@ -2595,29 +2588,29 @@ async fn rename_contact_category(
     // user's "use as mailing list" choice doesn't reset.
     let suppressed = cache
         .get_mailing_list_suppressed()
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     if suppressed.contains(&format!("cat:{old}")) {
         cache
             .set_mailing_list_suppressed(&format!("cat:{old}"), false)
-            .map_err(NimbusError::from)?;
+            .map_err(UnkaiError::from)?;
         cache
             .set_mailing_list_suppressed(&format!("cat:{new}"), true)
-            .map_err(NimbusError::from)?;
+            .map_err(UnkaiError::from)?;
     }
     // Carry the per-list emoji overlay across the rename too.
     cache
         .rename_mailing_list_setting(&format!("cat:{old}"), &format!("cat:{new}"))
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     Ok(())
 }
 
 /// Delete a category — strips the tag from every contact.  The
 /// underlying contacts are untouched, just no longer tagged.
 #[tauri::command]
-async fn delete_contact_category(name: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
+async fn delete_contact_category(name: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     let contacts = cache
         .list_contacts_with_category(&name)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     for c in contacts {
         if let Err(e) = rewrite_contact_categories_inner(&c.id, &cache, |cats| {
             let before = cats.len();
@@ -2639,7 +2632,7 @@ async fn rewrite_contact_categories<F>(
     contact_id: &str,
     cache: &State<'_, Cache>,
     f: F,
-) -> Result<(), NimbusError>
+) -> Result<(), UnkaiError>
 where
     F: FnOnce(&mut Vec<String>) -> bool,
 {
@@ -2654,14 +2647,14 @@ async fn rewrite_contact_categories_inner<F>(
     contact_id: &str,
     cache: &Cache,
     f: F,
-) -> Result<(), NimbusError>
+) -> Result<(), UnkaiError>
 where
     F: FnOnce(&mut Vec<String>) -> bool,
 {
     let handle = load_contact_handle(cache, contact_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
-    let mut parsed = match nimbus_carddav::parse_vcard(&handle.vcard_raw) {
+    let mut parsed = match unkai_carddav::parse_vcard(&handle.vcard_raw) {
         Ok(p) => p,
         Err(_) => ParsedVcard {
             uid: handle.vcard_uid.clone(),
@@ -2692,7 +2685,7 @@ where
     );
     cache
         .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     Ok(())
 }
 
@@ -2740,26 +2733,26 @@ struct MailingListMemberView {
 /// SQL pass and the NC group / team list reuses the existing
 /// list_nextcloud_groups path.
 #[tauri::command]
-async fn list_mailing_lists(cache: State<'_, Cache>) -> Result<Vec<MailingListView>, NimbusError> {
+async fn list_mailing_lists(cache: State<'_, Cache>) -> Result<Vec<MailingListView>, UnkaiError> {
     // Same lazy backfill list_contact_categories does — this
     // IPC is the entry point the autocomplete uses on first
     // launch, before the contacts UI was opened, so we have to
     // rehydrate categories here too or the category-derived
     // rows would surface with zero members.
     let _ = cache.backfill_categories(|raw| {
-        nimbus_carddav::parse_vcard(raw)
+        unkai_carddav::parse_vcard(raw)
             .map(|p| p.categories)
             .unwrap_or_default()
     });
     let suppressed = cache
         .get_mailing_list_suppressed()
-        .map_err(NimbusError::from)?;
-    let emojis = cache.get_mailing_list_emojis().map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
+    let emojis = cache.get_mailing_list_emojis().map_err(UnkaiError::from)?;
     let mut out: Vec<MailingListView> = Vec::new();
 
     // 1. Categories.  Skip the reserved one we use as a holder
     // for KIND:group vCards.
-    let cats = cache.list_contact_categories().map_err(NimbusError::from)?;
+    let cats = cache.list_contact_categories().map_err(UnkaiError::from)?;
     for (name, _count) in cats {
         if name == MAILING_LISTS_CATEGORY {
             continue;
@@ -2880,10 +2873,10 @@ fn set_mailing_list_hidden(
     id: String,
     hidden: bool,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     cache
         .set_mailing_list_suppressed(&id, hidden)
-        .map_err(NimbusError::from)
+        .map_err(UnkaiError::from)
 }
 
 /// Set (or clear) the per-list emoji avatar override.  An empty
@@ -2895,10 +2888,10 @@ fn set_mailing_list_emoji(
     id: String,
     emoji: Option<String>,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     cache
         .set_mailing_list_emoji(&id, emoji.as_deref().filter(|s| !s.is_empty()))
-        .map_err(NimbusError::from)
+        .map_err(UnkaiError::from)
 }
 
 /// Rename a mailing list, dispatched on the unified id prefix.
@@ -2910,10 +2903,10 @@ async fn rename_mailing_list(
     id: String,
     new_name: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let new_name = new_name.trim().to_string();
     if new_name.is_empty() {
-        return Err(NimbusError::Other("new name is empty".into()));
+        return Err(UnkaiError::Other("new name is empty".into()));
     }
     if let Some(old) = id.strip_prefix("cat:") {
         rename_contact_category(old.to_string(), new_name, cache).await
@@ -2924,7 +2917,7 @@ async fn rename_mailing_list(
             .await
             .map(|_| ())
     } else {
-        Err(NimbusError::Other("teams cannot be renamed".into()))
+        Err(UnkaiError::Other("teams cannot be renamed".into()))
     }
 }
 
@@ -2969,13 +2962,13 @@ struct GroupMemberView {
 /// each with its members already resolved to (id, name, email)
 /// triples so the UI doesn't have to chase referenced UIDs.
 #[tauri::command]
-fn list_contact_groups(cache: State<'_, Cache>) -> Result<Vec<ContactGroupView>, NimbusError> {
-    let groups = cache.list_contact_groups().map_err(NimbusError::from)?;
+fn list_contact_groups(cache: State<'_, Cache>) -> Result<Vec<ContactGroupView>, UnkaiError> {
+    let groups = cache.list_contact_groups().map_err(UnkaiError::from)?;
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
         let resolved = cache
             .resolve_group_members(&g.nextcloud_account_id, &g.member_uids)
-            .map_err(NimbusError::from)?;
+            .map_err(UnkaiError::from)?;
         let members = resolved
             .into_iter()
             .map(|(id, display_name, email)| GroupMemberView {
@@ -3008,7 +3001,7 @@ async fn create_contact_group(
     display_name: String,
     member_uids: Vec<String>,
     cache: State<'_, Cache>,
-) -> Result<ContactGroupView, NimbusError> {
+) -> Result<ContactGroupView, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -3050,7 +3043,7 @@ async fn create_contact_group(
     let row = parsed_to_row(&outcome.href, &outcome.etag, &uid, &parsed, vcard);
     cache
         .upsert_single_contact(&nc_id, &addressbook_name, &row)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     let id = format!("{nc_id}::{uid}");
     Ok(ContactGroupView {
         id,
@@ -3073,12 +3066,12 @@ async fn update_contact_group(
     display_name: Option<String>,
     member_uids: Option<Vec<String>>,
     cache: State<'_, Cache>,
-) -> Result<ContactGroupView, NimbusError> {
+) -> Result<ContactGroupView, UnkaiError> {
     let handle = load_contact_handle(&cache, &group_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
-    let mut parsed = match nimbus_carddav::parse_vcard(&handle.vcard_raw) {
+    let mut parsed = match unkai_carddav::parse_vcard(&handle.vcard_raw) {
         Ok(p) => p,
         Err(_) => ParsedVcard {
             uid: handle.vcard_uid.clone(),
@@ -3121,17 +3114,17 @@ async fn update_contact_group(
     );
     cache
         .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     // Re-pull the group with members hydrated so callers can
     // refresh their UI from a single response.
-    let groups = cache.list_contact_groups().map_err(NimbusError::from)?;
+    let groups = cache.list_contact_groups().map_err(UnkaiError::from)?;
     let g = groups
         .into_iter()
         .find(|g| g.id == group_id)
-        .ok_or_else(|| NimbusError::Other(format!("group '{group_id}' missing after update")))?;
+        .ok_or_else(|| UnkaiError::Other(format!("group '{group_id}' missing after update")))?;
     let resolved = cache
         .resolve_group_members(&g.nextcloud_account_id, &g.member_uids)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     Ok(ContactGroupView {
         id: g.id,
         nextcloud_account_id: g.nextcloud_account_id,
@@ -3152,10 +3145,7 @@ async fn update_contact_group(
 
 /// Delete a contact group from the server + local cache.
 #[tauri::command]
-async fn delete_contact_group(
-    group_id: String,
-    cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+async fn delete_contact_group(group_id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     let handle = load_contact_handle(&cache, &group_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
@@ -3169,7 +3159,7 @@ async fn delete_contact_group(
     .await?;
     cache
         .delete_contact_by_id(&group_id)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     Ok(())
 }
 
@@ -3181,10 +3171,10 @@ fn set_contact_group_hidden(
     group_id: String,
     hidden: bool,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     cache
         .set_contact_group_hidden(&group_id, hidden)
-        .map_err(NimbusError::from)
+        .map_err(UnkaiError::from)
 }
 
 /// Local-only emoji avatar overlay for a group.  `None` clears
@@ -3194,11 +3184,11 @@ fn set_contact_group_emoji(
     group_id: String,
     emoji: Option<String>,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let val = emoji.as_deref().filter(|s| !s.is_empty());
     cache
         .set_contact_group_emoji(&group_id, val)
-        .map_err(NimbusError::from)
+        .map_err(UnkaiError::from)
 }
 
 // ── Nextcloud user groups + Teams (#133 follow-up) ────────────
@@ -3206,7 +3196,7 @@ fn set_contact_group_emoji(
 // These are *identity / access* groups, separate from the vCard
 // `KIND:group` records above.  Members are NC user IDs
 // (provisioning-API speak), not vCard UIDs, so the contacts UI
-// renders them in their own read-only sections — Nimbus can't
+// renders them in their own read-only sections — Unkai can't
 // add or remove members (admin task) but it can surface the
 // groups the user already belongs to and resolve their members
 // to email addresses for the Compose autocomplete.
@@ -3260,7 +3250,7 @@ fn humanize_nc_group_name(raw: &str) -> String {
 #[tauri::command]
 async fn list_nextcloud_groups(
     cache: State<'_, Cache>,
-) -> Result<Vec<NextcloudGroupView>, NimbusError> {
+) -> Result<Vec<NextcloudGroupView>, UnkaiError> {
     let accounts = nextcloud_store::load_accounts(&cache).unwrap_or_default();
     let mut out: Vec<NextcloudGroupView> = Vec::new();
     // Build a uid → email fallback map from the local CardDAV
@@ -3297,7 +3287,7 @@ async fn list_nextcloud_groups(
             }
         };
         // OCS user groups -------------------------------------------------
-        let group_ids = match nimbus_nextcloud::fetch_my_groups(
+        let group_ids = match unkai_nextcloud::fetch_my_groups(
             &acc.server_url,
             &acc.username,
             &app_password,
@@ -3327,7 +3317,7 @@ async fn list_nextcloud_groups(
             });
         }
         // Circles / Teams ------------------------------------------------
-        let circles = match nimbus_nextcloud::fetch_my_circles(
+        let circles = match unkai_nextcloud::fetch_my_circles(
             &acc.server_url,
             &acc.username,
             &app_password,
@@ -3342,7 +3332,7 @@ async fn list_nextcloud_groups(
             }
         };
         for c in circles {
-            let mids = match nimbus_nextcloud::fetch_circle_member_ids(
+            let mids = match unkai_nextcloud::fetch_circle_member_ids(
                 &acc.server_url,
                 &acc.username,
                 &app_password,
@@ -3380,7 +3370,7 @@ async fn collect_group_members(
     group_id: &str,
     cache_uid_email: &std::collections::HashMap<String, (String, String)>,
 ) -> Vec<NextcloudGroupMemberView> {
-    let ids = match nimbus_nextcloud::fetch_group_member_ids(
+    let ids = match unkai_nextcloud::fetch_group_member_ids(
         &acc.server_url,
         &acc.username,
         app_password,
@@ -3409,7 +3399,7 @@ async fn resolve_member_profiles(
     cache_uid_email: &std::collections::HashMap<String, (String, String)>,
 ) -> Vec<NextcloudGroupMemberView> {
     let futs = ids.into_iter().map(|uid| async move {
-        let prof = nimbus_nextcloud::fetch_user_profile(
+        let prof = unkai_nextcloud::fetch_user_profile(
             &acc.server_url,
             &acc.username,
             app_password,
@@ -3469,9 +3459,7 @@ struct AddressbookSummary {
 /// when creating a new contact. Hits the server (PROPFIND) because
 /// the list can change between logins and we want a fresh view.
 #[tauri::command]
-async fn list_nextcloud_addressbooks(
-    nc_id: String,
-) -> Result<Vec<AddressbookSummary>, NimbusError> {
+async fn list_nextcloud_addressbooks(nc_id: String) -> Result<Vec<AddressbookSummary>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let books: Vec<Addressbook> = list_addressbooks(
@@ -3554,7 +3542,7 @@ struct SyncCalendarsReport {
 /// no cache write. Used in settings UIs where the user just wants
 /// to see what calendars exist server-side before toggling sync on.
 #[tauri::command]
-async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>, NimbusError> {
+async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let calendars: Vec<CaldavCalendar> = caldav_list_calendars(
@@ -3606,7 +3594,7 @@ async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>,
 async fn sync_nextcloud_calendars(
     nc_id: String,
     cache: State<'_, Cache>,
-) -> Result<SyncCalendarsReport, NimbusError> {
+) -> Result<SyncCalendarsReport, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -3788,11 +3776,11 @@ async fn sync_nextcloud_calendars(
 async fn sync_calendar_by_id(
     calendar_id: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let (nc_id, path) = cache
         .get_calendar_server_path(&calendar_id)?
         .ok_or_else(|| {
-            NimbusError::Other(format!(
+            UnkaiError::Other(format!(
                 "calendar '{calendar_id}' is not in the local cache"
             ))
         })?;
@@ -3806,7 +3794,7 @@ async fn sync_calendar_by_id(
 fn get_cached_calendars(
     nc_id: String,
     cache: State<'_, Cache>,
-) -> Result<Vec<CalendarSummary>, NimbusError> {
+) -> Result<Vec<CalendarSummary>, UnkaiError> {
     let cached = cache.list_calendars(&nc_id)?;
     Ok(cached
         .into_iter()
@@ -3845,7 +3833,7 @@ async fn create_nextcloud_calendar(
     display_name: String,
     color: Option<String>,
     cache: State<'_, Cache>,
-) -> Result<CalendarSummary, NimbusError> {
+) -> Result<CalendarSummary, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -3905,10 +3893,10 @@ async fn update_nextcloud_calendar(
     display_name: Option<String>,
     color: Option<String>,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let (nc_id, path) = cache
         .get_calendar_server_path(&calendar_id)?
-        .ok_or_else(|| NimbusError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
+        .ok_or_else(|| UnkaiError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -3934,10 +3922,10 @@ async fn update_nextcloud_calendar(
 async fn delete_nextcloud_calendar(
     calendar_id: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let (nc_id, path) = cache
         .get_calendar_server_path(&calendar_id)?
-        .ok_or_else(|| NimbusError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
+        .ok_or_else(|| UnkaiError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -3960,7 +3948,7 @@ fn set_nextcloud_calendar_hidden(
     calendar_id: String,
     hidden: bool,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     cache.set_calendar_hidden(&calendar_id, hidden)?;
     Ok(())
 }
@@ -3973,7 +3961,7 @@ fn set_nextcloud_calendar_muted(
     calendar_id: String,
     muted: bool,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     cache.set_calendar_muted(&calendar_id, muted)?;
     Ok(())
 }
@@ -3995,7 +3983,7 @@ fn set_nextcloud_calendar_muted(
 /// 2. Overrides are indexed by the `{calendar_id}::{uid}` prefix of
 ///    their composite id — the very same prefix that a master's id
 ///    has — so matching an override to its series is O(1).
-/// 3. `nimbus_caldav::expand_event` does the RFC 5545 work: RRULE
+/// 3. `unkai_caldav::expand_event` does the RFC 5545 work: RRULE
 ///    enumeration, EXDATE removal, RDATE insertion, override swap-in.
 /// Pull events out of the local cache for `calendar_ids` over
 /// `[range_start, range_end)`, recurrence-expanded.  Shared by
@@ -4011,10 +3999,10 @@ fn expand_calendar_events_in_range(
     calendar_ids: &[String],
     range_start: chrono::DateTime<chrono::Utc>,
     range_end: chrono::DateTime<chrono::Utc>,
-) -> Result<Vec<CalendarEvent>, NimbusError> {
+) -> Result<Vec<CalendarEvent>, UnkaiError> {
     let input = cache
         .list_events_for_expansion(calendar_ids, range_start, range_end)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
 
     let mut overrides_by_master: std::collections::HashMap<&str, Vec<&CalendarEvent>> =
         std::collections::HashMap::new();
@@ -4030,7 +4018,7 @@ fn expand_calendar_events_in_range(
             .get(master.id.as_str())
             .cloned()
             .unwrap_or_default();
-        out.extend(nimbus_caldav::expand_event(
+        out.extend(unkai_caldav::expand_event(
             master,
             &ovs,
             range_start,
@@ -4047,7 +4035,7 @@ fn get_cached_events(
     range_start: chrono::DateTime<chrono::Utc>,
     range_end: chrono::DateTime<chrono::Utc>,
     cache: State<'_, Cache>,
-) -> Result<Vec<CalendarEvent>, NimbusError> {
+) -> Result<Vec<CalendarEvent>, UnkaiError> {
     expand_calendar_events_in_range(&cache, &calendar_ids, range_start, range_end)
 }
 
@@ -4194,7 +4182,7 @@ async fn resolve_organizer(
     if !has_attendees {
         return organizer_local(account);
     }
-    match nimbus_nextcloud::user::fetch_current_user(
+    match unkai_nextcloud::user::fetch_current_user(
         &account.server_url,
         &account.username,
         app_password,
@@ -4271,9 +4259,9 @@ fn flag_calendar_read_only_on_forbidden(
     app: &AppHandle,
     cache: &Cache,
     calendar_id: &str,
-    err: &NimbusError,
+    err: &UnkaiError,
 ) {
-    if !matches!(err, NimbusError::CalDavWriteForbidden(_)) {
+    if !matches!(err, UnkaiError::CalDavWriteForbidden(_)) {
         return;
     }
     if let Err(e) = cache.set_calendar_read_only(calendar_id, true) {
@@ -4308,12 +4296,12 @@ async fn create_calendar_event(
     input: CalendarEventInput,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<CalendarEvent, NimbusError> {
+) -> Result<CalendarEvent, UnkaiError> {
     let (nc_id, calendar_path) =
         cache
             .get_calendar_server_path(&calendar_id)?
             .ok_or_else(|| {
-                NimbusError::Other(format!(
+                UnkaiError::Other(format!(
                     "calendar '{calendar_id}' is not in the local cache — refresh and try again"
                 ))
             })?;
@@ -4327,7 +4315,7 @@ async fn create_calendar_event(
     let ics = caldav_build_ics(&event, Some(&organizer_email), organizer_name.as_deref());
 
     // `calendar_path` from the cache is already an absolute URL —
-    // `nimbus-caldav::discovery` resolves it via `absolute_url` before
+    // `unkai-caldav::discovery` resolves it via `absolute_url` before
     // storing. Don't re-prefix the server origin or the PUT goes to
     // `https://hosthttps://host/...`.
     let outcome = caldav_create_event(
@@ -4364,7 +4352,7 @@ async fn update_calendar_event(
     input: CalendarEventInput,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<CalendarEvent, NimbusError> {
+) -> Result<CalendarEvent, UnkaiError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
@@ -4405,7 +4393,7 @@ async fn delete_calendar_event(
     event_id: String,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let calendar_id = handle.calendar_id.clone();
     delete_event_with_etag_retry(&cache, &event_id, &handle)
@@ -4489,7 +4477,7 @@ async fn get_attendee_availability(
     range_start: chrono::DateTime<chrono::Utc>,
     range_end: chrono::DateTime<chrono::Utc>,
     cache: State<'_, Cache>,
-) -> Result<Vec<AttendeeAvailability>, NimbusError> {
+) -> Result<Vec<AttendeeAvailability>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -4513,7 +4501,7 @@ async fn get_attendee_availability(
 
         // Step 1: sharees lookup.  Soft-fail (None) on errors so a
         // single bad lookup doesn't blank out the planner.
-        let nc_match = match nimbus_nextcloud::find_user_by_email(
+        let nc_match = match unkai_nextcloud::find_user_by_email(
             &account.server_url,
             &account.username,
             &app_password,
@@ -4683,7 +4671,7 @@ async fn geocode_search(
     lang: Option<String>,
     cache: State<'_, Cache>,
     settings: State<'_, SharedSettings>,
-) -> Result<Vec<geocode::GeocodeResult>, NimbusError> {
+) -> Result<Vec<geocode::GeocodeResult>, UnkaiError> {
     // Privacy gate (#280).  Off by default; the user must opt in
     // via General Settings before any keystroke leaves the
     // device.  We refuse here as well as in the UI so a
@@ -4709,7 +4697,7 @@ async fn geocode_search(
     // upstream call.
     if let Some(json) = cache
         .get_geocode_cache(&query, &lang)
-        .map_err(NimbusError::from)?
+        .map_err(UnkaiError::from)?
     {
         if let Ok(hits) = serde_json::from_str::<Vec<geocode::GeocodeResult>>(&json) {
             return Ok(hits);
@@ -4721,7 +4709,7 @@ async fn geocode_search(
 
     let hits = geocode::nominatim_search(&query, &lang, &base_url).await?;
     let serialised = serde_json::to_string(&hits)
-        .map_err(|e| NimbusError::Other(format!("geocode result serialise: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("geocode result serialise: {e}")))?;
     if let Err(e) = cache.put_geocode_cache(&query, &lang, &serialised) {
         // Cache write failure is non-fatal — the user still
         // gets the live result.
@@ -4738,7 +4726,7 @@ struct NextcloudMapsCapability {
 }
 
 #[tauri::command]
-async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, NimbusError> {
+async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -4752,7 +4740,7 @@ async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, Nimbus
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
-        .map_err(|e| NimbusError::Network(format!("capabilities client: {e}")))?;
+        .map_err(|e| UnkaiError::Network(format!("capabilities client: {e}")))?;
     let resp = client
         .get(&url)
         .header("OCS-APIRequest", "true")
@@ -4760,7 +4748,7 @@ async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, Nimbus
         .basic_auth(&account.username, Some(&app_password))
         .send()
         .await
-        .map_err(|e| NimbusError::Network(format!("capabilities request: {e}")))?;
+        .map_err(|e| UnkaiError::Network(format!("capabilities request: {e}")))?;
     if !resp.status().is_success() {
         return Ok(NextcloudMapsCapability { available: false });
     }
@@ -4805,7 +4793,7 @@ async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, Nimbus
 /// to a passive "not in your calendar" line instead of the
 /// remove button.
 #[tauri::command]
-fn is_event_in_calendar(uid: String, cache: State<'_, Cache>) -> Result<bool, NimbusError> {
+fn is_event_in_calendar(uid: String, cache: State<'_, Cache>) -> Result<bool, UnkaiError> {
     Ok(cache.find_event_id_by_uid(&uid)?.is_some())
 }
 
@@ -4814,8 +4802,8 @@ fn is_event_in_calendar(uid: String, cache: State<'_, Cache>) -> Result<bool, Ni
 /// `METHOD:CANCEL` mail, so the original REQUEST mail's RSVP
 /// card can flip to the cancelled flavour on its next open.
 #[tauri::command]
-fn record_cancelled_invite(uid: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
-    cache.mark_invite_cancelled(&uid).map_err(NimbusError::from)
+fn record_cancelled_invite(uid: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
+    cache.mark_invite_cancelled(&uid).map_err(UnkaiError::from)
 }
 
 /// True when MailView has previously observed a `METHOD:CANCEL`
@@ -4824,12 +4812,12 @@ fn record_cancelled_invite(uid: String, cache: State<'_, Cache>) -> Result<(), N
 /// banner so the user doesn't unwittingly answer a meeting
 /// that's been cancelled.
 #[tauri::command]
-fn is_invite_cancelled(uid: String, cache: State<'_, Cache>) -> Result<bool, NimbusError> {
-    cache.is_invite_cancelled(&uid).map_err(NimbusError::from)
+fn is_invite_cancelled(uid: String, cache: State<'_, Cache>) -> Result<bool, UnkaiError> {
+    cache.is_invite_cancelled(&uid).map_err(UnkaiError::from)
 }
 
 #[tauri::command]
-async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
+async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     let Some(event_id) = cache.find_event_id_by_uid(&uid)? else {
         tracing::info!(
             "dismiss_cancelled_event: no cached event with UID {uid}, treating as no-op"
@@ -4844,7 +4832,7 @@ async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result
     // `METHOD:REPLY;PARTSTAT=DECLINED` to the organiser.  The
     // organiser already sent CANCEL; mailing them a decline
     // back is just noise (and confusing).
-    nimbus_caldav::delete_event_silent(
+    unkai_caldav::delete_event_silent(
         &handle.href,
         &account.username,
         &app_password,
@@ -4908,7 +4896,7 @@ struct InviteSummary {
     /// All ATTENDEEs from the VEVENT.  The card highlights the
     /// row matching the current user's address so they can see
     /// their own NEEDS-ACTION status before clicking.
-    attendees: Vec<nimbus_core::models::EventAttendee>,
+    attendees: Vec<unkai_core::models::EventAttendee>,
     /// The full ICS body, used to preserve UID + DTSTAMP +
     /// SEQUENCE on the REPLY without re-fetching.
     raw_ics: String,
@@ -4925,15 +4913,15 @@ struct InviteSummary {
 /// `From:` header for the recipient of the RSVP REPLY — which is
 /// what RFC 5546 says the organiser address tracks anyway.
 #[tauri::command]
-fn parse_event_invite(bytes: Vec<u8>) -> Result<InviteSummary, NimbusError> {
+fn parse_event_invite(bytes: Vec<u8>) -> Result<InviteSummary, UnkaiError> {
     let body = String::from_utf8(bytes)
-        .map_err(|e| NimbusError::Protocol(format!("invite is not UTF-8: {e}")))?;
-    let events = nimbus_caldav::ical::parse_ics(&body)
-        .map_err(|e| NimbusError::Protocol(format!("could not parse calendar invite: {e}")))?;
+        .map_err(|e| UnkaiError::Protocol(format!("invite is not UTF-8: {e}")))?;
+    let events = unkai_caldav::ical::parse_ics(&body)
+        .map_err(|e| UnkaiError::Protocol(format!("could not parse calendar invite: {e}")))?;
     let event = events
         .into_iter()
         .next()
-        .ok_or_else(|| NimbusError::Protocol("invite contains no VEVENT".into()))?;
+        .ok_or_else(|| UnkaiError::Protocol("invite contains no VEVENT".into()))?;
 
     let method = extract_calendar_method(&body);
 
@@ -4995,7 +4983,7 @@ fn extract_calendar_method(ics: &str) -> Option<String> {
 ///   declined meetings don't clutter the grid.
 ///
 /// Resolving the responding attendee's address goes through
-/// **every identity Nimbus knows about**, not just one: the NC
+/// **every identity Unkai knows about**, not just one: the NC
 /// user-profile email (Sabre's principal CUA), every configured
 /// mail-account address, plus an optional `attendee_email`
 /// hint from the card (the address the inbound mail was
@@ -5027,13 +5015,13 @@ async fn respond_to_invite(
     partstat: String,
     attendee_hint: Option<String>,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     // Resolve the chosen calendar's location on the server.
     let (nc_id, calendar_path) =
         cache
             .get_calendar_server_path(&calendar_id)?
             .ok_or_else(|| {
-                NimbusError::Other(format!(
+                UnkaiError::Other(format!(
                     "calendar '{calendar_id}' is not in the local cache — refresh and try again"
                 ))
             })?;
@@ -5046,7 +5034,7 @@ async fn respond_to_invite(
     //   2. NC profile email — Sabre's principal CUA, the
     //      authoritative identity for the iTIP broker.
     //   3. Every configured mail-account address (covers the
-    //      "I added a Nimbus mail account whose email differs
+    //      "I added a Unkai mail account whose email differs
     //      from my NC profile" case).
     //   4. The synth `username@server-host` as a last resort.
     // We then take the FIRST candidate that actually appears
@@ -5063,7 +5051,7 @@ async fn respond_to_invite(
             candidates.push(h.to_string());
         }
     }
-    let nc_profile_email = match nimbus_nextcloud::user::fetch_current_user(
+    let nc_profile_email = match unkai_nextcloud::user::fetch_current_user(
         &account.server_url,
         &account.username,
         &app_password,
@@ -5101,7 +5089,7 @@ async fn respond_to_invite(
     // against its principal CUA) — and last-ditch the first
     // non-empty candidate so we always have something.
     let attendee_email = {
-        let inbound_attendees: Vec<String> = nimbus_caldav::ical::parse_ics(&raw_ics)
+        let inbound_attendees: Vec<String> = unkai_caldav::ical::parse_ics(&raw_ics)
             .ok()
             .and_then(|v| v.into_iter().next())
             .map(|e| e.attendees.into_iter().map(|a| a.email).collect())
@@ -5123,12 +5111,12 @@ async fn respond_to_invite(
     // Parse the inbound ICS, flip the matching attendee's PARTSTAT,
     // and (for TENTATIVE) override TRANSP so the calendar renders
     // it differently.
-    let events = nimbus_caldav::ical::parse_ics(&raw_ics)
-        .map_err(|e| NimbusError::Protocol(format!("could not parse invite: {e}")))?;
+    let events = unkai_caldav::ical::parse_ics(&raw_ics)
+        .map_err(|e| UnkaiError::Protocol(format!("could not parse invite: {e}")))?;
     let mut event = events
         .into_iter()
         .next()
-        .ok_or_else(|| NimbusError::Protocol("invite has no VEVENT".into()))?;
+        .ok_or_else(|| UnkaiError::Protocol("invite has no VEVENT".into()))?;
 
     // Flip the matching ATTENDEE's PARTSTAT.  When no row
     // matches — common for aliases, forwarded invites, or any
@@ -5233,7 +5221,7 @@ async fn respond_to_invite(
             // ATTENDEE PARTSTAT (and add SCHEDULE-FORCE-SEND=
             // REPLY), preserve everything else byte-for-byte.
             let handle = load_event_handle(&cache, &existing_id)?;
-            let surgical = nimbus_caldav::ical::surgical_set_partstat(
+            let surgical = unkai_caldav::ical::surgical_set_partstat(
                 &handle.ics_raw,
                 &attendee_email,
                 &partstat,
@@ -5248,7 +5236,7 @@ async fn respond_to_invite(
             // the body Sabre stores as the "before" state is a
             // minimal mutation of the original — Sabre's iTIP
             // restrictions accept it cleanly.
-            let step1_body = nimbus_caldav::ical::surgical_set_partstat(
+            let step1_body = unkai_caldav::ical::surgical_set_partstat(
                 &raw_ics,
                 &attendee_email,
                 "NEEDS-ACTION",
@@ -5269,7 +5257,7 @@ async fn respond_to_invite(
             // the user's chosen PARTSTAT + SCHEDULE-FORCE-SEND.
             // Sabre sees a clean PARTSTAT-only diff against
             // step 1's stored body and dispatches the REPLY iMIP.
-            let step2_body = nimbus_caldav::ical::surgical_set_partstat(
+            let step2_body = unkai_caldav::ical::surgical_set_partstat(
                 &raw_ics,
                 &attendee_email,
                 &partstat,
@@ -5325,15 +5313,15 @@ async fn respond_to_invite(
 async fn get_rsvp_response(
     uid: String,
     cache: State<'_, Cache>,
-) -> Result<Option<String>, NimbusError> {
-    cache.get_rsvp_response(&uid).map_err(NimbusError::from)
+) -> Result<Option<String>, UnkaiError> {
+    cache.get_rsvp_response(&uid).map_err(UnkaiError::from)
 }
 
 /// Read the responding-user's PARTSTAT off the cached calendar
 /// event with `uid`, if any.  Source of truth for the inbox
 /// RSVP card so it reflects PARTSTAT changes made via NC web
 /// UI / the user's phone / any other CalDAV client — not just
-/// the changes Nimbus made itself (which is what the local
+/// the changes Unkai made itself (which is what the local
 /// `rsvp_responses` table tracks).
 ///
 /// Runs a **differential CalDAV sync** of the calendar that
@@ -5354,13 +5342,13 @@ async fn get_event_partstat_for_user(
     uid: String,
     attendee_hint: Option<String>,
     cache: State<'_, Cache>,
-) -> Result<Option<String>, NimbusError> {
+) -> Result<Option<String>, UnkaiError> {
     let Some(event_id) = cache.find_event_id_by_uid(&uid)? else {
         return Ok(None);
     };
     let handle = cache
         .get_event_server_handle(&event_id)?
-        .ok_or_else(|| NimbusError::Other("stale calendar cache entry".into()))?;
+        .ok_or_else(|| UnkaiError::Other("stale calendar cache entry".into()))?;
 
     // Differential CalDAV sync of the parent calendar — picks
     // up PARTSTAT changes made via NC web UI / phone / any other
@@ -5389,7 +5377,7 @@ async fn get_event_partstat_for_user(
             candidates.push(h.to_string());
         }
     }
-    if let Ok(profile) = nimbus_nextcloud::user::fetch_current_user(
+    if let Ok(profile) = unkai_nextcloud::user::fetch_current_user(
         &account.server_url,
         &account.username,
         &app_password,
@@ -5407,8 +5395,8 @@ async fn get_event_partstat_for_user(
     }
     let candidates_lc: Vec<String> = candidates.iter().map(|s| s.to_ascii_lowercase()).collect();
 
-    let events = nimbus_caldav::ical::parse_ics(&handle.ics_raw)
-        .map_err(|e| NimbusError::Protocol(format!("parse cached event: {e}")))?;
+    let events = unkai_caldav::ical::parse_ics(&handle.ics_raw)
+        .map_err(|e| UnkaiError::Protocol(format!("parse cached event: {e}")))?;
     let partstat = events.into_iter().next().and_then(|event| {
         event.attendees.into_iter().find_map(|att| {
             if candidates_lc.contains(&att.email.to_ascii_lowercase()) {
@@ -5442,7 +5430,7 @@ async fn update_event_with_etag_retry(
     cache: &Cache,
     event_id: &str,
     ics: &str,
-) -> Result<(nimbus_caldav::WriteOutcome, CalendarEventServerHandle), NimbusError> {
+) -> Result<(unkai_caldav::WriteOutcome, CalendarEventServerHandle), UnkaiError> {
     let handle = load_event_handle(cache, event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
@@ -5458,13 +5446,13 @@ async fn update_event_with_etag_retry(
     .await
     {
         Ok(o) => Ok((o, handle)),
-        Err(NimbusError::EtagMismatch(_)) => {
+        Err(UnkaiError::EtagMismatch(_)) => {
             tracing::info!("stale etag for {event_id}; refreshing calendar cache and retrying");
             let cal_path = cache
                 .get_calendar_server_path(&handle.calendar_id)?
                 .map(|(_, p)| p)
                 .ok_or_else(|| {
-                    NimbusError::Other(format!(
+                    UnkaiError::Other(format!(
                         "calendar '{}' is not in the local cache",
                         handle.calendar_id
                     ))
@@ -5503,7 +5491,7 @@ async fn delete_event_with_etag_retry(
     cache: &Cache,
     event_id: &str,
     handle: &CalendarEventServerHandle,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
@@ -5517,13 +5505,13 @@ async fn delete_event_with_etag_retry(
     .await
     {
         Ok(()) => Ok(()),
-        Err(NimbusError::EtagMismatch(_)) => {
+        Err(UnkaiError::EtagMismatch(_)) => {
             tracing::info!("stale etag for delete of {event_id}; refreshing calendar and retrying");
             let cal_path = cache
                 .get_calendar_server_path(&handle.calendar_id)?
                 .map(|(_, p)| p)
                 .ok_or_else(|| {
-                    NimbusError::Other(format!(
+                    UnkaiError::Other(format!(
                         "calendar '{}' is not in the local cache",
                         handle.calendar_id
                     ))
@@ -5535,7 +5523,7 @@ async fn delete_event_with_etag_retry(
             // away", which is now true.
             let Some(fresh) = cache
                 .get_event_server_handle(event_id)
-                .map_err(NimbusError::from)?
+                .map_err(UnkaiError::from)?
             else {
                 return Ok(());
             };
@@ -5563,7 +5551,7 @@ async fn refresh_calendar_cache(
     cache: &Cache,
     nc_id: &str,
     calendar_path: &str,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(nc_id)?;
     let app_password = credentials::get_nextcloud_password(nc_id)?;
     // Look up the local calendar id by path so we can fetch its
@@ -5573,7 +5561,7 @@ async fn refresh_calendar_cache(
         .into_iter()
         .find(|c| c.path == calendar_path)
         .ok_or_else(|| {
-            NimbusError::Other(format!(
+            UnkaiError::Other(format!(
                 "calendar '{calendar_path}' is not in the local cache"
             ))
         })?;
@@ -5605,12 +5593,12 @@ async fn refresh_calendar_cache(
 fn load_event_handle(
     cache: &Cache,
     event_id: &str,
-) -> Result<CalendarEventServerHandle, NimbusError> {
+) -> Result<CalendarEventServerHandle, UnkaiError> {
     cache
         .get_event_server_handle(event_id)
-        .map_err(NimbusError::from)?
+        .map_err(UnkaiError::from)?
         .ok_or_else(|| {
-            NimbusError::Other(format!(
+            UnkaiError::Other(format!(
                 "event '{event_id}' is not in the local cache — refresh and try again"
             ))
         })
@@ -5691,7 +5679,7 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
         emails: input
             .emails
             .iter()
-            .map(|e| nimbus_carddav::VcardEmail {
+            .map(|e| unkai_carddav::VcardEmail {
                 kind: e.kind.clone(),
                 value: e.value.clone(),
             })
@@ -5699,7 +5687,7 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
         phones: input
             .phones
             .iter()
-            .map(|p| nimbus_carddav::VcardPhone {
+            .map(|p| unkai_carddav::VcardPhone {
                 kind: p.kind.clone(),
                 value: p.value.clone(),
             })
@@ -5715,7 +5703,7 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
             .as_ref()
             .map(|list| {
                 list.iter()
-                    .map(|a| nimbus_carddav::VcardAddress {
+                    .map(|a| unkai_carddav::VcardAddress {
                         kind: a.kind.clone(),
                         street: a.street.clone(),
                         locality: a.locality.clone(),
@@ -5734,7 +5722,7 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
         structured_name: input
             .structured_name
             .as_ref()
-            .map(|n| nimbus_carddav::VcardStructuredName {
+            .map(|n| unkai_carddav::VcardStructuredName {
                 family: n.family.clone(),
                 given: n.given.clone(),
                 additional: n.additional.clone(),
@@ -5750,7 +5738,7 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
             .as_ref()
             .map(|list| {
                 list.iter()
-                    .map(|i| nimbus_carddav::VcardImpp {
+                    .map(|i| unkai_carddav::VcardImpp {
                         kind: i.kind.clone(),
                         value: i.value.clone(),
                     })
@@ -5783,7 +5771,7 @@ fn parsed_to_row(
         emails: parsed
             .emails
             .iter()
-            .map(|e| nimbus_core::models::ContactEmail {
+            .map(|e| unkai_core::models::ContactEmail {
                 kind: e.kind.clone(),
                 value: e.value.clone(),
             })
@@ -5791,7 +5779,7 @@ fn parsed_to_row(
         phones: parsed
             .phones
             .iter()
-            .map(|p| nimbus_core::models::ContactPhone {
+            .map(|p| unkai_core::models::ContactPhone {
                 kind: p.kind.clone(),
                 value: p.value.clone(),
             })
@@ -5805,7 +5793,7 @@ fn parsed_to_row(
         addresses: parsed
             .addresses
             .iter()
-            .map(|a| nimbus_core::models::ContactAddress {
+            .map(|a| unkai_core::models::ContactAddress {
                 kind: a.kind.clone(),
                 street: a.street.clone(),
                 locality: a.locality.clone(),
@@ -5837,10 +5825,10 @@ fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) -> C
     // vCard).  When parsing fails — corrupt cached body, malformed
     // server data, etc. — we fall back to defaults so the rest of
     // the contact still renders.
-    let extra = nimbus_carddav::parse_vcard(&row.vcard_raw).ok();
+    let extra = unkai_carddav::parse_vcard(&row.vcard_raw).ok();
     let structured_name = extra
         .as_ref()
-        .map(|p| nimbus_core::models::StructuredName {
+        .map(|p| unkai_core::models::StructuredName {
             family: p.structured_name.family.clone(),
             given: p.structured_name.given.clone(),
             additional: p.structured_name.additional.clone(),
@@ -5851,12 +5839,12 @@ fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) -> C
     let nickname = extra.as_ref().and_then(|p| p.nickname.clone());
     let anniversary = extra.as_ref().and_then(|p| p.anniversary.clone());
     let gender = extra.as_ref().and_then(|p| p.gender.clone());
-    let impp: Vec<nimbus_core::models::ContactImpp> = extra
+    let impp: Vec<unkai_core::models::ContactImpp> = extra
         .as_ref()
         .map(|p| {
             p.impp
                 .iter()
-                .map(|i| nimbus_core::models::ContactImpp {
+                .map(|i| unkai_core::models::ContactImpp {
                     kind: i.kind.clone(),
                     value: i.value.clone(),
                 })
@@ -5907,28 +5895,25 @@ fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) -> C
 /// `State<'_, Cache>` and thread `&Cache` through itself.
 static GLOBAL_CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
 
-fn global_cache() -> Result<&'static Cache, NimbusError> {
+fn global_cache() -> Result<&'static Cache, UnkaiError> {
     GLOBAL_CACHE
         .get()
-        .ok_or_else(|| NimbusError::Storage("cache not initialised yet".into()))
+        .ok_or_else(|| UnkaiError::Storage("cache not initialised yet".into()))
 }
 
-fn load_nextcloud_account(nc_id: &str) -> Result<NextcloudAccount, NimbusError> {
+fn load_nextcloud_account(nc_id: &str) -> Result<NextcloudAccount, UnkaiError> {
     nextcloud_store::load_accounts(global_cache()?)?
         .into_iter()
         .find(|a| a.id == nc_id)
-        .ok_or_else(|| NimbusError::Other(format!("no Nextcloud account with id '{nc_id}'")))
+        .ok_or_else(|| UnkaiError::Other(format!("no Nextcloud account with id '{nc_id}'")))
 }
 
-fn load_contact_handle(
-    cache: &Cache,
-    contact_id: &str,
-) -> Result<ContactServerHandle, NimbusError> {
+fn load_contact_handle(cache: &Cache, contact_id: &str) -> Result<ContactServerHandle, UnkaiError> {
     cache
         .get_contact_server_handle(contact_id)
-        .map_err(NimbusError::from)?
+        .map_err(UnkaiError::from)?
         .ok_or_else(|| {
-            NimbusError::Other(format!(
+            UnkaiError::Other(format!(
                 "contact '{contact_id}' is not in the local cache — refresh and try again"
             ))
         })
@@ -5951,17 +5936,17 @@ fn load_contact_handle(
 /// `&Cache` because every account row now lives in SQLite (#60) and
 /// we want every callsite to be explicit about which DB it's reading
 /// from rather than hiding a global behind a free function.
-fn load_account(cache: &Cache, id: &str) -> Result<Account, NimbusError> {
+fn load_account(cache: &Cache, id: &str) -> Result<Account, UnkaiError> {
     account_store::load_accounts(cache)?
         .into_iter()
         .find(|a| a.id == id)
-        .ok_or_else(|| NimbusError::Other(format!("no account with id '{id}'")))
+        .ok_or_else(|| UnkaiError::Other(format!("no account with id '{id}'")))
 }
 
 /// Connect to an account's IMAP server using the stored password.
 /// Includes any per-account TLS-trusted certs so a self-signed
 /// server the user has previously accepted continues to validate.
-async fn connect_imap(account: &Account) -> Result<ImapClient, NimbusError> {
+async fn connect_imap(account: &Account) -> Result<ImapClient, UnkaiError> {
     let password = credentials::get_imap_password(&account.id)?;
     ImapClient::connect(
         &account.imap_host,
@@ -5974,9 +5959,9 @@ async fn connect_imap(account: &Account) -> Result<ImapClient, NimbusError> {
 }
 
 /// Connect to an account's JMAP server using the stored password.
-async fn connect_jmap(account: &Account) -> Result<JmapClient, NimbusError> {
+async fn connect_jmap(account: &Account) -> Result<JmapClient, UnkaiError> {
     let jmap_url = account.jmap_url.as_deref().ok_or_else(|| {
-        NimbusError::Other(format!(
+        UnkaiError::Other(format!(
             "Account '{}' has use_jmap=true but no jmap_url configured",
             account.id
         ))
@@ -5999,7 +5984,7 @@ async fn fetch_envelopes(
     folder: String,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     match fetch_envelopes_inner(&account_id, &folder, limit, &cache).await {
         Ok(envs) => Ok(envs),
         Err(e) => {
@@ -6014,7 +5999,7 @@ async fn fetch_envelopes_inner(
     folder: &str,
     limit: u32,
     cache: &Cache,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     let account = load_account(cache, account_id)?;
     let _ = poll_folder(&account, folder, limit, cache).await?;
     // The poll helper already wrote through to the cache and updated
@@ -6048,7 +6033,7 @@ async fn fetch_older_envelopes(
     before_uid: u32,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
         tracing::warn!(
@@ -6092,7 +6077,7 @@ async fn fetch_older_unified_envelopes(
     before_uid_per_account: std::collections::HashMap<String, u32>,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     let accounts = account_store::load_accounts(&cache).unwrap_or_default();
     let mut merged: Vec<EmailEnvelope> = Vec::new();
     for account in &accounts {
@@ -6152,7 +6137,7 @@ async fn fetch_unified_envelopes(
     folder: String,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     let accounts = account_store::load_accounts(&cache).unwrap_or_default();
     for account in &accounts {
         if let Err(e) = poll_folder(account, &folder, limit, &cache).await {
@@ -6202,7 +6187,7 @@ async fn poll_folder(
     folder: &str,
     limit: u32,
     cache: &Cache,
-) -> Result<FolderPollOutcome, NimbusError> {
+) -> Result<FolderPollOutcome, UnkaiError> {
     let account_id = &account.id;
     let prior = cache.get_sync_state(account_id, folder).ok().flatten();
     let prior_highest = prior.as_ref().and_then(|s| s.highest_uid_seen);
@@ -6307,7 +6292,7 @@ async fn poll_folder(
     // `fetch_envelopes` above only fetches UIDs strictly newer than
     // the cache bookmark, so flag flips another client made
     // (mark-read on a phone, answer from webmail, star elsewhere)
-    // never round-trip into Nimbus.  Cheap catch-up: one
+    // never round-trip into Unkai.  Cheap catch-up: one
     // `UID FETCH x,y,z (UID FLAGS)` on the same window the user
     // sees in the mail list.  Read the recent UIDs from the cache
     // *before* the upsert below — the freshly-fetched batch will
@@ -6407,7 +6392,7 @@ async fn poll_folder(
     // *and* re-flagged won't be flickered between the two writes —
     // the upsert lands its envelope-derived flags first, the
     // reconcile then runs against everything else.  `replied_kind`
-    // is preserved by `reconcile_envelope_flags` (Nimbus-only
+    // is preserved by `reconcile_envelope_flags` (Unkai-only
     // metadata that IMAP can't carry).
     let flag_changes = if flag_snapshots.is_empty() {
         0
@@ -6449,10 +6434,10 @@ async fn fetch_message(
     folder: String,
     uid: u32,
     cache: State<'_, Cache>,
-) -> Result<Email, NimbusError> {
+) -> Result<Email, UnkaiError> {
     match fetch_message_inner(&account_id, &folder, uid, &cache).await {
         Ok(email) => Ok(email),
-        Err(NimbusError::MessageGone) => {
+        Err(UnkaiError::MessageGone) => {
             tracing::info!(
                 "fetch_message: UID {uid} in '{account_id}'/'{folder}' is gone on the server; \
                  evicting cached envelope"
@@ -6461,7 +6446,7 @@ async fn fetch_message(
                 tracing::warn!("remove_envelope after MessageGone failed: {e}");
             }
             emit_mail_flags_updated(&app, &account_id, &folder);
-            Err(NimbusError::MessageGone)
+            Err(UnkaiError::MessageGone)
         }
         Err(e) => {
             tracing::error!("fetch_message failed: {e}");
@@ -6475,7 +6460,7 @@ async fn fetch_message_inner(
     folder: &str,
     uid: u32,
     cache: &Cache,
-) -> Result<Email, NimbusError> {
+) -> Result<Email, UnkaiError> {
     let account = load_account(cache, account_id)?;
 
     let email = if uses_jmap(&account) {
@@ -6517,10 +6502,10 @@ async fn download_email_attachment(
     uid: u32,
     part_id: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<u8>, NimbusError> {
+) -> Result<Vec<u8>, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
-        return Err(NimbusError::Protocol(
+        return Err(UnkaiError::Protocol(
             "JMAP attachment download is not implemented yet".into(),
         ));
     }
@@ -6534,7 +6519,7 @@ async fn download_email_attachment(
 //
 // Persists frontend-generated thumbnails alongside the cached
 // message body so MailView re-renders without re-fetching the
-// full attachment bytes.  See nimbus-store/src/cache/mod.rs
+// full attachment bytes.  See unkai-store/src/cache/mod.rs
 // for the schema and helpers.
 
 #[derive(Debug, Clone, Serialize)]
@@ -6566,14 +6551,14 @@ fn put_attachment_preview(
     mime: String,
     base64: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let bytes = STANDARD
         .decode(base64.as_bytes())
-        .map_err(|e| NimbusError::Other(format!("attachment preview base64 decode: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("attachment preview base64 decode: {e}")))?;
     cache
         .put_attachment_preview(&account_id, &folder, uid, part_id, &mime, &bytes)
-        .map_err(NimbusError::from)
+        .map_err(UnkaiError::from)
 }
 
 /// Bulk-fetch every stored thumbnail for a message.  MailView
@@ -6586,11 +6571,11 @@ fn get_attachment_previews(
     folder: String,
     uid: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<AttachmentPreviewView>, NimbusError> {
+) -> Result<Vec<AttachmentPreviewView>, UnkaiError> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let rows = cache
         .get_attachment_previews_for_message(&account_id, &folder, uid)
-        .map_err(NimbusError::from)?;
+        .map_err(UnkaiError::from)?;
     Ok(rows
         .into_iter()
         .map(|r| AttachmentPreviewView {
@@ -6616,10 +6601,10 @@ async fn download_calendar_from_message(
     folder: String,
     uid: u32,
     cache: State<'_, Cache>,
-) -> Result<Option<Vec<u8>>, NimbusError> {
+) -> Result<Option<Vec<u8>>, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
-        return Err(NimbusError::Protocol(
+        return Err(UnkaiError::Protocol(
             "JMAP calendar extraction is not implemented yet".into(),
         ));
     }
@@ -6642,7 +6627,7 @@ async fn mark_as_read(
     uid: u32,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     set_message_read(account_id, folder, uid, true, cache, app).await
 }
 
@@ -6658,7 +6643,7 @@ async fn set_message_read(
     read: bool,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     // Optimistic cache update — instant UI feedback. Both the
     // `mark_envelope_*` helpers also adjust `folders.unread_count`
     // so the sidebar badge moves with the change.
@@ -6714,11 +6699,11 @@ async fn delete_message(
     folder: String,
     uid: u32,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_account(&cache, &account_id)?;
 
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Deleting messages via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
@@ -6737,7 +6722,7 @@ async fn delete_message(
 
     // Drafts-folder cleanup (#193): if this is a draft and its
     // cached body carries Compose-stamped Nextcloud share
-    // markers (`data-nimbus-share-id` + `data-nimbus-share-nc`
+    // markers (`data-unkai-share-id` + `data-unkai-share-nc`
     // on the share-link anchors), tear those shares down before
     // the message itself goes away.  Without this, deleting a
     // draft from the mail list leaves dangling entries in the
@@ -6756,7 +6741,7 @@ async fn delete_message(
             if let Err(e) = (async {
                 let nc_account = load_nextcloud_account(&nc_id_owned)?;
                 let app_password = credentials::get_nextcloud_password(&nc_id_owned)?;
-                nimbus_nextcloud::delete_share(
+                unkai_nextcloud::delete_share(
                     &nc_account.server_url,
                     &nc_account.username,
                     &app_password,
@@ -6873,10 +6858,10 @@ fn pick_trash_folder(account_id: &str, cache: &Cache) -> Option<String> {
 /// delete (Ok) *or* reported the UID isn't there (the probe error we
 /// added to `delete_message`) — in both cases the cached envelope
 /// should come out.
-fn should_clean_cache_for_delete(result: &Result<(), NimbusError>) -> bool {
+fn should_clean_cache_for_delete(result: &Result<(), UnkaiError>) -> bool {
     match result {
         Ok(()) => true,
-        Err(NimbusError::Protocol(msg)) => msg.contains("isn't in folder"),
+        Err(UnkaiError::Protocol(msg)) => msg.contains("isn't in folder"),
         _ => false,
     }
 }
@@ -6895,17 +6880,17 @@ async fn archive_message(
     folder: String,
     uid: u32,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_account(&cache, &account_id)?;
 
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Archiving via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
 
     let Some(archive) = pick_archive_folder(&account.id, cache.inner()) else {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "no Archive folder found for this account — create one on the server or tell us which folder to use".into(),
         ));
     };
@@ -6974,11 +6959,11 @@ async fn move_message(
     uid: u32,
     dest_folder: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_account(&cache, &account_id)?;
 
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Move via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
@@ -7051,14 +7036,14 @@ async fn move_messages(
     uids: Vec<u32>,
     dest_folder: String,
     cache: State<'_, Cache>,
-) -> Result<Vec<u32>, NimbusError> {
+) -> Result<Vec<u32>, UnkaiError> {
     if uids.is_empty() {
         return Ok(vec![]);
     }
     let account = load_account(&cache, &account_id)?;
 
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Move via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
@@ -7145,14 +7130,14 @@ async fn archive_messages(
     folder: String,
     uids: Vec<u32>,
     cache: State<'_, Cache>,
-) -> Result<Vec<u32>, NimbusError> {
+) -> Result<Vec<u32>, UnkaiError> {
     if uids.is_empty() {
         return Ok(vec![]);
     }
     let account = load_account(&cache, &account_id)?;
 
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Archive via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
@@ -7160,7 +7145,7 @@ async fn archive_messages(
     let archive = match pick_archive_folder(&account_id, &cache) {
         Some(name) => name,
         None => {
-            return Err(NimbusError::Other(
+            return Err(UnkaiError::Other(
                 "No archive folder found on this account — cannot archive.".into(),
             ));
         }
@@ -7340,7 +7325,7 @@ async fn send_email(
     outbox_source: Option<OutboxSourceRef>,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<i64, NimbusError> {
+) -> Result<i64, UnkaiError> {
     // Validate up-front: building the lettre Message rejects bad
     // addresses, missing bodies, etc.  Doing it here means
     // user-facing input errors still surface in Compose's modal
@@ -7351,11 +7336,11 @@ async fn send_email(
 
     let (from_header, to_display, subject) = outbox_display_fields(&email);
     let outgoing_json = serde_json::to_string(&email)
-        .map_err(|e| NimbusError::Other(format!("serialize OutgoingEmail for outbox: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("serialize OutgoingEmail for outbox: {e}")))?;
     let replied_to_json =
         match replied_to.as_ref() {
             Some(rt) => Some(serde_json::to_string(rt).map_err(|e| {
-                NimbusError::Other(format!("serialize RepliedToRef for outbox: {e}"))
+                UnkaiError::Other(format!("serialize RepliedToRef for outbox: {e}"))
             })?),
             None => None,
         };
@@ -7372,7 +7357,7 @@ async fn send_email(
         }
     }
 
-    let entry_id = cache.enqueue_outbox(&nimbus_store::OutboxEnqueue {
+    let entry_id = cache.enqueue_outbox(&unkai_store::OutboxEnqueue {
         account_id: account_id.clone(),
         outgoing_json,
         replied_to_json,
@@ -7422,6 +7407,28 @@ async fn send_email(
 /// missing local-side bookkeeping will reconcile on the next
 /// envelope fetch).
 async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
+    // Claim the row before doing any real work (#292 follow-up).
+    // Without this guard, the spawned drain `send_email` kicks off
+    // and the periodic `drain_outbox_sweep` can both reach this
+    // function for the same `entry_id` — each reads the row, each
+    // pushes it through SMTP + APPEND-to-Sent, and the recipient
+    // receives the same mail twice.  A 30 s TTL is comfortable for
+    // any healthy SMTP roundtrip and short enough that a crashed
+    // drain stops blocking retries quickly.
+    match cache.claim_outbox_for_drain(entry_id, 30) {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::debug!(
+                "try_drain_outbox_entry: skipping entry {entry_id}, claim held by another drain"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("claim_outbox_for_drain({entry_id}) failed: {e}");
+            return;
+        }
+    }
+
     let row = match cache.get_outbox(entry_id) {
         Ok(Some(r)) => r,
         Ok(None) => return, // Already removed (manual delete, race with another drain).
@@ -7471,7 +7478,7 @@ async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
         }
     };
 
-    let send_result: Result<(), NimbusError> =
+    let send_result: Result<(), UnkaiError> =
         run_send_pipeline(app, cache, &account, &email, replied_to.as_ref()).await;
 
     match send_result {
@@ -7506,7 +7513,7 @@ async fn run_send_pipeline(
     account: &Account,
     email: &OutgoingEmail,
     replied_to: Option<&RepliedToRef>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     if uses_jmap(account) {
         let client = connect_jmap(account).await?;
         client.send_email(email).await?;
@@ -7616,7 +7623,7 @@ struct OutboxRowDto {
     replied_to_json: Option<String>,
 }
 
-fn dto_from_row(row: nimbus_store::OutboxRow) -> OutboxRowDto {
+fn dto_from_row(row: unkai_store::OutboxRow) -> OutboxRowDto {
     OutboxRowDto {
         id: row.id,
         account_id: row.account_id,
@@ -7639,7 +7646,7 @@ fn dto_from_row(row: nimbus_store::OutboxRow) -> OutboxRowDto {
 async fn list_outbox(
     account_id: String,
     cache: State<'_, Cache>,
-) -> Result<Vec<OutboxRowDto>, NimbusError> {
+) -> Result<Vec<OutboxRowDto>, UnkaiError> {
     let rows = cache.list_outbox(&account_id)?;
     Ok(rows.into_iter().map(dto_from_row).collect())
 }
@@ -7648,7 +7655,7 @@ async fn list_outbox(
 /// mode and by anything that needs the global queue (e.g. a tray
 /// "queued mail" indicator).
 #[tauri::command]
-async fn list_all_outbox(cache: State<'_, Cache>) -> Result<Vec<OutboxRowDto>, NimbusError> {
+async fn list_all_outbox(cache: State<'_, Cache>) -> Result<Vec<OutboxRowDto>, UnkaiError> {
     let rows = cache.list_all_outbox()?;
     Ok(rows.into_iter().map(dto_from_row).collect())
 }
@@ -7657,7 +7664,7 @@ async fn list_all_outbox(cache: State<'_, Cache>) -> Result<Vec<OutboxRowDto>, N
 /// query — retained for callers that want the global figure
 /// (tray indicators, future global badges).
 #[tauri::command]
-async fn count_outbox(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
+async fn count_outbox(cache: State<'_, Cache>) -> Result<u32, UnkaiError> {
     Ok(cache.count_outbox()?)
 }
 
@@ -7669,7 +7676,7 @@ async fn count_outbox(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
 #[tauri::command]
 async fn count_outbox_by_account(
     cache: State<'_, Cache>,
-) -> Result<std::collections::HashMap<String, u32>, NimbusError> {
+) -> Result<std::collections::HashMap<String, u32>, UnkaiError> {
     Ok(cache.count_outbox_by_account()?)
 }
 
@@ -7679,7 +7686,7 @@ async fn count_outbox_by_account(
 /// vanished.  Doesn't block: the actual SMTP work runs on a
 /// spawned task so the UI returns instantly.
 #[tauri::command]
-async fn retry_outbox_entry(id: i64, app: AppHandle) -> Result<(), NimbusError> {
+async fn retry_outbox_entry(id: i64, app: AppHandle) -> Result<(), UnkaiError> {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         let cache = app_clone.state::<Cache>();
@@ -7696,7 +7703,7 @@ async fn delete_outbox_entry(
     id: i64,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     cache.remove_outbox(id)?;
     emit_outbox_updated(&app);
     Ok(())
@@ -7712,10 +7719,10 @@ async fn edit_outbox_entry(
     id: i64,
     cache: State<'_, Cache>,
     app: AppHandle,
-) -> Result<OutboxRowDto, NimbusError> {
+) -> Result<OutboxRowDto, UnkaiError> {
     let row = cache
         .get_outbox(id)?
-        .ok_or_else(|| NimbusError::Other(format!("outbox row {id} not found")))?;
+        .ok_or_else(|| UnkaiError::Other(format!("outbox row {id} not found")))?;
     cache.remove_outbox(id)?;
     emit_outbox_updated(&app);
     Ok(dto_from_row(row))
@@ -7811,10 +7818,10 @@ async fn mark_original_answered_jmap(
 /// Locate the account's Sent folder (via the IMAP `\Sent` attribute,
 /// or a name-based fallback) and `APPEND` the raw RFC 822 bytes there.
 /// Marked `\Seen` so it doesn't add to the unread badge.
-async fn append_to_sent(account: &Account, raw: &[u8], cache: &Cache) -> Result<(), NimbusError> {
+async fn append_to_sent(account: &Account, raw: &[u8], cache: &Cache) -> Result<(), UnkaiError> {
     let sent_folder = pick_sent_folder(&account.id, cache);
     let Some(sent) = sent_folder else {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "no Sent folder found in cached folder list".into(),
         ));
     };
@@ -7847,6 +7854,54 @@ struct DraftReplaceSource {
     uid: u32,
 }
 
+/// What `save_draft` reports back to the caller (#292).
+///
+/// `folder` is the IMAP folder we APPENDed into (either the
+/// `replace_source.folder` when editing, or the result of
+/// `pick_drafts_folder` for a fresh draft). `uid` is the new
+/// server-assigned UID discovered via a `UID SEARCH HEADER
+/// Message-ID` round-trip after the APPEND — `None` when the
+/// search failed or returned no hits, in which case the caller
+/// has to treat the next save as a fresh APPEND and accept that
+/// the previous copy will remain in Drafts as a duplicate.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedDraft {
+    folder: String,
+    uid: Option<u32>,
+}
+
+/// Pull the `Message-ID` header value out of a raw RFC 822 message.
+///
+/// Returns the bare bracketed form (e.g. `<uuid@host>`) so the
+/// caller can hand it straight to `find_uid_by_message_id`, which
+/// SEARCHes on the literal header value the IMAP server stored.
+///
+/// Tolerant of casing variants (`Message-ID:` / `Message-Id:` /
+/// `message-id:`) since RFC 5322 header field names are case-
+/// insensitive. Folded continuation lines aren't expected for
+/// Message-ID values (lettre emits a single short line) but the
+/// scanner stops at the first match and bails on the first blank
+/// line, which is the conventional header/body separator.
+fn extract_message_id(raw: &[u8]) -> Option<String> {
+    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let headers = std::str::from_utf8(&raw[..header_end]).ok()?;
+    for line in headers.split("\r\n") {
+        let prefix_len = if line.len() >= "Message-ID:".len()
+            && line[..="Message-ID:".len() - 1].eq_ignore_ascii_case("Message-ID:")
+        {
+            "Message-ID:".len()
+        } else {
+            continue;
+        };
+        let value = line[prefix_len..].trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 /// Save an in-progress message to the account's IMAP Drafts folder.
 ///
 /// Mirrors `send_email` structurally (same `OutgoingEmail` input, same
@@ -7870,17 +7925,22 @@ async fn save_draft(
     email: OutgoingEmail,
     replace_source: Option<DraftReplaceSource>,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<SavedDraft, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
 
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Saving drafts via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
 
     let message = build_outgoing_message(&email)?;
     let raw = message.formatted();
+    // Pulled before APPEND so the post-APPEND SEARCH has a value
+    // to match against even if some later step (e.g. the replace
+    // delete) panics — `None` here just means we can't dedup the
+    // next save, not that the user's draft was lost.
+    let message_id = extract_message_id(&raw);
 
     // Prefer the source folder when replacing an existing draft so
     // APPEND and DELETE both target the folder the user actually
@@ -7889,19 +7949,57 @@ async fn save_draft(
     let target_folder = match replace_source.as_ref() {
         Some(src) => src.folder.clone(),
         None => pick_drafts_folder(&account.id, cache.inner()).ok_or_else(|| {
-            NimbusError::Other("no Drafts folder found in cached folder list".into())
+            UnkaiError::Other("no Drafts folder found in cached folder list".into())
         })?,
     };
 
+    // Optimistic-UI tombstone (#292 follow-up): mark the source
+    // draft as pending-delete BEFORE the IMAP roundtrip so any
+    // mid-flight `fetch_envelopes` (folder switch, sync tick) sees
+    // the cached row already filtered out.  Without this the
+    // frontend's `mergeEnvelopes` keeps the old UID alive in
+    // `existing` (it preserves rows the fresh batch didn't return,
+    // to support pagination) so the user briefly sees both copies
+    // until the eventual sync evicts the stale one.  Mirrors the
+    // pattern in `delete_message`.
+    //
+    // `upsert_message_pending` (not plain `mark_message_pending`)
+    // because chained minimize-saves leave the source UID without
+    // a corresponding cache row: the first minimize APPENDs uid N
+    // but never writes the envelope into the cache, so a second
+    // minimize trying to tombstone uid N as a UPDATE finds zero
+    // rows and silently misses.  A concurrent `poll_folder` mid-
+    // save then inserts the row from IMAP with `pending_action`
+    // NULL and the draft pops back into the visible list.
+    if let Some(src) = replace_source.as_ref()
+        && let Err(e) = cache.upsert_message_pending(&account_id, &src.folder, src.uid, "delete")
+    {
+        tracing::warn!("save_draft upsert_message_pending(delete) failed: {e}");
+    }
+
     let password = credentials::get_imap_password(&account.id)?;
-    let mut client = ImapClient::connect(
+    let connect_result = ImapClient::connect(
         &account.imap_host,
         account.imap_port,
         &account.email,
         &password,
         &account.trusted_certs,
     )
-    .await?;
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            // IMAP unreachable: un-tombstone the row so the user
+            // doesn't lose sight of their existing draft while
+            // we couldn't even attempt the replace.
+            if let Some(src) = replace_source.as_ref()
+                && let Err(c) = cache.clear_message_pending(&account_id, &src.folder, src.uid)
+            {
+                tracing::warn!("clear_message_pending after save_draft connect failure: {c}");
+            }
+            return Err(e);
+        }
+    };
 
     // `\Draft` marks the message as an unfinished draft. `\Seen`
     // keeps it out of the unread badge — there's no point notifying
@@ -7909,6 +8007,16 @@ async fn save_draft(
     let append_result = client
         .append_message(&target_folder, &raw, &["\\Draft", "\\Seen"])
         .await;
+
+    // APPEND failure: the new copy never landed, so the old draft
+    // is still authoritative — un-tombstone it so the user can
+    // see (and retry from) their unchanged source.
+    if append_result.is_err()
+        && let Some(src) = replace_source.as_ref()
+        && let Err(c) = cache.clear_message_pending(&account_id, &src.folder, src.uid)
+    {
+        tracing::warn!("clear_message_pending after save_draft APPEND failure: {c}");
+    }
 
     // Only attempt the delete if the APPEND actually succeeded —
     // otherwise a flaky APPEND would have us destroy the user's
@@ -7918,17 +8026,29 @@ async fn save_draft(
     // envelope left over from a previous expunge) — either way the
     // cached row is wrong and hanging onto it just makes the next
     // edit attempt fail the same way.
-    let result = if append_result.is_ok() {
-        if let Some(src) = replace_source {
+    let delete_result = if append_result.is_ok() {
+        if let Some(src) = replace_source.as_ref() {
             let delete_result = client.delete_message(&src.folder, src.uid).await;
-            if should_clean_cache_for_delete(&delete_result)
-                && let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid)
+            let should_clean = should_clean_cache_for_delete(&delete_result);
+            if should_clean && let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid)
             {
                 tracing::warn!("remove_envelope after save_draft replace failed: {e}");
             }
+            // Real DELETE failure (not the stale-UID case the cleanup
+            // heuristic absorbs): the old draft is still on the
+            // server even though APPEND succeeded.  Un-tombstone so
+            // the user sees it again — the new copy is also in
+            // place, so the result is two visible drafts and the
+            // user can manually discard whichever they want.
+            if !should_clean
+                && delete_result.is_err()
+                && let Err(c) = cache.clear_message_pending(&account_id, &src.folder, src.uid)
+            {
+                tracing::warn!("clear_message_pending after save_draft DELETE failure: {c}");
+            }
             match delete_result {
                 Ok(()) => Ok(()),
-                Err(e) => Err(NimbusError::Other(format!(
+                Err(e) => Err(UnkaiError::Other(format!(
                     "Draft saved, but removing the previous copy (UID {}) failed: {e}",
                     src.uid
                 ))),
@@ -7940,8 +8060,181 @@ async fn save_draft(
         append_result
     };
 
+    // SEARCH the target folder for the just-APPENDed message by
+    // Message-ID so the caller can pass the new UID as
+    // `replace_source` on the next save (#292) — keeps Drafts
+    // pruned to one copy per in-flight Compose instead of letting
+    // every minimize stack a fresh duplicate. Best-effort: a
+    // missing Message-ID, a server that rejects the SEARCH, or a
+    // server that hasn't yet indexed the new mail all collapse
+    // back to `uid: None`, and the caller treats the next save as
+    // a fresh APPEND.
+    let new_uid = if delete_result.is_ok() {
+        match &message_id {
+            Some(id) => match client.find_uid_by_message_id(&target_folder, id).await {
+                Ok(uid) => uid,
+                Err(e) => {
+                    tracing::warn!("SEARCH after save_draft APPEND failed: {e}");
+                    None
+                }
+            },
+            None => {
+                tracing::warn!(
+                    "save_draft: could not extract Message-ID from raw bytes; \
+                     next save will not be able to replace this copy"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let _ = client.logout().await;
-    result
+    delete_result.map(|()| SavedDraft {
+        folder: target_folder,
+        uid: new_uid,
+    })
+}
+
+/// Synchronously tombstone a Drafts row that's about to be expunged
+/// by the send pipeline (#292 follow-up).
+///
+/// Compose's `send()` closes the modal immediately (#156's instant-
+/// close UX) and bumps `refreshToken` via the parent's
+/// `closeCompose`.  That bump triggers MailList's `load()` BEFORE
+/// the background `runSendPipeline` reaches its
+/// `invoke('delete_message')` call — so without an upfront
+/// tombstone, the fresh fetch returns the source draft and
+/// `mergeEnvelopes` puts it back in the visible list, where it
+/// hangs around until the next sync evicts it.
+///
+/// Calling this from the frontend BEFORE `onclose()` plants the
+/// tombstone in time: `get_cached_envelopes` filters on
+/// `pending_action IS NULL`, and `upsert_envelopes_for_account`
+/// doesn't include `pending_action` in its ON CONFLICT UPDATE list,
+/// so a concurrent sync writing the same row preserves the
+/// tombstone.  The eventual `delete_message` call still does the
+/// real IMAP work and either removes the row entirely (success)
+/// or clears the tombstone (real failure) — same semantics as
+/// calling `delete_message` alone, just split so the cache flag
+/// lands before the visible refresh.
+#[tauri::command]
+async fn tombstone_draft_for_expunge(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    // `upsert_message_pending` (not plain `mark_message_pending`)
+    // because a minimize-saved draft lives on the IMAP server
+    // without a corresponding cache row — `save_draft` only
+    // touches the cache on the replace path.  Without the upsert,
+    // an UPDATE-only tombstone would miss those UIDs entirely
+    // and the next poll would re-insert them sans `pending_action`,
+    // flashing the row back into the visible list (#292 follow-up).
+    cache
+        .upsert_message_pending(&account_id, &folder, uid, "delete")
+        .map_err(Into::into)
+}
+
+/// Permanently expunge a Drafts UID after the user sent its
+/// contents (#292 follow-up).
+///
+/// Different from the user-facing `delete_message` command in two
+/// important ways:
+///
+/// 1. **Skips move-to-Trash.**  `delete_message` routes "delete from
+///    a non-Trash folder" through a `UID COPY` to Trash followed by
+///    an EXPUNGE of the source.  That's right for a manual delete
+///    (user can recover from Trash) but wrong here: the draft was
+///    *consumed* by the send, depositing a duplicate in Trash
+///    would just clutter the user's mailbox.  Matches the inline
+///    expunge the `save_draft` replace path uses for the same
+///    reason.
+///
+/// 2. **Keeps the tombstone on IMAP failure.**  `delete_message`
+///    clears `pending_action` on real failures so the row reappears
+///    on the next poll — which is correct for a delete that the
+///    user can retry from the visible list, but produces the
+///    "draft flicks back into Drafts after sending" symptom here:
+///    the mail itself shipped, so the user expects the draft to
+///    be gone whether or not the cleanup IMAP DELETE landed.  We
+///    leave the tombstone in place; if the row really survived on
+///    the server, a folder-wipe reconcile or a fresh poll will
+///    eventually re-surface it, but the immediate post-send
+///    experience is correct.
+#[tauri::command]
+async fn expunge_draft_after_send(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    let account = load_account(&cache, &account_id)?;
+
+    if uses_jmap(&account) {
+        return Err(UnkaiError::Other(
+            "Expunging drafts via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    // Tombstone the row (creating a placeholder if absent — the
+    // minimize-saved UID case where the cache row doesn't exist
+    // yet) so any concurrent poll keeps the row hidden across the
+    // IMAP roundtrip.
+    if let Err(e) = cache.upsert_message_pending(&account_id, &folder, uid, "delete") {
+        tracing::warn!("expunge_draft_after_send upsert_message_pending failed: {e}");
+    }
+
+    let password = credentials::get_imap_password(&account.id)?;
+    let connect_result = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            // No tombstone clear here — see fn docs for the
+            // post-send UX rationale.  The user already shipped
+            // the mail; surfacing a half-deleted source draft
+            // doesn't help them.
+            return Err(e);
+        }
+    };
+
+    let delete_result = client.delete_message(&folder, uid).await;
+    let _ = client.logout().await;
+
+    // Deliberately *not* dropping the cache row on success here
+    // (#292 follow-up).  Some IMAP servers (Gmail, certain
+    // Exchange variants) take a moment to propagate an EXPUNGE
+    // to fresh sessions — long enough that a `poll_folder` racing
+    // ahead of the propagation will re-fetch the just-deleted UID,
+    // and if the row is already gone from the cache the INSERT
+    // path of `upsert_envelopes_for_account` writes a fresh row
+    // *without* `pending_action`, so the draft pops back into the
+    // visible list.  Leaving the tombstone planted keeps the row
+    // hidden across that window — the next reconcile pass in
+    // `poll_folder` removes it cleanly once the server confirms
+    // it's gone from `list_all_uids`.
+    //
+    // The stale-UID case ("isn't in folder") is also fine to
+    // leave tombstoned: the row already isn't on the server, so
+    // reconcile will drop it on the next poll.
+    //
+    // Real IMAP failure (server unreachable mid-EXPUNGE,
+    // permission error, etc.) → tombstone also stays.  The
+    // user already shipped the mail; surfacing a half-deleted
+    // source draft would just confuse.  If the server really
+    // never removed the message, a future poll's reconcile keeps
+    // the row cached and tombstoned; that's a soft leak but
+    // user-invisible.
+    delete_result
 }
 
 /// Pick the most likely Drafts folder name from the cached folder list.
@@ -8022,7 +8315,7 @@ fn pick_sent_folder(account_id: &str, cache: &Cache) -> Option<String> {
 async fn fetch_folders(
     account_id: String,
     cache: State<'_, Cache>,
-) -> Result<Vec<Folder>, NimbusError> {
+) -> Result<Vec<Folder>, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
 
     let folders = if uses_jmap(&account) {
@@ -8047,7 +8340,7 @@ async fn fetch_folders(
 fn get_cached_folders(
     account_id: String,
     cache: State<'_, Cache>,
-) -> Result<Vec<Folder>, NimbusError> {
+) -> Result<Vec<Folder>, UnkaiError> {
     cache.get_folders(&account_id).map_err(Into::into)
 }
 
@@ -8068,10 +8361,10 @@ async fn create_folder(
     account_id: String,
     name: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Creating folders via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
@@ -8090,10 +8383,10 @@ async fn delete_folder(
     account_id: String,
     name: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Deleting folders via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
@@ -8119,10 +8412,10 @@ async fn rename_folder(
     old_name: String,
     new_name: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Renaming folders via JMAP is not yet implemented — this account uses JMAP".into(),
         ));
     }
@@ -8153,7 +8446,7 @@ fn get_cached_envelopes(
     folder: String,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     cache
         .get_envelopes(&account_id, &folder, limit)
         .map_err(Into::into)
@@ -8167,7 +8460,7 @@ fn get_unified_cached_envelopes(
     folder: String,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     cache
         .get_unified_envelopes(&folder, limit)
         .map_err(Into::into)
@@ -8179,7 +8472,7 @@ fn get_cached_message(
     folder: String,
     uid: u32,
     cache: State<'_, Cache>,
-) -> Result<Option<Email>, NimbusError> {
+) -> Result<Option<Email>, UnkaiError> {
     cache
         .get_message(&account_id, &folder, uid)
         .map_err(Into::into)
@@ -8196,7 +8489,7 @@ async fn test_jmap_connection(
     jmap_url: String,
     username: String,
     password: String,
-) -> Result<String, NimbusError> {
+) -> Result<String, UnkaiError> {
     tracing::info!("Testing JMAP connection to {jmap_url} as {username}");
     JmapClient::test(&jmap_url, &username, &password).await
 }
@@ -8207,7 +8500,7 @@ async fn test_jmap_connection(
 /// doesn't support JMAP. This is a best-effort probe — it's fine to
 /// fall back to IMAP if this fails.
 #[tauri::command]
-async fn detect_jmap(host: String) -> Result<Option<String>, NimbusError> {
+async fn detect_jmap(host: String) -> Result<Option<String>, UnkaiError> {
     // Try HTTPS first (standard), then HTTP as fallback.
     for scheme in &["https", "http"] {
         let url = format!("{scheme}://{host}/.well-known/jmap");
@@ -8216,7 +8509,7 @@ async fn detect_jmap(host: String) -> Result<Option<String>, NimbusError> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
-            .map_err(|e| NimbusError::Network(format!("HTTP client error: {e}")))?;
+            .map_err(|e| UnkaiError::Network(format!("HTTP client error: {e}")))?;
 
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 401 => {
@@ -8328,7 +8621,7 @@ fn percent_decode(s: &str) -> String {
 /// Run a full-text search against the local mail cache.
 ///
 /// The query is parsed as operator-prefixed syntax (FROM:, TO:,
-/// SUBJECT:, etc. — see `nimbus_store::cache::search` for the full
+/// SUBJECT:, etc. — see `unkai_store::cache::search` for the full
 /// grammar). `scope` and
 /// `filters` are optional narrowings from the UI — empty values
 /// mean "search everything the cache has".
@@ -8338,7 +8631,7 @@ fn search_emails(
     scope: Option<SearchScope>,
     filters: Option<SearchFilters>,
     cache: State<'_, Cache>,
-) -> Result<Vec<SearchHit>, NimbusError> {
+) -> Result<Vec<SearchHit>, UnkaiError> {
     let scope = scope.unwrap_or_default();
     let filters = filters.unwrap_or_default();
     cache
@@ -8362,7 +8655,7 @@ async fn search_imap_server(
     query: String,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
         // JMAP cache-first coverage is comprehensive; no separate
@@ -8406,7 +8699,7 @@ async fn search_imap_server_older(
     before_uid: u32,
     limit: u32,
     cache: State<'_, Cache>,
-) -> Result<Vec<EmailEnvelope>, NimbusError> {
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
         return Ok(Vec::new());
@@ -8552,12 +8845,12 @@ struct MailFlagsUpdatedPayload {
 }
 
 /// Bring the main window to the front. Called from the tray's
-/// left-click handler, the tray menu's "Open Nimbus" item, and the
+/// left-click handler, the tray menu's "Open Unkai" item, and the
 /// `show_main_window` command.
-fn show_main_window(app: &AppHandle) -> Result<(), NimbusError> {
+fn show_main_window(app: &AppHandle) -> Result<(), UnkaiError> {
     let win = app
         .get_webview_window("main")
-        .ok_or_else(|| NimbusError::Other("main window not found".into()))?;
+        .ok_or_else(|| UnkaiError::Other("main window not found".into()))?;
     // show() may be a no-op if the window is already visible, but
     // unminimize() + set_focus() still make sense in that case.
     let _ = win.show();
@@ -8572,7 +8865,7 @@ fn show_main_window(app: &AppHandle) -> Result<(), NimbusError> {
 /// the fresh total. Used by both the periodic loop and the `Check Mail
 /// Now` tray/UI action — same code path so manual and automatic
 /// refreshes behave identically.
-async fn check_mail_now_inner(app: &AppHandle) -> Result<(), NimbusError> {
+async fn check_mail_now_inner(app: &AppHandle) -> Result<(), UnkaiError> {
     let cache = app.state::<Cache>();
     let accounts = account_store::load_accounts(&cache).unwrap_or_default();
 
@@ -8646,7 +8939,7 @@ fn refresh_unread_badge(app: &AppHandle) {
         }
     };
 
-    if let Some(tray) = app.tray_by_id("nimbus-main") {
+    if let Some(tray) = app.tray_by_id("unkai-main") {
         let base = app.state::<TrayBaseIcon>();
         let bitmap = match base.0.lock() {
             Ok(g) => g.clone(),
@@ -8660,9 +8953,9 @@ fn refresh_unread_badge(app: &AppHandle) {
             tracing::warn!("failed to update tray icon: {e}");
         }
         let tip = if total == 0 {
-            "Nimbus Mail".to_string()
+            "Unkai Mail".to_string()
         } else {
-            format!("Nimbus Mail — {total} unread")
+            format!("Unkai Mail — {total} unread")
         };
         let _ = tray.set_tooltip(Some(&tip));
     }
@@ -8710,7 +9003,7 @@ fn refresh_unread_badge(app: &AppHandle) {
 #[tauri::command]
 fn get_unread_counts_by_account(
     cache: State<'_, Cache>,
-) -> Result<std::collections::HashMap<String, u32>, NimbusError> {
+) -> Result<std::collections::HashMap<String, u32>, UnkaiError> {
     cache.unread_counts_by_account().map_err(Into::into)
 }
 
@@ -8849,7 +9142,7 @@ struct EventReminderPayload {
 /// `calendar_reminders_enabled` for events without).  Called
 /// from the background sync loop; cheap because it reads from
 /// the local cache only.
-async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> {
+async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), UnkaiError> {
     use chrono::Utc;
 
     let settings = app.state::<SharedSettings>();
@@ -8920,7 +9213,7 @@ async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError>
             .get(master.id.as_str())
             .cloned()
             .unwrap_or_default();
-        events.extend(nimbus_caldav::expand_event(
+        events.extend(unkai_caldav::expand_event(
             master,
             &ovs,
             range_start,
@@ -9125,7 +9418,7 @@ fn vevent_uid_from_event_id(id: &str) -> String {
 fn dismiss_event_reminder(
     uid: String,
     state: State<'_, EventReminderState>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     {
         let mut d = state
             .dismissed
@@ -9161,10 +9454,10 @@ fn snooze_event_reminder(
     uid: String,
     snooze_until_iso: String,
     state: State<'_, EventReminderState>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let snooze_until = chrono::DateTime::parse_from_rfc3339(&snooze_until_iso)
         .map_err(|e| {
-            NimbusError::Other(format!(
+            UnkaiError::Other(format!(
                 "snooze_event_reminder: invalid timestamp '{snooze_until_iso}': {e}"
             ))
         })?
@@ -9365,7 +9658,7 @@ struct FontCacheFile {
 }
 
 fn font_cache_path() -> Option<std::path::PathBuf> {
-    dirs::cache_dir().map(|d| d.join("nimbus-mail").join("system_fonts.json"))
+    dirs::cache_dir().map(|d| d.join("unkai-mail").join("system_fonts.json"))
 }
 
 /// Standard system font directories per OS.  Used for the
@@ -9497,8 +9790,8 @@ struct FidoStatusView {
 /// path to decide whether to require an unlock before opening the
 /// cache.
 #[tauri::command]
-fn fido_status() -> Result<FidoStatusView, NimbusError> {
-    let env = nimbus_store::cache::key::load_envelope()?;
+fn fido_status() -> Result<FidoStatusView, UnkaiError> {
+    let env = unkai_store::cache::key::load_envelope()?;
     Ok(FidoStatusView {
         has_plain_key: env.plain_key.is_some(),
         credentials: env
@@ -9506,8 +9799,8 @@ fn fido_status() -> Result<FidoStatusView, NimbusError> {
             .into_iter()
             .map(|w| FidoCredentialView {
                 kind: match w.kind {
-                    nimbus_store::fido::WrapKind::FidoPrf => "fido_prf".to_string(),
-                    nimbus_store::fido::WrapKind::Passphrase => "passphrase".to_string(),
+                    unkai_store::fido::WrapKind::FidoPrf => "fido_prf".to_string(),
+                    unkai_store::fido::WrapKind::Passphrase => "passphrase".to_string(),
                 },
                 credential_id: w.credential_id,
                 label: w.label,
@@ -9523,9 +9816,9 @@ fn fido_status() -> Result<FidoStatusView, NimbusError> {
 /// credentials.create` so the authenticator returns the matching
 /// PRF output.
 #[tauri::command]
-fn fido_generate_salt() -> Result<String, NimbusError> {
-    let salt = nimbus_store::fido::generate_salt()?;
-    Ok(nimbus_store::fido::encode_b64(&salt))
+fn fido_generate_salt() -> Result<String, UnkaiError> {
+    let salt = unkai_store::fido::generate_salt()?;
+    Ok(unkai_store::fido::encode_b64(&salt))
 }
 
 /// Wrap the current master key under a freshly-registered FIDO
@@ -9540,22 +9833,22 @@ fn fido_enroll(
     prf_output_b64: String,
     label: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
-    use nimbus_store::fido;
-    let env = nimbus_store::cache::key::load_envelope()?;
+) -> Result<(), UnkaiError> {
+    use unkai_store::fido;
+    let env = unkai_store::cache::key::load_envelope()?;
     // Same fallback as `fido_enroll_passphrase`: prefer the
     // envelope's plain key, fall back to the in-memory copy
     // when FIDO-only mode has cleared plain_key.
     let plain_hex = match env.plain_key.as_deref() {
         Some(hex) => hex.to_string(),
         None => cache.master_key_hex().ok_or_else(|| {
-            NimbusError::Auth(
+            UnkaiError::Auth(
                 "Cannot enroll a credential while the database is locked — unlock first".into(),
             )
         })?,
     };
     let master_key = hex::decode(&plain_hex)
-        .map_err(|e| NimbusError::Storage(format!("master key hex decode: {e}")))?;
+        .map_err(|e| UnkaiError::Storage(format!("master key hex decode: {e}")))?;
     let credential_id = fido::decode_b64(&credential_id_b64)?;
     let salt = fido::decode_b64(&salt_b64)?;
     let prf_output = fido::decode_b64(&prf_output_b64)?;
@@ -9567,7 +9860,7 @@ fn fido_enroll(
         &salt,
         label,
     )?;
-    nimbus_store::cache::key::add_wrap(wrap)?;
+    unkai_store::cache::key::add_wrap(wrap)?;
     Ok(())
 }
 
@@ -9582,12 +9875,12 @@ fn fido_enroll_passphrase(
     passphrase: String,
     label: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
-    use nimbus_store::fido::{self, WrapKind};
+) -> Result<(), UnkaiError> {
+    use unkai_store::fido::{self, WrapKind};
     if passphrase.trim().is_empty() {
-        return Err(NimbusError::Other("passphrase must not be empty".into()));
+        return Err(UnkaiError::Other("passphrase must not be empty".into()));
     }
-    let mut env = nimbus_store::cache::key::load_envelope()?;
+    let mut env = unkai_store::cache::key::load_envelope()?;
     // Prefer the keychain envelope's plain key (pre-FIDO-only),
     // fall back to the in-memory copy that `unlock_with_*` stashes
     // on the Cache.  The fallback is what makes "Change passphrase"
@@ -9596,13 +9889,13 @@ fn fido_enroll_passphrase(
     let plain_hex = match env.plain_key.as_deref() {
         Some(hex) => hex.to_string(),
         None => cache.master_key_hex().ok_or_else(|| {
-            NimbusError::Auth(
+            UnkaiError::Auth(
                 "Cannot enroll a passphrase while the database is locked — unlock first".into(),
             )
         })?,
     };
     let master_key = hex::decode(&plain_hex)
-        .map_err(|e| NimbusError::Storage(format!("master key hex decode: {e}")))?;
+        .map_err(|e| UnkaiError::Storage(format!("master key hex decode: {e}")))?;
     let salt = fido::generate_salt()?;
     let id = fido::generate_passphrase_id()?;
     let aes_key = fido::derive_passphrase_key(&passphrase, &salt)?;
@@ -9622,7 +9915,7 @@ fn fido_enroll_passphrase(
     // different ids).
     env.wraps.retain(|w| w.kind != WrapKind::Passphrase);
     env.wraps.push(wrap);
-    nimbus_store::cache::key::save_envelope(&env)?;
+    unkai_store::cache::key::save_envelope(&env)?;
     Ok(())
 }
 
@@ -9633,9 +9926,9 @@ fn fido_enroll_passphrase(
 /// Returns `true` on success, `false` on a wrong passphrase /
 /// no matching wrap, error on storage / crypto failure.
 #[tauri::command]
-fn fido_verify_passphrase(passphrase: String) -> Result<bool, NimbusError> {
-    use nimbus_store::fido::{self, WrapKind};
-    let env = nimbus_store::cache::key::load_envelope()?;
+fn fido_verify_passphrase(passphrase: String) -> Result<bool, UnkaiError> {
+    use unkai_store::fido::{self, WrapKind};
+    let env = unkai_store::cache::key::load_envelope()?;
     for wrap in &env.wraps {
         if wrap.kind != WrapKind::Passphrase {
             continue;
@@ -9655,9 +9948,9 @@ fn fido_verify_passphrase(passphrase: String) -> Result<bool, NimbusError> {
 /// here.  Phase 1B's lock screen will use this; today it lets
 /// you sanity-check that a registered hardware key still works.
 #[tauri::command]
-fn fido_verify_prf(credential_id_b64: String, prf_output_b64: String) -> Result<bool, NimbusError> {
-    use nimbus_store::fido::{self, WrapKind};
-    let env = nimbus_store::cache::key::load_envelope()?;
+fn fido_verify_prf(credential_id_b64: String, prf_output_b64: String) -> Result<bool, UnkaiError> {
+    use unkai_store::fido::{self, WrapKind};
+    let env = unkai_store::cache::key::load_envelope()?;
     let prf = fido::decode_b64(&prf_output_b64)?;
     for wrap in &env.wraps {
         if wrap.kind != WrapKind::FidoPrf {
@@ -9677,14 +9970,14 @@ fn fido_verify_prf(credential_id_b64: String, prf_output_b64: String) -> Result<
 /// when the keychain is in FIDO-only mode (would orphan the
 /// encrypted DB).
 #[tauri::command]
-fn fido_remove(credential_id_b64: String) -> Result<(), NimbusError> {
-    let env = nimbus_store::cache::key::load_envelope()?;
+fn fido_remove(credential_id_b64: String) -> Result<(), UnkaiError> {
+    let env = unkai_store::cache::key::load_envelope()?;
     if env.plain_key.is_none() && env.wraps.len() <= 1 {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Cannot remove the last hardware key while FIDO-only mode is active".into(),
         ));
     }
-    nimbus_store::cache::key::remove_wrap(&credential_id_b64)?;
+    unkai_store::cache::key::remove_wrap(&credential_id_b64)?;
     Ok(())
 }
 
@@ -9713,8 +10006,8 @@ struct DatabaseStatusView {
 /// Snapshot used by `App.svelte` on mount to decide whether to
 /// route the user to the lock screen or straight into the inbox.
 #[tauri::command]
-fn database_status(cache: State<'_, Cache>) -> Result<DatabaseStatusView, NimbusError> {
-    let env = nimbus_store::cache::key::load_envelope()?;
+fn database_status(cache: State<'_, Cache>) -> Result<DatabaseStatusView, UnkaiError> {
+    let env = unkai_store::cache::key::load_envelope()?;
     let locked = cache.is_locked();
     let attempts_remaining = match (env.wipe_on_failure, env.max_unlock_attempts) {
         (true, Some(max)) if max > 0 => Some(max.saturating_sub(env.failed_attempts)),
@@ -9728,8 +10021,8 @@ fn database_status(cache: State<'_, Cache>) -> Result<DatabaseStatusView, Nimbus
             .into_iter()
             .map(|w| FidoCredentialView {
                 kind: match w.kind {
-                    nimbus_store::fido::WrapKind::FidoPrf => "fido_prf".to_string(),
-                    nimbus_store::fido::WrapKind::Passphrase => "passphrase".to_string(),
+                    unkai_store::fido::WrapKind::FidoPrf => "fido_prf".to_string(),
+                    unkai_store::fido::WrapKind::Passphrase => "passphrase".to_string(),
                 },
                 credential_id: w.credential_id,
                 label: w.label,
@@ -9748,7 +10041,7 @@ fn perform_wipe(cache: &Cache) {
     if let Err(e) = cache.wipe_on_disk() {
         tracing::error!("wipe_on_disk failed: {e}");
     }
-    let cleared = nimbus_store::fido::KeychainEnvelope {
+    let cleared = unkai_store::fido::KeychainEnvelope {
         version: 1,
         plain_key: None,
         wraps: Vec::new(),
@@ -9757,7 +10050,7 @@ fn perform_wipe(cache: &Cache) {
         failed_attempts: 0,
         integrity_mac: None,
     };
-    if let Err(e) = nimbus_store::cache::key::save_envelope(&cleared) {
+    if let Err(e) = unkai_store::cache::key::save_envelope(&cleared) {
         tracing::error!("clearing envelope after wipe failed: {e}");
     }
 }
@@ -9769,18 +10062,18 @@ fn perform_wipe(cache: &Cache) {
 /// kill+relaunch can't reset the budget.  An invalid envelope
 /// MAC trips the wipe immediately on the next failure regardless
 /// of where the persisted counter sat.
-fn note_unlock_failure(cache: &Cache, label: &str) -> NimbusError {
-    let mut env = match nimbus_store::cache::key::load_envelope() {
+fn note_unlock_failure(cache: &Cache, label: &str) -> UnkaiError {
+    let mut env = match unkai_store::cache::key::load_envelope() {
         Ok(e) => e,
         Err(e) => return e,
     };
-    let tampered = nimbus_store::cache::key::envelope_tampered(&env);
+    let tampered = unkai_store::cache::key::envelope_tampered(&env);
     if tampered {
         tracing::warn!("Keychain envelope MAC mismatch — treating this attempt as terminal.");
     }
     env.failed_attempts = env.failed_attempts.saturating_add(1);
     let attempts = env.failed_attempts;
-    if let Err(e) = nimbus_store::cache::key::save_envelope(&env) {
+    if let Err(e) = unkai_store::cache::key::save_envelope(&env) {
         tracing::warn!("could not persist failure counter: {e}");
     }
     if env.wipe_on_failure || tampered {
@@ -9795,8 +10088,8 @@ fn note_unlock_failure(cache: &Cache, label: &str) -> NimbusError {
                 );
             }
             perform_wipe(cache);
-            return NimbusError::Auth(if tampered {
-                "Keychain envelope was modified outside Nimbus. The encrypted cache has been wiped."
+            return UnkaiError::Auth(if tampered {
+                "Keychain envelope was modified outside Unkai. The encrypted cache has been wiped."
                     .to_string()
             } else {
                 format!(
@@ -9805,19 +10098,19 @@ fn note_unlock_failure(cache: &Cache, label: &str) -> NimbusError {
             });
         }
     }
-    NimbusError::Auth(format!("incorrect {label}"))
+    UnkaiError::Auth(format!("incorrect {label}"))
 }
 
 /// Reset the persisted failure counter on a successful unlock.
 fn note_unlock_success() {
-    let Ok(mut env) = nimbus_store::cache::key::load_envelope() else {
+    let Ok(mut env) = unkai_store::cache::key::load_envelope() else {
         return;
     };
     if env.failed_attempts == 0 {
         return;
     }
     env.failed_attempts = 0;
-    if let Err(e) = nimbus_store::cache::key::save_envelope(&env) {
+    if let Err(e) = unkai_store::cache::key::save_envelope(&env) {
         tracing::warn!("could not reset failure counter: {e}");
     }
 }
@@ -9825,9 +10118,9 @@ fn note_unlock_success() {
 /// Unlock the cache from a passphrase.  Tries every passphrase
 /// wrap in the envelope, returns the first match.
 #[tauri::command]
-fn unlock_with_passphrase(passphrase: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
-    use nimbus_store::fido::{self, WrapKind};
-    let env = nimbus_store::cache::key::load_envelope()?;
+fn unlock_with_passphrase(passphrase: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
+    use unkai_store::fido::{self, WrapKind};
+    let env = unkai_store::cache::key::load_envelope()?;
     for wrap in &env.wraps {
         if wrap.kind != WrapKind::Passphrase {
             continue;
@@ -9838,7 +10131,7 @@ fn unlock_with_passphrase(passphrase: String, cache: State<'_, Cache>) -> Result
             let hex = hex::encode(&master);
             cache
                 .unlock_with_master_key(hex)
-                .map_err(NimbusError::from)?;
+                .map_err(UnkaiError::from)?;
             note_unlock_success();
             return Ok(());
         }
@@ -9855,9 +10148,9 @@ fn unlock_with_prf(
     credential_id_b64: String,
     prf_output_b64: String,
     cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
-    use nimbus_store::fido::{self, WrapKind};
-    let env = nimbus_store::cache::key::load_envelope()?;
+) -> Result<(), UnkaiError> {
+    use unkai_store::fido::{self, WrapKind};
+    let env = unkai_store::cache::key::load_envelope()?;
     let prf = fido::decode_b64(&prf_output_b64)?;
     for wrap in &env.wraps {
         if wrap.kind != WrapKind::FidoPrf || wrap.credential_id != credential_id_b64 {
@@ -9870,11 +10163,11 @@ fn unlock_with_prf(
         let hex = hex::encode(&master);
         cache
             .unlock_with_master_key(hex)
-            .map_err(NimbusError::from)?;
+            .map_err(UnkaiError::from)?;
         note_unlock_success();
         return Ok(());
     }
-    Err(NimbusError::Auth(
+    Err(UnkaiError::Auth(
         "no registered hardware key matches that credential".into(),
     ))
 }
@@ -9886,9 +10179,9 @@ fn unlock_with_prf(
 /// keys registered — without a recovery option we'd lock them
 /// out permanently the first time a YubiKey gets lost.
 #[tauri::command]
-fn enable_fido_only_mode() -> Result<(), NimbusError> {
-    use nimbus_store::fido::WrapKind;
-    let mut env = nimbus_store::cache::key::load_envelope()?;
+fn enable_fido_only_mode() -> Result<(), UnkaiError> {
+    use unkai_store::fido::WrapKind;
+    let mut env = unkai_store::cache::key::load_envelope()?;
     if env.plain_key.is_none() {
         return Ok(()); // already FIDO-only — idempotent.
     }
@@ -9903,14 +10196,14 @@ fn enable_fido_only_mode() -> Result<(), NimbusError> {
         .filter(|w| w.kind == WrapKind::FidoPrf)
         .count();
     if passphrase_count == 0 && fido_count < 2 {
-        return Err(NimbusError::Other(
+        return Err(UnkaiError::Other(
             "Register at least one passphrase OR two hardware keys before enabling FIDO-only mode \
              — otherwise losing a single key would lock the cache permanently."
                 .into(),
         ));
     }
     env.plain_key = None;
-    nimbus_store::cache::key::save_envelope(&env)?;
+    unkai_store::cache::key::save_envelope(&env)?;
     Ok(())
 }
 
@@ -9927,8 +10220,8 @@ struct WipePolicyView {
 }
 
 #[tauri::command]
-fn get_wipe_policy() -> Result<WipePolicyView, NimbusError> {
-    let env = nimbus_store::cache::key::load_envelope()?;
+fn get_wipe_policy() -> Result<WipePolicyView, UnkaiError> {
+    let env = unkai_store::cache::key::load_envelope()?;
     Ok(WipePolicyView {
         enabled: env.wipe_on_failure,
         max_attempts: env.max_unlock_attempts,
@@ -9936,15 +10229,15 @@ fn get_wipe_policy() -> Result<WipePolicyView, NimbusError> {
 }
 
 #[tauri::command]
-fn set_wipe_policy(policy: WipePolicyView) -> Result<(), NimbusError> {
-    let mut env = nimbus_store::cache::key::load_envelope()?;
+fn set_wipe_policy(policy: WipePolicyView) -> Result<(), UnkaiError> {
+    let mut env = unkai_store::cache::key::load_envelope()?;
     env.wipe_on_failure = policy.enabled;
     env.max_unlock_attempts = if policy.enabled {
         policy.max_attempts.filter(|n| *n > 0)
     } else {
         None
     };
-    nimbus_store::cache::key::save_envelope(&env)?;
+    unkai_store::cache::key::save_envelope(&env)?;
     Ok(())
 }
 
@@ -9953,23 +10246,23 @@ fn set_wipe_policy(policy: WipePolicyView) -> Result<(), NimbusError> {
 /// cache without prompting.  Only callable while the cache is
 /// already unlocked (we need the in-memory key).
 #[tauri::command]
-fn disable_fido_only_mode(cache: State<'_, Cache>) -> Result<(), NimbusError> {
+fn disable_fido_only_mode(cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     if cache.is_locked() {
-        return Err(NimbusError::Auth(
+        return Err(UnkaiError::Auth(
             "Database must be unlocked before FIDO-only mode can be disabled".into(),
         ));
     }
     let key_hex = cache.master_key_hex().ok_or_else(|| {
-        NimbusError::Auth(
+        UnkaiError::Auth(
             "Master key isn't available in memory — unlock the database again before disabling key encryption".into(),
         )
     })?;
-    let mut env = nimbus_store::cache::key::load_envelope()?;
+    let mut env = unkai_store::cache::key::load_envelope()?;
     if env.plain_key.is_some() {
         return Ok(()); // already plain — idempotent.
     }
     env.plain_key = Some(key_hex);
-    nimbus_store::cache::key::save_envelope(&env)?;
+    unkai_store::cache::key::save_envelope(&env)?;
     Ok(())
 }
 
@@ -9979,7 +10272,7 @@ fn disable_fido_only_mode(cache: State<'_, Cache>) -> Result<(), NimbusError> {
 /// yet), runs the enumeration once on a blocking thread and
 /// memoises the result before returning.
 #[tauri::command]
-async fn list_system_fonts(cache: State<'_, SystemFontsCache>) -> Result<Vec<String>, NimbusError> {
+async fn list_system_fonts(cache: State<'_, SystemFontsCache>) -> Result<Vec<String>, UnkaiError> {
     {
         let snap = cache.read().await;
         if !snap.is_empty() {
@@ -9989,13 +10282,13 @@ async fn list_system_fonts(cache: State<'_, SystemFontsCache>) -> Result<Vec<Str
     // Cold path: warm the cache synchronously this once.
     let fonts = tokio::task::spawn_blocking(enumerate_system_fonts)
         .await
-        .map_err(|e| NimbusError::Other(format!("font enumeration join: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("font enumeration join: {e}")))?;
     *cache.write().await = fonts.clone();
     Ok(fonts)
 }
 
 #[tauri::command]
-async fn get_app_settings(settings: State<'_, SharedSettings>) -> Result<AppSettings, NimbusError> {
+async fn get_app_settings(settings: State<'_, SharedSettings>) -> Result<AppSettings, UnkaiError> {
     Ok(settings.read().await.clone())
 }
 
@@ -10004,7 +10297,7 @@ async fn update_app_settings(
     new_settings: AppSettings,
     settings: State<'_, SharedSettings>,
     notify: State<'_, SettingsSyncNotify>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     app_settings::save_settings(&new_settings)?;
     *settings.write().await = new_settings;
     notify.0.notify_one();
@@ -10016,7 +10309,7 @@ async fn update_app_settings(
 // Lets the user save every preference (app-wide settings, account
 // metadata, folder→emoji mappings, signature, locale, theme, …)
 // to either a local `settings.json` or to a connected Nextcloud
-// under `/Nimbus Mail/settings/settings.json`.  Restoring is the
+// under `/Unkai Mail/settings/settings.json`.  Restoring is the
 // reverse: pick a file, or — on first NC connect — accept the
 // "found a backup, restore?" prompt.
 //
@@ -10025,7 +10318,7 @@ async fn update_app_settings(
 //   • Bundle = { version, exported_at, app_settings, accounts,
 //                local_storage }.  Schema-versioned JSON; secrets
 //                (passwords, FIDO wraps, master key) deliberately
-//                excluded.  See `nimbus_store::settings_bundle`.
+//                excluded.  See `unkai_store::settings_bundle`.
 //
 //   • NC sync runs in a background task.  Frontend calls
 //     `notify_settings_changed(local_storage)` after any UI
@@ -10045,10 +10338,10 @@ async fn update_app_settings(
 //     server.
 
 /// Path inside a user's Nextcloud where the settings bundle
-/// lives.  Sits under the existing `/Nimbus Mail` root so it
+/// lives.  Sits under the existing `/Unkai Mail` root so it
 /// shares a folder with the temp area used by Office viewer.
-const NIMBUS_SETTINGS_DIR: &str = "/Nimbus Mail/settings";
-const NIMBUS_SETTINGS_FILE: &str = "/Nimbus Mail/settings/settings.json";
+const UNKAI_SETTINGS_DIR: &str = "/Unkai Mail/settings";
+const UNKAI_SETTINGS_FILE: &str = "/Unkai Mail/settings/settings.json";
 
 /// Latest `localStorage` snapshot the frontend has shared with
 /// us.  The auto-sync worker reads from here so it can assemble
@@ -10070,7 +10363,7 @@ struct SettingsSyncNotify(Arc<tokio::sync::Notify>);
 async fn build_settings_bundle(
     local_storage: std::collections::HashMap<String, String>,
     cache: State<'_, Cache>,
-) -> Result<String, NimbusError> {
+) -> Result<String, UnkaiError> {
     let bundle = settings_bundle::build_bundle(&cache, local_storage)?;
     settings_bundle::serialise(&bundle)
 }
@@ -10086,7 +10379,7 @@ async fn apply_settings_bundle(
     json: String,
     cache: State<'_, Cache>,
     settings: State<'_, SharedSettings>,
-) -> Result<std::collections::HashMap<String, String>, NimbusError> {
+) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
     let bundle = settings_bundle::parse(&json)?;
     let new_app_settings = bundle.app_settings.clone();
     let local_storage = settings_bundle::apply(&cache, bundle)?;
@@ -10105,7 +10398,7 @@ struct SettingsSyncStateView {
 }
 
 #[tauri::command]
-fn get_settings_sync_state() -> Result<SettingsSyncStateView, NimbusError> {
+fn get_settings_sync_state() -> Result<SettingsSyncStateView, UnkaiError> {
     let state = settings_sync::load_state()?;
     Ok(SettingsSyncStateView {
         target_nc_id: state.target_nc_id,
@@ -10121,7 +10414,7 @@ fn get_settings_sync_state() -> Result<SettingsSyncStateView, NimbusError> {
 async fn set_settings_sync_target(
     target_nc_id: Option<String>,
     notify: State<'_, SettingsSyncNotify>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let mut state = settings_sync::load_state()?;
     if state.target_nc_id == target_nc_id {
         return Ok(());
@@ -10146,7 +10439,7 @@ async fn notify_settings_changed(
     local_storage: std::collections::HashMap<String, String>,
     storage: State<'_, SharedLocalStorage>,
     notify: State<'_, SettingsSyncNotify>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     *storage.write().await = local_storage;
     notify.0.notify_one();
     Ok(())
@@ -10160,21 +10453,21 @@ async fn notify_settings_changed(
 #[tauri::command]
 async fn nc_probe_settings_bundle(
     nc_id: String,
-) -> Result<Option<chrono::DateTime<chrono::Utc>>, NimbusError> {
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    match nimbus_nextcloud::download_file(
+    match unkai_nextcloud::download_file(
         &account.server_url,
         &account.username,
         &app_password,
-        NIMBUS_SETTINGS_FILE,
+        UNKAI_SETTINGS_FILE,
         &account.trusted_certs,
     )
     .await
     {
         Ok(bytes) => {
             let json = String::from_utf8(bytes).map_err(|e| {
-                NimbusError::Storage(format!("settings bundle on NC is not UTF-8: {e}"))
+                UnkaiError::Storage(format!("settings bundle on NC is not UTF-8: {e}"))
             })?;
             let bundle = settings_bundle::parse(&json)?;
             Ok(Some(bundle.exported_at))
@@ -10182,7 +10475,7 @@ async fn nc_probe_settings_bundle(
         // 404 = no backup, that's the normal first-time path.
         // We map it through to None so the UI can stay quiet
         // instead of surfacing an error toast.
-        Err(NimbusError::Nextcloud(msg)) if msg.contains("not found") => Ok(None),
+        Err(UnkaiError::Nextcloud(msg)) if msg.contains("not found") => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -10195,19 +10488,19 @@ async fn nc_restore_settings_bundle(
     nc_id: String,
     cache: State<'_, Cache>,
     settings: State<'_, SharedSettings>,
-) -> Result<std::collections::HashMap<String, String>, NimbusError> {
+) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let bytes = nimbus_nextcloud::download_file(
+    let bytes = unkai_nextcloud::download_file(
         &account.server_url,
         &account.username,
         &app_password,
-        NIMBUS_SETTINGS_FILE,
+        UNKAI_SETTINGS_FILE,
         &account.trusted_certs,
     )
     .await?;
     let json = String::from_utf8(bytes)
-        .map_err(|e| NimbusError::Storage(format!("settings bundle on NC is not UTF-8: {e}")))?;
+        .map_err(|e| UnkaiError::Storage(format!("settings bundle on NC is not UTF-8: {e}")))?;
     let bundle = settings_bundle::parse(&json)?;
     let new_app_settings = bundle.app_settings.clone();
     let local_storage = settings_bundle::apply(&cache, bundle)?;
@@ -10217,30 +10510,30 @@ async fn nc_restore_settings_bundle(
 
 /// One push attempt.  Best-effort folder creation, then PUT.
 /// Folder creates are intentionally swallowed because
-/// `create_directory` returns `NimbusError::Nextcloud` for the
+/// `create_directory` returns `UnkaiError::Nextcloud` for the
 /// idempotent "folder already exists" case — it's not actually
 /// an error from our perspective.
 async fn push_settings_to_nc(
     cache: &Cache,
     local_storage: std::collections::HashMap<String, String>,
     nc_id: &str,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let bundle = settings_bundle::build_bundle(cache, local_storage)?;
     let json = settings_bundle::serialise(&bundle)?;
 
     let account = nextcloud_store::load_accounts(cache)?
         .into_iter()
         .find(|a| a.id == nc_id)
-        .ok_or_else(|| NimbusError::Other(format!("Nextcloud account '{nc_id}' not found")))?;
+        .ok_or_else(|| UnkaiError::Other(format!("Nextcloud account '{nc_id}' not found")))?;
     let app_password = credentials::get_nextcloud_password(nc_id)?;
 
     // Idempotent folder creates.  The Office viewer code already
-    // ensures `/Nimbus Mail` for the temp area, but a user who
+    // ensures `/Unkai Mail` for the temp area, but a user who
     // hasn't opened any Office attachments won't have triggered
     // that path yet — we make sure both rungs of the hierarchy
     // exist before the PUT.
-    for dir in [NIMBUS_TEMP_ROOT, NIMBUS_SETTINGS_DIR] {
-        if let Err(e) = nimbus_nextcloud::create_directory(
+    for dir in [UNKAI_TEMP_ROOT, UNKAI_SETTINGS_DIR] {
+        if let Err(e) = unkai_nextcloud::create_directory(
             &account.server_url,
             &account.username,
             &app_password,
@@ -10258,11 +10551,11 @@ async fn push_settings_to_nc(
         }
     }
 
-    nimbus_nextcloud::upload_file(
+    unkai_nextcloud::upload_file(
         &account.server_url,
         &account.username,
         &app_password,
-        NIMBUS_SETTINGS_FILE,
+        UNKAI_SETTINGS_FILE,
         json.into_bytes(),
         Some("application/json"),
         &account.trusted_certs,
@@ -10358,7 +10651,7 @@ async fn settings_sync_worker(
 }
 
 #[tauri::command]
-async fn check_mail_now(app: AppHandle) -> Result<(), NimbusError> {
+async fn check_mail_now(app: AppHandle) -> Result<(), UnkaiError> {
     check_mail_now_inner(&app).await
 }
 
@@ -10431,13 +10724,10 @@ struct LinkVerdict {
 }
 
 #[tauri::command]
-fn debug_link_check(
-    url: String,
-    cache: State<'_, Cache>,
-) -> Result<serde_json::Value, NimbusError> {
-    let status = link_check::status(&cache).map_err(NimbusError::from)?;
-    let lookup = link_check::lookup(&cache, &url).map_err(NimbusError::from)?;
-    let host_count = link_check::host_count_for_url(&cache, &url).map_err(NimbusError::from)?;
+fn debug_link_check(url: String, cache: State<'_, Cache>) -> Result<serde_json::Value, UnkaiError> {
+    let status = link_check::status(&cache).map_err(UnkaiError::from)?;
+    let lookup = link_check::lookup(&cache, &url).map_err(UnkaiError::from)?;
+    let host_count = link_check::host_count_for_url(&cache, &url).map_err(UnkaiError::from)?;
     let host = url
         .split_once("://")
         .map(|(_, rest)| rest)
@@ -10461,7 +10751,7 @@ fn check_urls(
     urls: Vec<String>,
     cache: State<'_, Cache>,
     settings: State<'_, SharedSettings>,
-) -> Result<Vec<LinkVerdict>, NimbusError> {
+) -> Result<Vec<LinkVerdict>, UnkaiError> {
     // Master toggle short-circuit: when the user has the link
     // checker turned off, return "unknown" verdicts that the
     // frontend renders without a pill at all.  We use the
@@ -10519,47 +10809,45 @@ fn check_urls(
 }
 
 #[tauri::command]
-fn get_link_check_status(
-    cache: State<'_, Cache>,
-) -> Result<link_check::UrlhausStatus, NimbusError> {
-    link_check::status(&cache).map_err(NimbusError::from)
+fn get_link_check_status(cache: State<'_, Cache>) -> Result<link_check::UrlhausStatus, UnkaiError> {
+    link_check::status(&cache).map_err(UnkaiError::from)
 }
 
 /// Manually trigger a URLhaus refresh.  Used by the "Refresh
 /// now" button on the Settings page; also called by the
 /// background worker on its hourly tick.
 #[tauri::command]
-async fn refresh_urlhaus_now(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
+async fn refresh_urlhaus_now(cache: State<'_, Cache>) -> Result<u32, UnkaiError> {
     refresh_urlhaus_inner(&cache).await
 }
 
-async fn refresh_urlhaus_inner(cache: &Cache) -> Result<u32, NimbusError> {
+async fn refresh_urlhaus_inner(cache: &Cache) -> Result<u32, UnkaiError> {
     let http = reqwest::Client::builder()
-        .user_agent(concat!("nimbus-mail/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("unkai-mail/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .map_err(|e| NimbusError::Network(format!("urlhaus client build: {e}")))?;
+        .map_err(|e| UnkaiError::Network(format!("urlhaus client build: {e}")))?;
     let resp = http
         .get(URLHAUS_CSV_URL)
         .send()
         .await
-        .map_err(|e| NimbusError::Network(format!("urlhaus fetch: {e}")))?;
+        .map_err(|e| UnkaiError::Network(format!("urlhaus fetch: {e}")))?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(NimbusError::Network(format!(
+        return Err(UnkaiError::Network(format!(
             "urlhaus fetch returned HTTP {status}"
         )));
     }
     let body = resp
         .text()
         .await
-        .map_err(|e| NimbusError::Network(format!("urlhaus body read: {e}")))?;
+        .map_err(|e| UnkaiError::Network(format!("urlhaus body read: {e}")))?;
     let rows = parse_urlhaus_csv(&body);
     let cache_clone = cache.clone();
     let count = tokio::task::spawn_blocking(move || link_check::replace_all(&cache_clone, &rows))
         .await
-        .map_err(|e| NimbusError::Other(format!("urlhaus replace_all join: {e}")))?
-        .map_err(NimbusError::from)?;
+        .map_err(|e| UnkaiError::Other(format!("urlhaus replace_all join: {e}")))?
+        .map_err(UnkaiError::from)?;
     tracing::info!("URLhaus refresh complete — {count} URL(s)");
     Ok(count)
 }
@@ -10713,7 +11001,7 @@ async fn set_logo_style(
     app: AppHandle,
     style: String,
     settings: State<'_, SharedSettings>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let bytes = logo_bytes_for(&style);
 
     // Decode once up front so a bad slug fails before we touch any
@@ -10751,9 +11039,9 @@ async fn set_logo_style(
     Ok(())
 }
 
-/// Custom URI scheme handler for `nimbus-logo://localhost/<style>`.
+/// Custom URI scheme handler for `unkai-logo://localhost/<style>`.
 /// Used by the Settings picker to render preview tiles via plain
-/// `<img src="nimbus-logo://localhost/storm">` — same trick the
+/// `<img src="unkai-logo://localhost/storm">` — same trick the
 /// `contact-photo` scheme uses for avatars.  Unknown style →
 /// storm fallback (matches the runtime behaviour, so the preview
 /// can't deceive the user).
@@ -10776,7 +11064,7 @@ fn logo_protocol(
 // User picks a Skeleton-shape CSS file in the Settings → Design
 // "Import theme…" flow.  The frontend hands us the file's
 // absolute path; we copy the bytes under
-// `<config>/nimbus-mail/themes/<id>.css`, parse out the
+// `<config>/unkai-mail/themes/<id>.css`, parse out the
 // `[data-theme="…"]` slug to use as the picker id, and append a
 // `CustomTheme` record to AppSettings.
 //
@@ -10786,12 +11074,12 @@ fn logo_protocol(
 
 /// Resolve the user-themes directory under the app's config root.
 /// Created on demand — first import is what creates the folder.
-fn custom_themes_dir() -> Result<std::path::PathBuf, NimbusError> {
+fn custom_themes_dir() -> Result<std::path::PathBuf, UnkaiError> {
     let base = dirs::config_dir()
-        .ok_or_else(|| NimbusError::Other("cannot resolve user config dir".into()))?;
-    let dir = base.join("nimbus-mail").join("themes");
+        .ok_or_else(|| UnkaiError::Other("cannot resolve user config dir".into()))?;
+    let dir = base.join("unkai-mail").join("themes");
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        return Err(NimbusError::Other(format!(
+        return Err(UnkaiError::Other(format!(
             "create themes dir {}: {e}",
             dir.display()
         )));
@@ -10840,15 +11128,15 @@ async fn import_custom_theme(
     source_path: String,
     label: Option<String>,
     settings: State<'_, SharedSettings>,
-) -> Result<CustomTheme, NimbusError> {
+) -> Result<CustomTheme, UnkaiError> {
     let src = std::path::PathBuf::from(&source_path);
     if !src.exists() {
-        return Err(NimbusError::Other(format!(
+        return Err(UnkaiError::Other(format!(
             "theme source not found: {source_path}"
         )));
     }
     let css = std::fs::read_to_string(&src)
-        .map_err(|e| NimbusError::Other(format!("read theme source: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("read theme source: {e}")))?;
     let stem = src
         .file_stem()
         .and_then(|s| s.to_str())
@@ -10857,7 +11145,7 @@ async fn import_custom_theme(
     let slug = extract_theme_slug(&css, &stem);
     let dir = custom_themes_dir()?;
     let dest = dir.join(format!("{slug}.css"));
-    std::fs::write(&dest, &css).map_err(|e| NimbusError::Other(format!("copy theme file: {e}")))?;
+    std::fs::write(&dest, &css).map_err(|e| UnkaiError::Other(format!("copy theme file: {e}")))?;
 
     let record = CustomTheme {
         id: slug.clone(),
@@ -10893,7 +11181,7 @@ async fn remove_custom_theme(
     app: AppHandle,
     id: String,
     settings: State<'_, SharedSettings>,
-) -> Result<(), NimbusError> {
+) -> Result<(), UnkaiError> {
     let path: Option<String> = {
         let mut s = settings.write().await;
         let path = s
@@ -10923,12 +11211,12 @@ async fn remove_custom_theme(
 }
 
 #[tauri::command]
-fn get_total_unread(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
+fn get_total_unread(cache: State<'_, Cache>) -> Result<u32, UnkaiError> {
     cache.total_unread_count().map_err(Into::into)
 }
 
 #[tauri::command]
-fn show_main_window_cmd(app: AppHandle) -> Result<(), NimbusError> {
+fn show_main_window_cmd(app: AppHandle) -> Result<(), UnkaiError> {
     show_main_window(&app)
 }
 
@@ -10937,7 +11225,7 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
-/// Restart Nimbus in place (#190 follow-up).
+/// Restart Unkai in place (#190 follow-up).
 ///
 /// Used by the language-change confirmation popup: paraglide
 /// resolves the active locale once, at boot, by walking its
@@ -10954,7 +11242,7 @@ fn restart_app(app: AppHandle) {
 
 // ── File-association handlers (#254) ────────────────────────────
 //
-// `bundle.fileAssociations` in `tauri.conf.json` registers Nimbus
+// `bundle.fileAssociations` in `tauri.conf.json` registers Unkai
 // with the OS as an "Open with…" candidate for `.ics` and `.eml`.
 // When the user double-clicks (or `start file.eml`s) one of those
 // the OS launches us with the path as `argv[1]`.  We capture the
@@ -10969,6 +11257,33 @@ static PENDING_FILE_OPEN: std::sync::OnceLock<Mutex<Option<String>>> = std::sync
 
 fn pending_file_slot() -> &'static Mutex<Option<String>> {
     PENDING_FILE_OPEN.get_or_init(|| Mutex::new(None))
+}
+
+/// Cold-start buffer for `mailto:` URLs that arrived before the
+/// frontend was ready to receive events (#294).  Populated by:
+///   - `capture_launch_mailto_arg()` at process start, for cold
+///     launches where the OS handed us a mailto as argv[1];
+///   - the deep-link plugin's `on_open_url` callback for the
+///     very first URL that fires before the webview mounts;
+///   - the single-instance plugin when a second launch beats the
+///     deep-link path on slower OSes.
+/// Always a `Vec`, never a single slot, because on a cold start
+/// it's plausible (though unusual) for multiple paths to deliver
+/// the same URL — the frontend dedups by drainging the whole list
+/// and parsing each one fresh.
+static PENDING_MAILTO_URLS: std::sync::OnceLock<Mutex<Vec<String>>> = std::sync::OnceLock::new();
+
+fn pending_mailto_slot() -> &'static Mutex<Vec<String>> {
+    PENDING_MAILTO_URLS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Stash a `mailto:` URL in the cold-start buffer.  No-op if the
+/// mutex is poisoned — losing one URL to a worker-thread panic is
+/// strictly better than panicking the main thread on lock recovery.
+fn buffer_mailto_url(url: &str) {
+    if let Ok(mut slot) = pending_mailto_slot().lock() {
+        slot.push(url.to_string());
+    }
 }
 
 /// Capture argv[1] at startup if it points at an `.ics` or `.eml`
@@ -10994,6 +11309,22 @@ fn capture_launch_file_arg() {
     }
 }
 
+/// Capture argv at startup if any argument is a `mailto:` URL.
+/// On Windows the OS hands the protocol URL as `argv[1]` when we
+/// are the registered handler; on macOS the URL is delivered via
+/// the deep-link plugin (which sets up an Apple Event handler);
+/// on Linux behaviour depends on the desktop file's `Exec=` line
+/// (typically `%u` or `%U` substitution → argv).  Scanning all of
+/// argv (not just argv[1]) handles the edge case where a wrapper
+/// or shell prepends flags.
+fn capture_launch_mailto_arg() {
+    for arg in std::env::args().skip(1) {
+        if arg.to_lowercase().starts_with("mailto:") {
+            buffer_mailto_url(&arg);
+        }
+    }
+}
+
 /// Frontend hook: returns the launch-time file path (if any) and
 /// clears the slot so a window refresh doesn't re-open it.
 #[tauri::command]
@@ -11004,20 +11335,32 @@ fn take_pending_file_to_open() -> Option<String> {
         .and_then(|mut slot| slot.take())
 }
 
+/// Frontend hook: drains the cold-start `mailto:` URL buffer
+/// (#294).  Returns the URLs collected so far and clears the
+/// buffer — a refresh of the main window won't re-open them.
+/// Live URLs arriving after this point are delivered via the
+/// `unkai://mailto` Tauri event instead.
+#[tauri::command]
+fn take_pending_mailto_urls() -> Vec<String> {
+    pending_mailto_slot()
+        .lock()
+        .map(|mut slot| std::mem::take(&mut *slot))
+        .unwrap_or_default()
+}
+
 /// Read an `.eml` file from disk and parse it into the same
 /// `Email` shape `get_mail` returns from the cache.  Used by the
 /// view-only popout when the OS hands us a `.eml` to open.  No
 /// account context — the popout disables reply / forward / archive
 /// because there's no IMAP session to act against.
 #[tauri::command]
-fn parse_eml_file(path: String) -> Result<nimbus_core::models::Email, NimbusError> {
-    let bytes =
-        std::fs::read(&path).map_err(|e| NimbusError::Other(format!("read {path}: {e}")))?;
+fn parse_eml_file(path: String) -> Result<unkai_core::models::Email, UnkaiError> {
+    let bytes = std::fs::read(&path).map_err(|e| UnkaiError::Other(format!("read {path}: {e}")))?;
     let stem = std::path::Path::new(&path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("file");
-    nimbus_imap::parse_eml_bytes(&bytes, &format!("file:{stem}"), "", "")
+    unkai_imap::parse_eml_bytes(&bytes, &format!("file:{stem}"), "", "")
 }
 
 /// Read an `.ics` file from disk and parse it into one or more
@@ -11025,14 +11368,14 @@ fn parse_eml_file(path: String) -> Result<nimbus_core::models::Email, NimbusErro
 /// first event in the EventEditor so the user can pick a target
 /// calendar and save it via the existing create path.
 #[tauri::command]
-fn parse_ics_file(path: String) -> Result<Vec<nimbus_core::models::CalendarEvent>, NimbusError> {
+fn parse_ics_file(path: String) -> Result<Vec<unkai_core::models::CalendarEvent>, UnkaiError> {
     let body = std::fs::read_to_string(&path)
-        .map_err(|e| NimbusError::Other(format!("read {path}: {e}")))?;
-    nimbus_caldav::ical::parse_ics(&body)
+        .map_err(|e| UnkaiError::Other(format!("read {path}: {e}")))?;
+    unkai_caldav::ical::parse_ics(&body)
 }
 
 /// Cross-platform "open the OS Default Apps panel" — used by the
-/// settings page button so users can mark Nimbus as the default
+/// settings page button so users can mark Unkai as the default
 /// handler for `.ics` / `.eml` (which OS APIs don't let us do
 /// programmatically without a COM dance on Windows).
 ///
@@ -11045,13 +11388,13 @@ fn parse_ics_file(path: String) -> Result<Vec<nimbus_core::models::CalendarEvent
 ///   GUI panel varies wildly across desktops, so we fall back to
 ///   doing nothing and let the user run the CLI themselves.
 #[tauri::command]
-fn open_default_apps_settings() -> Result<(), NimbusError> {
+fn open_default_apps_settings() -> Result<(), UnkaiError> {
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
             .args(["/C", "start", "", "ms-settings:defaultapps"])
             .spawn()
-            .map_err(|e| NimbusError::Other(format!("open defaults panel: {e}")))?;
+            .map_err(|e| UnkaiError::Other(format!("open defaults panel: {e}")))?;
         return Ok(());
     }
     #[cfg(target_os = "macos")]
@@ -11059,15 +11402,15 @@ fn open_default_apps_settings() -> Result<(), NimbusError> {
         std::process::Command::new("open")
             .arg(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
             .spawn()
-            .map_err(|e| NimbusError::Other(format!("open defaults panel: {e}")))?;
+            .map_err(|e| UnkaiError::Other(format!("open defaults panel: {e}")))?;
         return Ok(());
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        Err(NimbusError::Other(
+        Err(UnkaiError::Other(
             "Default-app registration on Linux is per-desktop; \
-             use `xdg-mime default nimbus-mail.desktop text/calendar message/rfc822` \
-             from a terminal to mark Nimbus as the default handler."
+             use `xdg-mime default unkai-mail.desktop text/calendar message/rfc822` \
+             from a terminal to mark Unkai as the default handler."
                 .into(),
         ))
     }
@@ -11078,12 +11421,21 @@ fn open_default_apps_settings() -> Result<(), NimbusError> {
 fn main() {
     tracing_subscriber::fmt::init();
 
-    // Pick up the path the OS handed us if Nimbus was invoked as
+    // Pick up the path the OS handed us if Unkai was invoked as
     // an `.ics` / `.eml` file handler (#254).  Capturing here —
     // before the Tauri builder runs — means the slot is populated
     // by the time the frontend's `take_pending_file_to_open`
     // ping arrives on first paint.
     capture_launch_file_arg();
+
+    // Same idea for `mailto:` URLs (#294).  On Windows the OS
+    // hands the URL through argv, and registering as the default
+    // mailto handler at the OS level only takes effect after the
+    // deep-link plugin's first run — we still want a cold-start
+    // launch with a mailto in argv to land in Compose, so the
+    // argv-scan path stays independent of the plugin's runtime
+    // registration.
+    capture_launch_mailto_arg();
 
     // Open (and migrate) the local mail cache once at startup, then
     // hand it to Tauri as managed state so every command can borrow it.
@@ -11126,11 +11478,11 @@ fn main() {
     // recover the addresses.  Self-narrowing: a fixed row's
     // SELECT condition no longer matches on subsequent boots.
     match cache.backfill_addresses(|raw| {
-        let p = nimbus_carddav::parse_vcard(raw).ok()?;
+        let p = unkai_carddav::parse_vcard(raw).ok()?;
         Some(
             p.addresses
                 .into_iter()
-                .map(|a| nimbus_core::models::ContactAddress {
+                .map(|a| unkai_core::models::ContactAddress {
                     kind: a.kind,
                     street: a.street,
                     locality: a.locality,
@@ -11155,6 +11507,31 @@ fn main() {
     let shared_settings: SharedSettings = Arc::new(RwLock::new(settings));
 
     tauri::Builder::default()
+        // single-instance MUST come before any plugin that cares
+        // about second-launch argv (here: deep-link).  With the
+        // `deep-link` feature on, the plugin's callback routes the
+        // forwarded argv through deep-link's own dispatcher, so
+        // any `mailto:` URL hits the same `on_open_url` listener
+        // whether it came from the fresh-launch or
+        // second-launch path.  We still surface the window in the
+        // callback so a mailto click from another app raises
+        // Unkai to the foreground even before the URL hops
+        // through deep-link.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            tracing::debug!("single-instance argv received: {argv:?}");
+            for arg in &argv {
+                if arg.to_lowercase().starts_with("mailto:") {
+                    buffer_mailto_url(arg);
+                    if let Err(e) = app.emit("unkai://mailto", arg.clone()) {
+                        tracing::warn!("emit single-instance mailto failed: {e}");
+                    }
+                }
+            }
+            if let Err(e) = show_main_window(app) {
+                tracing::warn!("single-instance window raise failed: {e}");
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         // #131 follow-up: cross-platform "launch on login".
@@ -11178,14 +11555,14 @@ fn main() {
         .manage::<SharedLocalStorage>(Arc::new(RwLock::new(std::collections::HashMap::new())))
         .manage(SettingsSyncNotify(Arc::new(tokio::sync::Notify::new())))
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
-        .register_uri_scheme_protocol("nimbus-logo", logo_protocol)
+        .register_uri_scheme_protocol("unkai-logo", logo_protocol)
         .setup(|app| {
             // Windows toast attribution.  Without an explicit
             // AppUserModelID the OS falls back to the launching
             // process's AUMID — for `cargo tauri dev` that's the
             // shell (PowerShell, cmd, Git Bash), which is what
             // appears as the toast's source.  Setting our own AUMID
-            // here makes notifications attribute to "Nimbus Mail"
+            // here makes notifications attribute to "Unkai Mail"
             // in both dev and bundled builds.  The display-name +
             // icon come from a Start-Menu shortcut the installer
             // registers with this same AUMID; in dev the toast
@@ -11193,6 +11570,80 @@ fn main() {
             // "PowerShell".
             #[cfg(windows)]
             set_app_user_model_id();
+
+            // ── `mailto:` deep-link wiring (#294) ──────────────
+            //
+            // Three things happen here:
+            //
+            //   1. Register `mailto` as a handled URI scheme at
+            //      runtime.  The bundle config registers it at
+            //      install time, but `register()` is what writes
+            //      the per-user registry keys on Windows (and the
+            //      per-user `.desktop` association on Linux) for
+            //      dev / portable launches that never run an
+            //      installer.  Idempotent — safe to call every
+            //      boot.
+            //   2. Drain `get_current()` into our cold-start
+            //      buffer.  Tauri exposes the URL the OS used to
+            //      spawn us here; without this, a fresh launch
+            //      from a mailto link delivers the URL *before*
+            //      the frontend has registered an event listener
+            //      and we'd silently drop it.
+            //   3. Subscribe to `on_open_url` for any live URL
+            //      that arrives after the webview is up.  We emit
+            //      a `unkai://mailto` Tauri event with the raw
+            //      URL; the frontend parses it with the same
+            //      `parseMailtoUrl` helper the in-app body
+            //      handler uses and opens Compose pre-filled.
+            //
+            // The deep-link plugin is `cfg(desktop)`-gated on
+            // mobile by Tauri itself, so wrapping our calls in
+            // `cfg!(desktop)` would be redundant — on iOS /
+            // Android the plugin trait isn't even present.
+            use tauri_plugin_deep_link::DeepLinkExt;
+            let dl = app.deep_link();
+            if let Err(e) = dl.register("mailto") {
+                tracing::warn!(
+                    "deep-link mailto registration failed (OS will not route mailto links here \
+                     until next launch / installer run): {e}"
+                );
+            }
+            match dl.get_current() {
+                Ok(Some(urls)) => {
+                    for u in urls {
+                        let s = u.to_string();
+                        if s.to_lowercase().starts_with("mailto:") {
+                            buffer_mailto_url(&s);
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("deep-link get_current failed: {e}"),
+            }
+            let handle_for_links = app.handle().clone();
+            dl.on_open_url(move |event| {
+                for url in event.urls() {
+                    let s = url.to_string();
+                    if !s.to_lowercase().starts_with("mailto:") {
+                        continue;
+                    }
+                    // Buffer + emit covers the race where the OS
+                    // delivers the URL after `setup` returns but
+                    // before App.svelte's `onMount` has wired up
+                    // the listener: the buffer catches it and the
+                    // frontend's `take_pending_mailto_urls` poll
+                    // drains it on mount.  Live arrivals from a
+                    // user who is already in the app go through
+                    // the event path.
+                    buffer_mailto_url(&s);
+                    if let Err(e) = handle_for_links.emit("unkai://mailto", s.clone()) {
+                        tracing::warn!("emit deep-link mailto failed: {e}");
+                    }
+                    if let Err(e) = show_main_window(&handle_for_links) {
+                        tracing::warn!("deep-link window raise failed: {e}");
+                    }
+                }
+            });
 
             // Drop the app icon onto disk once and stash its path
             // in managed state so the JS layer can pass it to
@@ -11261,11 +11712,11 @@ fn main() {
             let menu = Menu::with_items(
                 &handle,
                 &[
-                    &MenuItem::with_id(&handle, "open", "Open Nimbus", true, None::<&str>)?,
+                    &MenuItem::with_id(&handle, "open", "Open Unkai", true, None::<&str>)?,
                     &MenuItem::with_id(&handle, "check", "Check Mail Now", true, None::<&str>)?,
                     &MenuItem::with_id(&handle, "compose", "Compose", true, None::<&str>)?,
                     &PredefinedMenuItem::separator(&handle)?,
-                    &MenuItem::with_id(&handle, "quit", "Quit Nimbus", true, None::<&str>)?,
+                    &MenuItem::with_id(&handle, "quit", "Quit Unkai", true, None::<&str>)?,
                 ],
             )?;
 
@@ -11306,7 +11757,7 @@ fn main() {
             // borrow-vs-move conflict where we want to *also*
             // hand `initial_bitmap` to the managed-state stash.
             let tray_icon = tauri::image::Image::from_bytes(style_bytes)
-                .map_err(|e| NimbusError::Other(format!("decode tray icon: {e}")))?;
+                .map_err(|e| UnkaiError::Other(format!("decode tray icon: {e}")))?;
 
             // Stash the base RGBA in managed state so the badge
             // renderer (and `set_logo_style`) can re-composite
@@ -11314,9 +11765,9 @@ fn main() {
             // change or style swap.
             app.manage(TrayBaseIcon(std::sync::Mutex::new(initial_bitmap)));
 
-            let _tray = TrayIconBuilder::with_id("nimbus-main")
+            let _tray = TrayIconBuilder::with_id("unkai-main")
                 .icon(tray_icon)
-                .tooltip("Nimbus Mail")
+                .tooltip("Unkai Mail")
                 .menu(&menu)
                 // Windows: without this, left-click auto-pops the menu
                 // and our click-handler never fires. We want left-click
@@ -11519,6 +11970,8 @@ fn main() {
             delete_outbox_entry,
             edit_outbox_entry,
             save_draft,
+            tombstone_draft_for_expunge,
+            expunge_draft_after_send,
             delete_message,
             archive_message,
             archive_messages,
@@ -11670,7 +12123,9 @@ fn main() {
             parse_eml_file,
             parse_ics_file,
             open_default_apps_settings,
+            // #294 — OS-level mailto handler cold-start drain
+            take_pending_mailto_urls,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Nimbus");
+        .expect("error while running Unkai");
 }

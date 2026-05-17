@@ -14,7 +14,7 @@
 // The action takes over the element's `width` and `position` inline
 // styles, appends an absolutely-positioned drag handle on the right
 // edge, and persists the user's chosen width to localStorage under
-// `nimbus.resize.<key>`.  On the next mount the saved width is read
+// `unkai.resize.<key>`.  On the next mount the saved width is read
 // back and clamped to the current [min, max] bounds.
 //
 // IMPORTANT: don't keep a tailwind `w-*` class on the host element
@@ -30,10 +30,10 @@
 
 import { m } from '../paraglide/messages'
 
-const STORAGE_PREFIX = 'nimbus.resize.'
+const STORAGE_PREFIX = 'unkai.resize.'
 
 export interface ResizableSidebarOptions {
-  /** Stable identifier — becomes `nimbus.resize.<key>` in localStorage.
+  /** Stable identifier — becomes `unkai.resize.<key>` in localStorage.
    *  Pick one that won't collide across sidebars (e.g. `mail.folderSidebar`,
    *  `notes.notesList`). */
   key: string

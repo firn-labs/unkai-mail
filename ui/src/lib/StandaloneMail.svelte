@@ -94,6 +94,16 @@
   function onForward(mail: EmailPayload) {
     void emitCompose('forward', mail)
   }
+  // #304 — "Respond with meeting" from a popped-out mail.  The
+  // EventEditor lives in the main window (app-level surface), so
+  // we just forward the message and let App.svelte open the
+  // editor and remember that the trigger came from a popout —
+  // the resulting Compose ends up as its own popped-out window.
+  function onRespondWithMeeting(mail: EmailPayload) {
+    void emit('respond-with-meeting-from-mail', { mail }).catch((e) => {
+      console.warn('respond-with-meeting-from-mail emit failed', e)
+    })
+  }
   function onEditDraft(mail: EmailPayload) {
     void emit('edit-draft-from-mail', { mail }).catch((e) => {
       console.warn('edit-draft-from-mail emit failed', e)
@@ -120,6 +130,7 @@
     onreply={onReply}
     onreplyall={onReplyAll}
     onforward={onForward}
+    onrespondwithmeeting={onRespondWithMeeting}
     oneditdraft={onEditDraft}
     onmessageremoved={closeWindow}
     onmailto={onMailto}

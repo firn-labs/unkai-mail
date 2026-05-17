@@ -110,14 +110,14 @@
   let keyEncryptionEnabled = $state(false)
   $effect(() => {
     try {
-      keyEncryptionEnabled = localStorage.getItem('nimbus.keyEncryption') === '1'
+      keyEncryptionEnabled = localStorage.getItem('unkai.keyEncryption') === '1'
     } catch {
       /* localStorage may be unavailable in some webview modes */
     }
   })
   function persistToggle(v: boolean) {
     try {
-      localStorage.setItem('nimbus.keyEncryption', v ? '1' : '0')
+      localStorage.setItem('unkai.keyEncryption', v ? '1' : '0')
     } catch {
       /* swallow — webview may not expose localStorage */
     }
@@ -256,7 +256,7 @@
       const saltB64 = await invoke<string>('fido_generate_salt')
       // The OS shows its own auth sheet here; we receive the
       // PRF output once the user authenticates.
-      const enrolled = await enrollFidoCredential(saltB64, 'nimbus-user', label)
+      const enrolled = await enrollFidoCredential(saltB64, 'unkai-user', label)
       await invoke('fido_enroll', {
         credentialIdB64: enrolled.credentialIdB64,
         saltB64: enrolled.saltB64,
@@ -465,7 +465,7 @@
           <h3 class="font-medium mb-2">Add a hardware key</h3>
           <p class="text-xs text-surface-500 mb-3">
             You'll be asked to authenticate (touch your security key, scan
-            a fingerprint, …). The OS handles the prompt; Nimbus only sees
+            a fingerprint, …). The OS handles the prompt; Unkai only sees
             the resulting key material.
           </p>
           <div class="flex items-center gap-2">

@@ -102,7 +102,7 @@
    *  configured mail accounts.  Backend treats it as the
    *  highest-priority candidate when picking the row to mutate
    *  + identify with on Sabre's principal CUA.  Stays `null`
-   *  when the invite uses an address Nimbus doesn't have a
+   *  when the invite uses an address Unkai doesn't have a
    *  matching account for; backend falls back to NC profile
    *  email + mail-account list. */
   let attendeeHint = $state<string | null>(null)

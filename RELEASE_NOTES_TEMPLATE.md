@@ -1,5 +1,5 @@
 <!--
-  Editorial template for a Nimbus Mail release.
+  Editorial template for a Unkai Mail release.
 
   When the release workflow runs (`v*` tag pushed), it creates a
   *draft* GitHub Release with the auto-generated changelog from
@@ -25,7 +25,7 @@
   Delete this comment block before publishing.
 -->
 
-# Nimbus Mail vX.Y.Z — _<one-sentence headline>_
+# Unkai Mail vX.Y.Z — _<one-sentence headline>_
 
 ## ✨ What's new
 
@@ -51,11 +51,11 @@
 
 | Platform | Download |
 |---|---|
-| Windows (10 / 11, x86_64) | `nimbus-mail_X.Y.Z_x64-setup.exe` or `nimbus-mail_X.Y.Z_x64_en-US.msi` |
-| macOS (Apple Silicon) | `nimbus-mail_X.Y.Z_aarch64.dmg` |
-| macOS (Intel) | `nimbus-mail_X.Y.Z_x64.dmg` |
-| Linux (Ubuntu/Debian, x86_64) | `nimbus-mail_X.Y.Z_amd64.deb` |
-| Linux (any distro, x86_64) | `nimbus-mail_X.Y.Z_amd64.AppImage` |
+| Windows (10 / 11, x86_64) | `unkai-mail_X.Y.Z_x64-setup.exe` or `unkai-mail_X.Y.Z_x64_en-US.msi` |
+| macOS (Apple Silicon) | `unkai-mail_X.Y.Z_aarch64.dmg` |
+| macOS (Intel) | `unkai-mail_X.Y.Z_x64.dmg` |
+| Linux (Ubuntu/Debian, x86_64) | `unkai-mail_X.Y.Z_amd64.deb` |
+| Linux (any distro, x86_64) | `unkai-mail_X.Y.Z_amd64.AppImage` |
 
 > **Note on signing:** these builds are not yet signed. Windows SmartScreen and macOS Gatekeeper will warn the first time you run the installer. We will start shipping signed builds once we provision the certs (Apple Developer ID + Windows EV Code Signing).
 

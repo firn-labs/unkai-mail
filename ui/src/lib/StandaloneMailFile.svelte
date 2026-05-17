@@ -4,7 +4,7 @@
    *
    * Mounted by main.ts when the URL carries
    * `?view=mailfile&path=...`.  The path points at a local .eml on
-   * disk (typically supplied by the OS via "Open with… → Nimbus").
+   * disk (typically supplied by the OS via "Open with… → Unkai").
    * We hand the path to the `parse_eml_file` Tauri command, which
    * runs the same MIME walker `fetch_message` uses internally and
    * returns the same Email shape.  No IMAP, no cache — just bytes
@@ -151,7 +151,7 @@
 <svelte:window onkeydown={onKeydown} />
 
 <svelte:head>
-  <title>{email?.subject || 'Nimbus Mail'}</title>
+  <title>{email?.subject || 'Unkai Mail'}</title>
 </svelte:head>
 
 <div class="h-screen flex flex-col bg-surface-50 dark:bg-surface-900 text-surface-900 dark:text-surface-100">

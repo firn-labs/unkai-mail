@@ -186,6 +186,13 @@
     event?: CalendarEvent | null
     onclose: () => void
     onsaved: (saved?: SavedEvent) => void
+    /** When true, the editor renders as a full-window surface
+     *  instead of a centered modal card over a dim backdrop —
+     *  used by `StandaloneEventEditor.svelte` so the popped-out
+     *  event editor window doesn't show the modal's letterboxed
+     *  black bars around the form (#304).  Mirrors the same prop
+     *  shape Compose uses for its popped-out variant. */
+    inStandaloneWindow?: boolean
   }
   const {
     mode,
@@ -194,6 +201,7 @@
     event,
     onclose,
     onsaved,
+    inStandaloneWindow = false,
   }: Props = $props()
 
   // ── Form state ──────────────────────────────────────────────
@@ -1488,7 +1496,7 @@
       // Nextcloud doesn't auto-delete rooms attached to a deleted
       // event, so without this the user accumulates dangling
       // meeting rooms in their Talk list.  We look for a `/call/`
-      // token in LOCATION first (where Nimbus + NC Calendar both
+      // token in LOCATION first (where Unkai + NC Calendar both
       // write the join URL), falling back to URL / DESCRIPTION
       // for events created elsewhere.  A 404 (room already gone)
       // or 403 (not the owner) is normal — log + move on.
@@ -1566,12 +1574,21 @@
      so the user's first outside-click closes just the popover,
      not the whole editor.  `target === currentTarget` ensures
      clicks on the modal panel itself don't trigger this. -->
+<!-- In a popped-out window (#304) the editor IS the window, so we
+     drop the fixed-position dim backdrop and let the card fill the
+     viewport.  The modal path keeps the original look (centered
+     card over a dim backdrop) for use inside the main window.  The
+     outside-click-to-cancel handler is meaningful only for the
+     modal — in standalone there is no "outside" of the card. -->
 <div
-  class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+  class={inStandaloneWindow
+    ? 'h-screen w-screen flex flex-col bg-surface-50 dark:bg-surface-900'
+    : 'fixed inset-0 z-50 flex items-center justify-center bg-black/50'}
   role="dialog"
-  aria-modal="true"
+  aria-modal={inStandaloneWindow ? 'false' : 'true'}
   tabindex="-1"
   onmousedown={(e) => {
+    if (inStandaloneWindow) return
     if (e.target !== e.currentTarget) return
     if (
       document.querySelector(
@@ -1583,7 +1600,11 @@
     void cancel()
   }}
 >
-  <div class="w-[640px] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col">
+  <div
+    class={inStandaloneWindow
+      ? 'flex-1 min-h-0 w-full bg-surface-50 dark:bg-surface-900 flex flex-col'
+      : 'w-[640px] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col'}
+  >
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-3">
       <h2 class="text-base font-semibold shrink-0">
         {mode === 'create' ? 'New event' : 'Edit event'}

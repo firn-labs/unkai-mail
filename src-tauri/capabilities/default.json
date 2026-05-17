@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for the Nimbus main window and any popped-out standalone windows (mail #104, compose #110, reminder #203).",
-  "windows": ["main", "mail-*", "compose-*", "reminder-*"],
+  "description": "Default capabilities for the Unkai main window and any popped-out standalone windows (mail #104, compose #110, reminder #203, event-editor #304).",
+  "windows": ["main", "mail-*", "compose-*", "reminder-*", "event-editor-*"],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",
@@ -11,6 +11,7 @@
     "dialog:default",
     "autostart:allow-enable",
     "autostart:allow-disable",
-    "autostart:allow-is-enabled"
+    "autostart:allow-is-enabled",
+    "deep-link:default"
   ]
 }

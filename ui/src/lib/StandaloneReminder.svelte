@@ -44,7 +44,7 @@
   /** Slug of the user's chosen app-icon style (`storm`, `dawn`,
    *  `mint`, …).  Read from `get_app_settings` on mount and
    *  rendered in the popup header so the user can tell at a
-   *  glance that the toast is from Nimbus, in their picked
+   *  glance that the toast is from Unkai, in their picked
    *  colour.  Defaults to `storm` (the same default the
    *  backend's `default_logo_style` returns) so the header
    *  isn't blank during the brief settings-fetch window. */
@@ -233,7 +233,7 @@
 <svelte:window onkeydown={onReminderKeydown} />
 
 <svelte:head>
-  <title>{reminder?.summary || 'Nimbus Reminder'}</title>
+  <title>{reminder?.summary || 'Unkai Reminder'}</title>
 </svelte:head>
 
 <!--
@@ -254,8 +254,8 @@
       class="flex items-center justify-between px-3 py-2 border-b border-surface-300/60 dark:border-surface-700/60 bg-surface-100 dark:bg-surface-800 cursor-move select-none"
     >
       <div class="flex items-center gap-2 min-w-0" data-tauri-drag-region>
-        <!-- Nimbus brand mark.  Sourced from the same
-             `nimbus-logo://localhost/<style>` custom URI scheme
+        <!-- Unkai brand mark.  Sourced from the same
+             `unkai-logo://localhost/<style>` custom URI scheme
              the AccountSettings logo picker uses, so whichever
              icon style the user picks (storm / dawn / mint /
              monochrome / etc.) is what shows up here too.
@@ -264,8 +264,8 @@
              ripples on the next reminder without any extra
              plumbing. -->
         <img
-          src={convertFileSrc(logoStyle, 'nimbus-logo')}
-          alt="Nimbus Mail"
+          src={convertFileSrc(logoStyle, 'unkai-logo')}
+          alt="Unkai Mail"
           class="w-5 h-5 shrink-0 object-contain"
           draggable="false"
         />
@@ -285,7 +285,7 @@
     </div>
 
     <!-- Body padding matches the header's `px-3` so the detail
-         rows' icons sit in the same column as the Nimbus logo
+         rows' icons sit in the same column as the Unkai logo
          at the top of the window.  Each row uses
          `flex items-start gap-2` + a `shrink-0` icon span so
          when a long location or a long attendee list wraps,

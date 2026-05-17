@@ -48,7 +48,7 @@ ignore = [
 ]
 
 # ── Licences ────────────────────────────────────────────────────
-# Allow-list mirrors `SBOM.md`'s "what licences ship with Nimbus"
+# Allow-list mirrors `SBOM.md`'s "what licences ship with Unkai"
 # section.  Adding a new licence here is the same project-level
 # decision as adding a row to the SBOM — surface it in the PR
 # description, don't slip it in.
@@ -57,11 +57,11 @@ version = 2
 confidence-threshold = 0.8
 # Skip licence checks for crates that aren't published anywhere
 # (i.e. our own workspace crates).  Without this, cargo-deny
-# fails on every `nimbus-*` crate because it can't infer a
+# fails on every `unkai-*` crate because it can't infer a
 # licence from the manifest — and inheriting `license.workspace`
 # would still leave the per-crate manifest ambiguous to
 # cargo-deny's parser.  The `SBOM.md` / `License.md` pair is
-# our authoritative source for what licence Nimbus ships under.
+# our authoritative source for what licence Unkai ships under.
 private = { ignore = true }
 allow = [
   # Permissive
@@ -108,7 +108,7 @@ license-files = []
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Workspace path-deps (`nimbus-core = { path = "../nimbus-core" }`)
+# Workspace path-deps (`unkai-core = { path = "../unkai-core" }`)
 # look like wildcard version requirements to cargo-deny.  This
 # flag exempts intra-workspace path links from the wildcard ban
 # without weakening the ban for *external* deps, which is what

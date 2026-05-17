@@ -1,7 +1,7 @@
 // Settings backup & sync helpers (#168).
 //
 // Three roles:
-//   1. Pack & download — collect every localStorage pref Nimbus
+//   1. Pack & download — collect every localStorage pref Unkai
 //      cares about and ask the Rust side to splice it together
 //      with `AppSettings` + accounts into a single JSON blob,
 //      then save it via the OS file dialog.
@@ -34,7 +34,7 @@ const SYNCED_LOCAL_STORAGE_KEYS = [
   // envelope — only the *user intent* (am I in encrypted mode?)
   // is on the frontend, and that intent should follow the user
   // across machines.
-  'nimbus.keyEncryption',
+  'unkai.keyEncryption',
   // Display-language pin (#190).  Paraglide reads this on every
   // process start; when present it overrides
   // `navigator.language`.  Survives bundle import so a user who
@@ -43,7 +43,7 @@ const SYNCED_LOCAL_STORAGE_KEYS = [
   // Trusted-senders allow-list for remote-image autoload.
   // Stored as a JSON array; we copy it verbatim so the import
   // path doesn't have to know its inner shape.
-  'nimbus-trusted-senders',
+  'unkai-trusted-senders',
 ] as const
 
 /**
@@ -119,9 +119,9 @@ export async function packBundle(): Promise<string> {
  */
 export async function downloadBundle(): Promise<string | null> {
   const path = await saveFileDialog({
-    title: 'Save Nimbus settings backup',
-    defaultPath: 'nimbus-settings.json',
-    filters: [{ name: 'Nimbus settings', extensions: ['json'] }],
+    title: 'Save Unkai settings backup',
+    defaultPath: 'unkai-settings.json',
+    filters: [{ name: 'Unkai settings', extensions: ['json'] }],
   })
   if (!path) return null
   const json = await packBundle()
@@ -143,9 +143,9 @@ export async function downloadBundle(): Promise<string | null> {
  */
 export async function uploadBundle(): Promise<string | null> {
   const picked = await openFileDialog({
-    title: 'Import Nimbus settings backup',
+    title: 'Import Unkai settings backup',
     multiple: false,
-    filters: [{ name: 'Nimbus settings', extensions: ['json'] }],
+    filters: [{ name: 'Unkai settings', extensions: ['json'] }],
   })
   if (!picked || Array.isArray(picked)) return null
   const path = typeof picked === 'string' ? picked : (picked as { path: string }).path

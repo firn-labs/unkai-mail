@@ -14,6 +14,9 @@
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
+  import Avatar from './Avatar.svelte'
+  import { contactsStore, contactPhotoSrc } from './contactsStore.svelte'
+  import { parseFromHeader, senderLabel } from './fromHeader'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import Icon from './Icon.svelte'
 
@@ -27,10 +30,10 @@
     is_read: boolean
     is_starred: boolean
     /** IMAP `\Answered` flag (#255).  Drives the generic-reply
-     *  fallback icon — true when *anyone* (Nimbus, another
+     *  fallback icon — true when *anyone* (Unkai, another
      *  client, the user's phone) has answered the message. */
     is_answered?: boolean
-    /** Nimbus-only reply kind (#255): `'reply'`, `'reply-all'`,
+    /** Unkai-only reply kind (#255): `'reply'`, `'reply-all'`,
      *  `'meeting'`.  Stamped by the send path; takes precedence
      *  over `is_answered` for the icon decision. */
     replied_kind?: string | null
@@ -234,7 +237,7 @@
     // anchors a different ID than the reply's `In-Reply-To`
     // points at.  Standard practice in conversation groupers is
     // to fall back to subject matching when the header chain
-    // breaks — Nimbus does the same.
+    // breaks — Unkai does the same.
     //
     // For every reply-shaped bucket head (`Re:` / `Fwd:` / …),
     // look for another bucket whose head has the same canonical
@@ -633,7 +636,7 @@
   // can iterate moves on drop.  The payload is always an array —
   // single-row drags become a 1-element list.  When the dragged
   // row is part of a multi-select group, the whole group rides
-  // along.  The custom `application/x-nimbus-mail` MIME type means
+  // along.  The custom `application/x-unkai-mail` MIME type means
   // the browser ignores the drag for non-Sidebar drop targets.
   function onMailDragStart(e: DragEvent, env: EmailEnvelope) {
     if (!e.dataTransfer) return
@@ -656,7 +659,7 @@
       return { accountId: src, folder: srcFolder, uid: g.uid }
     })
     e.dataTransfer.setData(
-      'application/x-nimbus-mail',
+      'application/x-unkai-mail',
       JSON.stringify(payload),
     )
     e.dataTransfer.effectAllowed = 'move'
@@ -1105,12 +1108,12 @@
   // Small icon prefixed to the subject when this message has
   // been answered.  Three sources of truth, in priority order:
   //
-  //   1. `replied_kind` — Nimbus stamped this when the user
+  //   1. `replied_kind` — Unkai stamped this when the user
   //      replied via Compose.  Carries the *kind* of reply
   //      (reply / reply-all / meeting), so we can pick the
   //      matching icon.
   //   2. `is_answered` — the IMAP `\Answered` system flag.
-  //      True when *anyone* (Nimbus, another mail client, the
+  //      True when *anyone* (Unkai, another mail client, the
   //      user's phone) has answered the message.  We don't
   //      know how, so fall back to the generic reply icon.
   //   3. neither — return null, the subject renders without an
@@ -1287,6 +1290,22 @@
         {@const env = row.env}
         {@const selected = selectedUid === env.uid && (!unified || selectedUid === env.uid)}
         {@const multi = isMulti(env.uid)}
+        <!-- Sender avatar lookup (#305).  `env.from` is the raw
+             RFC 5322 header, so we parse out the email first and
+             try to resolve it against the shared contact cache.
+             A hit gives us a photo; a miss falls back to coloured
+             initials seeded off the email/name so threads from
+             one person carry a stable hue. -->
+        {@const parsedFrom = parseFromHeader(env.from)}
+        {@const senderContact = parsedFrom.email
+          ? contactsStore.byEmail.get(parsedFrom.email.toLowerCase())
+          : undefined}
+        {@const senderPhoto = contactPhotoSrc(senderContact)}
+        {@const senderInitialName = senderContact?.display_name
+          || parsedFrom.name
+          || senderLabel(parsedFrom)
+          || '?'}
+        {@const senderSeed = parsedFrom.email || parsedFrom.name || env.from}
         <!-- Unread visual treatment: a 3px themed accent strip on the
              leading edge plus a subtle primary tint on the row.  The
              border is always present (transparent when read) so rows
@@ -1397,81 +1416,98 @@
                 title="Unread"
               ></span>
             {/if}
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
-                {env.from || '(unknown sender)'}
-              </span>
-              <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
-            </div>
-            <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
-              {#if answeredIconName(env)}
-                <span
-                  class="shrink-0 inline-flex items-center text-primary-500"
-                  title={answeredIconTitle(env)}
-                  aria-label={answeredIconTitle(env)}
-                >
-                  <Icon name={answeredIconName(env)!} size={14} />
-                </span>
-              {/if}
-              <span class="truncate min-w-0">
-                {env.subject || '(no subject)'}
-              </span>
-            </p>
-            <!-- Bottom meta row.  Conversation count + chevron
-                 (#277) sits at the bottom-left as a pill badge;
-                 the unified-mode account label, when present,
-                 trails to the right via `ml-auto`.  Only renders
-                 if at least one piece has content; otherwise the
-                 row stays compact. -->
-            {#if row.siblingCount > 0 || (unified && env.account_id)}
-              <div class="flex items-center gap-2 mt-1 text-[11px] text-surface-500 min-w-0">
-                {#if row.siblingCount > 0}
-                  <!-- Modern pill badge: rounded-full, soft
-                       primary tint, primary-coloured count, and
-                       an inline SVG chevron that rotates 180° on
-                       expand.  Click toggles the thread below;
-                       `stopPropagation` on click AND dblclick so
-                       neither the row's click (which opens the
-                       head message) nor its dblclick (which pops
-                       the message out to a standalone window) fire
-                       through the button — the count badge is for
-                       expanding the thread, full stop.
-                       Inline SVG instead of an Icon registry entry —
-                       `chevron-down` isn't a stock icon in
-                       Icon.svelte and a 12 px path is too small
-                       to justify a new file. -->
-                  <button
-                    type="button"
-                    class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary-500/10 text-primary-600 dark:text-primary-400 hover:bg-primary-500/20 transition-colors"
-                    title={expandedThreads.has(row.threadKey)
-                      ? 'Collapse conversation'
-                      : 'Show full conversation'}
-                    onclick={(e) => {
-                      e.stopPropagation()
-                      toggleThread(row.threadKey)
-                    }}
-                    ondblclick={(e) => e.stopPropagation()}
-                  >
-                    <span>{row.siblingCount + 1}</span>
-                    <svg
-                      class="w-2.5 h-2.5 transition-transform duration-150 {expandedThreads.has(row.threadKey) ? 'rotate-180' : ''}"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
+            <!-- Avatar + text-block wrapper (#305).  `items-start`
+                 keeps the avatar pinned to the top so a wrapping
+                 subject doesn't drag the circle down with it;
+                 `min-w-0` on the text column is the standard
+                 flex-truncation trick — without it, the long
+                 sender / subject strings expand the column past
+                 the row width and the trailing-date column wraps. -->
+            <div class="flex items-start gap-3">
+              <Avatar
+                photo={senderPhoto}
+                displayName={senderInitialName}
+                seed={senderSeed}
+                size={36}
+              />
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
+                    {env.from || '(unknown sender)'}
+                  </span>
+                  <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
+                </div>
+                <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
+                  {#if answeredIconName(env)}
+                    <span
+                      class="shrink-0 inline-flex items-center text-primary-500"
+                      title={answeredIconTitle(env)}
+                      aria-label={answeredIconTitle(env)}
                     >
-                      <path d="M4 6 L8 10 L12 6" />
-                    </svg>
-                  </button>
-                {/if}
-                {#if unified && env.account_id}
-                  <span class="truncate ml-auto">{accountLabel(env.account_id)}</span>
+                      <Icon name={answeredIconName(env)!} size={14} />
+                    </span>
+                  {/if}
+                  <span class="truncate min-w-0">
+                    {env.subject || '(no subject)'}
+                  </span>
+                </p>
+                <!-- Bottom meta row.  Conversation count + chevron
+                     (#277) sits at the bottom-left as a pill badge;
+                     the unified-mode account label, when present,
+                     trails to the right via `ml-auto`.  Only renders
+                     if at least one piece has content; otherwise the
+                     row stays compact. -->
+                {#if row.siblingCount > 0 || (unified && env.account_id)}
+                  <div class="flex items-center gap-2 mt-1 text-[11px] text-surface-500 min-w-0">
+                    {#if row.siblingCount > 0}
+                      <!-- Modern pill badge: rounded-full, soft
+                           primary tint, primary-coloured count, and
+                           an inline SVG chevron that rotates 180° on
+                           expand.  Click toggles the thread below;
+                           `stopPropagation` on click AND dblclick so
+                           neither the row's click (which opens the
+                           head message) nor its dblclick (which pops
+                           the message out to a standalone window) fire
+                           through the button — the count badge is for
+                           expanding the thread, full stop.
+                           Inline SVG instead of an Icon registry entry —
+                           `chevron-down` isn't a stock icon in
+                           Icon.svelte and a 12 px path is too small
+                           to justify a new file. -->
+                      <button
+                        type="button"
+                        class="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary-500/10 text-primary-600 dark:text-primary-400 hover:bg-primary-500/20 transition-colors"
+                        title={expandedThreads.has(row.threadKey)
+                          ? 'Collapse conversation'
+                          : 'Show full conversation'}
+                        onclick={(e) => {
+                          e.stopPropagation()
+                          toggleThread(row.threadKey)
+                        }}
+                        ondblclick={(e) => e.stopPropagation()}
+                      >
+                        <span>{row.siblingCount + 1}</span>
+                        <svg
+                          class="w-2.5 h-2.5 transition-transform duration-150 {expandedThreads.has(row.threadKey) ? 'rotate-180' : ''}"
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M4 6 L8 10 L12 6" />
+                        </svg>
+                      </button>
+                    {/if}
+                    {#if unified && env.account_id}
+                      <span class="truncate ml-auto">{accountLabel(env.account_id)}</span>
+                    {/if}
+                  </div>
                 {/if}
               </div>
-            {/if}
+            </div>
           </div>
           <!-- Hover-revealed quick actions (#98).  Anchored to the
                BOTTOM-right corner of the row so the cluster never

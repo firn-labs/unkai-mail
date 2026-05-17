@@ -1,6 +1,6 @@
 /**
  * Spawn a standalone Tauri webview window that displays an .eml
- * file from disk (#254 — "Open with… → Nimbus" flow).
+ * file from disk (#254 — "Open with… → Unkai" flow).
  *
  * Same bundle as the main app; `main.ts` routes `view=mailfile`
  * to `StandaloneMailFile.svelte`.  The path is passed straight
@@ -19,7 +19,7 @@ export async function openMailFileInStandaloneWindow(
   })
   new WebviewWindow(label, {
     url: `index.html?${params.toString()}`,
-    title: 'Nimbus Mail',
+    title: 'Unkai Mail',
     width: 900,
     height: 700,
     minWidth: 500,

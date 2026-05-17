@@ -32,6 +32,7 @@
     getSenderAddress,
     isSenderTrusted,
   } from './trustedSenders'
+  import { parseMailtoUrl } from './mailtoUrl'
 
   interface EmailAttachment {
     filename: string
@@ -467,10 +468,10 @@
   // After DOMPurify, a second pass with DOMParser:
   //   • annotates <a href> with a tooltip showing the raw URL (phishing
   //     guard — the Tauri webview hides the URL bar)
-  //   • marks cid: anchors with data-nimbus-cid for the click handler
+  //   • marks cid: anchors with data-unkai-cid for the click handler
   //   • unless showImages is true, replaces every remote <img src> with
   //     a transparent 1×1 GIF and stashes the original in
-  //     data-nimbus-blocked-src
+  //     data-unkai-blocked-src
 
   const BLOCKED_IMG_PLACEHOLDER =
     'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
@@ -559,8 +560,8 @@
         ],
         ADD_ATTR: [
           'target',
-          'data-nimbus-cid',
-          'data-nimbus-blocked-src',
+          'data-unkai-cid',
+          'data-unkai-blocked-src',
           'title',
           // Attachment-ref (#93) — survive sanitisation so the
           // body click handler can route the click back to the
@@ -595,7 +596,7 @@
         a.setAttribute('title', existing ? `${existing} — ${href}` : href)
         if (href.toLowerCase().startsWith('cid:')) {
           const cid = href.slice(4).trim().replace(/^<|>$/g, '')
-          a.setAttribute('data-nimbus-cid', cid)
+          a.setAttribute('data-unkai-cid', cid)
           // Neutralise default `cid:` navigation; our click handler takes over.
           a.setAttribute('href', '#')
         } else {
@@ -612,7 +613,7 @@
           const src = img.getAttribute('src') ?? ''
           if (src && !src.toLowerCase().startsWith('data:') && !src.toLowerCase().startsWith('cid:')) {
             hadBlocked = true
-            img.setAttribute('data-nimbus-blocked-src', src)
+            img.setAttribute('data-unkai-blocked-src', src)
             img.setAttribute('src', BLOCKED_IMG_PLACEHOLDER)
             img.removeAttribute('srcset')
             const alt = img.getAttribute('alt') ?? ''
@@ -766,7 +767,7 @@
         // the link, separated by a thin no-break space so they
         // visually attach to the URL they describe.
         const pill = doc.createElement('span')
-        pill.setAttribute('data-nimbus-link-pill', v.verdict)
+        pill.setAttribute('data-unkai-link-pill', v.verdict)
         if (v.verdict === 'unsafe') {
           pill.style.cssText =
             'display:inline-block;font-size:0.7rem;font-weight:600;' +
@@ -780,9 +781,9 @@
           }
           // Mark the anchor so the click handler knows to
           // intercept and show the confirm modal.
-          a.setAttribute('data-nimbus-unsafe-link', '1')
-          if (v.threat) a.setAttribute('data-nimbus-threat', v.threat)
-          if (v.exact) a.setAttribute('data-nimbus-link-exact', '1')
+          a.setAttribute('data-unkai-unsafe-link', '1')
+          if (v.threat) a.setAttribute('data-unkai-threat', v.threat)
+          if (v.exact) a.setAttribute('data-unkai-link-exact', '1')
         } else {
           // Safe pill stays understated — a green dot pill so it
           // doesn't draw the eye away from the actual content.
@@ -849,12 +850,12 @@
     const target = e.target as HTMLElement | null
     if (!target) return
 
-    // Tiptap-rendered attachment refs from Nimbus (#93).
+    // Tiptap-rendered attachment refs from Unkai (#93).
     // Two on-the-wire shapes float around:
     //   - new: <span data-attachment-ref data-cid=... data-filename=...>
     //   - legacy: <a href="cid:..." data-attachment-ref>
     // Plus an intermediate where DOMPurify's cid: handler has
-    // already moved the cid into `data-nimbus-cid`.  We resolve
+    // already moved the cid into `data-unkai-cid`.  We resolve
     // through every channel so a click works regardless of the
     // sending client's age or what survived the round-trip.
     const refEl = target.closest('[data-attachment-ref]') as HTMLElement | null
@@ -862,10 +863,10 @@
       e.preventDefault()
       e.stopPropagation()
       if (!email) return
-      // CID resolution: explicit data-cid → data-nimbus-cid
+      // CID resolution: explicit data-cid → data-unkai-cid
       // (set by processEmailHtml on legacy anchors) → href.
       let cidAttr = (refEl.getAttribute('data-cid') ?? '').trim()
-      if (!cidAttr) cidAttr = (refEl.getAttribute('data-nimbus-cid') ?? '').trim()
+      if (!cidAttr) cidAttr = (refEl.getAttribute('data-unkai-cid') ?? '').trim()
       if (!cidAttr) {
         const href = (refEl.getAttribute('href') ?? '').trim()
         if (href.toLowerCase().startsWith('cid:')) {
@@ -901,7 +902,7 @@
     const anchor = target.closest('a') as HTMLAnchorElement | null
     if (!anchor) return
 
-    const cid = anchor.getAttribute('data-nimbus-cid')
+    const cid = anchor.getAttribute('data-unkai-cid')
     if (cid) {
       e.preventDefault()
       e.stopPropagation()
@@ -921,7 +922,7 @@
     if (!href || href === '#' || href.startsWith('javascript:')) return
     // mailto: → open Compose pre-filled rather than handing the
     // URL to the OS (which would launch the default mail handler,
-    // unhelpful when Nimbus *is* the user's mail client).  RFC 6068
+    // unhelpful when Unkai *is* the user's mail client).  RFC 6068
     // allows `mailto:to?subject=...&cc=...&bcc=...&body=...`, with
     // multiple addresses comma-separated and percent-encoded.
     if (href.toLowerCase().startsWith('mailto:')) {
@@ -933,73 +934,23 @@
     }
     // #165 — URLhaus-flagged links go through a confirm modal
     // instead of opening straight to the system browser.  The
-    // anchor is tagged with `data-nimbus-unsafe-link` by
+    // anchor is tagged with `data-unkai-unsafe-link` by
     // `annotateLinkPills` only when the verdict came back
     // 'unsafe' (and the master toggle is on), so a missing
     // attribute is the safe / off path that keeps the original
     // open-in-browser behaviour.
-    if (anchor.hasAttribute('data-nimbus-unsafe-link')) {
+    if (anchor.hasAttribute('data-unkai-unsafe-link')) {
       e.preventDefault()
       e.stopPropagation()
       unsafeLinkPrompt = {
         url: href,
-        threat: anchor.getAttribute('data-nimbus-threat'),
-        exact: anchor.hasAttribute('data-nimbus-link-exact'),
+        threat: anchor.getAttribute('data-unkai-threat'),
+        exact: anchor.hasAttribute('data-unkai-link-exact'),
       }
       return
     }
     e.preventDefault()
     void invoke('open_url', { url: href })
-  }
-
-  /** Parse a `mailto:` URL into ComposeInitial-shaped fields per
-   *  RFC 6068.  Tolerant: missing pieces just stay undefined so
-   *  the caller's defaults take over. */
-  function parseMailtoUrl(raw: string): {
-    to?: string
-    cc?: string
-    bcc?: string
-    subject?: string
-    body?: string
-  } {
-    const stripped = raw.replace(/^mailto:/i, '')
-    const qIdx = stripped.indexOf('?')
-    const recipientsPart = qIdx === -1 ? stripped : stripped.slice(0, qIdx)
-    const queryPart = qIdx === -1 ? '' : stripped.slice(qIdx + 1)
-    const decode = (s: string) => {
-      try {
-        return decodeURIComponent(s.replace(/\+/g, '%20'))
-      } catch {
-        return s
-      }
-    }
-    const out: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string } = {}
-    if (recipientsPart) out.to = decode(recipientsPart)
-    if (!queryPart) return out
-    for (const pair of queryPart.split('&')) {
-      if (!pair) continue
-      const eq = pair.indexOf('=')
-      const key = (eq === -1 ? pair : pair.slice(0, eq)).toLowerCase()
-      const val = eq === -1 ? '' : decode(pair.slice(eq + 1))
-      switch (key) {
-        case 'to':
-          out.to = out.to ? `${out.to}, ${val}` : val
-          break
-        case 'cc':
-          out.cc = out.cc ? `${out.cc}, ${val}` : val
-          break
-        case 'bcc':
-          out.bcc = out.bcc ? `${out.bcc}, ${val}` : val
-          break
-        case 'subject':
-          out.subject = val
-          break
-        case 'body':
-          out.body = val
-          break
-      }
-    }
-    return out
   }
 
   /** Single dispatch point for any user-driven attachment open

@@ -121,7 +121,7 @@ export function unregisterCustomThemePath(id: string): void {
   customThemePathById.delete(id)
 }
 
-const CUSTOM_LINK_ID = 'nimbus-custom-theme'
+const CUSTOM_LINK_ID = 'unkai-custom-theme'
 
 function ensureCustomThemeLoaded(themeId: string): void {
   const path = customThemePathById.get(themeId)

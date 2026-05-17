@@ -3,7 +3,7 @@
  * draft" cleanup flow (#193).
  *
  * Compose stamps each share anchor it inserts into the email body
- * with `data-nimbus-share-id` and `data-nimbus-share-nc`.  When the
+ * with `data-unkai-share-id` and `data-unkai-share-nc`.  When the
  * draft is later cancelled or deleted, the cleanup pass parses
  * those markers back out of the body and calls
  * `delete_nextcloud_share` for each one so the user's "Shared with
@@ -22,7 +22,7 @@ export interface ManagedShareRef {
 }
 
 /**
- * Pull every `<a data-nimbus-share-id="…" data-nimbus-share-nc="…">`
+ * Pull every `<a data-unkai-share-id="…" data-unkai-share-nc="…">`
  * marker out of an HTML string.  Robust to attribute order (the two
  * `data-` attributes can come in either order on the same element)
  * and to whitespace inside the tag.
@@ -41,8 +41,8 @@ export function extractManagedShares(html: string | null | undefined): ManagedSh
   const tagRe = /<a\b[^>]*>/gi
   for (const m of html.matchAll(tagRe)) {
     const tag = m[0]
-    const idMatch = tag.match(/\bdata-nimbus-share-id="([^"]*)"/i)
-    const ncMatch = tag.match(/\bdata-nimbus-share-nc="([^"]*)"/i)
+    const idMatch = tag.match(/\bdata-unkai-share-id="([^"]*)"/i)
+    const ncMatch = tag.match(/\bdata-unkai-share-nc="([^"]*)"/i)
     if (!idMatch || !ncMatch) continue
     const shareId = idMatch[1]
     const ncId = ncMatch[1]

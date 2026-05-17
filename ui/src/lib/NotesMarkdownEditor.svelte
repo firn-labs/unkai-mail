@@ -51,6 +51,7 @@
     type MailItem,
     type PickerItem,
   } from './NotesMentionPicker.svelte'
+  import { parseMailtoUrl, type MailtoParsed } from './mailtoUrl'
 
   interface Props {
     /** Markdown source — `bind:value` from the parent.  Updates
@@ -71,11 +72,16 @@
      *  no-ops. */
     accountId?: string | null
     /** `mail://acc/folder/uid` link click handler (#260).  Called
-     *  when the user clicks a Nimbus-internal mail reference in the
+     *  when the user clicks a Unkai-internal mail reference in the
      *  rendered preview pane.  When absent, link clicks fall
      *  through to the browser's default (which silently no-ops on
      *  the unregistered scheme). */
     onopenmail?: (accountId: string, folder: string, uid: number) => void
+    /** `mailto:` link click handler (#294).  Called when the user
+     *  clicks an external-mail link in the rendered preview pane,
+     *  with the parsed RFC 6068 fields ready for Compose prefill.
+     *  When absent the click falls through to the OS handler. */
+    onmailto?: (init: MailtoParsed) => void
   }
   let {
     value = $bindable(''),
@@ -84,6 +90,7 @@
     placeholder = 'Start writing — markdown is preserved on the server.',
     accountId = null,
     onopenmail,
+    onmailto,
   }: Props = $props()
 
   let host: HTMLDivElement | undefined = $state()
@@ -468,21 +475,33 @@
     }
   }
 
-  /** Notes-preview link click delegate (#260).  Intercepts
-   *  `mail://acc/folder/uid` links and routes them through the
-   *  parent's `onopenmail` callback (which composes the account /
-   *  folder / message state changes).  All other links — http(s)
-   *  to NC files, `mailto:` to external mail clients, etc. — fall
-   *  through to the browser's default handling. */
+  /** Notes-preview link click delegate.  Intercepts:
+   *   - `mail://acc/folder/uid` (#260) — internal Unkai mail
+   *     references, routed through `onopenmail` so the parent can
+   *     swap account / folder / selection state.
+   *   - `mailto:` (#294) — external mail addresses, parsed per RFC
+   *     6068 and routed through `onmailto` so Compose opens
+   *     pre-filled instead of handing the URL to the OS (which,
+   *     once Unkai is the registered mailto handler, would loop
+   *     back into a fresh app launch).
+   *  Every other link — http(s) to NC files, etc. — falls through
+   *  to the browser's default handling. */
   function onPreviewClick(e: MouseEvent): void {
     const target = (e.target as HTMLElement | null)?.closest('a')
     if (!target) return
     const href = target.getAttribute('href') ?? ''
-    if (!href.startsWith('mail://')) return
-    e.preventDefault()
-    const parsed = parseMailHref(href)
-    if (!parsed) return
-    onopenmail?.(parsed.accountId, parsed.folder, parsed.uid)
+    if (href.startsWith('mail://')) {
+      e.preventDefault()
+      const parsed = parseMailHref(href)
+      if (!parsed) return
+      onopenmail?.(parsed.accountId, parsed.folder, parsed.uid)
+      return
+    }
+    if (href.toLowerCase().startsWith('mailto:')) {
+      e.preventDefault()
+      onmailto?.(parseMailtoUrl(href))
+      return
+    }
   }
 
   /** Parse a `mail://<account_id>/<folder>/<uid>` URL into its
