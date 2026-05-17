@@ -1909,6 +1909,28 @@
       ondraftexpunged?.(snap.draftSource)
     }
 
+    // Standalone-window path (#304): the popped-out window IS the
+    // JS context that runs `runSendPipeline`.  If we close the
+    // window before the pipeline awaits `invoke('send_email')`,
+    // the webview is destroyed and the IPC never fires — the
+    // user clicked Send and nothing happened.  So in standalone
+    // we run the pipeline inline before closing and surface any
+    // failure to the still-open window so the user can retry.
+    if (inStandaloneWindow) {
+      try {
+        await runSendPipeline(snap)
+        onclose()
+      } catch (e) {
+        // `runSendPipeline` already logged the underlying error
+        // for us; only `send_email` itself rethrows in standalone
+        // mode (the Talk-participants / staged-event / expunge
+        // legs are best-effort and swallow their own errors).
+        error = formatError(e) || 'Failed to send'
+        sending = false
+      }
+      return
+    }
+
     onclose()
 
     // Defer the heavy bits past the next macrotask so Svelte
@@ -2005,7 +2027,17 @@
       onsentenqueued?.(newOutboxId)
     } catch (e: any) {
       const msg = formatError(e) || 'Failed to send'
-      console.warn('send_email failed (modal already closed)', e)
+      console.warn('send_email failed', e)
+      // #304: in a popped-out Compose the modal is still on screen
+      // (we await this pipeline inline before closing).  Rethrow
+      // so `send()` can surface the error inline and keep the
+      // window open for retry — `onsendfailed` is a modal-flow
+      // concern (it tells the parent to re-open Compose pre-
+      // filled), and the parent of a popped-out window doesn't
+      // own that surface.
+      if (inStandaloneWindow) {
+        throw e
+      }
       onsendfailed?.({
         errorMessage: msg,
         draft: {
