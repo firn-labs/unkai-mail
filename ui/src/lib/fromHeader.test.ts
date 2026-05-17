@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { parseFromHeader, senderLabel } from './fromHeader'
+import { nameInitials, parseFromHeader, senderLabel } from './fromHeader'
 
 describe('parseFromHeader', () => {
   test('name + angle-bracketed email', () => {
@@ -59,5 +59,49 @@ describe('senderLabel', () => {
 
   test('empty parse → empty label', () => {
     expect(senderLabel({ name: '', email: '' })).toBe('')
+  })
+})
+
+describe('nameInitials', () => {
+  test('two-word name → first + last letter', () => {
+    expect(nameInitials('Max Mustermann')).toBe('MM')
+  })
+
+  test('single word → single letter', () => {
+    expect(nameInitials('Max')).toBe('M')
+  })
+
+  test('three words → first + last (skip middle)', () => {
+    expect(nameInitials('Max von Mustermann')).toBe('MM')
+  })
+
+  test('comma-separated last-first name', () => {
+    expect(nameInitials('Smith, Alice')).toBe('SA')
+  })
+
+  test('lowercase becomes uppercase', () => {
+    expect(nameInitials('alice')).toBe('A')
+  })
+
+  test('empty / nullish → ?', () => {
+    expect(nameInitials('')).toBe('?')
+    expect(nameInitials(null)).toBe('?')
+    expect(nameInitials(undefined)).toBe('?')
+  })
+
+  test('extra whitespace is collapsed', () => {
+    expect(nameInitials('   Max   Mustermann  ')).toBe('MM')
+  })
+
+  test('accented Latin letters', () => {
+    expect(nameInitials('Émilie Renaud')).toBe('ÉR')
+  })
+
+  test('non-letter punctuation in a token is skipped', () => {
+    expect(nameInitials('Max Mustermann (Berlin)')).toBe('MB')
+  })
+
+  test('token with no letters is skipped, next word takes its slot', () => {
+    expect(nameInitials('🎉 Alice Smith')).toBe('AS')
   })
 })
