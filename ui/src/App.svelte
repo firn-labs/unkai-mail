@@ -41,6 +41,8 @@
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
   import { openMailInStandaloneWindow } from './lib/standaloneMailWindow'
+  import { openComposeInStandaloneWindow } from './lib/standaloneComposeWindow'
+  import { openEventEditorInStandaloneWindow } from './lib/standaloneEventEditorWindow'
   import { resizableSidebar } from './lib/resizableSidebar'
   import EventEditor, { type SavedEvent } from './lib/EventEditor.svelte'
   import { quotedHistoryHtml, type MeetingInvite } from './lib/inviteHtml'
@@ -906,6 +908,8 @@
     let unlistenComposeFromMail: UnlistenFn | null = null
     let unlistenEditDraftFromMail: UnlistenFn | null = null
     let unlistenMailtoFromMail: UnlistenFn | null = null
+    let unlistenRespondWithMeetingFromMail: UnlistenFn | null = null
+    let unlistenEventEditorSavedFromPopout: UnlistenFn | null = null
     let unlistenMailtoDeepLink: UnlistenFn | null = null
     let unlistenMailFlagsUpdated: UnlistenFn | null = null
     let unlistenOutboxUpdated: UnlistenFn | null = null
@@ -993,18 +997,31 @@
       )
       unlistenCompose = await listen('open-compose', () => openCompose({}))
       // Standalone-mail windows (#104) emit these when the user
-      // hits Reply / Reply All / Forward over there: we run the
-      // existing compose flow here in the main window so the user
-      // ends up with one Compose surface, with all autocomplete
-      // and signature state already wired up.
+      // hits Reply / Reply All / Forward over there.  Per #304 the
+      // resulting Compose opens as its own popped-out window so
+      // the user stays on the surface they were already looking
+      // at — building the initial here in the main window keeps
+      // the reply / forward shaping logic in one place even
+      // though the Compose itself mounts in a fresh window.
+      // `accountId: mail.account_id` makes the From: picker
+      // default to the account the original message lives on
+      // rather than whatever account the main window happens to
+      // have active.
       unlistenComposeFromMail = await listen<{
         kind: 'reply' | 'reply-all' | 'forward'
         mail: ReplyableMail
       }>('compose-from-mail', (e) => {
         const { kind, mail } = e.payload
-        if (kind === 'reply') onReply(mail)
-        else if (kind === 'reply-all') onReplyAll(mail)
-        else if (kind === 'forward') onForward(mail)
+        let initial: ComposeInitial
+        if (kind === 'reply') initial = buildReplyInitial(mail)
+        else if (kind === 'reply-all') initial = buildReplyAllInitial(mail)
+        else initial = buildForwardInitial(mail)
+        void openComposeInStandaloneWindow({
+          accountId: mail.account_id,
+          initial,
+        }).catch((err) =>
+          console.warn('openComposeInStandaloneWindow from #304 failed', err),
+        )
       })
       unlistenEditDraftFromMail = await listen<{ mail: DraftMail }>(
         'edit-draft-from-mail',
@@ -1013,6 +1030,67 @@
       unlistenMailtoFromMail = await listen<{
         init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }
       }>('mailto-from-mail', (e) => openCompose(e.payload.init))
+      // #304 — "Respond with meeting" from a popped-out mail
+      // window.  Both the EventEditor and the resulting Compose
+      // open as their own popped-out windows, so the user stays
+      // on the popout surface they were already looking at and
+      // the main window is never pulled into the flow.  The
+      // preparation work (NC account / calendars fetch, attendee
+      // splitting) still runs here in the main window because
+      // that's where `activeAccountEmail` lives.
+      unlistenRespondWithMeetingFromMail = await listen<{
+        mail: ReplyableMail
+      }>('respond-with-meeting-from-mail', (e) => {
+        void openMeetingEditorPopout(e.payload.mail)
+      })
+      // #304 — popped-out EventEditor emits this on save.  Build
+      // the meeting-reply Compose initial here (we need
+      // `activeAccountEmail` and the reply-shaping helpers, both
+      // main-window-side) and open Compose as another popped-out
+      // window.  `saved` is undefined when the editor closed
+      // without saving — nothing to do in that case.
+      unlistenEventEditorSavedFromPopout = await listen<{
+        saved?: SavedEvent
+        replyTo: ReplyableMail
+      }>('event-editor-saved-from-popout', (e) => {
+        const { saved, replyTo } = e.payload
+        if (!saved || !replyTo) return
+        const loc = (saved.location ?? '').trim()
+        const isUrl = /^https?:\/\//i.test(loc)
+        const meetingInvite: MeetingInvite = {
+          summary: saved.summary,
+          start: saved.start,
+          end: saved.end,
+          location: isUrl ? null : loc || null,
+          description: saved.description ?? null,
+          talkUrl: isUrl ? loc : null,
+        }
+        const others = [...replyTo.to, ...replyTo.cc].filter(
+          (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
+        )
+        const initial: ComposeInitial = {
+          to: replyTo.from,
+          cc: others.length > 0 ? others.join(', ') : undefined,
+          subject: replySubject(replyTo.subject),
+          body: quoteBody(replyTo.from, replyTo.date, replyTo.body_text),
+          meetingInvite,
+          repliedTo: {
+            accountId: replyTo.account_id,
+            folder: replyTo.folder,
+            uid: replyTo.uid,
+            kind: 'meeting',
+          },
+        }
+        void openComposeInStandaloneWindow({
+          accountId: replyTo.account_id,
+          initial,
+        }).catch((err) =>
+          console.warn(
+            'openComposeInStandaloneWindow from #304 meeting flow failed',
+            err,
+          ),
+        )
+      })
 
       // #294 — OS-level `mailto:` handler.  When Nimbus is the
       // registered system handler for the `mailto:` scheme the
@@ -1058,6 +1136,8 @@
       unlistenComposeFromMail?.()
       unlistenEditDraftFromMail?.()
       unlistenMailtoFromMail?.()
+      unlistenRespondWithMeetingFromMail?.()
+      unlistenEventEditorSavedFromPopout?.()
       unlistenMailtoDeepLink?.()
       unlistenMailFlagsUpdated?.()
       unlistenOutboxUpdated?.()
@@ -1708,8 +1788,14 @@
     uid: number
   }
 
-  function onReply(mail: ReplyableMail) {
-    openCompose({
+  // Pure builders for the reply / reply-all / forward initial
+  // (#304).  Extracted so the popped-out-mail event path can reuse
+  // the same shaping logic and route the result into a popped-out
+  // Compose window instead of the in-window modal — without the
+  // shared helpers, the popout path would silently drift away
+  // from the main-window flow on every future tweak.
+  function buildReplyInitial(mail: ReplyableMail): ComposeInitial {
+    return {
       to: mail.from,
       subject: replySubject(mail.subject),
       body: quoteBody(mail.from, mail.date, mail.body_text),
@@ -1725,14 +1811,14 @@
         parentMessageId: mail.message_id ?? null,
         parentReferences: mail.references_ids ?? [],
       },
-    })
+    }
   }
 
-  function onReplyAll(mail: ReplyableMail) {
+  function buildReplyAllInitial(mail: ReplyableMail): ComposeInitial {
     const others = [...mail.to, ...mail.cc].filter(
       (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
     )
-    openCompose({
+    return {
       to: mail.from,
       cc: others.join(', '),
       subject: replySubject(mail.subject),
@@ -1745,7 +1831,15 @@
         parentMessageId: mail.message_id ?? null,
         parentReferences: mail.references_ids ?? [],
       },
-    })
+    }
+  }
+
+  function onReply(mail: ReplyableMail) {
+    openCompose(buildReplyInitial(mail))
+  }
+
+  function onReplyAll(mail: ReplyableMail) {
+    openCompose(buildReplyAllInitial(mail))
   }
 
   /** Does the given folder name look like the account's Drafts folder?
@@ -1838,7 +1932,7 @@
     })
   }
 
-  function onForward(mail: OpenMail) {
+  function buildForwardInitial(mail: OpenMail): ComposeInitial {
     // Forwards use the same blockquote treatment as replies so the
     // original message sits inside a visually distinct container.
     // Unlike reply, we prefix with a small header block that states
@@ -1853,12 +1947,16 @@
       `Date: ${esc(when)}<br>` +
       `Subject: ${esc(mail.subject)}</p>`
     const body = htmlOrEscape(mail.body_text ?? '')
-    openCompose({
+    return {
       subject: forwardSubject(mail.subject),
       body:
         `<p></p><p></p>` +
         `<blockquote>${header}${body}</blockquote>`,
-    })
+    }
+  }
+
+  function onForward(mail: OpenMail) {
+    openCompose(buildForwardInitial(mail))
   }
 
   // ── "Respond with meeting" flow ────────────────────────────
@@ -1938,33 +2036,31 @@
     return out
   }
 
-  async function onRespondWithMeeting(mail: ReplyableMail) {
-    // Defensive: if a previous flow left state behind (e.g. a
-    // Compose modal whose overlay would z-index over the new
-    // editor), drop the *active* one out of view so the
-    // EventEditor lands on top of an empty surface.  We don't
-    // tear the Compose entries down — any minimised drafts the
-    // user has stashed in the shrunken-composes bar (#292)
-    // remain alive and reachable once the meeting editor closes.
-    meetingDraft = null
-    activeComposeId = null
-
-    // Top-level try/catch so any unhandled rejection surfaces as
-    // a visible alert instead of leaving the user staring at a
-    // button that did nothing.  The inner blocks still run their
-    // own try/catch where they can give a more specific message.
+  /** Shared prep for the "Respond with meeting" flow — fetches the
+   *  Nextcloud account list, the cached calendars, the default
+   *  calendar pref, and splits the thread's participants into
+   *  required / optional buckets.  Returns the
+   *  (calendars, draft) pair both the main-window and the popped-
+   *  out (#304) editor variants need.  Returns `null` after
+   *  alerting the user when any required precondition is missing
+   *  (no Nextcloud account, no writable calendar) so callers can
+   *  bail out without further work. */
+  async function prepareMeetingDraft(mail: ReplyableMail): Promise<{
+    calendars: CalendarSummary[]
+    draft: NonNullable<typeof meetingDraft>['draft']
+  } | null> {
     try {
       let ncId = ''
       try {
         const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
         if (list.length === 0) {
           alert('Connect a Nextcloud account first (Settings → Nextcloud).')
-          return
+          return null
         }
         ncId = list[0].id
       } catch (e) {
         alert(`Failed to load Nextcloud accounts: ${e}`)
-        return
+        return null
       }
 
       let calendars: CalendarSummary[] = []
@@ -1972,12 +2068,12 @@
         calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
       } catch (e) {
         alert(`Failed to load calendars: ${e}`)
-        return
+        return null
       }
       const visible = calendars.filter((c) => !c.hidden)
       if (visible.length === 0) {
         alert('No writable calendars found on your Nextcloud account.')
-        return
+        return null
       }
       let initialCalendarId = visible[0].id
       try {
@@ -2016,7 +2112,7 @@
       const start = nextHalfHour(new Date())
       const end = new Date(start.getTime() + 30 * 60 * 1000)
 
-      meetingDraft = {
+      return {
         calendars: visible,
         draft: {
           calendarId: initialCalendarId,
@@ -2027,10 +2123,54 @@
           optionalAttendees: optional,
           createTalkRoom: true,
         },
-        replyTo: mail,
       }
     } catch (e) {
       alert(`Failed to open meeting editor: ${e}`)
+      return null
+    }
+  }
+
+  async function onRespondWithMeeting(mail: ReplyableMail) {
+    // Defensive: if a previous flow left state behind (e.g. a
+    // Compose modal whose overlay would z-index over the new
+    // editor), drop the *active* one out of view so the
+    // EventEditor lands on top of an empty surface.  We don't
+    // tear the Compose entries down — any minimised drafts the
+    // user has stashed in the shrunken-composes bar (#292)
+    // remain alive and reachable once the meeting editor closes.
+    meetingDraft = null
+    activeComposeId = null
+
+    const prepared = await prepareMeetingDraft(mail)
+    if (!prepared) return
+    meetingDraft = { ...prepared, replyTo: mail }
+  }
+
+  /** #304 — popped-out variant of `onRespondWithMeeting`.  The
+   *  editor opens in its own webview window so the user stays on
+   *  the popout surface they were already looking at.  The
+   *  resulting Compose, once the user saves the event, also lands
+   *  in its own popout (via the `event-editor-saved-from-popout`
+   *  listener below) — so the main window never gets pulled into
+   *  the flow. */
+  async function openMeetingEditorPopout(mail: ReplyableMail) {
+    const prepared = await prepareMeetingDraft(mail)
+    if (!prepared) return
+    try {
+      await openEventEditorInStandaloneWindow({
+        calendars: prepared.calendars,
+        draft: {
+          ...prepared.draft,
+          // Dates aren't JSON-serialisable as Date instances —
+          // the helper takes ISO strings and the popout window
+          // rehydrates back to Date before mounting EventEditor.
+          start: prepared.draft.start.toISOString(),
+          end: prepared.draft.end.toISOString(),
+        },
+        replyTo: mail,
+      })
+    } catch (e) {
+      console.warn('openEventEditorInStandaloneWindow failed', e)
     }
   }
 

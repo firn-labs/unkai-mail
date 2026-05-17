@@ -41,6 +41,11 @@ export async function openComposeInStandaloneWindow(
   // its JS mounts — there's no race because both windows share the
   // same localStorage origin.
   localStorage.setItem(STORAGE_KEY_PREFIX + key, JSON.stringify(payload))
+  // `focus: true` makes the new window come up in the foreground —
+  // matters most for #304, where the trigger is a button click in
+  // a popped-out mail window and the user is staring at that
+  // surface, not the main window.  Tauri's WindowBuilder default
+  // is platform-dependent, so we set it explicitly.
   new WebviewWindow(`compose-${key}`, {
     url: `index.html?view=compose&key=${key}`,
     title: payload.initial.subject || 'Compose — Nimbus Mail',
@@ -48,6 +53,7 @@ export async function openComposeInStandaloneWindow(
     height: 700,
     minWidth: 500,
     minHeight: 400,
+    focus: true,
   })
 }
 
