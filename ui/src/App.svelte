@@ -517,7 +517,7 @@
   let notificationsGranted = $state(false)
   // Absolute path to our app icon, fetched once at startup. Passed
   // to `sendNotification` so libnotify (Linux) / NSUserNotification
-  // (macOS) / WinRT (Windows) show the Nimbus icon next to each
+  // (macOS) / WinRT (Windows) show the Unkai icon next to each
   // toast instead of a generic placeholder. Empty until the
   // backend `get_notification_icon_path` resolves.
   let notificationIconPath = $state<string>('')
@@ -642,11 +642,11 @@
   }
 
   /** Best-effort startup cleanup for the Office viewer's temp area
-   *  on every connected Nextcloud. If Nimbus crashed mid-edit, or
+   *  on every connected Nextcloud. If Unkai crashed mid-edit, or
    *  `office_close_attachment` errored on the way out last session,
-   *  the user's `/Nimbus Mail/temp` folder accumulates orphan
+   *  the user's `/Unkai Mail/temp` folder accumulates orphan
    *  uploads. The Rust sweeper scopes by mtime so a still-open
-   *  edit window in a parallel Nimbus instance doesn't get its
+   *  edit window in a parallel Unkai instance doesn't get its
    *  file pulled out from under it. Failures are logged and
    *  swallowed — no toast, no UI block. */
   async function sweepNextcloudTempFiles() {
@@ -807,7 +807,7 @@
     if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     const count = recentBurst.length
     pendingSummaryTimer = setTimeout(() => {
-      void fireToast('Nimbus Mail', `${count} new messages`)
+      void fireToast('Unkai Mail', `${count} new messages`)
       pendingSummaryTimer = null
     }, 600)
   }
@@ -1092,7 +1092,7 @@
         )
       })
 
-      // #294 — OS-level `mailto:` handler.  When Nimbus is the
+      // #294 — OS-level `mailto:` handler.  When Unkai is the
       // registered system handler for the `mailto:` scheme the
       // Rust side forwards each URL through this event (both for
       // cold-start launches that arrive after `onMount` runs and
@@ -1101,7 +1101,7 @@
       // 6068 helper the in-app body and notes handlers use, then
       // open Compose against the user's primary account.
       unlistenMailtoDeepLink = await listen<string>(
-        'nimbus://mailto',
+        'unkai://mailto',
         (e) => {
           if (typeof e.payload === 'string') {
             void openComposeFromMailtoUrl(e.payload)
@@ -1109,7 +1109,7 @@
         },
       )
 
-      // #254 — when Nimbus is launched as the OS handler for an
+      // #254 — when Unkai is launched as the OS handler for an
       // .ics or .eml file (Windows registry / macOS UTI / Linux
       // .desktop), the backend stashes the path in a one-shot
       // slot during process startup.  Pull it now, after the
@@ -1649,12 +1649,12 @@
     }
     // Try to also fire an OS-level notification so the user
     // notices the failure even if their attention has drifted
-    // off the Nimbus window.  Best-effort — silently ignore on
+    // off the Unkai window.  Best-effort — silently ignore on
     // platforms / permissions where it can't post.
     if (notificationsGranted) {
       try {
         sendNotification({
-          title: 'Nimbus Mail — send failed',
+          title: 'Unkai Mail — send failed',
           body: payload.errorMessage,
           icon: notificationIconPath || undefined,
         })
@@ -2239,8 +2239,8 @@
   }
 
   // ── OS file-association handoff (#254) ─────────────────────────
-  // When the user launches Nimbus by double-clicking an .ics /
-  // .eml file (or via "Open with… → Nimbus"), the OS hands the
+  // When the user launches Unkai by double-clicking an .ics /
+  // .eml file (or via "Open with… → Unkai"), the OS hands the
   // path to the process as `argv[1]`.  The Rust side stashes it
   // in a one-shot slot during process startup; we drain it here
   // and dispatch by extension:
@@ -2348,7 +2348,7 @@
       // Empty-state.  We could buffer and replay after the user
       // adds their first account, but the only way to be here
       // *and* have a mailto in flight is if the user clicked a
-      // mailto link in another app while Nimbus was mid-setup —
+      // mailto link in another app while Unkai was mid-setup —
       // surfacing that they need an account first is more useful
       // than silently swallowing the click.
       console.warn(

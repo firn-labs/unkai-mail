@@ -1,4 +1,4 @@
-# Nimbus Mail
+# Unkai Mail
 
 ## Vision
 
@@ -22,17 +22,17 @@ A modern, native desktop mail client built in Rust that stands out through deep 
 ## Project Structure
 
 ```
-nimbus-mail/
+unkai-mail/
 ├── Cargo.toml              # Workspace root
 ├── crates/
-│   ├── nimbus-core/        # Shared types, models, error handling
-│   ├── nimbus-imap/        # IMAP mail retrieval
-│   ├── nimbus-smtp/        # SMTP mail sending
-│   ├── nimbus-jmap/        # JMAP modern mail access
-│   ├── nimbus-caldav/      # CalDAV calendar sync
-│   ├── nimbus-carddav/     # CardDAV contact sync
-│   ├── nimbus-nextcloud/   # Nextcloud API (Talk, Files, OCS)
-│   └── nimbus-store/       # Local storage, caching, keychain
+│   ├── unkai-core/        # Shared types, models, error handling
+│   ├── unkai-imap/        # IMAP mail retrieval
+│   ├── unkai-smtp/        # SMTP mail sending
+│   ├── unkai-jmap/        # JMAP modern mail access
+│   ├── unkai-caldav/      # CalDAV calendar sync
+│   ├── unkai-carddav/     # CardDAV contact sync
+│   ├── unkai-nextcloud/   # Nextcloud API (Talk, Files, OCS)
+│   └── unkai-store/       # Local storage, caching, keychain
 ├── src-tauri/              # Tauri app (Rust entry point + config)
 └── ui/                     # Frontend (Svelte 5 + TypeScript + Vite)
     ├── src/
@@ -47,12 +47,12 @@ nimbus-mail/
 
 | Protocol/API | Purpose | Crate |
 |---|---|---|
-| IMAP | Mail retrieval | `nimbus-imap` |
-| SMTP | Mail sending | `nimbus-smtp` |
-| JMAP | Modern mail access (where supported) | `nimbus-jmap` |
-| CalDAV | Calendar sync (Nextcloud + others) | `nimbus-caldav` |
-| CardDAV | Contact sync (Nextcloud + others) | `nimbus-carddav` |
-| Nextcloud OCS/API | Talk rooms, file sharing, app integrations | `nimbus-nextcloud` |
+| IMAP | Mail retrieval | `unkai-imap` |
+| SMTP | Mail sending | `unkai-smtp` |
+| JMAP | Modern mail access (where supported) | `unkai-jmap` |
+| CalDAV | Calendar sync (Nextcloud + others) | `unkai-caldav` |
+| CardDAV | Contact sync (Nextcloud + others) | `unkai-carddav` |
+| Nextcloud OCS/API | Talk rooms, file sharing, app integrations | `unkai-nextcloud` |
 
 ## Architecture Principles
 
@@ -83,10 +83,10 @@ The Talk + meeting invite cards we drop into outgoing mail (`ui/src/lib/inviteHt
 - **System font stack.** `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`. Crisp on every OS without a font fetch.
 - **Detail-row glyphs are emoji** (📅 🕐 📍 📝 💬 🔗). Universal client support. SVG / icon fonts inside email are unreliable across Outlook desktop and conservative Gmail setups.
 - **No images in the chrome.** The brand header is a typography-only wordmark in a soft pill — no `<img>`. We tried both:
-  - **Remote URL** (`raw.githubusercontent.com/...`): hit "block remote images by default" in Gmail / Apple Mail / Outlook and the recipient saw a broken-icon until they trusted the sender. (Also: the original path I picked pointed at the v2 set, but storm is a v1 style — easy mistake to repeat. v2 ships `copper / forest / midnight / ocean / rose / slate / sunset`; storm lives at `logos/nimbus-logo/png/storm/...`.)
+  - **Remote URL** (`raw.githubusercontent.com/...`): hit "block remote images by default" in Gmail / Apple Mail / Outlook and the recipient saw a broken-icon until they trusted the sender. (Also: the original path I picked pointed at the v2 set, but storm is a v1 style — easy mistake to repeat. v2 ships `copper / forest / midnight / ocean / rose / slate / sunset`; storm lives at `logos/unkai-logo/png/storm/...`.)
   - **Inline `data:image/png;base64,…` URI**: many corporate / hardened mail filters (Outlook in particular) strip `<img src="data:…">` for security, again leaving a broken-icon.
-  Both paths ate the logo. Don't reintroduce an `<img>` in the chrome unless you've solved this for the worst client your users will receive mail in. The `PUBLIC_NIMBUS_LOGO_URL` export is now an empty-string compatibility stub for any leftover importers.
-- **The editor's `NimbusBlock` extension** (`ui/src/lib/RichTextEditor.svelte`) recognises `<div data-nimbus-block="…">` wrappers as atom nodes so the styled cards survive Tiptap's schema. If you add a new card kind, stamp the wrapper with that data attribute and the editor will render it via the existing NodeView path — no new extension needed.
+  Both paths ate the logo. Don't reintroduce an `<img>` in the chrome unless you've solved this for the worst client your users will receive mail in. The `PUBLIC_UNKAI_LOGO_URL` export is now an empty-string compatibility stub for any leftover importers.
+- **The editor's `UnkaiBlock` extension** (`ui/src/lib/RichTextEditor.svelte`) recognises `<div data-unkai-block="…">` wrappers as atom nodes so the styled cards survive Tiptap's schema. If you add a new card kind, stamp the wrapper with that data attribute and the editor will render it via the existing NodeView path — no new extension needed.
 
 When in doubt, render the card to a local HTML file and open it in `outlook.com`, `mail.google.com`, and Apple Mail — those three are the dominant surfaces and have the strictest sanitisers.
 
@@ -175,7 +175,7 @@ We run a **two-tier CI model** so daily dev stays fast and the heavy security su
 3. **Preview the auto-generated changelog** (optional but recommended — saves an "oh no, that PR didn't get a label" moment after the tag is out):
 
    ```bash
-   gh api repos/Videothek/nimbus-mail/releases/generate-notes \
+   gh api repos/Videothek/unkai-mail/releases/generate-notes \
      -f tag_name=vX.Y.Z \
      -f previous_tag_name=vPREV.PREV.PREV \
      --jq .body
@@ -210,7 +210,7 @@ We run a **two-tier CI model** so daily dev stays fast and the heavy security su
 7. **Finalise the Release**:
    - Open the draft on the Releases page.
    - Paste the editorial sections from `RELEASE_NOTES_TEMPLATE.md` *above* the auto-generated changelog (the template comment block explains what goes where).
-   - Verify every expected installer is attached: `nimbus-mail_X.Y.Z_x64-setup.exe`, `nimbus-mail_X.Y.Z_x64_en-US.msi`, `nimbus-mail_X.Y.Z_aarch64.dmg`, `nimbus-mail_X.Y.Z_x64.dmg`, `nimbus-mail_X.Y.Z_amd64.deb`, `nimbus-mail_X.Y.Z_amd64.AppImage`.
+   - Verify every expected installer is attached: `unkai-mail_X.Y.Z_x64-setup.exe`, `unkai-mail_X.Y.Z_x64_en-US.msi`, `unkai-mail_X.Y.Z_aarch64.dmg`, `unkai-mail_X.Y.Z_x64.dmg`, `unkai-mail_X.Y.Z_amd64.deb`, `unkai-mail_X.Y.Z_amd64.AppImage`.
    - Click **Publish release**.
 
 **If the tag pipeline fails** (gate red, build matrix red, etc.):
@@ -263,7 +263,7 @@ cargo clippy --workspace
 - Rust workspace with modular crates set up
 - Tauri 2 + Svelte 5 + Skeleton UI frontend in place
 - Basic mail client UI shell (sidebar, mail list, reading pane)
-- Repository: https://github.com/Videothek/nimbus-mail
+- Repository: https://github.com/Videothek/unkai-mail
 - Next: implement first protocol (IMAP), connect backend to frontend via Tauri commands
 
 ## Development Workflow
@@ -308,11 +308,11 @@ main (stable, always compiles)
   git branch -d feature/<old-branch>
   git push origin --delete feature/<old-branch>
   ```
-- **Merge early, merge small** — if you add a shared type to `nimbus-core` that the other person needs, split it into its own tiny PR first so the other feature branch can use it
+- **Merge early, merge small** — if you add a shared type to `unkai-core` that the other person needs, split it into its own tiny PR first so the other feature branch can use it
 
 ### When to merge to main
 - The issue is complete (or a clean slice of it is)
-- A new model or type is added to `nimbus-core` that other work depends on
+- A new model or type is added to `unkai-core` that other work depends on
 - A crate compiles and has basic functionality or tests
 - A UI component works (even with mock data)
 - **Do NOT merge** broken code or half-finished functions

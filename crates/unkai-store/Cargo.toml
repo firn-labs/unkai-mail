@@ -1,0 +1,26 @@
+[package]
+name = "unkai-store"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+unkai-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+dirs.workspace = true
+keyring.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+base64.workspace = true
+aes-gcm.workspace = true
+pbkdf2.workspace = true
+hmac.workspace = true
+sha2.workspace = true

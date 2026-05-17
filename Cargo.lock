@@ -3142,198 +3142,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
-name = "nimbus-app"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "dirs 6.0.0",
- "font-kit",
- "futures",
- "hex",
- "nimbus-caldav",
- "nimbus-carddav",
- "nimbus-core",
- "nimbus-discovery",
- "nimbus-imap",
- "nimbus-jmap",
- "nimbus-nextcloud",
- "nimbus-smtp",
- "nimbus-store",
- "notify-rust",
- "open",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-single-instance",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "windows",
-]
-
-[[package]]
-name = "nimbus-caldav"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "chrono-tz",
- "ical",
- "nimbus-core",
- "quick-xml 0.36.2",
- "reqwest 0.12.28",
- "rrule",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "nimbus-carddav"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "ical",
- "nimbus-core",
- "quick-xml 0.36.2",
- "reqwest 0.12.28",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "nimbus-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "hex",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tracing",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "nimbus-discovery"
-version = "0.1.0"
-dependencies = [
- "hickory-resolver",
- "nimbus-core",
- "quick-xml 0.36.2",
- "reqwest 0.12.28",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "nimbus-imap"
-version = "0.1.0"
-dependencies = [
- "async-imap",
- "base64 0.22.1",
- "chrono",
- "futures",
- "mail-parser",
- "nimbus-core",
- "rustls",
- "rustls-pki-types",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "tracing",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "nimbus-jmap"
-version = "0.1.0"
-dependencies = [
- "axum",
- "chrono",
- "nimbus-core",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "nimbus-nextcloud"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "nimbus-core",
- "quick-xml 0.36.2",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "nimbus-smtp"
-version = "0.1.0"
-dependencies = [
- "lettre",
- "nimbus-core",
- "rustls",
- "rustls-pki-types",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "tracing",
-]
-
-[[package]]
-name = "nimbus-store"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "base64 0.22.1",
- "chrono",
- "dirs 6.0.0",
- "getrandom 0.2.17",
- "hex",
- "hmac",
- "keyring",
- "nimbus-core",
- "pbkdf2",
- "r2d2",
- "r2d2_sqlite",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "nodrop"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6473,6 +6281,198 @@ checksum = "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea"
 dependencies = [
  "crypto-common",
  "subtle",
+]
+
+[[package]]
+name = "unkai-app"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "dirs 6.0.0",
+ "font-kit",
+ "futures",
+ "hex",
+ "notify-rust",
+ "open",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "unkai-caldav",
+ "unkai-carddav",
+ "unkai-core",
+ "unkai-discovery",
+ "unkai-imap",
+ "unkai-jmap",
+ "unkai-nextcloud",
+ "unkai-smtp",
+ "unkai-store",
+ "uuid",
+ "windows",
+]
+
+[[package]]
+name = "unkai-caldav"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "ical",
+ "quick-xml 0.36.2",
+ "reqwest 0.12.28",
+ "rrule",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unkai-core",
+ "uuid",
+]
+
+[[package]]
+name = "unkai-carddav"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ical",
+ "quick-xml 0.36.2",
+ "reqwest 0.12.28",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unkai-core",
+]
+
+[[package]]
+name = "unkai-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tracing",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "unkai-discovery"
+version = "0.1.0"
+dependencies = [
+ "hickory-resolver",
+ "quick-xml 0.36.2",
+ "reqwest 0.12.28",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unkai-core",
+]
+
+[[package]]
+name = "unkai-imap"
+version = "0.1.0"
+dependencies = [
+ "async-imap",
+ "base64 0.22.1",
+ "chrono",
+ "futures",
+ "mail-parser",
+ "rustls",
+ "rustls-pki-types",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+ "unkai-core",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "unkai-jmap"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unkai-core",
+ "url",
+]
+
+[[package]]
+name = "unkai-nextcloud"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "quick-xml 0.36.2",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unkai-core",
+]
+
+[[package]]
+name = "unkai-smtp"
+version = "0.1.0"
+dependencies = [
+ "lettre",
+ "rustls",
+ "rustls-pki-types",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "unkai-core",
+]
+
+[[package]]
+name = "unkai-store"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 6.0.0",
+ "getrandom 0.2.17",
+ "hex",
+ "hmac",
+ "keyring",
+ "pbkdf2",
+ "r2d2",
+ "r2d2_sqlite",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unkai-core",
 ]
 
 [[package]]

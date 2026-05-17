@@ -30,7 +30,7 @@ export interface ComposePopoutPayload {
   initial: ComposeInitial
 }
 
-const STORAGE_KEY_PREFIX = 'nimbus-compose-popout-'
+const STORAGE_KEY_PREFIX = 'unkai-compose-popout-'
 
 export async function openComposeInStandaloneWindow(
   payload: ComposePopoutPayload,
@@ -48,7 +48,7 @@ export async function openComposeInStandaloneWindow(
   // is platform-dependent, so we set it explicitly.
   new WebviewWindow(`compose-${key}`, {
     url: `index.html?view=compose&key=${key}`,
-    title: payload.initial.subject || 'Compose — Nimbus Mail',
+    title: payload.initial.subject || 'Compose — Unkai Mail',
     width: 800,
     height: 700,
     minWidth: 500,

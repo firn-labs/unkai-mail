@@ -11,7 +11,7 @@
  * reads the payload synchronously on mount.
  *
  * Why a separate window instead of an in-app overlay:
- *   * The popup needs to surface even when the main Nimbus window
+ *   * The popup needs to surface even when the main Unkai window
  *     is hidden / minimised to the tray, which an in-app overlay
  *     can't do (it lives inside the main window).
  *   * Picks up `alwaysOnTop` so it sits above the user's current
@@ -32,7 +32,7 @@ export interface EventReminderPayload {
   minutesBefore: number
 }
 
-const STORAGE_KEY_PREFIX = 'nimbus-reminder-popup-'
+const STORAGE_KEY_PREFIX = 'unkai-reminder-popup-'
 
 /** Window dimensions.  Sized to comfortably fit title + a 2-3 line
  *  summary + the action row, without being so big that it eats the
@@ -65,7 +65,7 @@ export async function openReminderInStandaloneWindow(
 
   new WebviewWindow(`reminder-${key}`, {
     url: `index.html?view=reminder&key=${key}`,
-    title: payload.summary || 'Nimbus Reminder',
+    title: payload.summary || 'Unkai Reminder',
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
     minWidth: WINDOW_WIDTH,

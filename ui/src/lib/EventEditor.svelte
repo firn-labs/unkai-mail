@@ -1496,7 +1496,7 @@
       // Nextcloud doesn't auto-delete rooms attached to a deleted
       // event, so without this the user accumulates dangling
       // meeting rooms in their Talk list.  We look for a `/call/`
-      // token in LOCATION first (where Nimbus + NC Calendar both
+      // token in LOCATION first (where Unkai + NC Calendar both
       // write the join URL), falling back to URL / DESCRIPTION
       // for events created elsewhere.  A 404 (room already gone)
       // or 403 (not the owner) is normal — log + move on.

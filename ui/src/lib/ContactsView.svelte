@@ -52,7 +52,7 @@
     kind: string
     value: string
   }
-  /** Mirrors `nimbus_core::models::StructuredName`. */
+  /** Mirrors `unkai_core::models::StructuredName`. */
   interface StructuredName {
     family: string
     given: string
@@ -60,7 +60,7 @@
     prefix: string
     suffix: string
   }
-  /** Mirrors `nimbus_core::models::ContactImpp`. */
+  /** Mirrors `unkai_core::models::ContactImpp`. */
   interface ContactImpp143 {
     kind: string
     value: string

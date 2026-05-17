@@ -1,0 +1,28 @@
+[package]
+name = "unkai-imap"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+unkai-core.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-imap.workspace = true
+futures.workspace = true
+mail-parser.workspace = true
+chrono.workspace = true
+# Pure-Rust TLS, shared with unkai-smtp via lettre. The custom
+# verifier and trust-store live in unkai-core::tls so both crates
+# present the same trust behaviour to the user.
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pki-types.workspace = true
+webpki-roots.workspace = true
+# `async-imap` is generic over `futures-io::AsyncRead + AsyncWrite`,
+# but our TLS stream is a `tokio::AsyncRead` — `Compat` bridges them.
+tokio-util.workspace = true
+# Base64 with custom-alphabet support — IMAP's Modified UTF-7 swaps
+# `/` for `,` in the alphabet and omits padding. Used by `mutf7.rs`.
+base64.workspace = true

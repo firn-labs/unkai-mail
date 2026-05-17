@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/Videothek/nimbus-mail/main/logos/nimbus-logo/png/storm/nimbus-256.png" alt="Nimbus Mail" width="160" />
+<img src="https://raw.githubusercontent.com/Videothek/unkai-mail/main/logos/unkai-logo/png/storm/unkai-256.png" alt="Unkai Mail" width="160" />
 
-# Nimbus Mail
+# Unkai Mail
 
 **A modern, native desktop mail client built on deep Nextcloud integration.**
 
@@ -15,15 +15,15 @@
 
 > ⚠️ **Project status — early development.** Mail (IMAP / SMTP) works
 > end-to-end with an encrypted local cache and Nextcloud authentication
-> is in place, but Nimbus is not yet feature-complete or suitable as a
+> is in place, but Unkai is not yet feature-complete or suitable as a
 > daily driver. See the [Roadmap](#roadmap) and the
-> [issue tracker](https://github.com/Videothek/nimbus-mail/issues).
+> [issue tracker](https://github.com/Videothek/unkai-mail/issues).
 
 ---
 
 ## What it is
 
-Nimbus is a desktop mail client for people who already live in Nextcloud.
+Unkai is a desktop mail client for people who already live in Nextcloud.
 It speaks IMAP, SMTP, and JMAP for the mail itself, but pulls Talk rooms,
 Files, Contacts, and Calendar straight into the inbox so the rest of your
 collaboration stack isn't one tab away. Native, fast, encrypted at rest,
@@ -172,18 +172,18 @@ results.
 ### Project structure
 
 ```
-nimbus-mail/
+unkai-mail/
 ├── Cargo.toml              # Rust workspace root
 ├── crates/
-│   ├── nimbus-core/        # Shared types, models, error handling
-│   ├── nimbus-imap/        # IMAP mail retrieval
-│   ├── nimbus-smtp/        # SMTP mail sending
-│   ├── nimbus-jmap/        # JMAP modern mail access
-│   ├── nimbus-caldav/      # CalDAV calendar sync
-│   ├── nimbus-carddav/     # CardDAV contact sync
-│   ├── nimbus-discovery/   # Mozilla autoconfig + DNS SRV discovery
-│   ├── nimbus-nextcloud/   # Nextcloud OCS API (Talk, Files, …)
-│   └── nimbus-store/       # Local cache + encrypted SQLite + keychain
+│   ├── unkai-core/        # Shared types, models, error handling
+│   ├── unkai-imap/        # IMAP mail retrieval
+│   ├── unkai-smtp/        # SMTP mail sending
+│   ├── unkai-jmap/        # JMAP modern mail access
+│   ├── unkai-caldav/      # CalDAV calendar sync
+│   ├── unkai-carddav/     # CardDAV contact sync
+│   ├── unkai-discovery/   # Mozilla autoconfig + DNS SRV discovery
+│   ├── unkai-nextcloud/   # Nextcloud OCS API (Talk, Files, …)
+│   └── unkai-store/       # Local cache + encrypted SQLite + keychain
 ├── src-tauri/              # Tauri shell (entry point + capabilities)
 └── ui/                     # Svelte 5 + TypeScript + Vite
     └── src/lib/            # Components
@@ -223,7 +223,7 @@ cargo tauri dev
 
 On first launch you'll see the account setup wizard. Enter IMAP / SMTP
 server details and password (stored in your OS keychain, not on disk).
-Connect Nextcloud separately from Settings — Nimbus opens a browser-based
+Connect Nextcloud separately from Settings — Unkai opens a browser-based
 login that returns a revocable app password.
 
 <!--
@@ -261,16 +261,16 @@ Nextcloud is independent of mail accounts — one server can back any
 number of IMAP/SMTP identities. From Settings → Nextcloud, enter your
 server URL and click *Connect*:
 
-1. Nimbus opens your system browser at the Nextcloud login page.
-2. You authorise Nimbus there. Any IdP / SSO in front of Nextcloud
+1. Unkai opens your system browser at the Nextcloud login page.
+2. You authorise Unkai there. Any IdP / SSO in front of Nextcloud
    (Keycloak, Authelia, Entra ID, …) works because the login happens
-   in the browser, not inside Nimbus.
+   in the browser, not inside Unkai.
 3. Nextcloud generates a **revocable app password** and hands it back;
-   Nimbus stores it in the OS keychain. You can revoke Nimbus at any
+   Unkai stores it in the OS keychain. You can revoke Unkai at any
    time from Nextcloud → Personal → Security without changing your
    real password.
 
-Once connected, Nimbus probes `/ocs/v2.php/cloud/capabilities` and
+Once connected, Unkai probes `/ocs/v2.php/cloud/capabilities` and
 shows which Nextcloud apps are available (Talk, Files, Calendar,
 Contacts, Office, Notes).
 
@@ -288,7 +288,7 @@ Contacts, Office, Notes).
 
 ## Theming
 
-Nimbus uses [Skeleton UI](https://www.skeleton.dev) for theming. You can
+Unkai uses [Skeleton UI](https://www.skeleton.dev) for theming. You can
 pick any of Skeleton's 22 stock themes from *Settings → Design* plus a
 Light / Dark / Follow-OS toggle. Custom CSS themes from Skeleton's
 [Theme Generator](https://themes.skeleton.dev) (or any third-party
@@ -317,7 +317,7 @@ titlebar, and Windows taskbar entry update immediately.
 
 ## Roadmap
 
-Tracked in [GitHub Issues](https://github.com/Videothek/nimbus-mail/issues).
+Tracked in [GitHub Issues](https://github.com/Videothek/unkai-mail/issues).
 
 **Done**
 - IMAP: connect, list folders, fetch envelopes + full messages
@@ -367,7 +367,7 @@ during AI-assisted development — read it for the full set of conventions.
 
 ## License
 
-Nimbus Mail itself is [GPL-3.0](LICENSE).
+Unkai Mail itself is [GPL-3.0](LICENSE).
 
 - [`SBOM.md`](SBOM.md) — direct-dependency inventory + licence cheat-sheet
   + what each licence forces our distribution model to look like.

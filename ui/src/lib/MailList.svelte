@@ -27,10 +27,10 @@
     is_read: boolean
     is_starred: boolean
     /** IMAP `\Answered` flag (#255).  Drives the generic-reply
-     *  fallback icon — true when *anyone* (Nimbus, another
+     *  fallback icon — true when *anyone* (Unkai, another
      *  client, the user's phone) has answered the message. */
     is_answered?: boolean
-    /** Nimbus-only reply kind (#255): `'reply'`, `'reply-all'`,
+    /** Unkai-only reply kind (#255): `'reply'`, `'reply-all'`,
      *  `'meeting'`.  Stamped by the send path; takes precedence
      *  over `is_answered` for the icon decision. */
     replied_kind?: string | null
@@ -234,7 +234,7 @@
     // anchors a different ID than the reply's `In-Reply-To`
     // points at.  Standard practice in conversation groupers is
     // to fall back to subject matching when the header chain
-    // breaks — Nimbus does the same.
+    // breaks — Unkai does the same.
     //
     // For every reply-shaped bucket head (`Re:` / `Fwd:` / …),
     // look for another bucket whose head has the same canonical
@@ -633,7 +633,7 @@
   // can iterate moves on drop.  The payload is always an array —
   // single-row drags become a 1-element list.  When the dragged
   // row is part of a multi-select group, the whole group rides
-  // along.  The custom `application/x-nimbus-mail` MIME type means
+  // along.  The custom `application/x-unkai-mail` MIME type means
   // the browser ignores the drag for non-Sidebar drop targets.
   function onMailDragStart(e: DragEvent, env: EmailEnvelope) {
     if (!e.dataTransfer) return
@@ -656,7 +656,7 @@
       return { accountId: src, folder: srcFolder, uid: g.uid }
     })
     e.dataTransfer.setData(
-      'application/x-nimbus-mail',
+      'application/x-unkai-mail',
       JSON.stringify(payload),
     )
     e.dataTransfer.effectAllowed = 'move'
@@ -1105,12 +1105,12 @@
   // Small icon prefixed to the subject when this message has
   // been answered.  Three sources of truth, in priority order:
   //
-  //   1. `replied_kind` — Nimbus stamped this when the user
+  //   1. `replied_kind` — Unkai stamped this when the user
   //      replied via Compose.  Carries the *kind* of reply
   //      (reply / reply-all / meeting), so we can pick the
   //      matching icon.
   //   2. `is_answered` — the IMAP `\Answered` system flag.
-  //      True when *anyone* (Nimbus, another mail client, the
+  //      True when *anyone* (Unkai, another mail client, the
   //      user's phone) has answered the message.  We don't
   //      know how, so fall back to the generic reply icon.
   //   3. neither — return null, the subject renders without an

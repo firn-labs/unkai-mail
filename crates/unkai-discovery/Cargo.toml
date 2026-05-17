@@ -1,0 +1,18 @@
+[package]
+name = "unkai-discovery"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+unkai-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+quick-xml.workspace = true
+hickory-resolver.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

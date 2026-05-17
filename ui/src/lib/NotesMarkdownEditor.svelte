@@ -72,7 +72,7 @@
      *  no-ops. */
     accountId?: string | null
     /** `mail://acc/folder/uid` link click handler (#260).  Called
-     *  when the user clicks a Nimbus-internal mail reference in the
+     *  when the user clicks a Unkai-internal mail reference in the
      *  rendered preview pane.  When absent, link clicks fall
      *  through to the browser's default (which silently no-ops on
      *  the unregistered scheme). */
@@ -476,13 +476,13 @@
   }
 
   /** Notes-preview link click delegate.  Intercepts:
-   *   - `mail://acc/folder/uid` (#260) — internal Nimbus mail
+   *   - `mail://acc/folder/uid` (#260) — internal Unkai mail
    *     references, routed through `onopenmail` so the parent can
    *     swap account / folder / selection state.
    *   - `mailto:` (#294) — external mail addresses, parsed per RFC
    *     6068 and routed through `onmailto` so Compose opens
    *     pre-filled instead of handing the URL to the OS (which,
-   *     once Nimbus is the registered mailto handler, would loop
+   *     once Unkai is the registered mailto handler, would loop
    *     back into a fresh app launch).
    *  Every other link — http(s) to NC files, etc. — falls through
    *  to the browser's default handling. */

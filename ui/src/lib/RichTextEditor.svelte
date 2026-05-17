@@ -66,12 +66,12 @@
      *  downloads bytes, converts to a data URL, and calls this. */
     insertImage: (src: string) => void
     /** Insert HTML at the position just before the first
-     *  `nimbusBlock` atom node carrying the given `kind` attr.
+     *  `unkaiBlock` atom node carrying the given `kind` attr.
      *  Used by Compose's mid-compose Talk-room creation so the
      *  new invite card lands *above* the quoted-history block on
      *  a reply. Falls back to appending at the end when no
      *  matching block exists (fresh compose). */
-    insertBeforeNimbusBlock: (html: string, kind: string) => void
+    insertBeforeUnkaiBlock: (html: string, kind: string) => void
   }
 
   interface Props {
@@ -308,13 +308,13 @@
     return event.key === 'Escape'
   }
 
-  // ── NimbusBlock — atom node for embedded styled HTML blocks ─
+  // ── UnkaiBlock — atom node for embedded styled HTML blocks ─
   //
   // Tiptap's StarterKit schema unwraps generic <div> wrappers and
   // strips inline styles, so the modern invite cards + the muted
   // "previous conversation" block (#195) couldn't survive a round
-  // trip through the editor. NimbusBlock recognises any element
-  // carrying `data-nimbus-block="<kind>"`, captures its full
+  // trip through the editor. UnkaiBlock recognises any element
+  // carrying `data-unkai-block="<kind>"`, captures its full
   // outerHTML into the node attribute, and renders it as a
   // contentEditable=false NodeView. The editor displays the
   // styled card verbatim; `editor.getHTML()` re-emits the
@@ -330,8 +330,8 @@
   // the inline data URI versions, leaving recipients with a
   // broken-icon. Brand header is typography-only now, so the
   // editor and the recipient see exactly the same thing.)
-  const NimbusBlock = TiptapNode.create({
-    name: 'nimbusBlock',
+  const UnkaiBlock = TiptapNode.create({
+    name: 'unkaiBlock',
     group: 'block',
     atom: true,
     selectable: true,
@@ -339,10 +339,10 @@
     parseHTML() {
       return [
         {
-          tag: 'div[data-nimbus-block]',
+          tag: 'div[data-unkai-block]',
           getAttrs: (el) => {
             const dom = el as HTMLElement
-            return { html: dom.outerHTML, kind: dom.getAttribute('data-nimbus-block') }
+            return { html: dom.outerHTML, kind: dom.getAttribute('data-unkai-block') }
           },
         },
       ]
@@ -368,7 +368,7 @@
       return [
         'div',
         mergeAttributes({
-          'data-nimbus-block': (node.attrs as { kind: string }).kind || '',
+          'data-unkai-block': (node.attrs as { kind: string }).kind || '',
         }),
       ]
     },
@@ -386,7 +386,7 @@
   // svelte-ignore state_referenced_locally
   const editor = createEditor({
     extensions: [
-      NimbusBlock,
+      UnkaiBlock,
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
         // Tiptap 3 renamed `History` to `UndoRedo`. `newGroupDelay`
@@ -598,7 +598,7 @@
       // keep `style` attrs and `title` tooltips, so recipients
       // see a styled pill + can hover to read the full address.
       // The `data-contact-mention` marker survives the round-trip
-      // so a Nimbus reply re-parses our own pills.
+      // so a Unkai reply re-parses our own pills.
       Mention.extend({
         name: 'contactMention',
         renderHTML({ node, HTMLAttributes }) {
@@ -729,10 +729,10 @@
       // tray, not a missing inline link.
       Mention.extend({
         name: 'attachmentRef',
-        // Render as <a href="cid:..."> so Nimbus's own reader
+        // Render as <a href="cid:..."> so Unkai's own reader
         // (MailView.processEmailHtml) picks it up the same way
         // it always did — by matching cid: anchors and routing
-        // their click to the attachment via `data-nimbus-cid`.
+        // their click to the attachment via `data-unkai-cid`.
         // The data-* attrs (data-cid, data-filename,
         // data-attachment-ref) ride along for the new robust
         // click handler and as a cross-client identifier.
@@ -740,7 +740,7 @@
         // surface a "can't open cid:..." error if the user
         // *clicks* the link.  The visible badge + filename is
         // the part those recipients are meant to read; the
-        // hyperlink is purely a Nimbus affordance.
+        // hyperlink is purely a Unkai affordance.
         renderHTML({ node, HTMLAttributes }) {
           const cid = node.attrs.id ?? ''
           const label = node.attrs.label ?? cid
@@ -977,12 +977,12 @@
           // the document and the image lands in the wrong place.
           ed.chain().focus().setImage({ src }).run()
         },
-        insertBeforeNimbusBlock: (html: string, kind: string) => {
+        insertBeforeUnkaiBlock: (html: string, kind: string) => {
           let pos: number | null = null
           ed.state.doc.descendants((node, p) => {
             if (pos !== null) return false
             if (
-              node.type.name === 'nimbusBlock'
+              node.type.name === 'unkaiBlock'
               && (node.attrs as { kind?: string }).kind === kind
             ) {
               pos = p
