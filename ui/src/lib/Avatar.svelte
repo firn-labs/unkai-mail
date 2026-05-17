@@ -46,6 +46,8 @@
    * just-in-time class scanner — dynamically composed utility class
    * names get purged out of the final CSS bundle.
    */
+  import { nameInitials } from './fromHeader'
+
   interface Props {
     /** Pre-resolved photo URL (e.g. via `contactPhotoSrc`).  Pass
      *  null/undefined to render the initials fallback. */
@@ -78,14 +80,19 @@
     alt = '',
   }: Props = $props()
 
-  const initial = $derived.by(() => {
-    const s = (displayName || '').trim()
-    return s ? s.slice(0, 1).toUpperCase() : '?'
-  })
+  // Two-letter initials when the name has more than one word
+  // ("Max Mustermann" → "MM"), single letter otherwise.  See
+  // `nameInitials` in fromHeader.ts for the full rule table.
+  const initials = $derived(nameInitials(displayName))
 
   const colourClass = $derived(avatarColourClass(seed ?? displayName ?? ''))
   const sizePx = $derived(`${size}px`)
-  const fontPx = $derived(`${Math.max(10, Math.round(size * 0.4))}px`)
+  // Font scales down a notch when there are two glyphs to fit so the
+  // pair doesn't crowd the circle.  Floor at 9 px so the smallest
+  // (28 px) avatars stay legible.
+  const fontPx = $derived(
+    `${Math.max(9, Math.round(size * (initials.length > 1 ? 0.36 : 0.42)))}px`,
+  )
 </script>
 
 {#if photo}
@@ -102,6 +109,6 @@
     style="width: {sizePx}; height: {sizePx}; font-size: {fontPx};"
     aria-hidden="true"
   >
-    {initial}
+    {initials}
   </span>
 {/if}

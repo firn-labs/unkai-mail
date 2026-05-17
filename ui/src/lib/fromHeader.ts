@@ -56,3 +56,40 @@ export function senderLabel(p: ParsedFrom): string {
   }
   return ''
 }
+
+/** Build the 1-or-2-letter avatar caption from a display name:
+ *
+ *   "Max Mustermann"      → "MM"
+ *   "Max"                 → "M"
+ *   "Max von Mustermann"  → "MM"   (first + last word, skip middle)
+ *   "Smith, Alice"        → "SA"   (the comma is non-letter, dropped)
+ *   "alice"               → "A"
+ *   ""                    → "?"
+ *
+ *  Word-boundary detection is Unicode-letter-aware (`\p{L}`) so the
+ *  function doesn't lose "Émilie Renaud" to its accent or "李 明" to
+ *  its CJK characters.  Tokens with no letter at all (e.g. an emoji-
+ *  only word) are skipped so the next word's letter takes the slot.
+ */
+export function nameInitials(name: string | null | undefined): string {
+  const cleaned = (name ?? '').trim()
+  if (!cleaned) return '?'
+
+  const firstLetter = (token: string): string => {
+    const m = token.match(/\p{L}/u)
+    return m ? m[0].toLocaleUpperCase() : ''
+  }
+
+  const letters = cleaned
+    .split(/\s+/)
+    .map(firstLetter)
+    .filter((c) => c.length > 0)
+
+  if (letters.length === 0) {
+    // No letters anywhere — fall back to the first visible character
+    // so the avatar still renders something instead of "?".
+    return cleaned.slice(0, 1).toLocaleUpperCase() || '?'
+  }
+  if (letters.length === 1) return letters[0]
+  return letters[0] + letters[letters.length - 1]
+}
