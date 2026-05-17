@@ -121,7 +121,7 @@
 
   // ── Drag-and-drop drop targets (#89) ───────────────────────────
   // Folder rows accept drags from `MailList` carrying our private
-  // `application/x-nimbus-mail` payload.  `dragOverFolder` drives a
+  // `application/x-unkai-mail` payload.  `dragOverFolder` drives a
   // subtle highlight on the hovered row.  We swallow drops onto the
   // current source folder (`folder === payload.folder`) so a misfire
   // doesn't trip the IMAP server with a move-to-self request.
@@ -136,7 +136,7 @@
     // array; `Array.from` normalises both shapes so the `.some`
     // call below works either way.
     const types = Array.from(e.dataTransfer?.types ?? [])
-    return types.includes('application/x-nimbus-mail')
+    return types.includes('application/x-unkai-mail')
   }
 
   function onFolderDragOver(e: DragEvent, target: Folder) {
@@ -181,7 +181,7 @@
     // Outbox is local-only (#276) — bail before parsing any
     // payload so the drop is a hard no-op.
     if (target.name === OUTBOX_FOLDER) return
-    const raw = e.dataTransfer?.getData('application/x-nimbus-mail')
+    const raw = e.dataTransfer?.getData('application/x-unkai-mail')
     // No payload → not our drag (or the engine forgot to
     // hand it over); silently bail.
     if (!raw) return

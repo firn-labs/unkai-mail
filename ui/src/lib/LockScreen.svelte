@@ -130,7 +130,7 @@
   <div class="w-full max-w-md p-8 space-y-6">
     <div class="text-center space-y-1">
       <div class="text-5xl mb-2" aria-hidden="true">🔒</div>
-      <h1 class="text-2xl font-semibold">Nimbus is locked</h1>
+      <h1 class="text-2xl font-semibold">Unkai is locked</h1>
       <p class="text-sm text-surface-500">
         Authenticate to open your encrypted mail cache.
       </p>

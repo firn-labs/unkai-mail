@@ -651,7 +651,7 @@
    *  quoted thread we're replying to should never fire the
    *  warning:
    *
-   *    1. `<div data-nimbus-block="quoted-history">…</div>` —
+   *    1. `<div data-unkai-block="quoted-history">…</div>` —
    *       the wrapper Compose stamps around the quoted
    *       original message on reply / forward.  Wraps a
    *       multi-paragraph block, so the closing `</div>` is
@@ -672,7 +672,7 @@
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html')
       doc
-        .querySelectorAll('div[data-nimbus-block="quoted-history"], blockquote')
+        .querySelectorAll('div[data-unkai-block="quoted-history"], blockquote')
         .forEach((el) => el.remove())
       // Inject `\n` at block-element boundaries before grabbing
       // textContent, so a paragraph break in the source HTML
@@ -700,8 +700,8 @@
 
   // Cards (Talk + meeting + quoted-history) all live IN the
   // editor's HTML body (#195 follow-up²). The RichTextEditor's
-  // `NimbusBlock` Tiptap extension recognises every
-  // `<div data-nimbus-block="…">` wrapper and renders it via a
+  // `UnkaiBlock` Tiptap extension recognises every
+  // `<div data-unkai-block="…">` wrapper and renders it via a
   // NodeView so the styled markup survives schema parsing.
   // The chrome carries no `<img>` (we tried both a remote URL
   // and an inline data URI; mail clients ate both), so the
@@ -724,7 +724,7 @@
             files in the in-Compose picker, same shape the
             `onlinks` callback emits)
          5. body — plain-text reply or the styled
-            `<div data-nimbus-block="quoted-history">` for replies
+            `<div data-unkai-block="quoted-history">` for replies
 
       Drafts re-opened from the Drafts folder skip steps 1+2 —
       the saved HTML already contains whatever the user had at
@@ -850,7 +850,7 @@
       if (leadIdx !== -1) {
         const afterLead = leadIdx + '<p></p><p></p>'.length
         const quoteIdx = bodyHtml.indexOf(
-          '<div data-nimbus-block="quoted-history"',
+          '<div data-unkai-block="quoted-history"',
           afterLead,
         )
         const insertAt = quoteIdx !== -1 ? quoteIdx : afterLead
@@ -1221,7 +1221,7 @@
     //   5. quoted history (replies / forwards)
     //
     // The signature is a plain `<p>-- <br>...</p>` (no
-    // NimbusBlock wrapper), so `insertBeforeNimbusBlock` can't
+    // UnkaiBlock wrapper), so `insertBeforeUnkaiBlock` can't
     // target it.  We do a string splice on `bodyHtml` instead:
     // find the previously-inserted signature substring and
     // splice the card just before it.  Fallback paths cover
@@ -1251,7 +1251,7 @@
       bodyHtml = replaced
       return
     }
-    editorApi.insertBeforeNimbusBlock(html, 'quoted-history')
+    editorApi.insertBeforeUnkaiBlock(html, 'quoted-history')
   }
 
   /** Combined To + Cc list as bare/RFC-formatted address strings,
@@ -1262,17 +1262,17 @@
 
   /** Insert a Talk invite card into the editor body when the
       user creates a Talk room mid-compose.  The new
-      `insertBeforeNimbusBlock` editor API drops the card just
+      `insertBeforeUnkaiBlock` editor API drops the card just
       above any existing quoted-history block (so reading order
       is card → reply text → previous conversation); on a fresh
       compose with no quote it appends at the end. The card is
-      parsed by the editor's `NimbusBlock` extension into an
+      parsed by the editor's `UnkaiBlock` extension into an
       atom node, so a single Backspace deletes the whole thing
       if the user changes their mind. */
   function injectTalkBlock(link: { name: string; url: string }) {
     const html = talkInviteHtml(link)
     if (editorApi) {
-      editorApi.insertBeforeNimbusBlock(html, 'quoted-history')
+      editorApi.insertBeforeUnkaiBlock(html, 'quoted-history')
     }
   }
 
@@ -2696,7 +2696,7 @@
       const items = links
         .map(
           (l) =>
-            `<p>🔗 <a href="${l.url}" data-nimbus-share-id="${esc(l.id)}" data-nimbus-share-nc="${esc(l.ncId)}">${esc(l.filename)}</a></p>`,
+            `<p>🔗 <a href="${l.url}" data-unkai-share-id="${esc(l.id)}" data-unkai-share-nc="${esc(l.ncId)}">${esc(l.filename)}</a></p>`,
         )
         .join('')
       const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`

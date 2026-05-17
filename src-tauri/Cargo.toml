@@ -1,19 +1,19 @@
 [package]
-name = "nimbus-app"
+name = "unkai-app"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-nimbus-core.workspace = true
-nimbus-imap.workspace = true
-nimbus-smtp.workspace = true
-nimbus-jmap.workspace = true
-nimbus-caldav.workspace = true
-nimbus-carddav.workspace = true
-nimbus-nextcloud.workspace = true
-nimbus-store.workspace = true
-nimbus-discovery.workspace = true
+unkai-core.workspace = true
+unkai-imap.workspace = true
+unkai-smtp.workspace = true
+unkai-jmap.workspace = true
+unkai-caldav.workspace = true
+unkai-carddav.workspace = true
+unkai-nextcloud.workspace = true
+unkai-store.workspace = true
+unkai-discovery.workspace = true
 tokio.workspace = true
 futures.workspace = true
 font-kit.workspace = true
@@ -42,14 +42,14 @@ tauri-plugin-dialog = "2"
 # and we sync it to the OS via the plugin's enable() / disable()
 # IPCs.
 tauri-plugin-autostart = "2"
-# OS-level `mailto:` handling (#294).  Registers Nimbus as the
+# OS-level `mailto:` handling (#294).  Registers Unkai as the
 # system's default mail-protocol handler so a mailto link clicked
 # in any other app (browser, calendar, document) launches us with
 # the URL — either as a fresh process (cold start) or as a
 # second-instance argv (handled below via single-instance).
 tauri-plugin-deep-link = "2"
 # Cross-platform "second launch forwards to the running one"
-# (#294).  When Nimbus is already running and the OS spawns it
+# (#294).  When Unkai is already running and the OS spawns it
 # again with a `mailto:` argv, this plugin shuttles the argv to
 # the existing instance instead of starting a duplicate process.
 # The deep-link plugin then re-emits the URL through its normal
@@ -75,7 +75,7 @@ open = { workspace = true }
 notify-rust = "4"
 
 # Windows-only: needed to register an explicit AppUserModelID so toast
-# notifications attribute to "Nimbus Mail" instead of falling back to
+# notifications attribute to "Unkai Mail" instead of falling back to
 # the launching process (PowerShell / cmd / Git Bash) — see
 # `set_app_user_model_id` in `main.rs`.
 [target.'cfg(windows)'.dependencies]

@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/nimbus-core",
-    "crates/nimbus-imap",
-    "crates/nimbus-smtp",
-    "crates/nimbus-jmap",
-    "crates/nimbus-caldav",
-    "crates/nimbus-carddav",
-    "crates/nimbus-nextcloud",
-    "crates/nimbus-store",
-    "crates/nimbus-discovery",
+    "crates/unkai-core",
+    "crates/unkai-imap",
+    "crates/unkai-smtp",
+    "crates/unkai-jmap",
+    "crates/unkai-caldav",
+    "crates/unkai-carddav",
+    "crates/unkai-nextcloud",
+    "crates/unkai-store",
+    "crates/unkai-discovery",
     "src-tauri",
 ]
 
@@ -17,8 +17,8 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0"
-repository = "https://github.com/Videothek/nimbus-mail"
-# We never publish individual `nimbus-*` crates to crates.io —
+repository = "https://github.com/Videothek/unkai-mail"
+# We never publish individual `unkai-*` crates to crates.io —
 # they're internal building blocks of the desktop app.  Marking
 # them `publish = false` lets cargo-deny treat them as private
 # (so `private = { ignore = true }` in deny.toml takes effect)
@@ -42,11 +42,11 @@ tracing-subscriber = "0.3"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
-# IANA timezone database. Used by nimbus-caldav to resolve
+# IANA timezone database. Used by unkai-caldav to resolve
 # `DTSTART;TZID=America/New_York:...`-style values to UTC. The crate
 # bundles the tz database (~600 KB) so we don't need system tzdata.
 chrono-tz = "0.10"
-# RFC 5545 recurrence-rule engine. Used by nimbus-caldav to expand a
+# RFC 5545 recurrence-rule engine. Used by unkai-caldav to expand a
 # VEVENT master's RRULE/RDATE/EXDATE into concrete occurrences over a
 # requested date window. The crate handles DST transitions, BYDAY /
 # BYMONTHDAY etc. quirks, and UNTIL semantics — things we really
@@ -78,7 +78,7 @@ hex = "0.4"
 # IMAP
 async-imap = "0.10"
 futures = "0.3"
-# Pure-Rust TLS used by both nimbus-imap and nimbus-smtp so we have
+# Pure-Rust TLS used by both unkai-imap and unkai-smtp so we have
 # one TLS stack, one custom cert verifier, and one set of trust
 # storage. `ring` is the crypto provider that lettre defaults to —
 # matching it keeps both halves linking the same crypto.
@@ -106,8 +106,8 @@ mail-parser = "0.11"
 # the responses with quick-xml's pull parser; no full DAV client crate
 # is needed.
 quick-xml = { version = "0.36", features = ["serialize"] }
-# vCard 3 / 4 + iCalendar parser. Backs nimbus-carddav's contact import
-# (vcard feature) and nimbus-caldav's event sync (ical feature). Default
+# vCard 3 / 4 + iCalendar parser. Backs unkai-carddav's contact import
+# (vcard feature) and unkai-caldav's event sync (ical feature). Default
 # features also pull in a generator we don't need, so we ask only for
 # the two parser modules we actually use.
 ical = { version = "0.11", default-features = false, features = ["vcard", "ical"] }
@@ -129,7 +129,7 @@ hmac = "0.12"
 # UUIDs for fresh vCard UIDs on contact create — we picked `urn:uuid:`
 # form to match what other CardDAV clients emit.
 uuid = { version = "1", features = ["v4"] }
-# Async DNS resolver. Used by nimbus-discovery for SRV-record
+# Async DNS resolver. Used by unkai-discovery for SRV-record
 # autoconfiguration (`_imaps._tcp.<domain>` etc.) when a provider
 # doesn't expose a Mozilla autoconfig endpoint. Pure Rust, no
 # system-resolver dependency.
@@ -140,12 +140,12 @@ hickory-resolver = "0.26"
 # us the family-name list cheaply at app startup.
 font-kit = "0.14"
 # Internal crates
-nimbus-core = { path = "crates/nimbus-core" }
-nimbus-imap = { path = "crates/nimbus-imap" }
-nimbus-smtp = { path = "crates/nimbus-smtp" }
-nimbus-jmap = { path = "crates/nimbus-jmap" }
-nimbus-caldav = { path = "crates/nimbus-caldav" }
-nimbus-carddav = { path = "crates/nimbus-carddav" }
-nimbus-nextcloud = { path = "crates/nimbus-nextcloud" }
-nimbus-store = { path = "crates/nimbus-store" }
-nimbus-discovery = { path = "crates/nimbus-discovery" }
+unkai-core = { path = "crates/unkai-core" }
+unkai-imap = { path = "crates/unkai-imap" }
+unkai-smtp = { path = "crates/unkai-smtp" }
+unkai-jmap = { path = "crates/unkai-jmap" }
+unkai-caldav = { path = "crates/unkai-caldav" }
+unkai-carddav = { path = "crates/unkai-carddav" }
+unkai-nextcloud = { path = "crates/unkai-nextcloud" }
+unkai-store = { path = "crates/unkai-store" }
+unkai-discovery = { path = "crates/unkai-discovery" }

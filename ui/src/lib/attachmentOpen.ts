@@ -135,7 +135,7 @@ async function openViaNcViewer(
   })
   // Cleanup hook fires once when the user closes the viewer
   // window — DAV-deletes the temp file from NC so the user's
-  // /Nimbus Mail/temp doesn't accumulate.  Errors are
+  // /Unkai Mail/temp doesn't accumulate.  Errors are
   // swallowed; the startup sweeper handles orphans.
   void win.once('tauri://destroyed', async () => {
     try {

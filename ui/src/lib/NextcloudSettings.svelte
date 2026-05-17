@@ -483,12 +483,12 @@
         }
       })()
       const ok = confirm(
-        `Found a Nimbus settings backup on this Nextcloud (saved ${formatted}). Restore it now? Existing accounts on this machine are kept; the bundle just adds back any that were missing and updates metadata.`,
+        `Found a Unkai settings backup on this Nextcloud (saved ${formatted}). Restore it now? Existing accounts on this machine are kept; the bundle just adds back any that were missing and updates metadata.`,
       )
       if (!ok) return
       await ncRestoreBundle(ncId)
       alert(
-        'Settings restored. Reload the window (or restart Nimbus) to see every preference apply.',
+        'Settings restored. Reload the window (or restart Unkai) to see every preference apply.',
       )
     } catch (e) {
       console.warn('post-connect bundle probe / restore failed', e)

@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/packages/tauri-config-schema/schema.json",
-  "productName": "Nimbus",
+  "productName": "Unkai",
   "version": "0.1.0",
-  "identifier": "com.nimbus.mail",
+  "identifier": "com.unkai.mail",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5173",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Nimbus Mail",
+        "title": "Unkai Mail",
         "width": 1200,
         "height": 800,
         "resizable": true,

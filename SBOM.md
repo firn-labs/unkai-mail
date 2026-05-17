@@ -1,10 +1,10 @@
 # Software Bill of Materials (SBOM)
 
-Inventory of every direct dependency Nimbus Mail pulls in, the licence
+Inventory of every direct dependency Unkai Mail pulls in, the licence
 each one ships under, and what that combination means for distributing
 the app commercially.
 
-> **TL;DR:** Nimbus is licensed **GPL-3.0**. The strongest copyleft
+> **TL;DR:** Unkai is licensed **GPL-3.0**. The strongest copyleft
 > dependency in the tree (`rrule`, GPL-3.0) is what forces that choice —
 > we can market and sell the app, but we must offer the source to every
 > user we ship a binary to. The public GitHub repository already
@@ -41,7 +41,7 @@ screen or a `LICENSES.md` shipped with the binary).
 - **Zlib** — permissive with one extra clause (don't claim you wrote
   the original). Treat like MIT.
 
-For Nimbus this means: anything pure-permissive can ship in any
+For Unkai this means: anything pure-permissive can ship in any
 distribution model we pick.
 
 ### Weak copyleft (must remain replaceable)
@@ -68,11 +68,11 @@ distribution model we pick.
   user we sell to has the right to a copy of the complete source
   (`src/` plus our build instructions). AGPL adds an extra trigger: if
   the software runs as a network service, anyone interacting with it
-  over the network is also a "user" entitled to the source. Nimbus is
+  over the network is also a "user" entitled to the source. Unkai is
   a desktop client, not a service, so AGPL would behave like GPL for
   our distribution model.
 
-For Nimbus this is what `rrule` brings in — and is why our own
+For Unkai this is what `rrule` brings in — and is why our own
 licence is GPL-3.0. **Adding AGPL-3.0 anywhere in the tree would
 upgrade the obligation** (network-service trigger), so flag carefully.
 
@@ -88,12 +88,12 @@ above still applies — pick the one that fits.
 
 ### What "GPL-3.0 forces our licence" means in practice
 
-- ✅ We can sell Nimbus binaries.
+- ✅ We can sell Unkai binaries.
 - ✅ We can run paid hosting / support / consulting around it.
 - ✅ We can make the source available *only* on the GitHub repo;
   the repo URL counts as "offer to provide source".
 - ❌ We cannot ship a closed-source proprietary fork.
-- ❌ We cannot dual-license Nimbus under a non-GPL licence without
+- ❌ We cannot dual-license Unkai under a non-GPL licence without
   swapping or relicensing every GPL dep first.
 - ❌ We cannot add code under a licence incompatible with GPL-3.0
   (e.g. older GPL-2.0-only, BUSL, SSPL).
@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-15 (`tauri-plugin-deep-link` + `tauri-plugin-single-instance` added so Nimbus can register as the OS mailto handler and de-dup second-instance launches, #294 — both MIT OR Apache-2.0, no licence pressure).
+Last manual reconciliation: 2026-05-15 (`tauri-plugin-deep-link` + `tauri-plugin-single-instance` added so Unkai can register as the OS mailto handler and de-dup second-instance launches, #294 — both MIT OR Apache-2.0, no licence pressure).
 
 ---
 
@@ -253,7 +253,7 @@ or terms change.
 | Dual-licence under e.g. commercial + GPL | ❌ | Same. Would need to swap `rrule` for an MIT/Apache RRULE expander. |
 | Ship in a closed-source company-internal tool only | ✅ | GPL-3.0's redistribution clause only triggers on distribution. Internal use is unrestricted. |
 
-If at some point we want the option of relicensing Nimbus to a
+If at some point we want the option of relicensing Unkai to a
 permissive licence (MIT / Apache / a commercial dual-licence), the
 single hard blocker is `rrule`. It would need replacing — either by
 forking it under a permissive licence (which is itself a GPL violation

@@ -644,7 +644,7 @@
    *  row's PARTSTAT is DECLINED, the grid renders it with the
    *  declined visual treatment (transparent fill, coloured
    *  border) instead of the regular filled block.  Loaded once
-   *  on init from `get_accounts` (Nimbus mail-account emails);
+   *  on init from `get_accounts` (Unkai mail-account emails);
    *  empty by default so events still render correctly when
    *  the lookup fails. */
   let userIdentities = $state<Set<string>>(new Set())
@@ -897,7 +897,7 @@
     return `${y}-${m}-${dd}`
   }
   function isAllDay(s: Date, e: Date): boolean {
-    // The backend (`nimbus-caldav::ical`) stores `VALUE=DATE` events
+    // The backend (`unkai-caldav::ical`) stores `VALUE=DATE` events
     // as midnight UTC → 23:59:59 UTC of the last covered day. Detect
     // on the UTC fields, not local ones — otherwise a user east of UTC
     // sees the event start at e.g. 02:00 (CEST) and isAllDay returns
@@ -905,7 +905,7 @@
     if (s.getUTCHours() !== 0 || s.getUTCMinutes() !== 0) return false
     const hours = (e.getTime() - s.getTime()) / 3600_000
     if (hours < 23) return false
-    // All-day shapes we actually observe in nimbus-caldav output:
+    // All-day shapes we actually observe in unkai-caldav output:
     //   - DURATION:P1D×N  → span is exactly N×24h
     //   - DTSTART only    → span is 23h59m59s (start + 86399s fallback)
     //   - DTEND snapped   → span is N×24h - 1s (ical.rs 23:59:59 snap)

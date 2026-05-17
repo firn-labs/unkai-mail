@@ -142,7 +142,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Nimbus Mail ${{ github.ref_name }}"
+          releaseName: "Unkai Mail ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
           # `generateReleaseNotes: true` tells the underlying

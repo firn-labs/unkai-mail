@@ -3,7 +3,7 @@
 //!
 //! Fetches forward-geocoding suggestions for the EventEditor's
 //! Location autocomplete.  Routes through the local
-//! `geocode_cache` SQLite table (see `nimbus-store::cache::geocode`)
+//! `geocode_cache` SQLite table (see `unkai-store::cache::geocode`)
 //! so the same query typed twice doesn't burn two upstream calls,
 //! and so the user honours Nominatim's posted "1 req/sec
 //! absolute" rate limit naturally.
@@ -30,7 +30,7 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use nimbus_core::NimbusError;
+use unkai_core::UnkaiError;
 
 /// One forward-geocoding suggestion.  Mirrors the Nominatim
 /// response we care about, plus a normalised `(lat, lon)` pair —
@@ -171,14 +171,14 @@ pub fn resolve_nominatim_base_url(user_setting: &str) -> &str {
 ///
 /// The function does **not** consult the local cache — that's the
 /// caller's job.  Pulling cache logic into this layer would
-/// couple the protocol crate to `nimbus-store`, and the cache
+/// couple the protocol crate to `unkai-store`, and the cache
 /// adds a small amount of canonicalisation we want visible in
 /// `main.rs` where the Tauri command flows.
 pub async fn nominatim_search(
     query: &str,
     lang: &str,
     base_url: &str,
-) -> Result<Vec<GeocodeResult>, NimbusError> {
+) -> Result<Vec<GeocodeResult>, UnkaiError> {
     let q = query.trim();
     if q.is_empty() {
         return Ok(Vec::new());
@@ -196,12 +196,12 @@ pub async fn nominatim_search(
         // identifying the application + version + a contact path.
         // Repo URL satisfies the contact requirement.
         .user_agent(concat!(
-            "NimbusMail/",
+            "UnkaiMail/",
             env!("CARGO_PKG_VERSION"),
-            " (+https://github.com/Videothek/nimbus-mail)"
+            " (+https://github.com/Videothek/unkai-mail)"
         ))
         .build()
-        .map_err(|e| NimbusError::Network(format!("geocode HTTP client: {e}")))?;
+        .map_err(|e| UnkaiError::Network(format!("geocode HTTP client: {e}")))?;
 
     let mut req = client.get(&url);
     if !lang.trim().is_empty() {
@@ -210,18 +210,18 @@ pub async fn nominatim_search(
     let resp = req
         .send()
         .await
-        .map_err(|e| NimbusError::Network(format!("geocode request: {e}")))?;
+        .map_err(|e| UnkaiError::Network(format!("geocode request: {e}")))?;
 
     let status = resp.status();
     if !status.is_success() {
-        return Err(NimbusError::Other(format!(
+        return Err(UnkaiError::Other(format!(
             "Nominatim returned HTTP {status}"
         )));
     }
     let hits: Vec<NominatimHit> = resp
         .json()
         .await
-        .map_err(|e| NimbusError::Protocol(format!("geocode JSON: {e}")))?;
+        .map_err(|e| UnkaiError::Protocol(format!("geocode JSON: {e}")))?;
 
     Ok(hits
         .into_iter()
@@ -248,7 +248,7 @@ pub async fn nominatim_search(
 }
 
 /// Minimal percent-encoding for query-string values.  Mirrors the
-/// helper in `nimbus-nextcloud::user` so we don't pull in a fresh
+/// helper in `unkai-nextcloud::user` so we don't pull in a fresh
 /// dep just for one path.
 fn urlencoding(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

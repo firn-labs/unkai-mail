@@ -81,8 +81,8 @@ describe('parseMailtoUrl', () => {
   })
 
   test('percent-encoded recipient (e.g. + in local part)', () => {
-    expect(parseMailtoUrl('mailto:alice%2Bnimbus@example.org')).toEqual({
-      to: 'alice+nimbus@example.org',
+    expect(parseMailtoUrl('mailto:alice%2Bunkai@example.org')).toEqual({
+      to: 'alice+unkai@example.org',
     })
   })
 

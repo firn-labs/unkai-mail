@@ -73,7 +73,7 @@ export interface EventEditorPopoutPayload {
   replyTo?: unknown
 }
 
-const STORAGE_KEY_PREFIX = 'nimbus-event-editor-popout-'
+const STORAGE_KEY_PREFIX = 'unkai-event-editor-popout-'
 
 export async function openEventEditorInStandaloneWindow(
   payload: EventEditorPopoutPayload,
@@ -89,7 +89,7 @@ export async function openEventEditorInStandaloneWindow(
   // away rather than have to hunt for it.
   new WebviewWindow(`event-editor-${key}`, {
     url: `index.html?view=event-editor&key=${key}`,
-    title: payload.draft.summary || 'New event — Nimbus Mail',
+    title: payload.draft.summary || 'New event — Unkai Mail',
     width: 700,
     height: 760,
     minWidth: 500,

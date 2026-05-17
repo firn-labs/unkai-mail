@@ -14,7 +14,7 @@
  *     unreliable across mail clients.
  *   • Banner image referenced via the project's GitHub raw URL
  *     so the recipient's mail client fetches a real PNG of the
- *     Nimbus logo when they permit remote content.  Falls back
+ *     Unkai logo when they permit remote content.  Falls back
  *     gracefully to alt-text if blocked.
  *
  * The visual language across both cards is identical: same
@@ -36,7 +36,7 @@
  *  something falsy without breaking the bundle; new code
  *  shouldn't reference it. Remove on next cleanup pass once we
  *  confirm nothing else imports it. */
-export const PUBLIC_NIMBUS_LOGO_URL = ''
+export const PUBLIC_UNKAI_LOGO_URL = ''
 /** Minimal HTML escape for the few values we splice into the
  *  template. Same characters DOMPurify-tier sanitisers cover —
  *  we don't need full sanitisation here because the inputs are
@@ -123,16 +123,16 @@ const T = {
  *  based brand element ends up as a broken-icon artifact for the
  *  recipient. The wordmark renders identically in every client.
  *
- *  The outer `data-nimbus-block` attribute is the marker the
- *  RichTextEditor's `NimbusBlock` extension parses into an atom
+ *  The outer `data-unkai-block` attribute is the marker the
+ *  RichTextEditor's `UnkaiBlock` extension parses into an atom
  *  node — that's how the styled card survives Tiptap's schema
  *  unwrapping when the HTML is loaded into the editor. */
 function chrome(bodyHtml: string, kind: string): string {
   return `
-<div data-nimbus-block="${kind}" style="max-width:560px;margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div data-unkai-block="${kind}" style="max-width:560px;margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="${T.card}">
     <div style="${T.headerBg}">
-      <span style="${T.headerPill}"><span style="${T.headerWordmark}">Nimbus Mail</span></span>
+      <span style="${T.headerPill}"><span style="${T.headerWordmark}">Unkai Mail</span></span>
     </div>
     <div style="${T.body}">
       ${bodyHtml}
@@ -303,8 +303,8 @@ ${nextcloudFooter("You'll be invited via Nextcloud — accepting in your mail cl
  *  dark themes — designed to read as "old context" rather than
  *  competing with the new content.
  *
- *  The outer `data-nimbus-block` attribute lets the editor's
- *  `NimbusBlock` extension capture this as an atom node so the
+ *  The outer `data-unkai-block` attribute lets the editor's
+ *  `UnkaiBlock` extension capture this as an atom node so the
  *  styled wrapper survives Tiptap's schema (which would otherwise
  *  unwrap the `<div>` and strip the inline styles).
  *
@@ -335,7 +335,7 @@ export function quotedHistoryHtml(args: {
       .replace(/'/g, '&#39;')
   const meta = `On ${escAttr(whenText)}, ${escAttr(fromHeader)} wrote:`
   return `
-<div data-nimbus-block="quoted-history" style="margin:24px 0 0 0;padding:14px 18px;background:#f1f5f9;border-left:3px solid #cbd5e1;border-radius:8px;color:#64748b;font-size:13px;line-height:1.55;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div data-unkai-block="quoted-history" style="margin:24px 0 0 0;padding:14px 18px;background:#f1f5f9;border-left:3px solid #cbd5e1;border-radius:8px;color:#64748b;font-size:13px;line-height:1.55;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px;">Previous conversation</div>
   <div style="font-size:12px;color:#475569;margin-bottom:10px;">${meta}</div>
   <blockquote type="cite" style="margin:0;padding:0;border:0;color:#64748b;">${bodyHtml}</blockquote>

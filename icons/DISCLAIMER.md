@@ -1,1 +1,1 @@
-Original icons designed for Nimbus Mail, 2026
+Original icons designed for Unkai Mail, 2026

@@ -73,7 +73,7 @@
   const initialLocale = getLocale()
 
   // ── Types ───────────────────────────────────────────────────
-  // Mirrors the Rust `Account` struct from nimbus-core
+  // Mirrors the Rust `Account` struct from unkai-core
   interface FolderIconRule {
     keyword: string
     icon: string
@@ -301,7 +301,7 @@
 
   // ── Logo / app-icon picker (Issue #X) ───────────────────────
   // Each entry is one slug the Rust side knows: the image source
-  // is the `nimbus-logo://localhost/<id>` URI scheme (registered
+  // is the `unkai-logo://localhost/<id>` URI scheme (registered
   // in main.rs) which streams the embedded PNG bytes back as a
   // plain image response. Click → invoke `set_logo_style`, which
   // hot-swaps the running tray + window icon and persists the
@@ -621,8 +621,8 @@
   }
 
   /** Open the OS's default-apps settings page so the user can
-   *  pick Nimbus as the default handler for .ics / .eml (#254).
-   *  Nimbus is *eligible* once installed thanks to the
+   *  pick Unkai as the default handler for .ics / .eml (#254).
+   *  Unkai is *eligible* once installed thanks to the
    *  `bundle.fileAssociations` declarations, but on Windows
    *  marking it as the *default* requires user consent in the
    *  Settings panel — programmatic association without the
@@ -830,7 +830,7 @@
     trustError = ''
     try {
       // Append every cert in the probed chain to the account's
-      // trust list. We don't dedupe — `nimbus_core::tls::
+      // trust list. We don't dedupe — `unkai_core::tls::
       // build_client_config` happily accepts duplicates, and an
       // exact-match dupe is harmless. Anything else (cert renewed
       // under same CN, server moved hosts, …) is a *new* entry
@@ -1187,11 +1187,11 @@
         <div class="flex items-start gap-3">
           <Toggle
             checked={appSettings.autostart_enabled}
-            label="Launch Nimbus when I sign in"
+            label="Launch Unkai when I sign in"
             onchange={(v) => void onAutostartToggle(v)}
           />
           <span>
-            Launch Nimbus when I sign in
+            Launch Unkai when I sign in
             <span class="block text-xs text-surface-500">
               Adds an entry to your OS's autostart list. Combine with "Start minimized to tray" for a quiet boot.
             </span>
@@ -1381,7 +1381,7 @@
           </p>
         {/if}
 
-        <!-- File associations (#254).  Nimbus is registered as an
+        <!-- File associations (#254).  Unkai is registered as an
              eligible handler for .ics / .eml during install via
              the bundle.fileAssociations entries in
              tauri.conf.json — but on Windows, "eligible" doesn't
@@ -1865,7 +1865,7 @@
         <!-- App icon picker — swaps the running tray + window
              icon (and Windows taskbar entry, which mirrors the
              window icon) to one of the bundled styles.  The
-             `nimbus-logo://localhost/<id>` URI scheme serves the
+             `unkai-logo://localhost/<id>` URI scheme serves the
              embedded PNG bytes so each tile previews the actual
              icon, not just a colour swatch. -->
         <div>
@@ -1889,7 +1889,7 @@
                 title="Use the {style.label} icon for the tray, window and taskbar"
               >
                 <img
-                  src={convertFileSrc(style.id, 'nimbus-logo')}
+                  src={convertFileSrc(style.id, 'unkai-logo')}
                   alt={`${style.label} icon preview`}
                   class="w-12 h-12 object-contain"
                   loading="lazy"
@@ -2177,7 +2177,7 @@
                 file dialog.  Cross-machine portable; users can
                 stash a copy in their own backup pipeline.
              2. Nextcloud — pick a connected NC, the worker keeps
-                /Nimbus Mail/settings/settings.json fresh.  Used
+                /Unkai Mail/settings/settings.json fresh.  Used
                 for first-launch recovery on a new install. -->
       <section class="space-y-6">
         <header>
@@ -2221,7 +2221,7 @@
             <h3 class="font-medium leading-tight">Save to Nextcloud</h3>
             <p class="text-xs text-surface-500 leading-snug mt-1">
               Keep a copy on a connected Nextcloud at
-              <code>/Nimbus Mail/settings/settings.json</code>.
+              <code>/Unkai Mail/settings/settings.json</code>.
               Pushed automatically on every settings change. If
               the server is unreachable the push is queued and
               retried — silently — the next time it's online or
