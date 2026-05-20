@@ -1988,11 +1988,19 @@
             <span class="rt-btn-label">Link</span>
           </button>
           {#if showLinkPopover}
+            <!-- Pointer + key handlers exist only to shield the popover
+                 contents from the document-level click-outside-to-dismiss
+                 handler; they're not user-actionable. role="dialog" +
+                 aria-label gives the wrapper accurate ARIA semantics. -->
             <div
+              role="dialog"
+              aria-label="Insert link"
+              tabindex="-1"
               class="fixed z-60 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md p-2 flex items-center gap-2"
               style="left: {Math.min(linkPopoverPos.x, window.innerWidth - 320)}px; top: {linkPopoverPos.y}px; width: 304px;"
               onclick={(e) => e.stopPropagation()}
               onmousedown={(e) => e.stopPropagation()}
+              onkeydown={(e) => e.stopPropagation()}
             >
               <input
                 bind:this={linkInputEl}
