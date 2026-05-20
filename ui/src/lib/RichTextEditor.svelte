@@ -1053,11 +1053,31 @@
   }
 
   /** Apply the URL currently in the input.  Empty string removes
-   *  the link (matches the previous `window.prompt` behaviour). */
+   *  the link (matches the previous `window.prompt` behaviour).
+   *
+   *  Three cases:
+   *    1. URL empty + on existing link → strip the link mark.
+   *    2. URL non-empty + range selected → apply the link mark to
+   *       the selection (Tiptap's `extendMarkRange('link')` widens
+   *       the range to cover the full anchor text when the cursor
+   *       sits inside one).
+   *    3. URL non-empty + cursor only (no selection) → insert the
+   *       URL as visible text with the link mark.  Without this
+   *       branch `setLink` silently no-ops because there's no
+   *       range to apply the mark to — which is exactly the
+   *       "Insert link does nothing" symptom from #317. */
   function commitLink() {
     const url = linkUrlInput.trim()
     if (url === '') {
       cmd().extendMarkRange('link').unsetLink().run()
+    } else if ($editor && $editor.state.selection.empty) {
+      cmd()
+        .insertContent({
+          type: 'text',
+          text: url,
+          marks: [{ type: 'link', attrs: { href: url } }],
+        })
+        .run()
     } else {
       cmd().extendMarkRange('link').setLink({ href: url }).run()
     }
@@ -1441,13 +1461,16 @@
   // select its content so the user can immediately overtype an
   // existing URL.  Keyed on `showLinkPopover` so re-opening the
   // popover (close → reopen on a different word) re-runs the focus.
+  // setTimeout(0) rather than queueMicrotask so we land *after* the
+  // DOM has actually committed — queueMicrotask can race the render
+  // and find `linkInputEl` still null.
   $effect(() => {
     if (!showLinkPopover) return
-    // Defer to next tick so the input element is mounted.
-    queueMicrotask(() => {
+    const t = setTimeout(() => {
       linkInputEl?.focus()
       linkInputEl?.select()
-    })
+    }, 0)
+    return () => clearTimeout(t)
   })
 
   function insertEmoji(e: string | null) {
@@ -1968,8 +1991,6 @@
             <div
               class="fixed z-60 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md p-2 flex items-center gap-2"
               style="left: {Math.min(linkPopoverPos.x, window.innerWidth - 320)}px; top: {linkPopoverPos.y}px; width: 304px;"
-              role="dialog"
-              aria-label="Insert link"
               onclick={(e) => e.stopPropagation()}
               onmousedown={(e) => e.stopPropagation()}
             >

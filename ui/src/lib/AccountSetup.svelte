@@ -356,8 +356,19 @@
         - Back / Next | Add Account buttons
 -->
 <svelte:window onkeydown={onWizardKeydown} />
-<div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
-  <div class="w-full max-w-xl mx-4">
+<!-- #317 — outer wrapper scrolls when content exceeds the viewport
+     (e.g. the rich-text signature editor on step 3 pushes the Add
+     Account button below the fold on shorter windows).  Previously
+     `h-full flex items-center` centred the card vertically but
+     clipped overflow on both sides with no scroll.  The fix is a
+     two-layer pattern: the outer takes `h-full overflow-y-auto`,
+     the middle takes `min-h-full flex items-center` so the card
+     stays visually centred when it fits and the page just grows
+     and scrolls when it doesn't.  `py-8` gives breathing room
+     against the viewport edges during scroll. -->
+<div class="h-full overflow-y-auto bg-surface-50 dark:bg-surface-900">
+  <div class="min-h-full flex items-center justify-center py-8">
+    <div class="w-full max-w-xl mx-4">
     <!-- Header -->
     <div class="text-center mb-8">
       <h1 class="text-3xl font-bold text-primary-500 mb-2">{m.account_setup_welcome_title()}</h1>
@@ -714,6 +725,7 @@
           </button>
         {/if}
       </div>
+    </div>
     </div>
   </div>
 </div>
