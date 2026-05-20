@@ -1,3 +1,5 @@
+import { m } from '../paraglide/messages'
+
 /**
  * Sentinel folder names used to route the global "All Sent" / "All
  * Drafts" entries through the same `selectedFolder` channel as real
@@ -45,4 +47,32 @@ export function unifiedSpecialKind(folder: string): UnifiedSpecialKind | null {
     default:
       return null
   }
+}
+
+/** Human-friendly display name for any folder string we might hold
+ *  in `selectedFolder`. Sentinels and the literal `INBOX` translate
+ *  via the locale catalogue so copy referencing the folder name
+ *  reads consistently with the sidebar buttons in non-English UIs.
+ *  Real IMAP folder names are server-provided data — passed through
+ *  as the last path segment, matching the sidebar's `displayName`. */
+export function displayFolderName(folder: string): string {
+  switch (folder) {
+    case UNIFIED_SENT_FOLDER:
+      return m.folder_name_sent()
+    case UNIFIED_DRAFTS_FOLDER:
+      return m.folder_name_drafts()
+    case UNIFIED_JUNK_FOLDER:
+      return m.folder_name_junk()
+    case UNIFIED_ARCHIVE_FOLDER:
+      return m.folder_name_archive()
+    case UNIFIED_TRASH_FOLDER:
+      return m.folder_name_trash()
+  }
+  if (folder.toUpperCase() === 'INBOX') return m.folder_name_inbox()
+  // Real IMAP folders: strip the hierarchy prefix so "INBOX/Work"
+  // shows as "Work". We don't have the server's delimiter here, so
+  // fall back to `/` — matches the sidebar's behaviour when a folder
+  // didn't advertise one.
+  const parts = folder.split('/')
+  return parts[parts.length - 1] || folder
 }

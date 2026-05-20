@@ -19,7 +19,8 @@
   import { parseFromHeader, senderLabel } from './fromHeader'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import Icon from './Icon.svelte'
-  import { unifiedSpecialKind } from './unifiedFolders'
+  import { unifiedSpecialKind, displayFolderName } from './unifiedFolders'
+  import { m } from '../paraglide/messages'
 
   // ── Props ───────────────────────────────────────────────────
   interface EmailEnvelope {
@@ -1326,7 +1327,9 @@
     {:else if error}
       <div class="p-4 text-sm text-red-500">{error}</div>
     {:else if envelopes.length === 0}
-      <div class="p-6 text-center text-sm text-surface-500">No messages in {folder}.</div>
+      <div class="p-6 text-center text-sm text-surface-500">
+        {m.maillist_empty_in_folder({ folder: displayFolderName(folder) })}
+      </div>
     {:else}
       {#each renderRows as row (`${row.env.account_id}:${row.env.uid}:${row.isSibling ? 's' : 'h'}`)}
         {@const env = row.env}

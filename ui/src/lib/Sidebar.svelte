@@ -987,21 +987,11 @@
           <span class="badge preset-filled-primary-500 text-xs">{outboxCount}</span>
         </button>
       {/if}
-      <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
-          {selectedFolder === UNIFIED_SENT_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
-        onclick={() => onselectfolder(UNIFIED_SENT_FOLDER)}
-      >
-        <span
-          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
-          aria-hidden="true"
-        >
-          <Icon name="sent" size={16} />
-        </span>
-        <span class="flex-1 text-left truncate">{m.sidebar_unified_sent_label()}</span>
-      </button>
+      <!-- Order mirrors the per-account standard-folder ranking
+           (`standardRank` below): Inbox → Outbox → Drafts → Sent →
+           Archive → Junk → Trash. Same shape on both surfaces so a
+           user toggling between unified and a single account never
+           sees their outgoing-mail folders shuffle. -->
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
           {selectedFolder === UNIFIED_DRAFTS_FOLDER
@@ -1016,6 +1006,21 @@
           <Icon name="drafts" size={16} />
         </span>
         <span class="flex-1 text-left truncate">{m.sidebar_unified_drafts_label()}</span>
+      </button>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_SENT_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_SENT_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="sent" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_sent_label()}</span>
       </button>
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm

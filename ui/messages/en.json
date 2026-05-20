@@ -240,5 +240,14 @@
   "sidebar_unified_drafts_label": "All Drafts",
   "sidebar_unified_archive_label": "All Archive",
   "sidebar_unified_junk_label": "All Junk",
-  "sidebar_unified_trash_label": "All Trash"
+  "sidebar_unified_trash_label": "All Trash",
+
+  "maillist_empty_in_folder": "No messages in {folder}.",
+
+  "folder_name_inbox": "Inbox",
+  "folder_name_sent": "Sent",
+  "folder_name_drafts": "Drafts",
+  "folder_name_junk": "Junk",
+  "folder_name_archive": "Archive",
+  "folder_name_trash": "Trash"
 }
