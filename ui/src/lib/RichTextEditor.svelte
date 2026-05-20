@@ -1025,15 +1025,48 @@
   function doUndo() { cmd().undo().run() }
   function doRedo() { cmd().redo().run() }
 
-  function setLink() {
-    const prev = $editor?.getAttributes('link')?.href ?? ''
-    const url = window.prompt('URL', prev)
-    if (url === null) return
+  // ── Link popover ────────────────────────────────────────────
+  // #317 — `window.prompt` is disabled in Tauri 2 webviews and even
+  // when supported it stole focus from the editor and dropped the
+  // selection, leaving us with no range for `extendMarkRange` to
+  // operate on.  Replaced with an inline popover anchored to the
+  // Link toolbar button, matching the font / table / emoji picker
+  // idiom already in this file.
+  let showLinkPopover = $state(false)
+  let linkPopoverPos = $state<{ x: number; y: number }>({ x: 0, y: 0 })
+  let linkUrlInput = $state('')
+  /** Whether the click that opened the popover landed inside an
+   *  existing link.  Drives the visibility of the Remove button —
+   *  there's nothing to remove when the user is creating a new
+   *  link, so hiding the button keeps the popover compact. */
+  let linkPopoverHasExisting = $state(false)
+  /** Reference to the URL input so we can autofocus + select on
+   *  open without round-tripping through a `bind:this` snapshot. */
+  let linkInputEl: HTMLInputElement | null = $state(null)
+
+  function openLinkPopover(e: MouseEvent) {
+    const prev = ($editor?.getAttributes('link')?.href as string) ?? ''
+    linkUrlInput = prev
+    linkPopoverHasExisting = prev !== ''
+    linkPopoverPos = anchorPopover(e)
+    showLinkPopover = true
+  }
+
+  /** Apply the URL currently in the input.  Empty string removes
+   *  the link (matches the previous `window.prompt` behaviour). */
+  function commitLink() {
+    const url = linkUrlInput.trim()
     if (url === '') {
       cmd().extendMarkRange('link').unsetLink().run()
     } else {
       cmd().extendMarkRange('link').setLink({ href: url }).run()
     }
+    showLinkPopover = false
+  }
+
+  function removeLink() {
+    cmd().extendMarkRange('link').unsetLink().run()
+    showLinkPopover = false
   }
 
   /** Insert an image from a local file (embedded as data URL). */
@@ -1367,7 +1400,13 @@
    *  the document level catches Escape from anywhere in the
    *  Compose window. */
   $effect(() => {
-    if (!showFontPicker && !showTablePicker && !showEmojiPicker) return
+    if (
+      !showFontPicker &&
+      !showTablePicker &&
+      !showEmojiPicker &&
+      !showLinkPopover
+    )
+      return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (showFontPicker) {
@@ -1376,9 +1415,39 @@
       }
       if (showTablePicker) showTablePicker = false
       if (showEmojiPicker) showEmojiPicker = false
+      if (showLinkPopover) showLinkPopover = false
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
+  })
+
+  // Click-outside dismissal for the link popover — same idiom as
+  // the emoji popup below.  Crucial here because the popover takes
+  // input focus on open, so the user expects clicking elsewhere
+  // (back into the editor, the toolbar, …) to dismiss it.
+  $effect(() => {
+    if (!showLinkPopover) return
+    const close = () => (showLinkPopover = false)
+    const handle = setTimeout(() => {
+      window.addEventListener('click', close)
+    }, 0)
+    return () => {
+      clearTimeout(handle)
+      window.removeEventListener('click', close)
+    }
+  })
+
+  // Autofocus the URL input every time the popover opens, and pre-
+  // select its content so the user can immediately overtype an
+  // existing URL.  Keyed on `showLinkPopover` so re-opening the
+  // popover (close → reopen on a different word) re-runs the focus.
+  $effect(() => {
+    if (!showLinkPopover) return
+    // Defer to next tick so the input element is mounted.
+    queueMicrotask(() => {
+      linkInputEl?.focus()
+      linkInputEl?.select()
+    })
   })
 
   function insertEmoji(e: string | null) {
@@ -1883,10 +1952,59 @@
           <span class="rt-btn-label">Clear</span>
         </button>
       {:else if activeTab === 'insert'}
-        <button class="rt-btn {active('link')}" title="Insert link" onclick={setLink}>
-          <span class="rt-btn-icon"><Icon name="open-link" size={20} /></span>
-          <span class="rt-btn-label">Link</span>
-        </button>
+        <!-- #317 — the click opens an inline popover, not
+             `window.prompt`, which is disabled in Tauri 2 webviews
+             and stole the editor's selection anyway. -->
+        <div class="inline-block">
+          <button
+            class="rt-btn {active('link')}"
+            title="Insert link"
+            onclick={openLinkPopover}
+          >
+            <span class="rt-btn-icon"><Icon name="open-link" size={20} /></span>
+            <span class="rt-btn-label">Link</span>
+          </button>
+          {#if showLinkPopover}
+            <div
+              class="fixed z-60 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md p-2 flex items-center gap-2"
+              style="left: {Math.min(linkPopoverPos.x, window.innerWidth - 320)}px; top: {linkPopoverPos.y}px; width: 304px;"
+              role="dialog"
+              aria-label="Insert link"
+              onclick={(e) => e.stopPropagation()}
+              onmousedown={(e) => e.stopPropagation()}
+            >
+              <input
+                bind:this={linkInputEl}
+                bind:value={linkUrlInput}
+                type="url"
+                placeholder="https://example.com"
+                class="flex-1 min-w-0 px-2 py-1 text-sm rounded border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900"
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    commitLink()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    showLinkPopover = false
+                  }
+                }}
+              />
+              <button
+                type="button"
+                class="text-xs px-2 py-1 rounded bg-primary-500 text-white hover:bg-primary-600"
+                onclick={commitLink}
+              >Apply</button>
+              {#if linkPopoverHasExisting}
+                <button
+                  type="button"
+                  class="text-xs px-2 py-1 rounded text-error-500 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  title="Remove link"
+                  onclick={removeLink}
+                >Remove</button>
+              {/if}
+            </div>
+          {/if}
+        </div>
         <button class="rt-btn" title="Insert image from local file" onclick={() => addImageFromFile()}>
           <span class="rt-btn-icon"><Icon name="insert-image" size={20} /></span>
           <span class="rt-btn-label">Image</span>

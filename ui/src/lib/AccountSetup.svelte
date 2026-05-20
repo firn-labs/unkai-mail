@@ -585,7 +585,15 @@
             <Toggle bind:checked={useJmap} label={m.account_setup_jmap_label()} />
           </div>
 
-          <label class="block mb-4">
+          <!-- #317 — must be a plain <div>, not a <label>.  A <label>
+               wrapping the RichTextEditor redirects click focus to the
+               first labelable form control inside (one of the toolbar
+               <button>s), so clicking into the contenteditable would
+               immediately un-focus the editor and leave the user
+               unable to type.  The text below uses a <span> rather
+               than a <label for=…> because Tiptap's contenteditable
+               isn't a labelable form control. -->
+          <div class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_signature_label()}</span>
             <!-- #248 — rich-text signature editor.  HTML output rides
                  through unchanged via `Account.signature`; Compose's
@@ -602,7 +610,7 @@
             <span class="block text-xs text-surface-500 mt-1">
               {m.account_setup_signature_hint()}
             </span>
-          </label>
+          </div>
         </div>
       {/if}
 
