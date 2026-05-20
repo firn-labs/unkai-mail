@@ -238,5 +238,8 @@
   "sidebar_unified_inbox_label": "Alle Posteingänge",
   "sidebar_unified_outbox_label": "Alle ausgehenden Nachrichten",
   "sidebar_unified_sent_label": "Alle gesendeten Nachrichten",
-  "sidebar_unified_drafts_label": "Alle Entwürfe"
+  "sidebar_unified_drafts_label": "Alle Entwürfe",
+  "sidebar_unified_archive_label": "Alle Archive",
+  "sidebar_unified_junk_label": "Alle Spam-Ordner",
+  "sidebar_unified_trash_label": "Alle Papierkörbe"
 }

@@ -17,18 +17,32 @@
  */
 export const UNIFIED_SENT_FOLDER = '__UnifiedSent__'
 export const UNIFIED_DRAFTS_FOLDER = '__UnifiedDrafts__'
+export const UNIFIED_JUNK_FOLDER = '__UnifiedJunk__'
+export const UNIFIED_ARCHIVE_FOLDER = '__UnifiedArchive__'
+export const UNIFIED_TRASH_FOLDER = '__UnifiedTrash__'
 
 /** Backend-side identifier for the special-use kind a unified folder
  *  is aggregating. Matches the strings the Rust `UnifiedSpecial::parse`
  *  helper accepts. */
-export type UnifiedSpecialKind = 'sent' | 'drafts'
+export type UnifiedSpecialKind = 'sent' | 'drafts' | 'junk' | 'archive' | 'trash'
 
 /** Map a sentinel folder name back to the special-use kind the
  *  backend expects, or `null` if the folder isn't a unified special
  *  sentinel. Callers branch on the non-null result to dispatch to
  *  `fetch_unified_special_envelopes` / `get_unified_special_cached_envelopes`. */
 export function unifiedSpecialKind(folder: string): UnifiedSpecialKind | null {
-  if (folder === UNIFIED_SENT_FOLDER) return 'sent'
-  if (folder === UNIFIED_DRAFTS_FOLDER) return 'drafts'
-  return null
+  switch (folder) {
+    case UNIFIED_SENT_FOLDER:
+      return 'sent'
+    case UNIFIED_DRAFTS_FOLDER:
+      return 'drafts'
+    case UNIFIED_JUNK_FOLDER:
+      return 'junk'
+    case UNIFIED_ARCHIVE_FOLDER:
+      return 'archive'
+    case UNIFIED_TRASH_FOLDER:
+      return 'trash'
+    default:
+      return null
+  }
 }
