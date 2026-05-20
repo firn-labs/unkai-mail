@@ -1994,6 +1994,21 @@
       })}
       <div class="space-y-4">
         {#each sortedRows as account, accountIdx (account.id)}
+          <!-- #314 — popout trigger rendered inside the inline
+               RichTextEditor's `actionsTrailing` slot.  Lives in
+               the loop body so it closes over the per-iteration
+               `account` and the right account gets popped out
+               when the user clicks. -->
+          {#snippet signaturePopoutAction()}
+            <button
+              type="button"
+              class="tb"
+              title={m.signature_popout_button_title()}
+              aria-label={m.signature_popout_button_aria()}
+              disabled={sigPopoutOpen[account.id]}
+              onclick={() => openSignaturePopout(account)}
+            ><Icon name="full-screen" size={18} /></button>
+          {/snippet}
           <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg">
             <div class="flex items-start justify-between">
               <div class="flex items-start gap-3">
@@ -2098,29 +2113,13 @@
             <div class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700">
               <div class="flex items-center justify-between mb-1">
                 <label class="text-sm font-medium" for="sig-{account.id}">Signature</label>
-                <div class="flex items-center gap-2">
-                  {#if sigSaveStatus[account.id] === 'saving'}
-                    <span class="text-xs text-surface-400">{m.signature_status_saving()}</span>
-                  {:else if sigSaveStatus[account.id] === 'saved'}
-                    <span class="text-xs text-success-500">{m.signature_status_saved()}</span>
-                  {:else if sigSaveStatus[account.id] === 'error'}
-                    <span class="text-xs text-error-500">{m.signature_status_error()}</span>
-                  {/if}
-                  <!-- #314 — pop the signature editor out into its
-                       own resizable window.  Disabled while a popout
-                       is already open for this account so we don't
-                       end up with two popouts for the same row. -->
-                  <button
-                    type="button"
-                    class="text-surface-500 hover:text-primary-500 disabled:opacity-40 disabled:hover:text-surface-500"
-                    title={m.signature_popout_button_title()}
-                    aria-label={m.signature_popout_button_aria()}
-                    disabled={sigPopoutOpen[account.id]}
-                    onclick={() => openSignaturePopout(account)}
-                  >
-                    <Icon name="full-screen" size={16} />
-                  </button>
-                </div>
+                {#if sigSaveStatus[account.id] === 'saving'}
+                  <span class="text-xs text-surface-400">{m.signature_status_saving()}</span>
+                {:else if sigSaveStatus[account.id] === 'saved'}
+                  <span class="text-xs text-success-500">{m.signature_status_saved()}</span>
+                {:else if sigSaveStatus[account.id] === 'error'}
+                  <span class="text-xs text-error-500">{m.signature_status_error()}</span>
+                {/if}
               </div>
               <!-- #248 — rich-text signature.  Same Tiptap editor
                    the Compose flow uses, just instantiated in a
@@ -2148,6 +2147,8 @@
                     content={account.signature ?? ''}
                     placeholder="Appended to new messages sent from this account."
                     onchange={(html) => onSignatureChange(account, html)}
+                    actionsTrailing={signaturePopoutAction}
+                    actionsTrailingCompact={true}
                   />
                 </div>
               {/if}
