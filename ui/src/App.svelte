@@ -24,7 +24,7 @@
   import MailList from './lib/MailList.svelte'
   import MailView from './lib/MailView.svelte'
   import AccountSetup from './lib/AccountSetup.svelte'
-  import AccountSettings from './lib/AccountSettings.svelte'
+  import AccountSettings, { type SettingsCategory } from './lib/AccountSettings.svelte'
   import LockScreen from './lib/LockScreen.svelte'
   import Compose, {
     type ComposeInitial,
@@ -130,6 +130,13 @@
       notes?: boolean
     } | null
   }
+  // Settings category persistence (#318) — lifted out of
+  // AccountSettings so a remount (e.g. user clicks a freshly-revealed
+  // Nextcloud integration icon and then comes back to Settings) keeps
+  // the user on the category they were last viewing instead of
+  // snapping back to General.
+  let settingsCategory = $state<SettingsCategory>('general')
+
   let ncCaps = $state({
     /** True when at least one NC account is connected — gates
      *  every integration icon at once.  Without this, a user
@@ -2623,6 +2630,7 @@
           onaddaccount={goToSetup}
           onappprefschanged={(p) => (appPrefs = p)}
           onnextcloudchanged={refreshNextcloudCapabilities}
+          bind:activeCategory={settingsCategory}
         />
       </div>
     {:else if currentView === 'contacts'}
