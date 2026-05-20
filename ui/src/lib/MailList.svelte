@@ -885,6 +885,30 @@
    *  folder to leak into the next on folder switch. */
   let lastFolderKey = $state('')
 
+  /** Shared stale-response predicate. A pending fetch's response is
+   *  still relevant iff every dimension that selects which list the
+   *  user is actually looking at still matches what the parent
+   *  currently has:
+   *
+   *    - **mode** — toggling unified <-> single-account always
+   *      replaces the visible list, so a stale response from the
+   *      other mode never belongs.
+   *    - **folder** — required in both modes; the unified-mode
+   *      sentinel folders (#322) each route to a distinct list, so
+   *      it's no longer safe to skip this check in unified mode
+   *      (it used to be when "All Inboxes" was the only unified
+   *      destination).
+   *    - **account** — only meaningful in single-account mode;
+   *      unified aggregates across accounts so the account dimension
+   *      doesn't pin the view.
+   */
+  function isStillCurrent(id: string, f: string, isUnified: boolean): boolean {
+    if (isUnified !== unified) return false
+    if (f !== folder) return false
+    if (!isUnified && id !== accountId) return false
+    return true
+  }
+
   // Re-fetch whenever the account, folder, unified flag, or
   // refreshToken changes.  Resets the pagination flags every
   // round and clears the rendered envelope list IF the
@@ -942,15 +966,10 @@
 
     // Stale-response guard helper — `id`, `f`, and `isUnified` close
     // over the call's arguments while `accountId`/`folder`/`unified`
-    // refer to whatever the parent currently has. Folder is checked
-    // in unified mode too (#322 follow-up): with the unified Inbox
-    // alone there was only one possible value for `folder`, but the
-    // global Sent / Drafts / Junk / … sentinels each use a distinct
-    // folder string, so a stale unified-INBOX response landing after
-    // a unified-Drafts switch would otherwise merge INBOX rows into
-    // the Drafts view.
-    const stillCurrent = () =>
-      isUnified === unified && f === folder && (isUnified || id === accountId)
+    // refer to whatever the parent currently has. Single function so
+    // every load path (initial fetch, older-page fetch) routes
+    // through the same predicate and can't drift apart.
+    const stillCurrent = () => isStillCurrent(id, f, isUnified)
 
     // Resolve which backend command pair to call. Three cases:
     //   - Sentinel folder for a global "All Sent" / "All Drafts" view
@@ -1083,11 +1102,14 @@
         })
       }
 
-      // Stale-response guard — same shape as `load`.
-      const stillCurrent =
-        unifiedAtCall === unified
-        && (unifiedAtCall || (idAtCall === accountId && folderAtCall === folder))
-      if (!stillCurrent) return
+      // Stale-response guard — shared predicate with `load()` so
+      // both load paths can't drift. Folder is checked in unified
+      // mode too (#322): once the unified Sent / Drafts / Junk /
+      // Archive / Trash sentinels arrived, a stale older-page
+      // response from one sentinel would otherwise leak rows into
+      // the next sentinel's view if the user paginated and then
+      // switched fast.
+      if (!isStillCurrent(idAtCall, folderAtCall, unifiedAtCall)) return
 
       if (older.length === 0) {
         olderExhausted = true
