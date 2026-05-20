@@ -942,9 +942,15 @@
 
     // Stale-response guard helper — `id`, `f`, and `isUnified` close
     // over the call's arguments while `accountId`/`folder`/`unified`
-    // refer to whatever the parent currently has.
+    // refer to whatever the parent currently has. Folder is checked
+    // in unified mode too (#322 follow-up): with the unified Inbox
+    // alone there was only one possible value for `folder`, but the
+    // global Sent / Drafts / Junk / … sentinels each use a distinct
+    // folder string, so a stale unified-INBOX response landing after
+    // a unified-Drafts switch would otherwise merge INBOX rows into
+    // the Drafts view.
     const stillCurrent = () =>
-      isUnified === unified && (isUnified || (id === accountId && f === folder))
+      isUnified === unified && f === folder && (isUnified || id === accountId)
 
     // Resolve which backend command pair to call. Three cases:
     //   - Sentinel folder for a global "All Sent" / "All Drafts" view
