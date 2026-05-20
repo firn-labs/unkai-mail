@@ -1749,9 +1749,34 @@
    *  the editor body — Tiptap's schema unwraps generic <div>
    *  wrappers and strips inline styles, so we keep this out of
    *  the editor and let Compose render it as its own read-only
-   *  preview block + splice it in at send time. */
-  function quoteBody(from: string, date: string, body: string | null): string {
-    const bodyHtml = htmlOrEscape(body ?? '')
+   *  preview block + splice it in at send time.
+   *
+   *  Prefers `body_html` when present so HTML content (forwarded
+   *  newsletters, rich signatures, table-based layouts) survives
+   *  into the quoted history.  Falls back to escaping `body_text`
+   *  for plain-text mail.  Sanitises via DOMPurify with the same
+   *  FORBID_TAGS list `MailView.processEmailHtml` uses, so foreign
+   *  scripts / iframes / style blocks from the original sender
+   *  don't ride along into the editor and outgoing message.  The
+   *  outer `quotedHistoryHtml` wrapper carries a `data-unkai-block`
+   *  attribute so Tiptap's `UnkaiBlock` extension treats the whole
+   *  chunk as an atom node and leaves the interior untouched. */
+  function quoteBody(
+    from: string,
+    date: string,
+    bodyText: string | null,
+    bodyHtmlSource?: string | null,
+  ): string {
+    const bodyHtml = bodyHtmlSource
+      ? DOMPurify.sanitize(bodyHtmlSource, {
+          FORBID_TAGS: [
+            'script', 'noscript', 'object', 'embed', 'applet',
+            'iframe', 'frame', 'frameset',
+            'form', 'input', 'textarea', 'select', 'button',
+            'base', 'meta', 'link', 'style',
+          ],
+        })
+      : htmlOrEscape(bodyText ?? '')
     const when = new Date(date).toLocaleString()
     return quotedHistoryHtml({
       fromHeader: from,
@@ -1819,7 +1844,7 @@
     return {
       to: mail.from,
       subject: replySubject(mail.subject),
-      body: quoteBody(mail.from, mail.date, mail.body_text),
+      body: quoteBody(mail.from, mail.date, mail.body_text, mail.body_html),
       repliedTo: {
         accountId: mail.account_id,
         folder: mail.folder,
@@ -1843,7 +1868,7 @@
       to: mail.from,
       cc: others.join(', '),
       subject: replySubject(mail.subject),
-      body: quoteBody(mail.from, mail.date, mail.body_text),
+      body: quoteBody(mail.from, mail.date, mail.body_text, mail.body_html),
       repliedTo: {
         accountId: mail.account_id,
         folder: mail.folder,
@@ -2256,7 +2281,12 @@
       // Body holds the styled quoted-history block; the meeting
       // card lands above it via `initialBodyHtml` in Compose,
       // which prepends `meetingInvite`-rendered HTML.
-      body: quoteBody(original.from, original.date, original.body_text),
+      body: quoteBody(
+        original.from,
+        original.date,
+        original.body_text,
+        original.body_html,
+      ),
       meetingInvite,
       // #255 — flag the original as `\Answered` once the meeting
       // reply lands.  The icon distinguishes "respond with
