@@ -3,6 +3,7 @@
 //! This crate provides async IMAP connectivity for fetching,
 //! syncing, and managing mailboxes.
 
+mod attachment_filename;
 mod client;
 mod mutf7;
 

@@ -14,6 +14,8 @@ use unkai_core::error::UnkaiError;
 use unkai_core::models::{Email, EmailAttachment, EmailEnvelope, Folder, TrustedCert};
 use unkai_core::tls;
 
+use crate::attachment_filename::decode_attachment_filename;
+
 use crate::mutf7;
 
 /// Parse a raw RFC 5322 message into our `Email` shape.  Same MIME
@@ -91,10 +93,7 @@ pub fn parse_eml_bytes(
         .enumerate()
         .map(|(idx, part)| {
             let part_id = idx as u32;
-            let filename = part
-                .attachment_name()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "attachment".to_string());
+            let filename = decode_attachment_filename(&parsed, part);
             let content_type = part
                 .content_type()
                 .map(|ct| {
@@ -831,10 +830,7 @@ impl ImapClient {
             .enumerate()
             .map(|(idx, part)| {
                 let part_id = idx as u32;
-                let filename = part
-                    .attachment_name()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "attachment".to_string());
+                let filename = decode_attachment_filename(&parsed, part);
                 // `content_type()` returns a structured ContentType;
                 // rebuild the `type/subtype` string for the UI icon lookup.
                 let content_type = part
@@ -1050,10 +1046,7 @@ impl ImapClient {
                 UnkaiError::Protocol(format!("Message UID {uid} has no part #{part_id}"))
             })?;
 
-        let filename = part
-            .attachment_name()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "attachment".to_string());
+        let filename = decode_attachment_filename(&parsed, part);
         let content_type = part
             .content_type()
             .map(|ct| {
