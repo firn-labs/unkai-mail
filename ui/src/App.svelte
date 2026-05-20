@@ -13,6 +13,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+  import DOMPurify from 'dompurify'
   import {
     isPermissionGranted,
     requestPermission,
@@ -46,7 +47,11 @@
   import { openEventEditorInStandaloneWindow } from './lib/standaloneEventEditorWindow'
   import { resizableSidebar } from './lib/resizableSidebar'
   import EventEditor, { type SavedEvent } from './lib/EventEditor.svelte'
-  import { quotedHistoryHtml, type MeetingInvite } from './lib/inviteHtml'
+  import {
+    forwardedMailHtml,
+    quotedHistoryHtml,
+    type MeetingInvite,
+  } from './lib/inviteHtml'
   import { parseMailtoUrl } from './lib/mailtoUrl'
   import SearchBar, {
     type SearchScope,
@@ -1781,6 +1786,7 @@
     cc: string[]
     subject: string
     body_text: string | null
+    body_html?: string | null
     date: string
     /** RFC 5322 threading anchors (#277).  Optional because
      *  older cached payloads predate the parser; absent values
@@ -1948,25 +1954,36 @@
   }
 
   function buildForwardInitial(mail: OpenMail): ComposeInitial {
-    // Forwards use the same blockquote treatment as replies so the
-    // original message sits inside a visually distinct container.
-    // Unlike reply, we prefix with a small header block that states
-    // the original From/Date/Subject so the recipient can see the
-    // chain even if they collapse the quote.
-    const esc = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const when = new Date(mail.date).toLocaleString()
-    const header =
-      `<p><strong>---------- Forwarded message ----------</strong></p>` +
-      `<p>From: ${esc(mail.from)}<br>` +
-      `Date: ${esc(when)}<br>` +
-      `Subject: ${esc(mail.subject)}</p>`
-    const body = htmlOrEscape(mail.body_text ?? '')
+    // Forwards preserve the original message verbatim inside an
+    // UnkaiBlock atom (#319) so the editor doesn't reflow the
+    // sender's table layout, strip their inline styles, or
+    // duplicate <img> nodes while reconciling the HTML against
+    // Tiptap's block schema.  The header bar marks the chunk as a
+    // forward; the body below renders with the original CSS
+    // intact.  Sanitise via DOMPurify with the same posture
+    // MailView uses so scripts / iframes / style blocks from the
+    // sender don't ride along into our editor (and from there
+    // into the outgoing message).
+    const bodyHtml = mail.body_html
+      ? DOMPurify.sanitize(mail.body_html, {
+          FORBID_TAGS: [
+            'script', 'noscript', 'object', 'embed', 'applet',
+            'iframe', 'frame', 'frameset',
+            'form', 'input', 'textarea', 'select', 'button',
+            'base', 'meta', 'link', 'style',
+          ],
+        })
+      : htmlOrEscape(mail.body_text ?? '')
+    const block = forwardedMailHtml({
+      fromHeader: mail.from,
+      whenText: new Date(mail.date).toLocaleString(),
+      subjectText: mail.subject,
+      toHeader: mail.to.join(', '),
+      bodyHtml,
+    })
     return {
       subject: forwardSubject(mail.subject),
-      body:
-        `<p></p><p></p>` +
-        `<blockquote>${header}${body}</blockquote>`,
+      body: `<p></p><p></p>${block}`,
     }
   }
 
