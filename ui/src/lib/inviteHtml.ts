@@ -342,3 +342,62 @@ export function quotedHistoryHtml(args: {
 </div>
 `.trim()
 }
+
+// ── Forwarded-mail wrapper (#319) ───────────────────────────────
+
+/** Wrap a forwarded message's body so the original formatting
+ *  is preserved verbatim and the header matches the long-standing
+ *  forwarded-mail convention every receiving mail client knows.
+ *
+ *  The header is the de-facto-standard plain-text delimiter
+ *  (`---------- Forwarded message ----------`) followed by
+ *  bold-labelled `From:` / `Date:` / `Subject:` / `To:` lines.
+ *  This is the same shape virtually every other mail client emits,
+ *  so the recipient's client renders the forward the way they
+ *  expect rather than seeing a bespoke chrome from us.
+ *
+ *  The `data-unkai-block` wrapper carries no visual styling — it
+ *  exists purely so the editor's `UnkaiBlock` extension captures
+ *  the whole chunk as an atom node. Without that, Tiptap's
+ *  StarterKit schema unwraps the wrapper, strips the original
+ *  message's inline styles, and can duplicate `<img>` nodes while
+ *  reconciling complex `<table>` / `<picture>` markup against its
+ *  block schema (the original visual symptom on #319). Inside the
+ *  atom Tiptap doesn't parse the interior, so the email's table
+ *  layout, inline styles, and `<img>` elements survive untouched.
+ *  The chunk is non-editable; users add their note above it and
+ *  remove it as a unit with one Backspace if they don't want it.
+ *
+ *  `toHeader` is optional because the field is occasionally
+ *  missing on cached payloads — when absent we just omit the line
+ *  rather than print an empty `To:`. */
+export function forwardedMailHtml(args: {
+  fromHeader: string
+  whenText: string
+  subjectText: string
+  toHeader?: string
+  bodyHtml: string
+}): string {
+  const { fromHeader, whenText, subjectText, toHeader, bodyHtml } = args
+  const esc = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+  const lines = [
+    `<div><b>From:</b> ${esc(fromHeader)}</div>`,
+    `<div><b>Date:</b> ${esc(whenText)}</div>`,
+    `<div><b>Subject:</b> ${esc(subjectText)}</div>`,
+  ]
+  if (toHeader && toHeader.trim()) {
+    lines.push(`<div><b>To:</b> ${esc(toHeader)}</div>`)
+  }
+  return `
+<div data-unkai-block="forwarded-mail">
+  <p>---------- Forwarded message ----------</p>
+  ${lines.join('\n  ')}
+  <p></p>
+  ${bodyHtml}
+</div>
+`.trim()
+}
