@@ -954,6 +954,33 @@
           <span class="badge preset-filled-primary-500 text-xs">{unifiedUnread}</span>
         {/if}
       </button>
+      {#if outboxCount > 0}
+        <!-- Global Outbox (#322 follow-up): only rendered when at
+             least one queued message exists across all accounts —
+             matches the per-account synthetic Outbox's "hide when
+             empty" behaviour, so a healthy install with nothing
+             queued sees the same three-button list as before.
+             Routing reuses the existing OUTBOX_FOLDER channel: when
+             selected with `unifiedMode = true`, App.svelte mounts
+             OutboxList with `unified={true}`, which already calls
+             `list_all_outbox` to merge every account's queue. -->
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+            {selectedFolder === OUTBOX_FOLDER
+              ? 'bg-primary-500/10 text-primary-500 font-medium'
+              : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+          onclick={() => onselectfolder(OUTBOX_FOLDER)}
+        >
+          <span
+            class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+            aria-hidden="true"
+          >
+            <Icon name="sent" size={16} />
+          </span>
+          <span class="flex-1 text-left truncate">{m.sidebar_unified_outbox_label()}</span>
+          <span class="badge preset-filled-primary-500 text-xs">{outboxCount}</span>
+        </button>
+      {/if}
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
           {selectedFolder === UNIFIED_SENT_FOLDER
