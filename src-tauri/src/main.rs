@@ -6150,16 +6150,19 @@ async fn fetch_unified_envelopes(
 }
 
 /// Which special-use folder the global "All …" view is aggregating.
-/// IMAP folder names for Sent / Drafts differ per account (English,
+/// IMAP folder names for these slots differ per account (English,
 /// German, French, Gmail-prefixed, …) so the unified view can't just
 /// query a single folder name the way the unified Inbox does — it has
-/// to resolve each account's actual Sent/Drafts via `pick_sent_folder`
-/// / `pick_drafts_folder` and aggregate the resulting per-account
-/// (account, folder) pairs.
+/// to resolve each account's actual folder via the matching
+/// `pick_*_folder` helper and aggregate the resulting per-account
+/// `(account, folder)` pairs.
 #[derive(Debug, Clone, Copy)]
 enum UnifiedSpecial {
     Sent,
     Drafts,
+    Junk,
+    Archive,
+    Trash,
 }
 
 impl UnifiedSpecial {
@@ -6167,8 +6170,12 @@ impl UnifiedSpecial {
         match s {
             "sent" => Ok(Self::Sent),
             "drafts" => Ok(Self::Drafts),
+            "junk" => Ok(Self::Junk),
+            "archive" => Ok(Self::Archive),
+            "trash" => Ok(Self::Trash),
             other => Err(UnkaiError::Other(format!(
-                "unknown unified special folder '{other}' (expected 'sent' or 'drafts')"
+                "unknown unified special folder '{other}' \
+                 (expected 'sent', 'drafts', 'junk', 'archive', or 'trash')"
             ))),
         }
     }
@@ -6177,6 +6184,9 @@ impl UnifiedSpecial {
         match self {
             Self::Sent => pick_sent_folder(account_id, cache),
             Self::Drafts => pick_drafts_folder(account_id, cache),
+            Self::Junk => pick_junk_folder(account_id, cache),
+            Self::Archive => pick_archive_folder(account_id, cache),
+            Self::Trash => pick_trash_folder(account_id, cache),
         }
     }
 }
@@ -7294,6 +7304,39 @@ async fn archive_messages(
     }
 
     Ok(uids)
+}
+
+/// Locate the account's Junk / Spam folder via the IMAP `\Junk`
+/// special-use attribute or a name-based fallback. Same strategy as
+/// `pick_sent_folder` / `pick_trash_folder`.
+fn pick_junk_folder(account_id: &str, cache: &Cache) -> Option<String> {
+    let folders = cache.get_folders(account_id).ok()?;
+
+    if let Some(by_attr) = folders.iter().find(|f| {
+        f.attributes
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("junk") || a.eq_ignore_ascii_case("\\junk"))
+    }) {
+        return Some(by_attr.name.clone());
+    }
+
+    const NAME_HINTS: &[&str] = &[
+        "junk",
+        "spam",
+        "bulk mail",
+        "junk e-mail",
+        "junk email",
+        "[gmail]/spam",
+        "courrier indésirable",
+        "indésirables",
+    ];
+    folders
+        .iter()
+        .find(|f| {
+            let lower = f.name.to_lowercase();
+            NAME_HINTS.iter().any(|h| lower.contains(h))
+        })
+        .map(|f| f.name.clone())
 }
 
 /// Locate the account's Archive folder via the IMAP `\Archive`

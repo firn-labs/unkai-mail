@@ -24,7 +24,13 @@
   import Icon, { type IconName } from './Icon.svelte'
   import { resizableSidebar } from './resizableSidebar'
   import { m } from '../paraglide/messages'
-  import { UNIFIED_SENT_FOLDER, UNIFIED_DRAFTS_FOLDER } from './unifiedFolders'
+  import {
+    UNIFIED_SENT_FOLDER,
+    UNIFIED_DRAFTS_FOLDER,
+    UNIFIED_JUNK_FOLDER,
+    UNIFIED_ARCHIVE_FOLDER,
+    UNIFIED_TRASH_FOLDER,
+  } from './unifiedFolders'
 
   interface Folder {
     name: string
@@ -1010,6 +1016,51 @@
           <Icon name="drafts" size={16} />
         </span>
         <span class="flex-1 text-left truncate">{m.sidebar_unified_drafts_label()}</span>
+      </button>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_ARCHIVE_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_ARCHIVE_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="archive" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_archive_label()}</span>
+      </button>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_JUNK_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_JUNK_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="spam" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_junk_label()}</span>
+      </button>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_TRASH_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_TRASH_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="trash" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_trash_label()}</span>
       </button>
     {:else if loading}
       <p class="px-3 py-2 text-xs text-surface-500">Loading folders…</p>
