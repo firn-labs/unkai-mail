@@ -65,13 +65,22 @@
      *  from Nextcloud" flow: the parent opens the file picker,
      *  downloads bytes, converts to a data URL, and calls this. */
     insertImage: (src: string) => void
-    /** Insert HTML at the position just before the first
-     *  `unkaiBlock` atom node carrying the given `kind` attr.
-     *  Used by Compose's mid-compose Talk-room creation so the
-     *  new invite card lands *above* the quoted-history block on
-     *  a reply. Falls back to appending at the end when no
-     *  matching block exists (fresh compose). */
-    insertBeforeUnkaiBlock: (html: string, kind: string) => void
+    /** Insert HTML at the **top** of the user's sign-off region.
+     *
+     *  The signoff region is everything between the lead-spacer
+     *  typing area and the signature (a `<p>` whose text starts
+     *  with the RFC 3676 `-- ` separator).  New blocks stack
+     *  *above* any existing `unkaiBlock` cards already sitting in
+     *  that region, so a freshly inserted share-link paragraph
+     *  isn't buried beneath a previously inserted meeting card
+     *  (#320 follow-up).  Falls back to just-above-signature when
+     *  the region is empty, then to just-above the first
+     *  `unkaiBlock` overall (signature absent → quoted-history is
+     *  the only landmark), then to appending at the end (fresh
+     *  compose).  Used by Compose's mid-compose meeting / Talk /
+     *  Nextcloud-share block injection — all three want the same
+     *  landing zone. */
+    insertAboveSignature: (html: string) => void
   }
 
   interface Props {
@@ -985,24 +994,52 @@
           // the document and the image lands in the wrong place.
           ed.chain().focus().setImage({ src }).run()
         },
-        insertBeforeUnkaiBlock: (html: string, kind: string) => {
-          let pos: number | null = null
+        insertAboveSignature: (html: string) => {
+          // Single doc walk collects the two landmark positions
+          // we need: the topmost `unkaiBlock` (any kind —
+          // meeting / Talk / share-card or quoted-history) and
+          // the signature paragraph.  RFC 3676 separator is
+          // exactly `-- ` (dash-dash-space) on its own line;
+          // Tiptap may strip the trailing space on parse so we
+          // accept both `-- ` and a bare `--` paragraph as the
+          // signature marker.
+          let firstBlockPos: number | null = null
+          let sigPos: number | null = null
           ed.state.doc.descendants((node, p) => {
-            if (pos !== null) return false
-            if (
-              node.type.name === 'unkaiBlock'
-              && (node.attrs as { kind?: string }).kind === kind
-            ) {
-              pos = p
-              return false
+            if (firstBlockPos === null && node.type.name === 'unkaiBlock') {
+              firstBlockPos = p
+            }
+            if (sigPos === null && node.type.name === 'paragraph') {
+              const text = node.textContent
+              if (text === '--' || text.startsWith('-- ')) {
+                sigPos = p
+              }
             }
             return true
           })
-          if (pos !== null) {
-            ed.chain().insertContentAt(pos, html).run()
+
+          // Land at the top of the signoff region so new blocks
+          // stack ABOVE previously inserted cards (a tiny share
+          // link otherwise disappears beneath a big meeting card
+          // — #320).  Cases:
+          //
+          //   - unkaiBlock sitting above sig (or sig absent) →
+          //     insert at that block's position so the new
+          //     content reads first.
+          //   - sig present, no block above it → insert at sig
+          //     position (first card in the signoff region).
+          //   - neither found → append at end (fresh compose
+          //     with no signature and no cards yet — the block
+          //     lands below the lead-spacer typing area).
+          let pos: number
+          if (firstBlockPos !== null && (sigPos === null || firstBlockPos < sigPos)) {
+            pos = firstBlockPos
+          } else if (sigPos !== null) {
+            pos = sigPos
           } else {
-            ed.chain().insertContentAt(ed.state.doc.content.size, html).run()
+            pos = ed.state.doc.content.size
           }
+          ed.chain().insertContentAt(pos, html).run()
         },
       })
     }
