@@ -31,7 +31,8 @@
     type ExtraTab,
   } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
-  import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
+  import NextcloudFilePicker from './NextcloudFilePicker.svelte'
+  import { type ShareLink } from './NextcloudShareDialog.svelte'
   import Icon from './Icon.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import AttachmentThumb, { prewarm as prewarmAttachmentThumb } from './AttachmentThumb.svelte'
