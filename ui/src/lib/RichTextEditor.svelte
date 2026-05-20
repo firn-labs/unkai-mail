@@ -118,6 +118,13 @@
      *  divider, which is what every future embedder without send-
      *  style actions gets by default. */
     actionsTrailing?: import('svelte').Snippet
+    /** When true the trailing-actions block is rendered without
+     *  the heavier vertical divider, so the caller's buttons sit
+     *  flush against undo / redo with only the `gap-1` between
+     *  them — used by surfaces like the signature editor (#314)
+     *  where the trailing action is a single small icon, not a
+     *  weight-bearing Save / Send group like in Compose. */
+    actionsTrailingCompact?: boolean
     /** Extra tabs the embedder wants to add to the toolbar (#103
      *  follow-up).  Compose contributes a single "Attach" tab so
      *  Attach / NC Files / Talk / Event live in the same ribbon as
@@ -193,6 +200,7 @@
     oncontactpicked,
     attachmentsForRef = [],
     actionsTrailing,
+    actionsTrailingCompact = false,
     extraTabs = [],
   }: Props = $props()
 
@@ -1438,7 +1446,7 @@
      afterthought next to the wider tabs.  Same idiom as before
      otherwise; the ribbon's panel buttons get `.rt-btn` styling
      instead. */
-  .tb {
+  :global(.tb) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1453,16 +1461,20 @@
     background: transparent;
     color: inherit;
   }
-  .tb:hover {
+  :global(.tb:hover:not(:disabled)) {
     background: var(--color-surface-200);
   }
-  :global(.dark) .tb:hover {
+  :global(.dark .tb:hover:not(:disabled)) {
     background: var(--color-surface-700);
   }
-  .tb.is-active {
+  :global(.tb:disabled) {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  :global(.tb.is-active) {
     background: var(--color-surface-300);
   }
-  :global(.dark) .tb.is-active {
+  :global(.dark .tb.is-active) {
     background: var(--color-surface-600);
   }
 
@@ -1740,7 +1752,9 @@
         <button class="tb" title="Undo (Ctrl+Z)" aria-label="Undo" onclick={() => doUndo()}><Icon name="undo" size={18} /></button>
         <button class="tb" title="Redo (Ctrl+Y)" aria-label="Redo" onclick={() => doRedo()}><Icon name="redo" size={18} /></button>
         {#if actionsTrailing}
-          <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
+          {#if !actionsTrailingCompact}
+            <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
+          {/if}
           {@render actionsTrailing()}
         {/if}
       </div>
