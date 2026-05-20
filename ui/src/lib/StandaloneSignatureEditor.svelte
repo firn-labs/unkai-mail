@@ -131,24 +131,44 @@
     }
   }
 
-  /** One-shot guard so the close path runs exactly once.  Without
-   *  it the `onCloseRequested` handler — which `preventDefault()`s
-   *  to let us flush — would re-fire on our own `close()` call and
-   *  trap the window in an infinite preventDefault loop, leaving
-   *  both the Done button and the OS close button visibly inert. */
+  /** One-shot guard so the close path runs exactly once.  The
+   *  `onCloseRequested` handler `preventDefault()`s to let us flush
+   *  before the window dies; once we kick off `closeWindow()` from
+   *  Done OR from the handler itself, this flag short-circuits any
+   *  re-entrant fire of the handler. */
   let closing = false
+  /** Unsubscribe handle for the close-requested listener.  Hoisted
+   *  out of `$effect` so `closeWindow()` can tear the listener down
+   *  *before* it calls `close()` — belt-and-braces against a Tauri
+   *  release where the synchronous `closing` early-return wouldn't
+   *  be enough to break the preventDefault loop. */
+  let unlistenClose: (() => void) | null = null
 
   async function closeWindow() {
     if (closing) return
     closing = true
     await flushPending()
     await announceClosing()
-    void getCurrentWindow().close()
+    // Drop our close-requested listener before issuing the
+    // programmatic close so there is no possible re-entry.  Without
+    // this, Tauri firing the handler one more time on our own
+    // `close()` would leave the window in a "close requested but
+    // not actually closing" state if anything in the handler chain
+    // mistakenly called preventDefault again.
+    unlistenClose?.()
+    unlistenClose = null
+    try {
+      await getCurrentWindow().close()
+    } catch (e) {
+      // Surface any IPC / permission failure so it's debuggable;
+      // a silent rejection here would look exactly like "Done does
+      // nothing", which is what the bug reporter saw.
+      console.error('signature popout close() failed', e)
+    }
   }
 
   $effect(() => {
     let unlistenSystem: (() => void) | null = null
-    let unlistenClose: (() => void) | null = null
 
     void (async () => {
       // Theme bootstrap so the popped-out window matches the user's
