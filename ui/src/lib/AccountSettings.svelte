@@ -122,6 +122,20 @@
     added_at: number
   }
 
+  // ── Category navigation (#131) ──────────────────────────────
+  // Settings used to be one long scroll; #131 split it into the
+  // categories users actually look for.  The nav lives in a
+  // left column and `activeCategory` gates which section block
+  // renders so each panel stays focused.
+  export type SettingsCategory =
+    | 'general'
+    | 'design'
+    | 'mail'
+    | 'calendar'
+    | 'nextcloud'
+    | 'security'
+    | 'backup'
+
   // ── Props ───────────────────────────────────────────────────
   interface Props {
     onclose: () => void         // Go back to the inbox view
@@ -136,23 +150,20 @@
         integration icons immediately, without waiting for the
         Settings panel to close (#318). */
     onnextcloudchanged?: () => void
+    /** Which settings category the panel is currently showing.
+        Lifted to the parent (#318) so that a remount of Settings
+        — e.g. the user clicks a freshly-revealed Nextcloud
+        integration icon, looks at it, then comes back to Settings
+        — preserves the category instead of snapping to General. */
+    activeCategory?: SettingsCategory
   }
-  let { onclose, onaddaccount, onappprefschanged, onnextcloudchanged }: Props = $props()
-
-  // ── Category navigation (#131) ──────────────────────────────
-  // Settings used to be one long scroll; #131 split it into the
-  // categories users actually look for.  The nav lives in a
-  // left column and `activeCategory` gates which section block
-  // renders so each panel stays focused.
-  type SettingsCategory =
-    | 'general'
-    | 'design'
-    | 'mail'
-    | 'calendar'
-    | 'nextcloud'
-    | 'security'
-    | 'backup'
-  let activeCategory = $state<SettingsCategory>('general')
+  let {
+    onclose,
+    onaddaccount,
+    onappprefschanged,
+    onnextcloudchanged,
+    activeCategory = $bindable('general'),
+  }: Props = $props()
   interface CategoryEntry {
     id: SettingsCategory
     label: string
