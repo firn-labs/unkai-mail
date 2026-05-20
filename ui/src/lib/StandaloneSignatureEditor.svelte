@@ -131,7 +131,16 @@
     }
   }
 
+  /** One-shot guard so the close path runs exactly once.  Without
+   *  it the `onCloseRequested` handler — which `preventDefault()`s
+   *  to let us flush — would re-fire on our own `close()` call and
+   *  trap the window in an infinite preventDefault loop, leaving
+   *  both the Done button and the OS close button visibly inert. */
+  let closing = false
+
   async function closeWindow() {
+    if (closing) return
+    closing = true
     await flushPending()
     await announceClosing()
     void getCurrentWindow().close()
@@ -191,12 +200,16 @@
       // before the window goes away.  Without this the main window
       // would stay locked because it never received
       // `signature-popout-closed`.
+      //
+      // The `closing` guard is critical: `closeWindow()` eventually
+      // calls `getCurrentWindow().close()` itself, which fires this
+      // same handler.  Without the early-out we'd `preventDefault()`
+      // forever and the window would never close.
       try {
         unlistenClose = await getCurrentWindow().onCloseRequested(async (event) => {
+          if (closing) return
           event.preventDefault()
-          await flushPending()
-          await announceClosing()
-          void getCurrentWindow().close()
+          await closeWindow()
         })
       } catch (e) {
         console.warn('onCloseRequested registration failed', e)
