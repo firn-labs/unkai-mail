@@ -91,6 +91,10 @@
   "compose_attachment_warning_body": "Add a file before sending, or dismiss this warning if it's a false alarm.",
   "compose_attachment_warning_dismiss": "Dismiss",
 
+  "nc_share_set_expiration_label": "Set expiration date",
+  "nc_share_expiration_aria": "Pick expiration date for the share link",
+  "nc_share_expiration_hint": "Recipients can't open the link after this date.",
+
   "compose_button_minimize_aria_label": "Minimize",
   "compose_button_minimize_title": "Minimize draft to bar",
   "compose_minimized_bar_aria_label": "Minimized drafts",
