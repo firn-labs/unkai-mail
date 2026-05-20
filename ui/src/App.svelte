@@ -1973,13 +1973,7 @@
             'base', 'meta', 'link', 'style',
           ],
         })
-      : // Plain-text forwards have no inline margins of their own,
-        // so the empty <p> between the header lines and the body
-        // collapses to almost nothing and the two clumps read as
-        // one paragraph.  Wrap in a top-margined div so the body
-        // sits visibly below the header.  HTML mails carry their
-        // own block spacing and don't need this.
-        `<div style="margin-top:16px;">${htmlOrEscape(mail.body_text ?? '')}</div>`
+      : htmlOrEscape(mail.body_text ?? '')
     const block = forwardedMailHtml({
       fromHeader: mail.from,
       whenText: new Date(mail.date).toLocaleString(),
