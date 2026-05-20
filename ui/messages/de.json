@@ -241,5 +241,14 @@
   "sidebar_unified_drafts_label": "Alle Entwürfe",
   "sidebar_unified_archive_label": "Alle Archive",
   "sidebar_unified_junk_label": "Alle Spam-Ordner",
-  "sidebar_unified_trash_label": "Alle Papierkörbe"
+  "sidebar_unified_trash_label": "Alle Papierkörbe",
+
+  "maillist_empty_in_folder": "Keine Nachrichten in {folder}.",
+
+  "folder_name_inbox": "Posteingang",
+  "folder_name_sent": "Gesendet",
+  "folder_name_drafts": "Entwürfe",
+  "folder_name_junk": "Spam",
+  "folder_name_archive": "Archiv",
+  "folder_name_trash": "Papierkorb"
 }
