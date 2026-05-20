@@ -18,8 +18,10 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import DateField from './DateField.svelte'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
+  import { m } from '../paraglide/messages'
   import NextcloudFileBrowser, {
     type FileEntry,
     type NextcloudAccount,
@@ -154,7 +156,30 @@
      *  "File drop" only make sense for folder shares (file shares
      *  can't have new files dropped into them by definition). */
     hasFolders: boolean
+    /** Whether an expiration date should be sent to the OCS endpoint
+     *  (#324).  Off by default — matches Nextcloud's own share UI
+     *  where a separate "Set expiration date" toggle gates the
+     *  picker.  Lets the user share without an expiry in a single
+     *  click. */
+    setExpiration: boolean
+    /** ISO `YYYY-MM-DD` from the DateField.  Empty when `setExpiration`
+     *  is off; only sent to the backend when the toggle is on AND
+     *  the field is non-empty (commitShare guards both). */
+    expireDate: string
   } | null>(null)
+
+  /** Default expiration suggestion when the user first ticks the
+   *  "Set expiration date" toggle — 7 days out, in the same
+   *  `YYYY-MM-DD` shape DateField round-trips through.  Picked over
+   *  "today" so the recipient has a usable window without further
+   *  clicks; the user can still drill to any date via the calendar
+   *  popover. */
+  function defaultExpiry(): string {
+    const d = new Date()
+    d.setDate(d.getDate() + 7)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
 
   /** Common public-link permission combinations Nextcloud's own
    *  share UI exposes.  The bitfield (1 read, 2 update, 4 create,
@@ -285,6 +310,8 @@
       password: '',
       permissions: 1, // View-only by default — matches Nextcloud's own picker.
       hasFolders,
+      setExpiration: false,
+      expireDate: '',
     }
     error = ''
   }
@@ -295,11 +322,17 @@
       direct flow. */
   async function commitShare() {
     if (!sharePrompt || !onlinks) return
-    const { paths, password, permissions } = sharePrompt
+    const { paths, password, permissions, setExpiration, expireDate } =
+      sharePrompt
     sharing = true
     error = ''
     try {
       const pw = password.trim() ? password : null
+      // Only send `expireDate` when the user actually opted into it.
+      // An empty `expireDate=` posted to OCS is parsed as a bad date
+      // and rejects the whole share, so the toggle-off path must
+      // omit the field entirely.
+      const exp = setExpiration && expireDate ? expireDate : null
       const results = await Promise.all(
         paths.map(async (p) => {
           const r = await invoke<{ id: string; url: string }>(
@@ -310,6 +343,7 @@
               password: pw,
               label: shareLabel?.trim() || null,
               permissions,
+              expireDate: exp,
             },
           )
           return {
@@ -553,6 +587,40 @@
       <p class="text-[11px] text-surface-500 mb-3">
         {permHint(sharePrompt.permissions)}
       </p>
+
+      <!-- Expiration date (#324).  Nextcloud's OCS endpoint takes an
+           optional `expireDate=YYYY-MM-DD`; after that date the
+           public link returns a "Link expired" page.  We gate the
+           DateField behind a checkbox so the no-expiry default
+           stays one click away, matching Nextcloud's own UI. -->
+      <label class="flex items-center gap-2 mb-2 text-xs text-surface-700 dark:text-surface-300 cursor-pointer">
+        <input
+          type="checkbox"
+          class="checkbox"
+          bind:checked={sharePrompt.setExpiration}
+          disabled={sharing}
+          onchange={() => {
+            // Seed a sensible default the first time the user opts in,
+            // otherwise reopening the toggle would land on an empty
+            // field that DateField renders as "Pick a date".
+            if (sharePrompt && sharePrompt.setExpiration && !sharePrompt.expireDate) {
+              sharePrompt.expireDate = defaultExpiry()
+            }
+          }}
+        />
+        <span>{m.nc_share_set_expiration_label()}</span>
+      </label>
+      {#if sharePrompt.setExpiration}
+        <div class="mb-3">
+          <DateField
+            bind:value={sharePrompt.expireDate}
+            ariaLabel={m.nc_share_expiration_aria()}
+          />
+          <p class="text-[11px] text-surface-500 mt-1">
+            {m.nc_share_expiration_hint()}
+          </p>
+        </div>
+      {/if}
 
       {#if error}
         <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>

@@ -92,6 +92,10 @@
   "compose_attachment_warning_body": "Fügen Sie vor dem Senden eine Datei hinzu oder schließen Sie diese Warnung, falls es ein Fehlalarm ist.",
   "compose_attachment_warning_dismiss": "Schließen",
 
+  "nc_share_set_expiration_label": "Ablaufdatum festlegen",
+  "nc_share_expiration_aria": "Ablaufdatum für den Freigabelink auswählen",
+  "nc_share_expiration_hint": "Empfänger können den Link nach diesem Datum nicht mehr öffnen.",
+
   "compose_button_minimize_aria_label": "Minimieren",
   "compose_button_minimize_title": "Entwurf in die Leiste minimieren",
   "compose_minimized_bar_aria_label": "Minimierte Entwürfe",

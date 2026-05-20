@@ -797,6 +797,10 @@ struct NextcloudShareResult {
 /// - `permissions`: Nextcloud's permission bitmask
 ///   (1=read, 2=update, 4=create, 8=delete, 16=share).  The Compose
 ///   share modal exposes the common combinations as a dropdown.
+/// - `expire_date`: optional `YYYY-MM-DD` after which Nextcloud
+///   refuses to serve the link (#324).  Omitting / `None` leaves the
+///   share open until manually revoked (subject to any server-side
+///   default-expiration policy the admin has configured).
 #[tauri::command]
 async fn create_nextcloud_share(
     nc_id: String,
@@ -804,6 +808,7 @@ async fn create_nextcloud_share(
     password: Option<String>,
     label: Option<String>,
     permissions: Option<u8>,
+    expire_date: Option<String>,
 ) -> Result<NextcloudShareResult, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
@@ -815,6 +820,7 @@ async fn create_nextcloud_share(
         password.as_deref(),
         label.as_deref(),
         permissions.unwrap_or(unkai_nextcloud::shares::PERM_READ_ONLY),
+        expire_date.as_deref(),
         &account.trusted_certs,
     )
     .await?;
