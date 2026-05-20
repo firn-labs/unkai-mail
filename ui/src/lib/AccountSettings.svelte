@@ -8,6 +8,7 @@
    */
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import { listen } from '@tauri-apps/api/event'
   import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
@@ -15,6 +16,11 @@
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
+  import {
+    openSignatureEditorInStandaloneWindow,
+    SIGNATURE_POPOUT_CLOSED_EVENT,
+    SIGNATURE_UPDATED_EVENT,
+  } from './standaloneSignatureEditorWindow'
   import Toggle from './Toggle.svelte'
   import {
     STOCK_THEMES,
@@ -894,6 +900,62 @@
       }, 400),
     )
   }
+
+  // #314 — popped-out signature editor.  Tracks which accounts
+  // currently have a popout window open so we can lock the inline
+  // editor (the user otherwise sees two live editors fighting over
+  // the same `account.signature`).  Keyed by account id; the popout
+  // emits `signature-popout-closed` on close, which clears the flag
+  // and re-enables the inline editor.
+  const sigPopoutOpen = $state<Record<string, boolean>>({})
+
+  function openSignaturePopout(account: Account) {
+    if (sigPopoutOpen[account.id]) return
+    sigPopoutOpen[account.id] = true
+    void openSignatureEditorInStandaloneWindow({
+      accountId: account.id,
+      accountLabel:
+        account.display_name?.trim() || account.email || account.id,
+      initialHtml: account.signature ?? '',
+    }).catch((e) => {
+      console.warn('openSignatureEditorInStandaloneWindow failed', e)
+      // Roll back the lock so the user can retry — keeping it set
+      // would leave the inline editor permanently disabled for a
+      // window that never actually opened.
+      sigPopoutOpen[account.id] = false
+    })
+  }
+
+  // Listen for save / close events emitted by the popped-out window.
+  // Save events keep the inline `account.signature` in sync (so when
+  // the user closes the popout the locked editor flashes the final
+  // content rather than the stale launch-time snapshot); close events
+  // re-enable the inline editor.
+  $effect(() => {
+    const unlisten: Array<Promise<() => void>> = []
+
+    unlisten.push(
+      listen<{ accountId: string; html: string }>(
+        SIGNATURE_UPDATED_EVENT,
+        (event) => {
+          const acc = accounts.find((a) => a.id === event.payload.accountId)
+          if (!acc) return
+          acc.signature = event.payload.html.trim() || null
+        },
+      ),
+    )
+    unlisten.push(
+      listen<{ accountId: string }>(SIGNATURE_POPOUT_CLOSED_EVENT, (event) => {
+        sigPopoutOpen[event.payload.accountId] = false
+      }),
+    )
+
+    return () => {
+      for (const p of unlisten) {
+        void p.then((fn) => fn()).catch(() => {})
+      }
+    }
+  })
 
   // ── Custom folder icons (Issue #63) ─────────────────────────
   // Each account carries a list of `{keyword, icon}` rules. The
@@ -2036,13 +2098,29 @@
             <div class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700">
               <div class="flex items-center justify-between mb-1">
                 <label class="text-sm font-medium" for="sig-{account.id}">Signature</label>
-                {#if sigSaveStatus[account.id] === 'saving'}
-                  <span class="text-xs text-surface-400">Saving…</span>
-                {:else if sigSaveStatus[account.id] === 'saved'}
-                  <span class="text-xs text-success-500">Saved</span>
-                {:else if sigSaveStatus[account.id] === 'error'}
-                  <span class="text-xs text-error-500">Save failed</span>
-                {/if}
+                <div class="flex items-center gap-2">
+                  {#if sigSaveStatus[account.id] === 'saving'}
+                    <span class="text-xs text-surface-400">{m.signature_status_saving()}</span>
+                  {:else if sigSaveStatus[account.id] === 'saved'}
+                    <span class="text-xs text-success-500">{m.signature_status_saved()}</span>
+                  {:else if sigSaveStatus[account.id] === 'error'}
+                    <span class="text-xs text-error-500">{m.signature_status_error()}</span>
+                  {/if}
+                  <!-- #314 — pop the signature editor out into its
+                       own resizable window.  Disabled while a popout
+                       is already open for this account so we don't
+                       end up with two popouts for the same row. -->
+                  <button
+                    type="button"
+                    class="text-surface-500 hover:text-primary-500 disabled:opacity-40 disabled:hover:text-surface-500"
+                    title={m.signature_popout_button_title()}
+                    aria-label={m.signature_popout_button_aria()}
+                    disabled={sigPopoutOpen[account.id]}
+                    onclick={() => openSignaturePopout(account)}
+                  >
+                    <Icon name="full-screen" size={16} />
+                  </button>
+                </div>
               </div>
               <!-- #248 — rich-text signature.  Same Tiptap editor
                    the Compose flow uses, just instantiated in a
@@ -2052,14 +2130,27 @@
                    HTML output rides through `update_account` →
                    `Account.signature` and Compose's `signatureBlock`
                    passes it through verbatim with the RFC 3676
-                   `-- ` separator above. -->
-              <div class="signature-editor-shell">
-                <RichTextEditor
-                  content={account.signature ?? ''}
-                  placeholder="Appended to new messages sent from this account."
-                  onchange={(html) => onSignatureChange(account, html)}
-                />
-              </div>
+                   `-- ` separator above.
+                   #314 — when the popout window is open for this
+                   account we lock the inline editor instead of
+                   keeping two live editors over the same field. -->
+              {#if sigPopoutOpen[account.id]}
+                <div
+                  class="signature-editor-shell flex items-center justify-center text-center px-6"
+                >
+                  <span class="text-sm text-surface-500">
+                    {m.signature_popout_locked_banner()}
+                  </span>
+                </div>
+              {:else}
+                <div class="signature-editor-shell">
+                  <RichTextEditor
+                    content={account.signature ?? ''}
+                    placeholder="Appended to new messages sent from this account."
+                    onchange={(html) => onSignatureChange(account, html)}
+                  />
+                </div>
+              {/if}
             </div>
 
             <!-- Folder icon rules (Issue #63). Match a folder name
