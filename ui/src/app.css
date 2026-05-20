@@ -106,3 +106,141 @@ body {
 .email-html-body a:hover {
   opacity: 0.8;
 }
+
+/* ── Collapsible quoted / forwarded blocks (#330) ──────────────────────
+   Display-time disclosure card MailView wraps around every standard
+   "this is quoted / forwarded" marker (our own data-unkai-block, the
+   cite-blockquote convention, gmail_quote, moz-cite-prefix, the
+   `---------- Forwarded message ----------` delimiter, etc.).  The raw
+   email body is untouched on the wire — the card lives entirely in
+   the rendered DOM. */
+.email-html-body details.quoted-collapse {
+  margin: 12px 0;
+  border: 1px solid #e2e8f0;       /* slate-200 */
+  border-radius: 8px;
+  background: #f8fafc;              /* slate-50 */
+  color: #1e293b;                   /* slate-800 — readable dark text on light bg */
+  overflow: hidden;
+}
+
+[data-mode='dark'] .email-html-body details.quoted-collapse {
+  border-color: #475569;            /* slate-600 */
+  background: #1e293b;              /* slate-800 */
+  color: #f1f5f9;                   /* slate-100 — readable light text on dark bg */
+}
+
+/* "Always white" mode forces the email pane to a white card; the
+   chrome below must also stay light (regardless of app theme) so the
+   text inside the card stays readable against the slate-50 background.
+   This selector wins over the [data-mode='dark'] rule above via
+   specificity (both have one class + one attribute … here the white
+   selector is declared later so cascade order tips it). */
+.email-html-body--white details.quoted-collapse {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: #1e293b;
+}
+
+.email-html-body details.quoted-collapse > summary.quoted-collapse__summary {
+  display: block;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;                   /* slate-500 — muted on light bg */
+  user-select: none;
+  list-style: none; /* hide default ▶ marker; we draw our own ▾ */
+}
+
+[data-mode='dark'] .email-html-body details.quoted-collapse > summary.quoted-collapse__summary {
+  color: #94a3b8;                   /* slate-400 — muted on dark bg */
+}
+
+.email-html-body--white details.quoted-collapse > summary.quoted-collapse__summary {
+  color: #64748b;
+}
+
+.email-html-body details.quoted-collapse > summary.quoted-collapse__summary::-webkit-details-marker {
+  display: none;
+}
+
+.email-html-body details.quoted-collapse > summary.quoted-collapse__summary::before {
+  content: '▸ ';
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.email-html-body details.quoted-collapse[open] > summary.quoted-collapse__summary::before {
+  content: '▾ ';
+}
+
+.email-html-body details.quoted-collapse > summary.quoted-collapse__summary:hover {
+  background: #f1f5f9;              /* slate-100 */
+}
+
+[data-mode='dark'] .email-html-body details.quoted-collapse > summary.quoted-collapse__summary:hover {
+  background: #334155;              /* slate-700 */
+}
+
+.email-html-body--white details.quoted-collapse > summary.quoted-collapse__summary:hover {
+  background: #f1f5f9;
+}
+
+.email-html-body details.quoted-collapse .quoted-collapse__content {
+  padding: 12px 14px;
+  border-top: 1px solid #e2e8f0;    /* slate-200 */
+}
+
+[data-mode='dark'] .email-html-body details.quoted-collapse .quoted-collapse__content {
+  border-top-color: #475569;        /* slate-600 */
+}
+
+.email-html-body--white details.quoted-collapse .quoted-collapse__content {
+  border-top-color: #e2e8f0;
+}
+
+/* Styled mini-header for our own forwarded-mail wrapper.  Two-column
+   key-value layout (label / value) for the From / Date / Subject /
+   To rows we extracted from the source HTML. */
+.email-html-body details.quoted-collapse .quoted-collapse__header {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  row-gap: 2px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed #e2e8f0; /* slate-200 */
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+[data-mode='dark'] .email-html-body details.quoted-collapse .quoted-collapse__header {
+  border-bottom-color: #475569;     /* slate-600 */
+}
+
+.email-html-body--white details.quoted-collapse .quoted-collapse__header {
+  border-bottom-color: #e2e8f0;
+}
+
+.email-html-body details.quoted-collapse .quoted-collapse__field {
+  display: contents; /* let the field's children sit directly in the grid */
+}
+
+.email-html-body details.quoted-collapse .quoted-collapse__label {
+  font-weight: 600;
+  color: #64748b;                   /* slate-500 */
+  text-align: right;
+}
+
+[data-mode='dark'] .email-html-body details.quoted-collapse .quoted-collapse__label {
+  color: #94a3b8;                   /* slate-400 */
+}
+
+.email-html-body--white details.quoted-collapse .quoted-collapse__label {
+  color: #94a3b8;
+}
+
+.email-html-body details.quoted-collapse .quoted-collapse__value {
+  color: inherit;
+  word-break: break-word;
+}
