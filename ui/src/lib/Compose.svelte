@@ -1211,47 +1211,11 @@
       description: saved.description ?? null,
       talkUrl: isUrl ? loc : null,
     }
-    const html = meetingInviteHtml(invite)
-    if (!editorApi) return
-    // Body order we want, from top to bottom:
-    //   1. lead spacer
-    //   2. **meeting card**            ← new
-    //   3. signature
-    //   4. (Talk / file-share cards)
-    //   5. quoted history (replies / forwards)
-    //
-    // The signature is a plain `<p>-- <br>...</p>` (no
-    // UnkaiBlock wrapper), so `insertBeforeUnkaiBlock` can't
-    // target it.  We do a string splice on `bodyHtml` instead:
-    // find the previously-inserted signature substring and
-    // splice the card just before it.  Fallback paths cover
-    // every shape the body might be in:
-    //
-    //   - signature present in source → splice before it.
-    //   - signature missing (no signature configured, or the
-    //     signature `$effect` hasn't run yet) → splice after
-    //     the lead spacer so future signature insertion still
-    //     lands below the card.
-    //   - neither marker found (e.g. an opened draft with a
-    //     bespoke shape) → fall back to the existing
-    //     before-quoted-history target so the card still
-    //     reads above the reply quote.
-    if (insertedSignatureHtml && bodyHtml.includes(insertedSignatureHtml)) {
-      const idx = bodyHtml.indexOf(insertedSignatureHtml)
-      const replaced = bodyHtml.slice(0, idx) + html + bodyHtml.slice(idx)
-      editorApi.setHtml(replaced)
-      bodyHtml = replaced
-      return
-    }
-    const leadIdx = bodyHtml.indexOf('<p></p><p></p>')
-    if (leadIdx !== -1) {
-      const after = leadIdx + '<p></p><p></p>'.length
-      const replaced = bodyHtml.slice(0, after) + html + bodyHtml.slice(after)
-      editorApi.setHtml(replaced)
-      bodyHtml = replaced
-      return
-    }
-    editorApi.insertBeforeUnkaiBlock(html, 'quoted-history')
+    // The editor walks its own ProseMirror doc to find the top
+    // of the signoff region; new cards stack above any existing
+    // ones so a later insert isn't buried below a previously
+    // dropped block (#320 + follow-up).
+    editorApi?.insertAboveSignature(meetingInviteHtml(invite))
   }
 
   /** Combined To + Cc list as bare/RFC-formatted address strings,
@@ -1261,19 +1225,15 @@
   }
 
   /** Insert a Talk invite card into the editor body when the
-      user creates a Talk room mid-compose.  The new
-      `insertBeforeUnkaiBlock` editor API drops the card just
-      above any existing quoted-history block (so reading order
-      is card → reply text → previous conversation); on a fresh
-      compose with no quote it appends at the end. The card is
-      parsed by the editor's `UnkaiBlock` extension into an
-      atom node, so a single Backspace deletes the whole thing
-      if the user changes their mind. */
+      user creates a Talk room mid-compose.  Lands the card at
+      the top of the signoff region, above any existing
+      integration cards so the newest insert is the most visible
+      (#320 + follow-up).  The card is parsed by the editor's
+      `UnkaiBlock` extension into an atom node, so a single
+      Backspace deletes the whole thing if the user changes
+      their mind. */
   function injectTalkBlock(link: { name: string; url: string }) {
-    const html = talkInviteHtml(link)
-    if (editorApi) {
-      editorApi.insertBeforeUnkaiBlock(html, 'quoted-history')
-    }
+    editorApi?.insertAboveSignature(talkInviteHtml(link))
   }
 
   function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
@@ -2700,23 +2660,11 @@
         )
         .join('')
       const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`
-      // Splice the block ABOVE an auto-inserted signature when one
-      // is sitting at the end of the body so the share renders
-      // inline with the message rather than below the user's
-      // sign-off.  Same pattern the Talk-link injection uses
-      // earlier in this component.
-      if (
-        insertedSignatureHtml
-        && bodyHtml.endsWith(insertedSignatureHtml)
-        && editorApi
-      ) {
-        const without = bodyHtml.slice(0, bodyHtml.length - insertedSignatureHtml.length)
-        const replaced = without + block + insertedSignatureHtml
-        editorApi.setHtml(replaced)
-        bodyHtml = replaced
-      } else {
-        editorApi?.appendHtml(block)
-      }
+      // Land the block at the top of the signoff region — a
+      // short share-link paragraph reads above any existing
+      // meeting / Talk card so it isn't buried beneath the big
+      // styled chrome (#320 + follow-up).
+      editorApi?.insertAboveSignature(block)
     }}
     onclose={() => (showNcPicker = false)}
   />
