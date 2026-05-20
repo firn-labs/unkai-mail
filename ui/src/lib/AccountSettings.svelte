@@ -131,8 +131,13 @@
         `$effect` it drives — in sync. Optional so callers that don't
         care about live updates aren't forced to handle it. */
     onappprefschanged?: (prefs: AppSettings) => void
+    /** Notify the parent when the connected Nextcloud accounts (or
+        their capabilities) change so the IconRail can refresh its
+        integration icons immediately, without waiting for the
+        Settings panel to close (#318). */
+    onnextcloudchanged?: () => void
   }
-  let { onclose, onaddaccount, onappprefschanged }: Props = $props()
+  let { onclose, onaddaccount, onappprefschanged, onnextcloudchanged }: Props = $props()
 
   // ── Category navigation (#131) ──────────────────────────────
   // Settings used to be one long scroll; #131 split it into the
@@ -2255,7 +2260,7 @@
     {/if}
 
     {#if activeCategory === 'nextcloud'}
-    <NextcloudSettings />
+    <NextcloudSettings {onnextcloudchanged} />
     {/if}
 
     {#if activeCategory === 'security'}

@@ -2622,6 +2622,7 @@
           onclose={goToInbox}
           onaddaccount={goToSetup}
           onappprefschanged={(p) => (appPrefs = p)}
+          onnextcloudchanged={refreshNextcloudCapabilities}
         />
       </div>
     {:else if currentView === 'contacts'}
