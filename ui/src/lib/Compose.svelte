@@ -80,7 +80,7 @@
     read_only?: boolean
   }
 
-  interface Attachment {
+  export interface Attachment {
     filename: string
     content_type: string
     data: number[]
@@ -255,6 +255,19 @@
      *  mount; the function reference is stable for the lifetime
      *  of the component. */
     oncancelref?: (cancel: () => void) => void
+    /** One-shot callback handing the parent a function it can call
+     *  to append attachments to this Compose from the outside
+     *  (#329).  Used by the forward-with-attachments flow: the
+     *  parent opens Compose, asks the user whether to bring the
+     *  original message's attachments along, and on "yes"
+     *  downloads the bytes in the background and pushes them in
+     *  through this handle once they're ready.  Fires once on
+     *  mount; the function reference is stable.  Reuses the
+     *  picker's append-and-prewarm path so a parent-pushed
+     *  attachment is indistinguishable from a user-picked one. */
+    onaddattachmentsref?: (
+      addAttachments: (atts: Attachment[]) => void,
+    ) => void
     /** Fires whenever this Compose's tracked Drafts-folder pointer
      *  changes (#292).  Seeded from `initial.draftSource` and
      *  updated after every successful `save_draft` round-trip with
@@ -295,6 +308,7 @@
     onminimize,
     onsubjectchange,
     oncancelref,
+    onaddattachmentsref,
     ondraftsourcechange,
     ondraftexpunged,
   }: Props = $props()
@@ -2196,6 +2210,29 @@
   // a one-shot register is sufficient.
   $effect(() => {
     oncancelref?.(cancel)
+  })
+
+  /** External attachment-append handle (#329).  Same shape the
+   *  picker's `onPickFiles` uses: append to the reactive list, then
+   *  pre-warm thumbs off the critical path so the `/` picker's
+   *  first open lands on fully rendered tiles.  Called by the
+   *  parent once the forward-with-attachments download finishes,
+   *  with a list whose `content_id`s were minted before the bytes
+   *  arrived so the cache key stays stable. */
+  function appendExternalAttachments(atts: Attachment[]) {
+    if (atts.length === 0) return
+    attachments = [...attachments, ...atts]
+    for (const a of atts) {
+      prewarmAttachmentThumb({
+        bytes: a.data,
+        contentType: a.content_type,
+        filename: a.filename,
+        cacheKey: a.content_id,
+      })
+    }
+  }
+  $effect(() => {
+    onaddattachmentsref?.(appendExternalAttachments)
   })
 
   function cancel() {

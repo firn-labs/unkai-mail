@@ -91,6 +91,13 @@
   "compose_attachment_warning_body": "Add a file before sending, or dismiss this warning if it's a false alarm.",
   "compose_attachment_warning_dismiss": "Dismiss",
 
+  "compose_forward_attachments_title": "Include original attachments?",
+  "compose_forward_attachments_body_one": "The forwarded message has 1 attachment. Add it to your forward?",
+  "compose_forward_attachments_body_many": "The forwarded message has {n} attachments. Add them to your forward?",
+  "compose_forward_attachments_include": "Include attachments",
+  "compose_forward_attachments_skip": "Forward without",
+  "compose_forward_attachments_download_failed": "Could not load some attachments: {reason}",
+
   "nc_share_set_expiration_label": "Set expiration date",
   "nc_share_expiration_aria": "Pick expiration date for the share link",
   "nc_share_expiration_hint": "Recipients can't open the link after this date.",
