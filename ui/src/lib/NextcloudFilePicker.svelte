@@ -18,32 +18,20 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
-  import DateField from './DateField.svelte'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
-  import { m } from '../paraglide/messages'
   import NextcloudFileBrowser, {
     type FileEntry,
     type NextcloudAccount,
   } from './NextcloudFileBrowser.svelte'
+  import NextcloudShareDialog, {
+    type ShareLink,
+  } from './NextcloudShareDialog.svelte'
 
   interface Attachment {
     filename: string
     content_type: string
     data: number[]
-  }
-  /** A "share as link" result.
-   *
-   *  - `filename` / `url` — what the body block needs.
-   *  - `id` / `ncId`     — what `update_nextcloud_share_label`
-   *    needs so Compose can re-PUT the label whenever the
-   *    recipient list changes after the share was minted (#91).
-   */
-  export interface ShareLink {
-    filename: string
-    url: string
-    id: string
-    ncId: string
   }
 
   interface Props {
@@ -95,9 +83,9 @@
   function onPickerKeydown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return
     if (sharing) return
-    if (sharePrompt) {
+    if (shareTarget) {
       e.preventDefault()
-      sharePrompt = null
+      shareTarget = null
       return
     }
     e.preventDefault()
@@ -119,7 +107,21 @@
   let error = $state('')
 
   let downloading = $state(false)
-  let sharing = $state(false)
+  // Snapshot of the selection at the moment "Share as link" was
+  // clicked — toggling the file tree behind the dialog can't change
+  // what gets shared.  The dialog component owns its own form state
+  // (password / permissions / expiry); we hand off paths +
+  // hasFolders and wait for `onresolve` / `oncancel`.
+  let shareTarget = $state<{
+    paths: string[]
+    hasFolders: boolean
+  } | null>(null)
+  // True while the share dialog is mounted — used by the picker's
+  // own buttons + Esc handler to stay inert while the user is
+  // mid-share-flow.  The actual in-flight IPC state lives inside
+  // the dialog; from the picker's perspective "dialog open" is
+  // close enough — the dialog backdrop blocks any clicks anyway.
+  let sharing = $derived(shareTarget !== null)
 
   /** Per-file download status surfaced as a progress strip while
    *  `attachSelected` runs (#160).  Keys are the full NC paths
@@ -136,93 +138,6 @@
     const next = new Map(downloadStatus)
     next.set(path, status)
     downloadStatus = next
-  }
-
-  // Password-protect-the-share modal. `null` = the prompt isn't open;
-  // `paths` is the snapshot of selection at the moment the user
-  // clicked "Share as link" so toggling the file tree behind the
-  // modal can't change what gets shared. `password` is the in-flight
-  // input — empty means "no password" (omitted from the OCS request,
-  // which keeps the share open as before).  `permissions` is the
-  // OCS bitfield value chosen via the dropdown — defaults to
-  // read-only so existing flows behave the same when the user
-  // clicks straight through.
-  let sharePrompt = $state<{
-    paths: string[]
-    password: string
-    permissions: number
-    /** Whether any of the selected paths is a folder.  Drives which
-     *  permission options the dropdown shows — "Upload + edit" and
-     *  "File drop" only make sense for folder shares (file shares
-     *  can't have new files dropped into them by definition). */
-    hasFolders: boolean
-    /** Whether an expiration date should be sent to the OCS endpoint
-     *  (#324).  Off by default — matches Nextcloud's own share UI
-     *  where a separate "Set expiration date" toggle gates the
-     *  picker.  Lets the user share without an expiry in a single
-     *  click. */
-    setExpiration: boolean
-    /** ISO `YYYY-MM-DD` from the DateField.  Empty when `setExpiration`
-     *  is off; only sent to the backend when the toggle is on AND
-     *  the field is non-empty (commitShare guards both). */
-    expireDate: string
-  } | null>(null)
-
-  /** Default expiration suggestion when the user first ticks the
-   *  "Set expiration date" toggle — 7 days out, in the same
-   *  `YYYY-MM-DD` shape DateField round-trips through.  Picked over
-   *  "today" so the recipient has a usable window without further
-   *  clicks; the user can still drill to any date via the calendar
-   *  popover. */
-  function defaultExpiry(): string {
-    const d = new Date()
-    d.setDate(d.getDate() + 7)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  }
-
-  /** Common public-link permission combinations Nextcloud's own
-   *  share UI exposes.  The bitfield (1 read, 2 update, 4 create,
-   *  8 delete, 16 share) gets sent to the OCS endpoint verbatim. */
-  /** Permission combinations Nextcloud's own share UI exposes.
-   *  `folderOnly` entries are filtered out when the selection is
-   *  pure files — "Upload + edit" and "File drop" semantically
-   *  only make sense for folder shares; offering them for a file
-   *  share would surface a Nextcloud-side rejection ("invalid
-   *  permissions"). */
-  const PERMISSION_OPTIONS = [
-    {
-      value: 1,
-      label: 'View only',
-      hint: 'Recipient can read / download.',
-      folderOnly: false,
-    },
-    {
-      value: 3,
-      label: 'View and edit',
-      hint: 'Recipient can edit the file in Nextcloud.',
-      folderOnly: false,
-    },
-    {
-      value: 15,
-      label: 'View, edit, upload, delete',
-      hint: 'Folder share with full read-write — recipient can drop files in and modify existing ones.',
-      folderOnly: true,
-    },
-    {
-      value: 4,
-      label: 'File drop (upload only)',
-      hint: 'Folder share where recipients can upload but not see the contents.',
-      folderOnly: true,
-    },
-  ] as const
-
-  function visiblePermissionOptions(hasFolders: boolean) {
-    return PERMISSION_OPTIONS.filter((o) => !o.folderOnly || hasFolders)
-  }
-
-  function permHint(value: number): string {
-    return PERMISSION_OPTIONS.find((o) => o.value === value)?.hint ?? ''
   }
 
   // Selection split by entry type. Folders can be shared as public
@@ -295,73 +210,28 @@
     }
   }
 
-  /** Open the password prompt instead of jumping straight to OCS.
-      The modal lets the user opt into a password (or skip with
-      Enter / "Share without password") before any link is minted —
-      no way to forget the password gate, no need to delete + recreate
-      a share if the user changes their mind mid-click. */
+  /** Open the share dialog instead of jumping straight to OCS.
+      The dialog lets the user opt into a password, permissions
+      bitmask, and expiry before any link is minted — no way to
+      forget those gates, no need to delete + recreate a share
+      if the user changes their mind mid-click. */
   function shareSelected() {
     if (selected.size === 0 || !onlinks) return
     // `selectedDirs` is the source of truth for "is any of the
     // ticked paths a folder" — survives folder navigation.
-    const hasFolders = selectedDirs.size > 0
-    sharePrompt = {
+    shareTarget = {
       paths: Array.from(selected),
-      password: '',
-      permissions: 1, // View-only by default — matches Nextcloud's own picker.
-      hasFolders,
-      setExpiration: false,
-      expireDate: '',
+      hasFolders: selectedDirs.size > 0,
     }
     error = ''
   }
 
-  /** Run the actual create_nextcloud_share calls with the password
-      the user picked (empty string = no password, omitted from the
-      OCS form on the Rust side). Same error-surface as the previous
-      direct flow. */
-  async function commitShare() {
-    if (!sharePrompt || !onlinks) return
-    const { paths, password, permissions, setExpiration, expireDate } =
-      sharePrompt
-    sharing = true
-    error = ''
-    try {
-      const pw = password.trim() ? password : null
-      // Only send `expireDate` when the user actually opted into it.
-      // An empty `expireDate=` posted to OCS is parsed as a bad date
-      // and rejects the whole share, so the toggle-off path must
-      // omit the field entirely.
-      const exp = setExpiration && expireDate ? expireDate : null
-      const results = await Promise.all(
-        paths.map(async (p) => {
-          const r = await invoke<{ id: string; url: string }>(
-            'create_nextcloud_share',
-            {
-              ncId: accountId,
-              path: p,
-              password: pw,
-              label: shareLabel?.trim() || null,
-              permissions,
-              expireDate: exp,
-            },
-          )
-          return {
-            filename: basename(p),
-            url: r.url,
-            id: r.id,
-            ncId: accountId,
-          } satisfies ShareLink
-        }),
-      )
-      sharePrompt = null
-      onlinks(results)
-      onclose()
-    } catch (e) {
-      error = formatError(e) || 'Failed to create share link(s)'
-    } finally {
-      sharing = false
-    }
+  /** Dialog resolved with freshly-minted share links.  Hand them
+      off to the Compose caller and close the picker. */
+  function onShareResolved(links: ShareLink[]) {
+    shareTarget = null
+    onlinks?.(links)
+    onclose()
   }
 </script>
 
@@ -527,122 +397,19 @@
   </div>
 </div>
 
-<!-- Password prompt for the public share link. Layered on top of
-     the picker's own modal (z-70 vs z-60) so dismissing it returns
-     focus to the picker without unmounting the selection. The
-     "Share without password" path commits with an empty password,
-     which the Rust side translates to omitting the OCS `password`
-     param entirely — keeps the previous "no-password share" flow
-     reachable in one click. -->
-{#if sharePrompt}
-  <div
-    class="fixed inset-0 z-70 flex items-center justify-center bg-black/50"
-    role="dialog"
-    aria-modal="true"
-    tabindex="-1"
-    onmousedown={(e) => { if (e.target === e.currentTarget && !sharing) sharePrompt = null }}
-  >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-[28rem] max-w-full p-5">
-      <h3 class="text-base font-semibold mb-1">Password-protect link?</h3>
-      <p class="text-xs text-surface-500 mb-3">
-        {sharePrompt.paths.length === 1
-          ? 'Anyone with the link can open the file.'
-          : `Anyone with each link can open ${sharePrompt.paths.length} files.`}
-        Setting a password gates the recipient behind it; leave it empty
-        to share without one.
-      </p>
-
-      <label class="block text-xs text-surface-500 mb-1" for="share-pw">Password (optional)</label>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
-        id="share-pw"
-        type="password"
-        class="input w-full text-sm px-2 py-1.5 rounded-md mb-3"
-        placeholder="Leave blank for no password"
-        bind:value={sharePrompt.password}
-        disabled={sharing}
-        autofocus
-        onkeydown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); void commitShare() }
-          else if (e.key === 'Escape' && !sharing) { e.preventDefault(); sharePrompt = null }
-        }}
-      />
-
-      <!-- Permissions dropdown — mirrors Nextcloud's own share UI.
-           The bitmask values map to OCS's `permissions` form field.
-           File-only flows (where the picker is used to attach a
-           single document) practically only use 1 / 3; the upload
-           variants ride along for folder shares. -->
-      <label class="block text-xs text-surface-500 mb-1" for="share-perms">Permissions</label>
-      <select
-        id="share-perms"
-        class="select w-full text-sm px-2 py-1.5 rounded-md mb-1"
-        bind:value={sharePrompt.permissions}
-        disabled={sharing}
-      >
-        {#each visiblePermissionOptions(sharePrompt.hasFolders) as opt}
-          <option value={opt.value}>{opt.label}</option>
-        {/each}
-      </select>
-      <p class="text-[11px] text-surface-500 mb-3">
-        {permHint(sharePrompt.permissions)}
-      </p>
-
-      <!-- Expiration date (#324).  Nextcloud's OCS endpoint takes an
-           optional `expireDate=YYYY-MM-DD`; after that date the
-           public link returns a "Link expired" page.  We gate the
-           DateField behind a checkbox so the no-expiry default
-           stays one click away, matching Nextcloud's own UI. -->
-      <label class="flex items-center gap-2 mb-2 text-xs text-surface-700 dark:text-surface-300 cursor-pointer">
-        <input
-          type="checkbox"
-          class="checkbox"
-          bind:checked={sharePrompt.setExpiration}
-          disabled={sharing}
-          onchange={() => {
-            // Seed a sensible default the first time the user opts in,
-            // otherwise reopening the toggle would land on an empty
-            // field that DateField renders as "Pick a date".
-            if (sharePrompt && sharePrompt.setExpiration && !sharePrompt.expireDate) {
-              sharePrompt.expireDate = defaultExpiry()
-            }
-          }}
-        />
-        <span>{m.nc_share_set_expiration_label()}</span>
-      </label>
-      {#if sharePrompt.setExpiration}
-        <div class="mb-3">
-          <DateField
-            bind:value={sharePrompt.expireDate}
-            ariaLabel={m.nc_share_expiration_aria()}
-          />
-          <p class="text-[11px] text-surface-500 mt-1">
-            {m.nc_share_expiration_hint()}
-          </p>
-        </div>
-      {/if}
-
-      {#if error}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>
-      {/if}
-
-      <div class="flex justify-end gap-2">
-        <button
-          class="btn preset-outlined-surface-500 shrink-0"
-          disabled={sharing}
-          onclick={() => (sharePrompt = null)}
-        >Cancel</button>
-        <button
-          class="btn preset-filled-primary-500 shrink-0 whitespace-nowrap"
-          disabled={sharing}
-          onclick={() => void commitShare()}
-        >
-          {#if sharing}Sharing…{:else}Share{/if}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
+<!-- Share dialog (password / permissions / expiry).  Sits over the
+     picker's own modal (z-70 vs z-60) so dismissing it returns
+     focus to the picker without unmounting the selection. -->
+<NextcloudShareDialog
+  open={shareTarget !== null}
+  accountId={accountId}
+  paths={shareTarget?.paths ?? []}
+  hasFolders={shareTarget?.hasFolders ?? false}
+  shareLabel={shareLabel}
+  zIndex={70}
+  onresolve={onShareResolved}
+  oncancel={() => (shareTarget = null)}
+/>
 
 <style>
   /* Indeterminate per-file progress head (#160).  Slides a
