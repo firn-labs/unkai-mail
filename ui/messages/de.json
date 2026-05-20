@@ -233,5 +233,9 @@
 
   "chrome_sidebar_resize_handle_label": "Seitenleiste anpassen",
 
-  "mail_view_message_gone": "Diese Nachricht existiert nicht mehr auf dem Server."
+  "mail_view_message_gone": "Diese Nachricht existiert nicht mehr auf dem Server.",
+
+  "sidebar_unified_inbox_label": "Alle Posteingänge",
+  "sidebar_unified_sent_label": "Alle gesendeten Nachrichten",
+  "sidebar_unified_drafts_label": "Alle Entwürfe"
 }

@@ -19,6 +19,7 @@
   import { parseFromHeader, senderLabel } from './fromHeader'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import Icon from './Icon.svelte'
+  import { unifiedSpecialKind } from './unifiedFolders'
 
   // ── Props ───────────────────────────────────────────────────
   interface EmailEnvelope {
@@ -71,8 +72,14 @@
     refreshToken?: number
     /** `accountId` is passed back when in unified mode so the parent
         can route the open-message action to the right account. In
-        single-account mode it's omitted (the active account is implicit). */
-    onselect: (uid: number, accountId?: string) => void
+        single-account mode it's omitted (the active account is implicit).
+        `folder` is passed back when the current view's `selectedFolder`
+        doesn't match the row's actual folder — i.e. the global "All
+        Sent" / "All Drafts" sentinel views (#322), where each row's
+        real IMAP folder differs per account. The parent stores it as
+        `selectedMessageFolder` so MailView can fetch from the right
+        mailbox. */
+    onselect: (uid: number, accountId?: string, folder?: string) => void
     /** Bindable mirror of the rendered envelope list.  Lets the
         parent peek at "what's currently shown" without re-fetching —
         used by the auto-advance-after-delete logic to pick the next
@@ -467,7 +474,14 @@
     }
     // Plain click — clear multi-select and open as before.
     if (multiSelectedUids.size > 0) multiSelectedUids = new Set()
-    onselect(env.uid, unified ? env.account_id : undefined)
+    // Hand the row's folder back to the parent when we're on a
+    // unified-special sentinel view (#322): the parent's
+    // `selectedFolder` is the sentinel, but the message lives in this
+    // row's actual per-account folder. For the unified Inbox both
+    // values are `INBOX`, so the override is unnecessary there.
+    const folderOverride =
+      unified && env.folder && unifiedSpecialKind(folder) !== null ? env.folder : undefined
+    onselect(env.uid, unified ? env.account_id : undefined, folderOverride)
   }
 
   /** Resolve the right (accountId, folder) tuple for a given
@@ -931,14 +945,37 @@
     const stillCurrent = () =>
       isUnified === unified && (isUnified || (id === accountId && f === folder))
 
+    // Resolve which backend command pair to call. Three cases:
+    //   - Sentinel folder for a global "All Sent" / "All Drafts" view
+    //     (#322): each account's actual Sent/Drafts folder name differs,
+    //     so the backend resolves them per-account and aggregates by
+    //     (account_id, folder) pairs.
+    //   - Unified Inbox: every account's INBOX shares the same name,
+    //     so a single-folder-name aggregator suffices.
+    //   - Single account: plain per-account fetch.
+    const specialKind = isUnified ? unifiedSpecialKind(f) : null
+    const cacheCmd =
+      specialKind !== null
+        ? 'get_unified_special_cached_envelopes'
+        : isUnified
+          ? 'get_unified_cached_envelopes'
+          : 'get_cached_envelopes'
+    const fetchCmd =
+      specialKind !== null
+        ? 'fetch_unified_special_envelopes'
+        : isUnified
+          ? 'fetch_unified_envelopes'
+          : 'fetch_envelopes'
+    const args: Record<string, unknown> =
+      specialKind !== null
+        ? { special: specialKind, limit: PAGE_SIZE }
+        : isUnified
+          ? { folder: f, limit: PAGE_SIZE }
+          : { accountId: id, folder: f, limit: PAGE_SIZE }
+
     // Cache first — usually instant, may return [] on cold start.
     try {
-      const cached = await invoke<EmailEnvelope[]>(
-        isUnified ? 'get_unified_cached_envelopes' : 'get_cached_envelopes',
-        isUnified
-          ? { folder: f, limit: PAGE_SIZE }
-          : { accountId: id, folder: f, limit: PAGE_SIZE },
-      )
+      const cached = await invoke<EmailEnvelope[]>(cacheCmd, args)
       if (stillCurrent()) {
         envelopes = mergeEnvelopes(envelopes, cached)
         if (envelopes.length > 0) loading = false
@@ -952,12 +989,7 @@
     // see new mail as soon as the server responds.
     refreshing = envelopes.length > 0
     try {
-      const fresh = await invoke<EmailEnvelope[]>(
-        isUnified ? 'fetch_unified_envelopes' : 'fetch_envelopes',
-        isUnified
-          ? { folder: f, limit: PAGE_SIZE }
-          : { accountId: id, folder: f, limit: PAGE_SIZE },
-      )
+      const fresh = await invoke<EmailEnvelope[]>(fetchCmd, args)
       if (stillCurrent()) {
         envelopes = mergeEnvelopes(envelopes, fresh)
       }
@@ -996,6 +1028,16 @@
   async function loadOlder() {
     if (loadingOlder || olderExhausted || envelopes.length === 0) return
     if (loading) return  // initial paint still in flight
+
+    // Global "All Sent" / "All Drafts" (#322) don't support older-page
+    // pagination yet — the per-account folder-name resolution would
+    // need a parallel backend command to `fetch_older_unified_envelopes`.
+    // The newest-PAGE_SIZE window is plenty for outgoing/draft volumes
+    // in practice; defer pagination until a user actually asks for it.
+    if (unified && unifiedSpecialKind(folder) !== null) {
+      olderExhausted = true
+      return
+    }
 
     const idAtCall = accountId
     const folderAtCall = folder

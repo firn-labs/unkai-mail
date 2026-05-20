@@ -730,6 +730,89 @@ impl Cache {
         Ok(out)
     }
 
+    /// Return the newest `limit` envelopes across the given
+    /// `(account_id, folder)` pairs, newest-first. Powers the global
+    /// "All Sent" / "All Drafts" views, where each account stores
+    /// outgoing mail in a differently-named folder (`Sent`, `Sent
+    /// Items`, `Gesendete Elemente`, `[Gmail]/Sent Mail`, …) so the
+    /// single-folder-name query used by `get_unified_envelopes` can't
+    /// match them all at once.
+    ///
+    /// Empty `pairs` short-circuits to `Ok(vec![])` so callers don't
+    /// have to special-case "no accounts have a Sent folder yet".
+    pub fn get_unified_envelopes_by_pairs(
+        &self,
+        pairs: &[(String, String)],
+        limit: u32,
+    ) -> Result<Vec<EmailEnvelope>, CacheError> {
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        // Build `(account_id = ?N AND folder = ?N+1) OR …` so each
+        // account's resolved special-use folder contributes only the
+        // rows that actually live in it. Parameterised — no string
+        // interpolation of folder names into the SQL.
+        let mut where_clause = String::new();
+        for i in 0..pairs.len() {
+            if i > 0 {
+                where_clause.push_str(" OR ");
+            }
+            let a = 2 * i + 1;
+            let b = 2 * i + 2;
+            where_clause.push_str(&format!("(account_id = ?{a} AND folder = ?{b})"));
+        }
+        let limit_param = 2 * pairs.len() + 1;
+        let sql = format!(
+            "SELECT account_id, uid, folder, from_addr, subject, internal_date,
+                    is_read, is_starred, is_answered, replied_kind,
+                    message_id, in_reply_to, references_ids
+             FROM messages
+             WHERE ({where_clause}) AND pending_action IS NULL
+             ORDER BY internal_date DESC
+             LIMIT ?{limit_param}"
+        );
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 * pairs.len() + 1);
+        for (account_id, folder) in pairs {
+            params_vec.push(account_id);
+            params_vec.push(folder);
+        }
+        let limit_i64 = limit as i64;
+        params_vec.push(&limit_i64);
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_vec.as_slice(), |r| {
+            let ts: i64 = r.get(5)?;
+            let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+            let refs_json: Option<String> = r.get(12)?;
+            let references_ids: Vec<String> = refs_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            Ok(EmailEnvelope {
+                account_id: r.get(0)?,
+                uid: r.get::<_, i64>(1)? as u32,
+                folder: r.get(2)?,
+                from: r.get(3)?,
+                subject: r.get(4)?,
+                date,
+                is_read: r.get::<_, i64>(6)? != 0,
+                is_starred: r.get::<_, i64>(7)? != 0,
+                is_answered: r.get::<_, i64>(8)? != 0,
+                replied_kind: r.get(9)?,
+                message_id: r.get(10)?,
+                in_reply_to: r.get(11)?,
+                references_ids,
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Mark a cached envelope as read (sets `is_read = 1`) and keep
     /// the folder's `unread_count` in sync by decrementing it iff the
     /// message was previously unread.

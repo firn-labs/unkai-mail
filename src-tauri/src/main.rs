@@ -6149,6 +6149,89 @@ async fn fetch_unified_envelopes(
         .map_err(Into::into)
 }
 
+/// Which special-use folder the global "All …" view is aggregating.
+/// IMAP folder names for Sent / Drafts differ per account (English,
+/// German, French, Gmail-prefixed, …) so the unified view can't just
+/// query a single folder name the way the unified Inbox does — it has
+/// to resolve each account's actual Sent/Drafts via `pick_sent_folder`
+/// / `pick_drafts_folder` and aggregate the resulting per-account
+/// (account, folder) pairs.
+#[derive(Debug, Clone, Copy)]
+enum UnifiedSpecial {
+    Sent,
+    Drafts,
+}
+
+impl UnifiedSpecial {
+    fn parse(s: &str) -> Result<Self, UnkaiError> {
+        match s {
+            "sent" => Ok(Self::Sent),
+            "drafts" => Ok(Self::Drafts),
+            other => Err(UnkaiError::Other(format!(
+                "unknown unified special folder '{other}' (expected 'sent' or 'drafts')"
+            ))),
+        }
+    }
+
+    fn resolve(&self, account_id: &str, cache: &Cache) -> Option<String> {
+        match self {
+            Self::Sent => pick_sent_folder(account_id, cache),
+            Self::Drafts => pick_drafts_folder(account_id, cache),
+        }
+    }
+}
+
+/// For each account, resolve its per-account special-use folder name
+/// and return `(account_id, folder)` pairs. Accounts whose Sent/Drafts
+/// folder can't be picked yet (no cached folder list, server hasn't
+/// labelled anything with the IMAP attribute and the name doesn't
+/// match the locale hints) are silently dropped — the global view
+/// then simply contributes nothing for them, which is the right
+/// fallback rather than blanking the whole list with an error.
+fn resolve_unified_special_pairs(
+    accounts: &[Account],
+    special: UnifiedSpecial,
+    cache: &Cache,
+) -> Vec<(String, String)> {
+    accounts
+        .iter()
+        .filter_map(|account| {
+            special
+                .resolve(&account.id, cache)
+                .map(|folder| (account.id.clone(), folder))
+        })
+        .collect()
+}
+
+/// Global "All Sent" / "All Drafts": same shape as
+/// `fetch_unified_envelopes`, but the folder name is resolved per
+/// account because Sent and Drafts don't share a canonical name across
+/// IMAP servers the way INBOX does. Polls each (account, resolved)
+/// pair sequentially into the cache, then returns the merged
+/// newest-first view via `get_unified_envelopes_by_pairs`.
+#[tauri::command]
+async fn fetch_unified_special_envelopes(
+    special: String,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
+    let kind = UnifiedSpecial::parse(&special)?;
+    let accounts = account_store::load_accounts(&cache).unwrap_or_default();
+    let pairs = resolve_unified_special_pairs(&accounts, kind, cache.inner());
+    for (account_id, folder) in &pairs {
+        // Re-locate the matching account for the poll — `pairs` only
+        // carries ids so we don't have to clone heavy structs.
+        if let Some(account) = accounts.iter().find(|a| a.id == *account_id) {
+            if let Err(e) = poll_folder(account, folder, limit, &cache).await {
+                tracing::warn!("unified special poll failed for '{account_id}'/'{folder}': {e}");
+            }
+        }
+    }
+    cache
+        .get_unified_envelopes_by_pairs(&pairs, limit)
+        .map_err(Into::into)
+}
+
 /// Outcome of polling a single folder — used by both the user-facing
 /// `fetch_envelopes` command and the background sync loop.
 ///
@@ -8463,6 +8546,24 @@ fn get_unified_cached_envelopes(
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     cache
         .get_unified_envelopes(&folder, limit)
+        .map_err(Into::into)
+}
+
+/// Cache-only sibling of `fetch_unified_special_envelopes` — returns
+/// the merged newest-`limit` envelopes across every account's resolved
+/// Sent (or Drafts) folder without hitting the network. Powers the
+/// instant first-paint of the global "All Sent" / "All Drafts" views.
+#[tauri::command]
+fn get_unified_special_cached_envelopes(
+    special: String,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
+    let kind = UnifiedSpecial::parse(&special)?;
+    let accounts = account_store::load_accounts(&cache).unwrap_or_default();
+    let pairs = resolve_unified_special_pairs(&accounts, kind, cache.inner());
+    cache
+        .get_unified_envelopes_by_pairs(&pairs, limit)
         .map_err(Into::into)
 }
 
@@ -11948,6 +12049,8 @@ fn main() {
             test_connection,
             fetch_envelopes,
             fetch_unified_envelopes,
+            fetch_unified_special_envelopes,
+            get_unified_special_cached_envelopes,
             fetch_older_envelopes,
             fetch_older_unified_envelopes,
             fetch_message,
