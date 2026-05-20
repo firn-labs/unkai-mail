@@ -232,5 +232,9 @@
 
   "chrome_sidebar_resize_handle_label": "Resize sidebar",
 
-  "mail_view_message_gone": "This message no longer exists on the server."
+  "mail_view_message_gone": "This message no longer exists on the server.",
+
+  "sidebar_unified_inbox_label": "All Inboxes",
+  "sidebar_unified_sent_label": "All Sent",
+  "sidebar_unified_drafts_label": "All Drafts"
 }

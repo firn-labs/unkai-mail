@@ -42,6 +42,7 @@
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
+  import { unifiedSpecialKind } from './lib/unifiedFolders'
   import { openMailInStandaloneWindow } from './lib/standaloneMailWindow'
   import { openComposeInStandaloneWindow } from './lib/standaloneComposeWindow'
   import { openEventEditorInStandaloneWindow } from './lib/standaloneEventEditorWindow'
@@ -224,6 +225,16 @@
   // the row's `account_id` so MailView opens the right message even
   // though the folder picker isn't pointing at that account.
   let selectedMessageAccountId = $state<string | null>(null)
+  /** The folder a clicked message belongs to, when the parent's
+   *  `selectedFolder` doesn't match the row's actual folder. Set by
+   *  the global "All Sent" / "All Drafts" sentinel views (#322): the
+   *  parent's folder is a sentinel like `__UnifiedSent__`, but the
+   *  message lives in this row's actual per-account Sent folder
+   *  ("Sent", "Sent Items", "Gesendete Elemente", `[Gmail]/Sent
+   *  Mail`, …). Read sites use `messageFolder` (derived where
+   *  `selectedFolder` itself is declared) which falls back to
+   *  `selectedFolder` when this is null. */
+  let selectedMessageFolder = $state<string | null>(null)
   // Compose modals (#292).  Each user-triggered Compose pushes a
   // new entry; the entry with `id === activeComposeId` is the one
   // currently rendered as a full-screen modal, everyone else sits
@@ -276,6 +287,12 @@
   // Default to INBOX — the Sidebar replaces this as soon as the user
   // picks a folder, or could switch it automatically if INBOX is absent.
   let selectedFolder = $state<string>('INBOX')
+  /** The folder MailView should fetch from for the currently-open
+   *  message. Mirrors `selectedMessageAccountId`'s relationship to
+   *  `activeAccountId`: the per-row override wins when set, otherwise
+   *  the sidebar's current selection. Used for the MailView prop and
+   *  for the thread-membership cache key (#322). */
+  const messageFolder = $derived<string>(selectedMessageFolder ?? selectedFolder)
   let selectedUid = $state<number | null>(null)
   // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
   let refreshToken = $state(0)
@@ -292,7 +309,7 @@
   let currentThreadMemberUids = $derived.by((): number[] | null => {
     if (selectedUid == null) return null
     const accId = selectedMessageAccountId ?? activeAccountId
-    const fld = selectedFolder
+    const fld = messageFolder
     const key = `${accId}::${fld}::${selectedUid}`
     const members = mailListThreadMembers.get(key)
     if (!members || members.length <= 1) return null
@@ -1259,6 +1276,7 @@
       selectedFolder = 'INBOX'
       selectedUid = null
       selectedMessageAccountId = null
+      selectedMessageFolder = null
       searchQuery = ''
       searchScope = {}
       searchFilters = {}
@@ -1271,6 +1289,7 @@
     selectedFolder = 'INBOX'
     selectedUid = null
     selectedMessageAccountId = null
+    selectedMessageFolder = null
     searchQuery = ''
     searchScope = {}
     searchFilters = {}
@@ -1309,6 +1328,9 @@
     selectedFolder = folder
     selectedUid = uid
     selectedMessageAccountId = accId
+    // Notes deep-links flip out of unified mode, so the row's folder
+    // matches `selectedFolder` — no override needed.
+    selectedMessageFolder = null
     searchQuery = ''
     searchScope = {}
     searchFilters = {}
@@ -1348,12 +1370,17 @@
     currentView = 'inbox'
   }
 
-  function selectMessage(uid: number, accountId?: string) {
+  function selectMessage(uid: number, accountId?: string, folder?: string) {
     selectedUid = uid
     // Unified mode: each row carries its owning account id so MailView
     // can fetch from the right account. Outside unified mode, the
     // active account is implicit.
     selectedMessageAccountId = accountId ?? null
+    // Unified-special views (#322): the row's actual folder differs
+    // from the sentinel `selectedFolder`, so MailList hands it back
+    // here. `null` when not set falls back to `selectedFolder` at the
+    // read site (`messageFolder` derived below).
+    selectedMessageFolder = folder ?? null
   }
 
   // Changing the folder resets the open message — the UID that was
@@ -1362,6 +1389,10 @@
   function selectFolder(name: string) {
     selectedFolder = name
     selectedUid = null
+    // The per-row folder override only makes sense while the user
+    // stays on the sentinel view that set it — switching folders
+    // invalidates it.
+    selectedMessageFolder = null
     // Clear the Outbox preview when switching away — the
     // right-pane routing is folder-conditional, but the
     // selectedOutboxRow value would otherwise linger and
@@ -1408,6 +1439,7 @@
     if (wasSelected) {
       let nextUid: number | null = null
       let nextAccountId: string | null = null
+      let nextFolder: string | null = null
 
       if (appPrefs?.auto_advance_after_remove ?? true) {
         const idx = mailListEnvelopes.findIndex((e) => e.uid === removedUid)
@@ -1421,12 +1453,21 @@
           if (next) {
             nextUid = next.uid
             nextAccountId = next.account_id || null
+            // On a unified-special sentinel view (#322) the next row
+            // may live in a different per-account folder than the
+            // removed one — carry it forward so MailView opens the
+            // right mailbox.
+            nextFolder =
+              unifiedMode && unifiedSpecialKind(selectedFolder) !== null
+                ? next.folder || null
+                : null
           }
         }
       }
 
       selectedUid = nextUid
       selectedMessageAccountId = nextAccountId
+      selectedMessageFolder = nextFolder
     }
 
     // Drop the matching envelope from the bound list (#174
@@ -1472,7 +1513,13 @@
     folder: string
     uid: number
   }) {
-    if (selectedFolder !== src.folder) return
+    // On the global "All Drafts" sentinel view (#322) the user's
+    // `selectedFolder` is the sentinel, not the per-account folder
+    // the expunged draft actually lived in — accept the splice
+    // anyway, since the bound list is genuinely showing that
+    // account's draft row.
+    const onUnifiedDrafts = unifiedMode && unifiedSpecialKind(selectedFolder) === 'drafts'
+    if (!onUnifiedDrafts && selectedFolder !== src.folder) return
     if (
       !unifiedMode
       && selectedMessageAccountId !== src.accountId
@@ -2806,7 +2853,7 @@
       {:else}
         <MailView
           accountId={selectedMessageAccountId ?? activeAccountId}
-          folder={selectedFolder}
+          folder={messageFolder}
           uid={selectedUid}
           forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
           autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
