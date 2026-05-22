@@ -18,6 +18,7 @@
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import Icon from './Icon.svelte'
+  import CryptoChips from './CryptoChips.svelte'
   import AttachmentThumb, { seedThumbFromBase64 } from './AttachmentThumb.svelte'
   import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
@@ -65,6 +66,22 @@
     is_starred: boolean
     has_attachments: boolean
     attachments: EmailAttachment[]
+    /** Kebab-case protection tag from the receive path (#57).
+     *  `"encrypted"` — message was PGP-encrypted; we decrypted it
+     *  locally.  `"signed"` — `multipart/signed` outer (detection
+     *  only for now).  `"signed-and-encrypted"` — both.
+     *  `"encrypted-cannot-decrypt"` — encrypted message that the
+     *  receive path couldn't unwrap (JMAP no-raw-blob fallback);
+     *  the UI renders a banner instead of a chip.
+     *  `null` for plaintext mail. */
+    protection?: string | null
+    /** Kebab-case verification outcome from the receive path
+     *  (`"valid"` | `"invalid"` | `"unknown-signer"`).
+     *  `null` for unsigned mail. */
+    signature_status?: string | null
+    /** Hex fingerprint of the verified signer.  Only present when
+     *  `signature_status === "valid"`. */
+    signer_fingerprint?: string | null
   }
 
   interface Props {
@@ -174,6 +191,52 @@
   let email = $state<Email | null>(null)
   let loading = $state(false)
   let error = $state('')
+
+  /** #57 — PGP decrypt prompt state.  Lives in MailView (not in
+   *  the chip subcomponent) so the IPC result swaps the local
+   *  `email` state directly, no event plumbing.  All three are
+   *  reset whenever the user opens a different message (see the
+   *  `$effect` in `load()`) so a passphrase typed on one mail
+   *  never leaks into another. */
+  let decryptPassphrase = $state('')
+  let decrypting = $state(false)
+  let decryptError = $state('')
+
+  async function runDecrypt() {
+    if (!email || !decryptPassphrase || decrypting) {
+      return
+    }
+    decrypting = true
+    decryptError = ''
+    try {
+      // Pull `(account, folder, uid)` off the existing email
+      // record — the message stays selected while we re-fetch,
+      // so the props the parent component holds for `accountId`,
+      // `folder`, and `uid` haven't changed.
+      const uidNum = Number(email.id.split(':').pop())
+      const decrypted = await invoke<Email>('decrypt_message', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid: uidNum,
+        pgpPassphrase: decryptPassphrase,
+      })
+      email = decrypted
+      // Clear the passphrase the moment the IPC resolves so it
+      // never lingers on the heap or in a DOM input that the
+      // user could leave open.
+      decryptPassphrase = ''
+    } catch (e: any) {
+      // Strip the `Crypto: ` variant prefix from UnkaiError so the
+      // user sees a clean sentence in the badge ("Wrong encryption
+      // passphrase") rather than "Crypto: Wrong encryption
+      // passphrase".  Log-side errors still carry the prefix via
+      // the IPC channel, so debugging info isn't lost.
+      const raw = formatError(e) || 'Decrypt failed'
+      decryptError = raw.replace(/^Crypto:\s*/i, '')
+    } finally {
+      decrypting = false
+    }
+  }
 
   /** Pre-fetch persisted thumbnails for one message and seed
    *  the in-memory thumb cache so AttachmentThumb's first
@@ -326,6 +389,12 @@
     showImagesForMessage = false
     trustedSender = false
     whiteBackgroundOverride = null
+    // #57 — clear any in-flight decrypt state from the previous
+    // message; a passphrase the user typed for `mail A` must not
+    // ride along to `mail B`.
+    decryptPassphrase = ''
+    decryptError = ''
+    decrypting = false
 
     // Cache first — lets the reading pane paint instantly when the user
     // re-opens a previously read message (the common case).
@@ -545,6 +614,477 @@
     }
   }
 
+  // ── Collapse quoted / forwarded blocks (#330) ────────────────────────
+  //
+  // Display-only transformation: every standard "this is a quoted /
+  // forwarded chunk" marker the wild collection of mail clients
+  // emits is folded into a native <details>/<summary> disclosure
+  // card so the reader sees the user's fresh content first and can
+  // expand the previous conversation on demand.  The raw
+  // `email.body_html` is never touched — Reply / Forward continue
+  // to read the unmodified body and emit the same wire format every
+  // other mail client expects.
+  //
+  // Markers handled, most-specific first.  Each pass skips elements
+  // already inside a `.quoted-collapse` to avoid double-wrapping
+  // nested matches (e.g. a `<blockquote type="cite">` inside our
+  // own `data-unkai-block="quoted-history"`).
+  //
+  //   1. `div[data-unkai-block="forwarded-mail"]` — our own forward
+  //      wrapper.  Parses the embedded From / Date / Subject / To
+  //      lines into a styled mini-header card; the body lands
+  //      below.
+  //   2. `div[data-unkai-block="quoted-history"]` — our own reply
+  //      wrapper.  Collapsed without re-styling — the inner
+  //      blockquote already has the muted-grey treatment.
+  //   3. `blockquote[type="cite"]` — the cite-blockquote
+  //      convention used by Apple Mail, Thunderbird, and the
+  //      RFC-3676 reply quoting style.
+  //   4. `div.gmail_quote`, `div.gmail_quote_container` — the
+  //      class names the dominant webmail emits on its reply
+  //      blocks.
+  //   5. `div.moz-cite-prefix` + the immediately-following
+  //      `<blockquote>` — Thunderbird splits the citation line
+  //      from the quoted body across two siblings; we wrap them
+  //      together.
+  //   6. The plain-text delimiter `---------- Forwarded message
+  //      ----------` followed by the rest of the body.  This is
+  //      the de-facto convention used when the sender's client
+  //      doesn't wrap forwards in a class-bearing div (and it's
+  //      what our own outgoing forwards emit, on top of the
+  //      data-unkai-block wrapper, so a receiving client without
+  //      the wrapper still recognises the chunk).
+  //
+  // The styled mini-header for case (1) is intentionally scoped to
+  // markers we own.  Universal multi-format parsing across every
+  // client's idiosyncratic header shape (Apple Mail's single
+  // line, Gmail's "On X at Y, Z wrote:", Thunderbird's table) is
+  // its own feature; for v1 the non-Unkai cases just collapse
+  // without restyling.
+
+  /** Does this element carry any visible content?  We treat empty
+   *  `<blockquote>` / `<div>` shells (common as line-spacers in mail
+   *  forwarded between clients) as "no content" so we don't render
+   *  empty disclosure cards over them.  Whitespace-only text doesn't
+   *  count; an `<img>` / `<video>` etc. does. */
+  function hasVisibleContent(el: Element): boolean {
+    if ((el.textContent ?? '').trim().length > 0) return true
+    return el.querySelector('img, video, audio, picture, canvas, svg') !== null
+  }
+
+  // Disclosure summary labels by chunk kind.  Replies show
+  // "conversation history"; forwards show "forwarded messages".
+  // For the ambiguous `<blockquote type="cite">` / `gmail_quote`
+  // markers (both clients use the same wrapper for replies AND
+  // forwards) we sniff the chunk text against forward-preamble
+  // markers below to pick the right label.
+  const REPLY_SUMMARY = 'Show conversation history'
+  const FORWARD_SUMMARY = 'Show forwarded messages'
+
+  // Multilingual forward-preamble markers used both to label
+  // ambiguous chunks as forwards and to recognise forward
+  // metadata in the body's outside-text for the auto-open
+  // heuristic.  Kept broad on purpose because different mail
+  // clients localise the preamble line and split the field
+  // labels differently.
+  const FORWARD_PREAMBLE_RE =
+    /(?:begin\s+forwarded\s+message|forwarded\s+message|anfang\s+der\s+weitergeleiteten\s+nachricht|weitergeleitete\s+nachricht|mensaje\s+reenviado|message\s+transféré|messaggio\s+inoltrato)/i
+  const FROM_LABEL_RE = /\b(?:from|von|de|fra|od):/i
+  const DATE_LABEL_RE =
+    /\b(?:date|datum|sent|fecha|envoyé|data|inviato|gesendet):/i
+  const SUBJECT_LABEL_RE =
+    /\b(?:subject|betreff|asunto|objet|oggetto):/i
+
+  /** Looks at the chunk's plain text and decides whether it's a
+   *  forward (preamble marker, or a From: + Date:/Subject: header
+   *  cluster) or a reply (default).  Used to pick the disclosure
+   *  summary label for the ambiguous wrapper markers — Apple Mail
+   *  / Thunderbird `<blockquote type="cite">` and Gmail's
+   *  `gmail_quote` both wrap replies AND forwards. */
+  function classifyChunk(text: string): 'forward' | 'reply' {
+    if (FORWARD_PREAMBLE_RE.test(text)) return 'forward'
+    if (
+      FROM_LABEL_RE.test(text) &&
+      (DATE_LABEL_RE.test(text) || SUBJECT_LABEL_RE.test(text))
+    ) {
+      return 'forward'
+    }
+    return 'reply'
+  }
+
+  function summaryFor(text: string): string {
+    return classifyChunk(text) === 'forward' ? FORWARD_SUMMARY : REPLY_SUMMARY
+  }
+
+  /** Build a native disclosure card around the given inner HTML.
+   *  The `<details>` element is closed by default, click on
+   *  `<summary>` toggles.  We mark the wrapper with a class so the
+   *  outer click handler (which delegates anchor / attachment-ref
+   *  clicks) can recognise descendants and skip the summary
+   *  toggle path entirely — and so the nested-collapse pass
+   *  skips elements already inside a wrapped block. */
+  function buildCollapseCard(
+    doc: Document,
+    summaryText: string,
+    headerHtml: string,
+    bodyHtml: string,
+  ): HTMLDetailsElement {
+    const details = doc.createElement('details')
+    details.className = 'quoted-collapse'
+    const summary = doc.createElement('summary')
+    summary.className = 'quoted-collapse__summary'
+    summary.textContent = summaryText
+    details.appendChild(summary)
+    const content = doc.createElement('div')
+    content.className = 'quoted-collapse__content'
+    if (headerHtml) {
+      const header = doc.createElement('div')
+      header.className = 'quoted-collapse__header'
+      header.innerHTML = headerHtml
+      content.appendChild(header)
+    }
+    const body = doc.createElement('div')
+    body.className = 'quoted-collapse__body'
+    body.innerHTML = bodyHtml
+    content.appendChild(body)
+    details.appendChild(content)
+    return details
+  }
+
+  /** For our own `data-unkai-block="forwarded-mail"` wrappers,
+   *  pull the embedded From / Date / Subject / To rows out of the
+   *  source HTML and rebuild them as a styled key-value list.
+   *  Everything *after* those rows is treated as the forwarded
+   *  body.  The shape we emit (see `forwardedMailHtml` in
+   *  `inviteHtml.ts`) is:
+   *
+   *      <p>---------- Forwarded message ----------</p>
+   *      <div><b>From:</b> …</div>
+   *      <div><b>Date:</b> …</div>
+   *      <div><b>Subject:</b> …</div>
+   *      <div><b>To:</b> …</div>
+   *      [body]
+   *
+   *  After DOMPurify the structure round-trips intact, so this
+   *  parser is a direct DOM walk.  Defensive fallback: if no
+   *  header rows are found (e.g. an older format we predate),
+   *  return the whole interior as body with no styled header. */
+  function parseOurForwardedHeaders(
+    el: Element,
+  ): { headerHtml: string; bodyHtml: string } {
+    const esc = (s: string) =>
+      s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+    interface Field {
+      label: string
+      value: string
+    }
+    const fields: Field[] = []
+    const LABEL_RE = /^(From|Date|Subject|To|Cc):\s*/i
+    let bodyStartIdx = -1
+    const kids = Array.from(el.children)
+    for (let i = 0; i < kids.length; i++) {
+      const child = kids[i]
+      const text = (child.textContent ?? '').trim()
+      // Skip the literal "---------- Forwarded message ----------" line.
+      if (/^-{5,}\s*forwarded message\s*-{5,}$/i.test(text)) continue
+      const m = text.match(LABEL_RE)
+      if (m && child.querySelector('b')) {
+        fields.push({
+          label: m[1],
+          value: text.slice(m[0].length),
+        })
+        continue
+      }
+      // First child that isn't a header row marks the body start.
+      bodyStartIdx = i
+      break
+    }
+    if (fields.length === 0) {
+      return { headerHtml: '', bodyHtml: el.innerHTML }
+    }
+    const headerHtml = fields
+      .map(
+        (f) =>
+          `<div class="quoted-collapse__field"><span class="quoted-collapse__label">${esc(f.label)}</span><span class="quoted-collapse__value">${esc(f.value)}</span></div>`,
+      )
+      .join('')
+    let bodyHtml = ''
+    if (bodyStartIdx !== -1) {
+      const wrapper = el.ownerDocument.createElement('div')
+      for (let i = bodyStartIdx; i < kids.length; i++) {
+        wrapper.appendChild(kids[i].cloneNode(true))
+      }
+      bodyHtml = wrapper.innerHTML
+    }
+    return { headerHtml, bodyHtml }
+  }
+
+  /** Find the text node containing the `---------- Forwarded
+   *  message ----------` delimiter (if any) and return both the
+   *  delimiter node and its containing block element (the element
+   *  that's a direct child of `<body>`).  Returns `null` when no
+   *  delimiter is present, or when it's already inside a
+   *  `.quoted-collapse` wrapper from an earlier pass. */
+  function findForwardedDelimiter(
+    doc: Document,
+  ): { containerBlock: Element } | null {
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+    let node: Node | null
+    while ((node = walker.nextNode())) {
+      const text = node.textContent ?? ''
+      if (!/-{5,}\s*forwarded message\s*-{5,}/i.test(text)) continue
+      const el = node.parentElement
+      if (!el) continue
+      if (el.closest('.quoted-collapse')) return null
+      // Walk up to the direct child of <body> so we wrap from the
+      // delimiter's block, not just its inline <strong> or <span>.
+      let block: Element = el
+      while (block.parentElement && block.parentElement !== doc.body) {
+        block = block.parentElement
+      }
+      return { containerBlock: block }
+    }
+    return null
+  }
+
+  /** Greedy run-collector: take a starting element and walk its
+   *  next siblings, absorbing any further matches plus filler
+   *  (whitespace text nodes, empty elements like `<br>` or empty
+   *  `<p>`).  Stops at the first sibling that is meaningful but
+   *  isn't a match — that's the boundary between this quoted run
+   *  and whatever follows it.  Returns the collected nodes; the
+   *  starting element is always first.
+   *
+   *  Used to coalesce mail clients that split a single logical
+   *  forwarded chunk across multiple sibling elements (e.g. Apple
+   *  Mail emits one `<blockquote type="cite">` for the embedded
+   *  headers and a second for the body — without this we'd render
+   *  them as two adjacent disclosure cards). */
+  function collectMatchRun(
+    start: Element,
+    isMatch: (el: Element) => boolean,
+  ): Node[] {
+    const run: Node[] = [start]
+    let cursor: Node | null = start.nextSibling
+    while (cursor) {
+      if (cursor.nodeType === Node.TEXT_NODE) {
+        if ((cursor.textContent ?? '').trim().length === 0) {
+          run.push(cursor)
+          cursor = cursor.nextSibling
+          continue
+        }
+        break // non-whitespace text breaks the run
+      }
+      if (cursor.nodeType !== Node.ELEMENT_NODE) {
+        cursor = cursor.nextSibling
+        continue
+      }
+      const el = cursor as Element
+      if (isMatch(el) || !hasVisibleContent(el)) {
+        run.push(el)
+        cursor = cursor.nextSibling
+        continue
+      }
+      break // meaningful non-match content ends the run
+    }
+    return run
+  }
+
+  /** Wrap a run of nodes (returned by `collectMatchRun`) in a
+   *  single collapse card, replacing the first node and detaching
+   *  the rest. */
+  function wrapRun(
+    doc: Document,
+    run: Node[],
+    summaryText: string,
+    headerHtml: string,
+  ): void {
+    const wrapper = doc.createElement('div')
+    for (const node of run) wrapper.appendChild(node.cloneNode(true))
+    const card = buildCollapseCard(doc, summaryText, headerHtml, wrapper.innerHTML)
+    const [first, ...rest] = run as [Element, ...Node[]]
+    first.replaceWith(card)
+    for (const node of rest) {
+      if (node.parentNode) node.parentNode.removeChild(node)
+    }
+  }
+
+  function collapseQuotedBlocks(doc: Document) {
+    // Pass 1 — our own forwarded-mail wrapper (with mini-header).
+    doc
+      .querySelectorAll('div[data-unkai-block="forwarded-mail"]')
+      .forEach((el) => {
+        if (el.closest('.quoted-collapse')) return
+        if (!hasVisibleContent(el)) return
+        const { headerHtml, bodyHtml } = parseOurForwardedHeaders(el)
+        el.replaceWith(
+          buildCollapseCard(doc, FORWARD_SUMMARY, headerHtml, bodyHtml),
+        )
+      })
+
+    // Pass 2 — our own quoted-history (reply) wrapper.
+    doc
+      .querySelectorAll('div[data-unkai-block="quoted-history"]')
+      .forEach((el) => {
+        if (el.closest('.quoted-collapse')) return
+        if (!hasVisibleContent(el)) return
+        el.replaceWith(
+          buildCollapseCard(doc, REPLY_SUMMARY, '', el.innerHTML),
+        )
+      })
+
+    // Pass 3 — standard cite-blockquote.  Coalesces adjacent
+    // siblings into one card so the embedded-header blockquote and
+    // the body blockquote a forward gets split into render as a
+    // single card rather than two.  Summary label is chosen by
+    // sniffing the merged chunk for forward-preamble markers —
+    // the same `<blockquote type="cite">` wrapper carries both
+    // reply quotes and forwarded chunks across mail clients.
+    const isCiteBq = (el: Element) =>
+      el.tagName.toLowerCase() === 'blockquote' &&
+      el.getAttribute('type')?.toLowerCase() === 'cite'
+    for (const bq of Array.from(doc.querySelectorAll('blockquote[type="cite"]'))) {
+      if (!bq.isConnected) continue // already absorbed into an earlier run
+      if (bq.closest('.quoted-collapse')) continue
+      if (!hasVisibleContent(bq)) continue
+      const run = collectMatchRun(bq, isCiteBq)
+      const runText = run
+        .map((n) => n.textContent ?? '')
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      wrapRun(doc, run, summaryFor(runText), '')
+    }
+
+    // Pass 4 — webmail "gmail_quote" / "gmail_quote_container" divs.
+    const isGmailQuote = (el: Element) =>
+      el.tagName.toLowerCase() === 'div' &&
+      (el.classList.contains('gmail_quote') ||
+        el.classList.contains('gmail_quote_container'))
+    for (const el of Array.from(
+      doc.querySelectorAll('div.gmail_quote, div.gmail_quote_container'),
+    )) {
+      if (!el.isConnected) continue
+      if (el.closest('.quoted-collapse')) continue
+      if (!hasVisibleContent(el)) continue
+      const run = collectMatchRun(el, isGmailQuote)
+      const runText = run
+        .map((n) => n.textContent ?? '')
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      wrapRun(doc, run, summaryFor(runText), '')
+    }
+
+    // Pass 5 — moz-cite-prefix + following blockquote (paired).
+    doc.querySelectorAll('div.moz-cite-prefix').forEach((prefix) => {
+      if (prefix.closest('.quoted-collapse')) return
+      const next = prefix.nextElementSibling
+      if (!next || next.tagName.toLowerCase() !== 'blockquote') return
+      if (!hasVisibleContent(prefix) && !hasVisibleContent(next)) return
+      const wrapper = doc.createElement('div')
+      wrapper.appendChild(prefix.cloneNode(true))
+      wrapper.appendChild(next.cloneNode(true))
+      const runText = ((prefix.textContent ?? '') + ' ' + (next.textContent ?? ''))
+        .replace(/\s+/g, ' ')
+        .trim()
+      const card = buildCollapseCard(
+        doc,
+        summaryFor(runText),
+        '',
+        wrapper.innerHTML,
+      )
+      next.remove()
+      prefix.replaceWith(card)
+    })
+
+    // Pass 6 — plain-text "---------- Forwarded message ----------"
+    // delimiter.  Wraps the delimiter block plus every sibling
+    // that follows it, so a forward without a wrapping div still
+    // collapses.  Runs last so the structured-wrapper passes
+    // above (which produce a `.quoted-collapse` ancestor) get
+    // first dibs on the delimiter and we don't double-wrap.  By
+    // construction this is always a forward.
+    const hit = findForwardedDelimiter(doc)
+    if (hit) {
+      const wrapper = doc.createElement('div')
+      let cursor: Element | null = hit.containerBlock
+      const toMove: Element[] = []
+      while (cursor) {
+        toMove.push(cursor)
+        cursor = cursor.nextElementSibling
+      }
+      for (const el of toMove) wrapper.appendChild(el)
+      if (hasVisibleContent(wrapper)) {
+        const card = buildCollapseCard(
+          doc,
+          FORWARD_SUMMARY,
+          '',
+          wrapper.innerHTML,
+        )
+        doc.body.appendChild(card)
+      }
+    }
+
+    // Pure-forward / pure-quote case: when the body's *outside*
+    // content (everything not in a collapse card) is either tiny,
+    // looks like forward preamble metadata, or is overwhelmed by
+    // the collapsed content size-wise, the user's primary interest
+    // IS the collapsed chunk (a mail forwarded to them, a thread
+    // where they have no fresh reply on top, etc).  Open every
+    // collapse by default; the toggle is still there if they want
+    // to fold it away.
+    //
+    // Three OR'd conditions, in increasing leniency:
+    //
+    //   1. outside text < 60 chars — clearly a pure forward with
+    //      nothing else around it.
+    //   2. outside text looks like forward preamble — detected via
+    //      multilingual marker strings ("Begin forwarded message",
+    //      "Anfang der weitergeleiteten Nachricht", From: + Date:
+    //      / Subject: cluster) — and is bounded in length so a
+    //      reply that happens to quote those words in passing
+    //      doesn't false-positive.
+    //   3. collapsed content is ≥ 85% of total body text — the
+    //      catch-all for very large forwarded chunks (newsletters,
+    //      long signatures) where the outside metadata bumps past
+    //      the preamble check but is still negligible relative to
+    //      the actual content.
+    const allCollapses = Array.from(
+      doc.querySelectorAll('details.quoted-collapse'),
+    ) as HTMLDetailsElement[]
+    if (allCollapses.length > 0) {
+      const clone = doc.body.cloneNode(true) as HTMLElement
+      clone
+        .querySelectorAll('details.quoted-collapse')
+        .forEach((d) => d.remove())
+      const outsideText = (clone.textContent ?? '').replace(/\s+/g, ' ').trim()
+      const insideText = allCollapses.reduce(
+        (sum, d) =>
+          sum + (d.textContent ?? '').replace(/\s+/g, ' ').trim().length,
+        0,
+      )
+      const totalText = outsideText.length + insideText
+
+      // Reuses the same `classifyChunk` heuristic that picks the
+      // summary label, so any text outside the collapses that
+      // looks like forward preamble doesn't block auto-open.
+      const looksLikePreamble = classifyChunk(outsideText) === 'forward'
+
+      const shouldOpen =
+        outsideText.length < 60 ||
+        (outsideText.length < 500 && looksLikePreamble) ||
+        (totalText > 100 && insideText / totalText >= 0.85)
+
+      if (shouldOpen) {
+        for (const d of allCollapses) d.setAttribute('open', '')
+      }
+    }
+  }
+
   function processEmailHtml(
     html: string,
     showImages: boolean,
@@ -622,6 +1162,13 @@
           }
         })
       }
+
+      // Fold quoted / forwarded chunks into collapsible cards (#330).
+      // Runs after the link / image passes so anything inside a
+      // collapsed block has already been annotated and image-blocked;
+      // the URLhaus second-pass that walks `<a href>` later will see
+      // the links inside the (still-in-DOM, just-hidden) block too.
+      collapseQuotedBlocks(doc)
 
       return { html: doc.body.innerHTML, hadBlocked }
     } catch (e) {
@@ -1305,6 +1852,74 @@
       <div class="flex items-center gap-2 text-sm text-surface-600 dark:text-surface-400">
         <span class="font-medium">{email.from || '(unknown sender)'}</span>
       </div>
+      <!-- #57 — encryption + signature status chips and the
+           "can't decrypt here" banner.  Component renders nothing
+           when both fields are null, which is the common-case
+           plaintext path. -->
+      <CryptoChips
+        protection={email.protection}
+        signatureStatus={email.signature_status}
+        signerFingerprint={email.signer_fingerprint}
+        decrypted={!!(email.body_text || email.body_html)}
+      />
+      {#if (email.protection === 'encrypted' || email.protection === 'signed-and-encrypted')
+        && !email.body_text && !email.body_html}
+        <!-- #57 — Decrypt prompt.  Appears when the receive path
+             marked the message encrypted but body is empty (no
+             bridge was supplied on first fetch, by design — we
+             re-prompt for the passphrase on every decrypt).  Two-
+             row layout: explanation line at the top, then the
+             input + button on a second row so the user reads the
+             "what's going on" copy before reaching for the field. -->
+        <div
+          class="mt-2 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
+        >
+          <!-- Explanation copy uses the same muted surface tone as
+               the From-line in the header so the badge reads as
+               *secondary information* rather than competing with
+               the subject for attention. -->
+          <p class="text-sm text-surface-600 dark:text-surface-400">
+            This message is encrypted with your OpenPGP key.  Enter your
+            passphrase to decrypt and view it.
+          </p>
+          <div class="flex items-center gap-2">
+            <input
+              type="password"
+              class="input text-sm px-2 py-1.5 rounded-md flex-1"
+              placeholder="PGP passphrase"
+              bind:value={decryptPassphrase}
+              disabled={decrypting}
+              autocomplete="off"
+              onkeydown={(e) => {
+                if (e.key === 'Enter' && decryptPassphrase) {
+                  void runDecrypt()
+                }
+              }}
+            />
+            <!-- Hover keeps the resting outlined-surface look and
+                 just brightens the border to the same lightest-
+                 surface tone the input field uses when focused —
+                 no fill, no text tint.  Any hue we tried (primary
+                 or success) competed with the surrounding badge;
+                 a neutral border bump signals "interactive" without
+                 introducing a colour. -->
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5 hover:border-surface-50 shrink-0"
+              disabled={decrypting || !decryptPassphrase}
+              onclick={() => void runDecrypt()}
+              title="Decrypt this message"
+            >
+              {decrypting ? 'Decrypting…' : 'Decrypt'}
+            </button>
+          </div>
+        </div>
+        {#if decryptError}
+          <div class="mt-1 text-xs text-error-500" data-test="decrypt-error">
+            {decryptError}
+          </div>
+        {/if}
+      {/if}
       {#if email.to.length > 0}
         <div class="text-xs text-surface-500 mt-1">
           To: {email.to.join(', ')}

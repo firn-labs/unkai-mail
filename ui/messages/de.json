@@ -16,6 +16,9 @@
   "settings_general_file_assoc_hint": "Unkai ist beim Betriebssystem als möglicher Handler registriert. Setzen Sie Unkai in den OS-Einstellungen als Standardprogramm, damit doppelt angeklickte Kalender­einladungen und E-Mail-Dateien hier geöffnet werden.",
   "settings_general_file_assoc_button": "OS-Einstellungen öffnen",
 
+  "settings_mail_conversation_view_label": "Nachrichten nach Konversation gruppieren",
+  "settings_mail_conversation_view_hint": "Antworten desselben Threads werden in einer Zeile mit Aufklapp-Pfeil zusammengefasst. Ausschalten zeigt jede Nachricht als eigene Zeile in zeitlicher Reihenfolge.",
+
   "account_setup_welcome_title": "Willkommen bei Unkai Mail",
   "account_setup_welcome_subtitle": "Lassen Sie uns Ihr E-Mail-Konto einrichten",
   "account_setup_close_label": "Einrichtungsassistenten schließen",
@@ -47,6 +50,21 @@
   "account_setup_jmap_hint": "Modernes Push-basiertes Mail-Protokoll. Nur aktivieren, wenn Ihr Anbieter es unterstützt.",
   "account_setup_signature_label": "Signatur (optional)",
   "account_setup_signature_hint": "Wird neuen Nachrichten dieses Kontos angefügt. Kann später in den Einstellungen geändert werden.",
+
+  "signature_popout_button_title": "Signatur in einem separaten Fenster bearbeiten",
+  "signature_popout_button_aria": "Signatur-Editor in einem separaten Fenster öffnen",
+  "signature_popout_locked_banner": "Bearbeitung im Pop-out-Fenster — schließen Sie dieses Fenster, um hier wieder zu bearbeiten.",
+  "signature_popout_header": "Signatur bearbeiten",
+  "signature_popout_done": "Fertig",
+  "signature_popout_placeholder": "Wird neuen Nachrichten dieses Kontos angefügt.",
+  "signature_popout_loading": "Wird geladen…",
+  "signature_popout_missing_state": "Kein Pop-out-Zustand für dieses Signatur-Editor-Fenster gefunden.",
+  "signature_popout_account_missing": "Das Konto, für das dieses Fenster geöffnet wurde, ist nicht mehr konfiguriert.",
+  "signature_popout_load_failed": "Kontoinformationen konnten nicht geladen werden.",
+  "signature_status_saving": "Wird gespeichert…",
+  "signature_status_saved": "Gespeichert",
+  "signature_status_error": "Speichern fehlgeschlagen",
+
   "account_setup_button_back": "Zurück",
   "account_setup_button_next": "Weiter",
   "account_setup_button_add_account": "Konto hinzufügen",
@@ -76,6 +94,17 @@
   "compose_attachment_warning_title": "Sie haben einen Anhang erwähnt, aber keine Datei angehängt.",
   "compose_attachment_warning_body": "Fügen Sie vor dem Senden eine Datei hinzu oder schließen Sie diese Warnung, falls es ein Fehlalarm ist.",
   "compose_attachment_warning_dismiss": "Schließen",
+
+  "compose_forward_attachments_title": "Originalanhänge übernehmen?",
+  "compose_forward_attachments_body_one": "Die weitergeleitete Nachricht enthält 1 Anhang. Soll er in die Weiterleitung übernommen werden?",
+  "compose_forward_attachments_body_many": "Die weitergeleitete Nachricht enthält {n} Anhänge. Sollen sie in die Weiterleitung übernommen werden?",
+  "compose_forward_attachments_include": "Anhänge übernehmen",
+  "compose_forward_attachments_skip": "Ohne Anhänge weiterleiten",
+  "compose_forward_attachments_download_failed": "Einige Anhänge konnten nicht geladen werden: {reason}",
+
+  "nc_share_set_expiration_label": "Ablaufdatum festlegen",
+  "nc_share_expiration_aria": "Ablaufdatum für den Freigabelink auswählen",
+  "nc_share_expiration_hint": "Empfänger können den Link nach diesem Datum nicht mehr öffnen.",
 
   "compose_button_minimize_aria_label": "Minimieren",
   "compose_button_minimize_title": "Entwurf in die Leiste minimieren",
@@ -218,5 +247,49 @@
 
   "chrome_sidebar_resize_handle_label": "Seitenleiste anpassen",
 
-  "mail_view_message_gone": "Diese Nachricht existiert nicht mehr auf dem Server."
+  "mail_view_message_gone": "Diese Nachricht existiert nicht mehr auf dem Server.",
+
+  "sidebar_unified_inbox_label": "Alle Posteingänge",
+  "sidebar_unified_outbox_label": "Alle ausgehenden Nachrichten",
+  "sidebar_unified_sent_label": "Alle gesendeten Nachrichten",
+  "sidebar_unified_drafts_label": "Alle Entwürfe",
+  "sidebar_unified_archive_label": "Alle Archive",
+  "sidebar_unified_junk_label": "Alle Spam-Ordner",
+  "sidebar_unified_trash_label": "Alle Papierkörbe",
+
+  "maillist_empty_in_folder": "Keine Nachrichten in {folder}.",
+
+  "folder_name_inbox": "Posteingang",
+  "folder_name_sent": "Gesendet",
+  "folder_name_drafts": "Entwürfe",
+  "folder_name_junk": "Spam",
+  "folder_name_archive": "Archiv",
+  "folder_name_trash": "Papierkorb",
+
+  "encryption_section_title": "Ende-zu-Ende-Verschlüsselung",
+  "encryption_status_loading": "Wird geladen…",
+  "encryption_active_key_label": "Aktiver OpenPGP-Schlüssel-Fingerabdruck",
+  "encryption_remove_button": "Schlüssel entfernen",
+  "encryption_replace_button": "Ersetzen…",
+  "encryption_no_key_explanation": "Importiere einen privaten OpenPGP-Schlüssel, um ausgehende E-Mails dieses Kontos zu signieren und eingehende zu entschlüsseln. Der ASCII-armierte Schlüssel wird im Schlüsselbund des Betriebssystems gespeichert; die Passphrase wird nicht behalten.",
+  "encryption_import_button": "Privaten Schlüssel importieren…",
+  "encryption_paste_label": "Armierten privaten OpenPGP-Schlüssel einfügen",
+  "encryption_passphrase_label": "Passphrase",
+  "encryption_passphrase_placeholder": "Wird benötigt, um den Schlüssel zu entsperren",
+  "encryption_passphrase_hint": "Die Passphrase wird einmal zur Validierung verwendet und dann verworfen. Compose fragt sie bei jeder verschlüsselten Sendung erneut ab.",
+  "encryption_import_submit": "Importieren",
+  "encryption_import_cancel": "Abbrechen",
+
+  "mail_view_cannot_decrypt_banner": "Diese Nachricht ist verschlüsselt. Der Server liefert die Rohbytes nicht aus, daher kann sie hier nicht entschlüsselt werden – öffne sie über IMAP oder einen Desktop-PGP-Client.",
+  "mail_view_chip_decrypted": "Entschlüsselt",
+  "mail_view_chip_encrypted": "Verschlüsselt",
+  "mail_view_chip_signed_valid": "Signiert von {fp}",
+  "mail_view_chip_signed_invalid": "Signatur ungültig",
+  "mail_view_chip_signed_unknown": "Signiert (Unterzeichner unbekannt)",
+
+  "contact_form_section_encryption": "Verschlüsselung",
+  "contact_form_label_pgp_keys": "OpenPGP-Schlüssel",
+  "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+  "contact_form_button_add_pgp_key": "Schlüssel hinzufügen",
+  "contact_form_hint_pgp_keys": "Füge einen ASCII-armierten öffentlichen OpenPGP-Schlüssel ein. Wird über die vCard des Kontakts synchronisiert und lokal zwischengespeichert, damit Compose verschlüsselt an diese Adresse senden kann."
 }

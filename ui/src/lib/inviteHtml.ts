@@ -296,49 +296,102 @@ ${nextcloudFooter("You'll be invited via Nextcloud — accepting in your mail cl
 
 // ── Quoted-history wrapper (#195 follow-up) ─────────────────────
 
-/** Wrap a reply's quoted history in a styled container.  Visually
- *  pushes the previous thread back so the user's fresh reply
- *  reads first: muted background, smaller type, soft left border,
- *  generous padding.  Same subdued grey palette across light and
- *  dark themes — designed to read as "old context" rather than
- *  competing with the new content.
+/** Wrap a reply's quoted history in the long-standing standard
+ *  reply format every receiving mail client recognises: an `On
+ *  {date}, {from} wrote:` attribution line followed by a
+ *  `<blockquote type="cite">` carrying the original body.
+ *  Receiving clients render this natively (indent, vertical-bar
+ *  accent, or their own collapse affordance) — no bespoke chrome
+ *  from us on the wire.
  *
- *  The outer `data-unkai-block` attribute lets the editor's
- *  `UnkaiBlock` extension capture this as an atom node so the
- *  styled wrapper survives Tiptap's schema (which would otherwise
- *  unwrap the `<div>` and strip the inline styles).
- *
- *  The inner content is also wrapped in a `<blockquote
- *  type="cite">` (#277).  Standard mail clients use blockquote
- *  as the canonical "this is quoted from a previous mail"
- *  signal — Apple Mail, Thunderbird, Gmail, Outlook each render
- *  blockquoted content with their own indent / collapse
- *  affordance ("Show original", a vertical bar, etc.).  The
- *  `type="cite"` attribute is the long-standing convention for
- *  email-quoted blockquotes (vs. literary citations); it does
- *  nothing visual but a couple of clients use it as a stronger
- *  signal that the block is a mail quote.  We zero out the
- *  blockquote's default browser indent so it doesn't double
- *  up with the styled div's own padding. */
+ *  The outer `data-unkai-block="quoted-history"` wrapper carries
+ *  no visual styling — it exists purely so the editor's
+ *  `UnkaiBlock` extension captures the whole chunk as an atom
+ *  node.  Without that, Tiptap's StarterKit schema would unwrap
+ *  the wrapper, strip the original message's inline styles, and
+ *  can duplicate `<img>` nodes while reconciling complex
+ *  `<table>` / `<picture>` markup against its block schema (same
+ *  failure mode #319 hit for forwards).  Inside the atom Tiptap
+ *  doesn't parse the interior, so the email's layout, inline
+ *  styles, and embedded images survive untouched.  Unkai's own
+ *  MailView display-time renderer (#330) detects the wrapper via
+ *  the `data-unkai-block` attribute and folds it into the
+ *  collapsible "Show conversation history" card; recipients on
+ *  other clients see the standard reply convention. */
 export function quotedHistoryHtml(args: {
   fromHeader: string
   whenText: string
   bodyHtml: string
 }): string {
   const { fromHeader, whenText, bodyHtml } = args
-  const escAttr = (s: string) =>
+  const esc = (s: string) =>
     s
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;')
-  const meta = `On ${escAttr(whenText)}, ${escAttr(fromHeader)} wrote:`
   return `
-<div data-unkai-block="quoted-history" style="margin:24px 0 0 0;padding:14px 18px;background:#f1f5f9;border-left:3px solid #cbd5e1;border-radius:8px;color:#64748b;font-size:13px;line-height:1.55;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px;">Previous conversation</div>
-  <div style="font-size:12px;color:#475569;margin-bottom:10px;">${meta}</div>
-  <blockquote type="cite" style="margin:0;padding:0;border:0;color:#64748b;">${bodyHtml}</blockquote>
+<div data-unkai-block="quoted-history">
+  <div>On ${esc(whenText)}, ${esc(fromHeader)} wrote:</div>
+  <blockquote type="cite">${bodyHtml}</blockquote>
+</div>
+`.trim()
+}
+
+// ── Forwarded-mail wrapper (#319) ───────────────────────────────
+
+/** Wrap a forwarded message's body so the original formatting
+ *  is preserved verbatim and the header matches the long-standing
+ *  forwarded-mail convention every receiving mail client knows.
+ *
+ *  The header is the de-facto-standard plain-text delimiter
+ *  (`---------- Forwarded message ----------`) followed by
+ *  bold-labelled `From:` / `Date:` / `Subject:` / `To:` lines.
+ *  This is the same shape virtually every other mail client emits,
+ *  so the recipient's client renders the forward the way they
+ *  expect rather than seeing a bespoke chrome from us.
+ *
+ *  The `data-unkai-block` wrapper carries no visual styling — it
+ *  exists purely so the editor's `UnkaiBlock` extension captures
+ *  the whole chunk as an atom node. Without that, Tiptap's
+ *  StarterKit schema unwraps the wrapper, strips the original
+ *  message's inline styles, and can duplicate `<img>` nodes while
+ *  reconciling complex `<table>` / `<picture>` markup against its
+ *  block schema (the original visual symptom on #319). Inside the
+ *  atom Tiptap doesn't parse the interior, so the email's table
+ *  layout, inline styles, and `<img>` elements survive untouched.
+ *  The chunk is non-editable; users add their note above it and
+ *  remove it as a unit with one Backspace if they don't want it.
+ *
+ *  `toHeader` is optional because the field is occasionally
+ *  missing on cached payloads — when absent we just omit the line
+ *  rather than print an empty `To:`. */
+export function forwardedMailHtml(args: {
+  fromHeader: string
+  whenText: string
+  subjectText: string
+  toHeader?: string
+  bodyHtml: string
+}): string {
+  const { fromHeader, whenText, subjectText, toHeader, bodyHtml } = args
+  const esc = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+  const lines = [
+    `<div><b>From:</b> ${esc(fromHeader)}</div>`,
+    `<div><b>Date:</b> ${esc(whenText)}</div>`,
+    `<div><b>Subject:</b> ${esc(subjectText)}</div>`,
+  ]
+  if (toHeader && toHeader.trim()) {
+    lines.push(`<div><b>To:</b> ${esc(toHeader)}</div>`)
+  }
+  return `
+<div data-unkai-block="forwarded-mail">
+  <p>---------- Forwarded message ----------</p>
+  ${lines.join('\n  ')}
+  <p></p>
+  ${bodyHtml}
 </div>
 `.trim()
 }

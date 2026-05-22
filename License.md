@@ -42,8 +42,8 @@ The following packages are distributed under the MIT License:
 `open`, `hex`, `async-imap`, `futures`, `tokio-rustls`,
 `rustls-pki-types`, `tokio-util`, `sha2`, `lettre`, `mail-parser`,
 `quick-xml`, `ical`, `base64`, `aes-gcm`, `pbkdf2`, `hmac`, `uuid`,
-`hickory-resolver`, `font-kit`, `tauri`, `tauri-build`,
-`tauri-plugin-notification`, `tauri-plugin-dialog`,
+`hickory-resolver`, `font-kit`, `pgp` (rpgp), `rand`, `tauri`,
+`tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
 `tauri-plugin-single-instance`, `notify-rust`, `windows`.
 
@@ -104,8 +104,9 @@ with downstream consumers who require it):
 `chrono-tz`, `dirs`, `keyring`, `r2d2`, `r2d2_sqlite`, `getrandom`,
 `open`, `hex`, `async-imap`, `futures`, `rustls`, `tokio-rustls`,
 `rustls-pki-types`, `mail-parser`, `ical`, `base64`, `aes-gcm`,
-`pbkdf2`, `hmac`, `uuid`, `hickory-resolver`, `font-kit`, `tauri`,
-`tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
+`pbkdf2`, `hmac`, `uuid`, `hickory-resolver`, `font-kit`,
+`pgp` (rpgp), `rand`, `tauri`, `tauri-build`,
+`tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
 `tauri-plugin-single-instance`, `notify-rust`, `windows`.
 

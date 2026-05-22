@@ -1,4 +1,4 @@
-//! Local mail cache backed by SQLite.
+﻿//! Local mail cache backed by SQLite.
 //!
 //! # What lives here
 //!
@@ -16,7 +16,7 @@
 //!
 //! The UI loads from the cache first (instant, offline-safe) and then
 //! kicks off a network refresh which write-throughs back to the cache.
-//! The Tauri layer owns this dance — there are separate `get_cached_*`
+//! The Tauri layer owns this dance â€” there are separate `get_cached_*`
 //! commands for the cache path and `fetch_*` commands for the network
 //! path. Keeping them distinct makes the strategy explicit in the UI
 //! and lets future views (search, notifications) pick whichever they
@@ -33,6 +33,7 @@ pub mod contacts;
 pub mod geocode;
 pub mod key;
 pub mod notes;
+pub mod pgp_keys;
 pub mod pool;
 pub mod schema;
 pub mod search;
@@ -43,6 +44,7 @@ pub use calendars::{
 };
 pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 pub use notes::NotesSyncState;
+pub use pgp_keys::{PgpKeySource, PgpPublicKeyRow};
 pub use search::{SearchFilters, SearchHit, SearchScope};
 
 use std::path::{Path, PathBuf};
@@ -76,7 +78,7 @@ pub enum CacheError {
     /// authenticated yet.  Surface this from any IPC that touches
     /// cached data so the UI can hold off until the lock screen
     /// completes the unlock.
-    #[error("cache is locked — authenticate to unlock")]
+    #[error("cache is locked â€” authenticate to unlock")]
     Locked,
 }
 
@@ -98,7 +100,7 @@ pub struct SyncState {
     pub last_synced_at: Option<DateTime<Utc>>,
 }
 
-/// Handle to the local mail cache. Cheap to clone — under the hood it's
+/// Handle to the local mail cache. Cheap to clone â€” under the hood it's
 /// an `Arc` around a connection pool.
 ///
 /// The pool is `Option`-wrapped so the cache can exist in a
@@ -144,7 +146,7 @@ impl Cache {
                 hex.len()
             ))),
             None => {
-                // No keychain entry yet — first-run; mint a key and
+                // No keychain entry yet â€” first-run; mint a key and
                 // open normally.  `get_or_create_master_key`
                 // handles the empty-keychain case for us.
                 if envelope.wraps.is_empty() {
@@ -171,7 +173,7 @@ impl Cache {
     /// Used by the default opener above and by future multi-profile
     /// support. The key must be a 64-char lowercase hex string.
     ///
-    /// Handles the pre-encryption → encryption upgrade: if a legacy
+    /// Handles the pre-encryption â†’ encryption upgrade: if a legacy
     /// unencrypted `cache.db` is found on disk, opening it with a key
     /// will fail at the first decrypt; we detect that, wipe the file,
     /// and recreate from scratch. The user loses their cache but
@@ -184,7 +186,7 @@ impl Cache {
                 warn!(
                     "Existing cache at {} could not be unlocked (likely an \
                      unencrypted cache from a pre-encryption build). Wiping \
-                     and recreating — mail will re-sync on next launch.",
+                     and recreating â€” mail will re-sync on next launch.",
                     path.display()
                 );
                 wipe_cache_files(path)?;
@@ -215,7 +217,7 @@ impl Cache {
         })
     }
 
-    /// True when the pool isn't open yet — every data method
+    /// True when the pool isn't open yet â€” every data method
     /// returns `Locked` until `unlock_with_master_key` runs.
     pub fn is_locked(&self) -> bool {
         self.pool.read().map(|g| g.is_none()).unwrap_or(true)
@@ -224,13 +226,13 @@ impl Cache {
     /// Open the pool for a previously-locked Cache.  Called from
     /// the unlock-flow IPCs once the user has authenticated and
     /// the master key has been recovered from a wrap.
-    /// Idempotent — a second call with the same key is a no-op.
+    /// Idempotent â€” a second call with the same key is a no-op.
     pub fn unlock_with_master_key(&self, key_hex: String) -> Result<(), CacheError> {
         if !self.is_locked() {
             return Ok(());
         }
         // No wipe-on-wrong-key fallback here.  At unlock time a
-        // SQLCipher key mismatch means authentication failed —
+        // SQLCipher key mismatch means authentication failed â€”
         // silently wiping the DB would destroy the user's mail and
         // accounts.  Surface the error so the unlock IPC can
         // re-prompt instead.  (The legacy-DB wipe lives in
@@ -239,7 +241,7 @@ impl Cache {
         let pool = pool::open_pool(&self.path, key_hex.clone())?;
         let mut conn = pool.get()?;
         schema::run_migrations(&mut conn)?;
-        // Same stale-tombstone sweep as `open_with_key` — see
+        // Same stale-tombstone sweep as `open_with_key` â€” see
         // there for the why.  Done while we still hold the pooled
         // conn so the cleanup runs before any data IPC can.
         if let Err(e) = conn.execute(
@@ -276,7 +278,7 @@ impl Cache {
     /// by the "wipe on failed authentication" policy: when the
     /// user exhausts their unlock attempts we drop the file so
     /// the next launch starts clean.  The Cache stays locked
-    /// (pool is `None` either way) — the caller is responsible
+    /// (pool is `None` either way) â€” the caller is responsible
     /// for clearing the keychain envelope's wraps if it wants a
     /// completely fresh setup on next launch.
     pub fn wipe_on_disk(&self) -> Result<(), CacheError> {
@@ -286,7 +288,7 @@ impl Cache {
     /// Borrow a pooled connection or return `Locked`.  Every
     /// data-touching method funnels through here so locked
     /// state propagates uniformly.  `pub(crate)` so sibling
-    /// modules (`account_store`, …) can reuse it instead of
+    /// modules (`account_store`, â€¦) can reuse it instead of
     /// duplicating the lock-and-checkout dance.
     pub(crate) fn conn(&self) -> Result<PooledConnection<SqliteConnectionManager>, CacheError> {
         let guard = self.pool.read().expect("Cache pool RwLock poisoned");
@@ -295,7 +297,7 @@ impl Cache {
     }
 
     /// Open an in-memory cache for tests. Each call gets its own
-    /// fresh DB — see `pool::open_memory_pool` for the URI trick
+    /// fresh DB â€” see `pool::open_memory_pool` for the URI trick
     /// that makes that work. Useful for any sibling module
     /// (e.g. `account_store`) that needs a Cache to run unit tests
     /// against without touching the user's real config dir or the
@@ -322,7 +324,7 @@ impl Cache {
     /// whose owning account no longer exists and `load_account`
     /// would fail on every click.
     ///
-    /// Returns the count of orphan account ids that were pruned —
+    /// Returns the count of orphan account ids that were pruned â€”
     /// zero on a clean cache, any other number is worth a log line.
     pub fn prune_orphan_accounts(&self, active_ids: &[String]) -> Result<usize, CacheError> {
         let conn = self.conn()?;
@@ -361,7 +363,7 @@ impl Cache {
         Ok(orphans.len())
     }
 
-    /// Clears the cache for a specific account — called when an account
+    /// Clears the cache for a specific account â€” called when an account
     /// is removed, or when `UIDVALIDITY` changes and we need to start fresh.
     pub fn wipe_account(&self, account_id: &str) -> Result<(), CacheError> {
         let conn = self.conn()?;
@@ -383,7 +385,7 @@ impl Cache {
     /// across a rename, so updating the `folder` column on `messages`,
     /// `folder_sync_state`, and `folders` is enough to keep every
     /// envelope / body / unread-count bookmark pointing at the right
-    /// mailbox — without re-fetching a single byte.
+    /// mailbox â€” without re-fetching a single byte.
     pub fn rename_folder(
         &self,
         account_id: &str,
@@ -410,7 +412,7 @@ impl Cache {
         Ok(())
     }
 
-    /// Clear all cached rows for a single folder — used when the server's
+    /// Clear all cached rows for a single folder â€” used when the server's
     /// `UIDVALIDITY` for that folder has changed, meaning every UID we had
     /// cached now refers to a different message (or none at all).
     ///
@@ -430,7 +432,7 @@ impl Cache {
         Ok(())
     }
 
-    // ── Folders ─────────────────────────────────────────────────
+    // â”€â”€ Folders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Replace the cached folder list for an account.
     ///
@@ -468,12 +470,12 @@ impl Cache {
 
     /// Read the cached folder list for an account.
     ///
-    /// Returns folders in the order they were inserted — i.e. the
+    /// Returns folders in the order they were inserted â€” i.e. the
     /// server's native order, which is what the user expects (INBOX
     /// first, then the server's own ordering). `upsert_folders`
     /// wipes-and-reinserts in a single transaction, so SQLite's
     /// monotonically-assigned `rowid` matches the input iteration
-    /// order exactly. Sorting by `name` instead — as we used to —
+    /// order exactly. Sorting by `name` instead â€” as we used to â€”
     /// alphabetised by ASCII code, which puts all-caps `INBOX`
     /// behind names like `Drafts` and made the sidebar look
     /// scrambled compared to every other mail client.
@@ -503,11 +505,11 @@ impl Cache {
         Ok(out)
     }
 
-    // ── Envelopes ───────────────────────────────────────────────
+    // â”€â”€ Envelopes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Upsert a batch of envelopes, tagging each with the given `account_id`.
     ///
-    /// `EmailEnvelope` doesn't carry an account id — the frontend never
+    /// `EmailEnvelope` doesn't carry an account id â€” the frontend never
     /// needs it, and the Tauri command always knows which account it
     /// connected to. We take the id once here instead of widening the
     /// shared struct.
@@ -516,6 +518,63 @@ impl Cache {
     /// refreshes its flags (e.g. user marked-as-read on another device).
     /// Runs inside a transaction: either the whole batch lands or none
     /// of it does.
+    /// One-shot warm-up: fill in `thread_id` for any rows in this
+    /// folder that pre-date the v32 migration or were inserted by a
+    /// path that didn't compute it (#334).  Cheap to run on every
+    /// read â€” when every row already has a `thread_id`, the UPDATE
+    /// matches zero rows.
+    ///
+    /// Computes the same canonical key shape as `compute_thread_id`
+    /// directly in SQL via COALESCE.  Folder-scoped so a big folder
+    /// doesn't tax other folders' read paths.
+    pub fn assign_pending_thread_ids(
+        &self,
+        account_id: &str,
+        folder: &str,
+    ) -> Result<usize, CacheError> {
+        let conn = self.conn()?;
+        let updated = conn.execute(
+            "UPDATE messages
+             SET thread_id = COALESCE(
+                 json_extract(references_ids, '$[0]'),
+                 message_id,
+                 'solo:' || account_id || ':' || folder || ':' || uid
+             )
+             WHERE account_id = ?1 AND folder = ?2 AND thread_id IS NULL",
+            params![account_id, folder],
+        )?;
+        if updated > 0 {
+            tracing::info!(
+                "Warmed up thread_id for {updated} envelope(s) in '{account_id}'/'{folder}' (#334)"
+            );
+        }
+        Ok(updated)
+    }
+
+    /// Canonical thread identity for the local cache (#334).
+    /// Two envelopes share a thread iff they produce the same key:
+    ///
+    ///   1. `references_ids[0]` â€” the chain root, when this is a reply.
+    ///   2. `message_id` â€” for top-of-thread originals (future replies
+    ///      will carry this value as their first References entry, so
+    ///      siblings still resolve correctly).
+    ///   3. `solo:<account>:<folder>:<uid>` â€” synthetic fallback for
+    ///      envelopes that have neither (e.g. pre-parser cached rows
+    ///      that didn't capture the headers).
+    ///
+    /// Kept in lock-step with the frontend's old `threadKeyOf` shape
+    /// so subjects already bucketed in the UI roll forward to the
+    /// same group once they pick up a stored `thread_id`.
+    fn compute_thread_id(account_id: &str, env: &EmailEnvelope) -> String {
+        if let Some(first) = env.references_ids.first() {
+            return first.clone();
+        }
+        if let Some(mid) = &env.message_id {
+            return mid.clone();
+        }
+        format!("solo:{}:{}:{}", account_id, env.folder, env.uid)
+    }
+
     pub fn upsert_envelopes_for_account(
         &self,
         account_id: &str,
@@ -529,7 +588,7 @@ impl Cache {
         let now = Utc::now().timestamp();
         {
             // Note (#255): `replied_kind` is intentionally NOT in
-            // the UPDATE clause — IMAP envelope re-fetches don't
+            // the UPDATE clause â€” IMAP envelope re-fetches don't
             // know which kind of reply happened, so leave whatever
             // we stamped from the send path in place.  `is_answered`
             // *is* refreshed because the IMAP `\Answered` flag is
@@ -538,15 +597,15 @@ impl Cache {
             // `references_ids` is serialised to JSON before the
             // bind so SQLite stores a single TEXT cell (the same
             // shape we use for `attendees_json` etc.).  Empty
-            // vector → `NULL` so the indexed column stays sparse
+            // vector â†’ `NULL` so the indexed column stays sparse
             // for messages that aren't in any thread.
             let mut stmt = tx.prepare(
                 "INSERT INTO messages
                    (account_id, folder, uid, from_addr, subject, internal_date,
                     is_read, is_starred, is_answered, cached_at,
-                    message_id, in_reply_to, references_ids)
+                    message_id, in_reply_to, references_ids, thread_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                         ?11, ?12, ?13)
+                         ?11, ?12, ?13, ?14)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
@@ -560,7 +619,12 @@ impl Cache {
                    -- wipe data we successfully extracted earlier.
                    message_id    = COALESCE(excluded.message_id, messages.message_id),
                    in_reply_to   = COALESCE(excluded.in_reply_to, messages.in_reply_to),
-                   references_ids = COALESCE(excluded.references_ids, messages.references_ids)",
+                   references_ids = COALESCE(excluded.references_ids, messages.references_ids),
+                   -- #334: `thread_id` is computed from the headers above,
+                   -- so a re-fetch that brought new threading info updates
+                   -- the row; otherwise we preserve whatever the previous
+                   -- write (or the warm-up pass) assigned.
+                   thread_id     = COALESCE(excluded.thread_id, messages.thread_id)",
             )?;
             for env in envelopes {
                 let refs_json: Option<String> = if env.references_ids.is_empty() {
@@ -568,6 +632,7 @@ impl Cache {
                 } else {
                     serde_json::to_string(&env.references_ids).ok()
                 };
+                let thread_id = Self::compute_thread_id(account_id, env);
                 stmt.execute(params![
                     account_id,
                     env.folder,
@@ -582,6 +647,7 @@ impl Cache {
                     env.message_id,
                     env.in_reply_to,
                     refs_json,
+                    thread_id,
                 ])?;
             }
         }
@@ -603,14 +669,32 @@ impl Cache {
         folder: &str,
         limit: u32,
     ) -> Result<Vec<EmailEnvelope>, CacheError> {
+        // #334: warm up any pre-migration rows so the read below
+        // returns populated thread_id / count fields.  Single
+        // UPDATE, no-op when every row is already warm.
+        let _ = self.assign_pending_thread_ids(account_id, folder);
+
         let conn = self.conn()?;
+        // Correlated subquery for `thread_total_count` rather than a
+        // CTE because we want each row's count computed against the
+        // *whole folder*, not just the returned window â€” a thread
+        // whose root is in the newest 50 may have replies older than
+        // the window, and the badge needs to report the true total.
         let mut stmt = conn.prepare(
-            "SELECT uid, folder, from_addr, subject, internal_date,
-                    is_read, is_starred, is_answered, replied_kind,
-                    message_id, in_reply_to, references_ids
-             FROM messages
-             WHERE account_id = ?1 AND folder = ?2 AND pending_action IS NULL
-             ORDER BY internal_date DESC
+            "SELECT m.uid, m.folder, m.from_addr, m.subject, m.internal_date,
+                    m.is_read, m.is_starred, m.is_answered, m.replied_kind,
+                    m.message_id, m.in_reply_to, m.references_ids,
+                    m.thread_id,
+                    (SELECT COUNT(*) FROM messages m2
+                     WHERE m2.account_id = ?1
+                       AND m2.folder = ?2
+                       AND m2.thread_id = m.thread_id
+                       AND m2.pending_action IS NULL) AS thread_total_count,
+                    b.protection
+             FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
+             WHERE m.account_id = ?1 AND m.folder = ?2 AND m.pending_action IS NULL
+             ORDER BY m.internal_date DESC
              LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
@@ -621,6 +705,9 @@ impl Cache {
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
+            let thread_id: Option<String> = r.get(12)?;
+            let thread_total_count: Option<i64> = r.get(13)?;
+            let protection: Option<String> = r.get(14)?;
             Ok(EmailEnvelope {
                 uid: r.get::<_, i64>(0)? as u32,
                 folder: r.get(1)?,
@@ -635,6 +722,9 @@ impl Cache {
                 message_id: r.get(9)?,
                 in_reply_to: r.get(10)?,
                 references_ids,
+                thread_id,
+                thread_total_count: thread_total_count.map(|n| n as u32),
+                protection,
             })
         })?;
 
@@ -645,9 +735,85 @@ impl Cache {
         Ok(out)
     }
 
+    /// Return every cached envelope belonging to a single conversation
+    /// (#334).  Folder-scoped because that's the scope the MailList
+    /// row lives in, and matches the scope used by the badge count.
+    /// Used by the on-expand backfill: the user clicks the chevron on
+    /// a thread head and we want every member the local DB knows
+    /// about, not just whichever happened to be in the newest-
+    /// `PAGE_SIZE` window.  Skips `pending_action` tombstones so a
+    /// just-moved message doesn't reappear in the source thread.
+    ///
+    /// `thread_total_count` is populated via the same correlated
+    /// subquery the broader read paths use — i.e. it agrees with
+    /// what `get_envelopes` would have returned for any member that
+    /// also happens to be in the newest window.  Sorted newest-first.
+    pub fn get_envelopes_by_thread(
+        &self,
+        account_id: &str,
+        folder: &str,
+        thread_id: &str,
+    ) -> Result<Vec<EmailEnvelope>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT m.uid, m.folder, m.from_addr, m.subject, m.internal_date,
+                    m.is_read, m.is_starred, m.is_answered, m.replied_kind,
+                    m.message_id, m.in_reply_to, m.references_ids,
+                    m.thread_id,
+                    (SELECT COUNT(*) FROM messages m2
+                     WHERE m2.account_id = ?1
+                       AND m2.folder = ?2
+                       AND m2.thread_id = m.thread_id
+                       AND m2.pending_action IS NULL) AS thread_total_count,
+                    b.protection
+             FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
+             WHERE m.account_id = ?1
+               AND m.folder = ?2
+               AND m.thread_id = ?3
+               AND m.pending_action IS NULL
+             ORDER BY m.internal_date DESC",
+        )?;
+        let rows = stmt.query_map(params![account_id, folder, thread_id], |r| {
+            let ts: i64 = r.get(4)?;
+            let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+            let refs_json: Option<String> = r.get(11)?;
+            let references_ids: Vec<String> = refs_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let thread_id: Option<String> = r.get(12)?;
+            let thread_total_count: Option<i64> = r.get(13)?;
+            let protection: Option<String> = r.get(14)?;
+            Ok(EmailEnvelope {
+                uid: r.get::<_, i64>(0)? as u32,
+                folder: r.get(1)?,
+                from: r.get(2)?,
+                subject: r.get(3)?,
+                date,
+                is_read: r.get::<_, i64>(5)? != 0,
+                is_starred: r.get::<_, i64>(6)? != 0,
+                is_answered: r.get::<_, i64>(7)? != 0,
+                replied_kind: r.get(8)?,
+                account_id: account_id.to_string(),
+                message_id: r.get(9)?,
+                in_reply_to: r.get(10)?,
+                references_ids,
+                thread_id,
+                thread_total_count: thread_total_count.map(|n| n as u32),
+                protection,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Return the newest `limit` envelopes in `folder` whose body has
     /// **not** yet been fetched (no row in `message_bodies`).  Used by
-    /// the launch-time prerender (#178) to warm the message cache —
+    /// the launch-time prerender (#178) to warm the message cache â€”
     /// the user clicks an inbox row and the reading pane paints
     /// instantly because the body is already on disk, instead of
     /// waiting for an IMAP round-trip.
@@ -688,14 +854,46 @@ impl Cache {
         folder: &str,
         limit: u32,
     ) -> Result<Vec<EmailEnvelope>, CacheError> {
+        // #334: warm up every account's copy of this folder before
+        // reading.  Cheap â€” one no-op UPDATE per warm folder.
+        if let Ok(mut conn) = self.conn() {
+            let tx = conn.transaction().ok();
+            if let Some(tx) = tx {
+                let _ = tx.execute(
+                    "UPDATE messages
+                     SET thread_id = COALESCE(
+                         json_extract(references_ids, '$[0]'),
+                         message_id,
+                         'solo:' || account_id || ':' || folder || ':' || uid
+                     )
+                     WHERE folder = ?1 AND thread_id IS NULL",
+                    params![folder],
+                );
+                let _ = tx.commit();
+            }
+        }
+
         let conn = self.conn()?;
+        // Subquery scopes the count by `(account_id, folder, thread_id)`
+        // because a thread_id can collide across accounts (two unrelated
+        // users may end up with the same `<msg-id@host>` if a sender
+        // delivers to both inboxes) â€” counting across accounts would
+        // wrongly merge those.
         let mut stmt = conn.prepare(
-            "SELECT account_id, uid, folder, from_addr, subject, internal_date,
-                    is_read, is_starred, is_answered, replied_kind,
-                    message_id, in_reply_to, references_ids
-             FROM messages
-             WHERE folder = ?1 AND pending_action IS NULL
-             ORDER BY internal_date DESC
+            "SELECT m.account_id, m.uid, m.folder, m.from_addr, m.subject, m.internal_date,
+                    m.is_read, m.is_starred, m.is_answered, m.replied_kind,
+                    m.message_id, m.in_reply_to, m.references_ids,
+                    m.thread_id,
+                    (SELECT COUNT(*) FROM messages m2
+                     WHERE m2.account_id = m.account_id
+                       AND m2.folder = m.folder
+                       AND m2.thread_id = m.thread_id
+                       AND m2.pending_action IS NULL) AS thread_total_count,
+                    b.protection
+             FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
+             WHERE m.folder = ?1 AND m.pending_action IS NULL
+             ORDER BY m.internal_date DESC
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![folder, limit as i64], |r| {
@@ -706,6 +904,9 @@ impl Cache {
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default();
+            let thread_id: Option<String> = r.get(13)?;
+            let thread_total_count: Option<i64> = r.get(14)?;
+            let protection: Option<String> = r.get(15)?;
             Ok(EmailEnvelope {
                 account_id: r.get(0)?,
                 uid: r.get::<_, i64>(1)? as u32,
@@ -720,6 +921,108 @@ impl Cache {
                 message_id: r.get(10)?,
                 in_reply_to: r.get(11)?,
                 references_ids,
+                thread_id,
+                thread_total_count: thread_total_count.map(|n| n as u32),
+                protection,
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Return the newest `limit` envelopes across the given
+    /// `(account_id, folder)` pairs, newest-first. Powers the global
+    /// "All Sent" / "All Drafts" views, where each account stores
+    /// outgoing mail in a differently-named folder (`Sent`, `Sent
+    /// Items`, `Gesendete Elemente`, `[Gmail]/Sent Mail`, â€¦) so the
+    /// single-folder-name query used by `get_unified_envelopes` can't
+    /// match them all at once.
+    ///
+    /// Empty `pairs` short-circuits to `Ok(vec![])` so callers don't
+    /// have to special-case "no accounts have a Sent folder yet".
+    pub fn get_unified_envelopes_by_pairs(
+        &self,
+        pairs: &[(String, String)],
+        limit: u32,
+    ) -> Result<Vec<EmailEnvelope>, CacheError> {
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        // Build `(account_id = ?N AND folder = ?N+1) OR â€¦` so each
+        // account's resolved special-use folder contributes only the
+        // rows that actually live in it. Parameterised â€” no string
+        // interpolation of folder names into the SQL.
+        let mut where_clause = String::new();
+        for i in 0..pairs.len() {
+            if i > 0 {
+                where_clause.push_str(" OR ");
+            }
+            let a = 2 * i + 1;
+            let b = 2 * i + 2;
+            where_clause.push_str(&format!("(account_id = ?{a} AND folder = ?{b})"));
+        }
+        let limit_param = 2 * pairs.len() + 1;
+        // #334: thread_total_count is folder-and-account-scoped, same
+        // shape as the single-account read.
+        let sql = format!(
+            "SELECT m.account_id, m.uid, m.folder, m.from_addr, m.subject, m.internal_date,
+                    m.is_read, m.is_starred, m.is_answered, m.replied_kind,
+                    m.message_id, m.in_reply_to, m.references_ids,
+                    m.thread_id,
+                    (SELECT COUNT(*) FROM messages m2
+                     WHERE m2.account_id = m.account_id
+                       AND m2.folder = m.folder
+                       AND m2.thread_id = m.thread_id
+                       AND m2.pending_action IS NULL) AS thread_total_count,
+                    b.protection
+             FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
+             WHERE ({where_clause}) AND m.pending_action IS NULL
+             ORDER BY m.internal_date DESC
+             LIMIT ?{limit_param}"
+        );
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 * pairs.len() + 1);
+        for (account_id, folder) in pairs {
+            params_vec.push(account_id);
+            params_vec.push(folder);
+        }
+        let limit_i64 = limit as i64;
+        params_vec.push(&limit_i64);
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_vec.as_slice(), |r| {
+            let ts: i64 = r.get(5)?;
+            let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+            let refs_json: Option<String> = r.get(12)?;
+            let references_ids: Vec<String> = refs_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let thread_id: Option<String> = r.get(13)?;
+            let thread_total_count: Option<i64> = r.get(14)?;
+            let protection: Option<String> = r.get(15)?;
+            Ok(EmailEnvelope {
+                account_id: r.get(0)?,
+                uid: r.get::<_, i64>(1)? as u32,
+                folder: r.get(2)?,
+                from: r.get(3)?,
+                subject: r.get(4)?,
+                date,
+                is_read: r.get::<_, i64>(6)? != 0,
+                is_starred: r.get::<_, i64>(7)? != 0,
+                is_answered: r.get::<_, i64>(8)? != 0,
+                replied_kind: r.get(9)?,
+                message_id: r.get(10)?,
+                in_reply_to: r.get(11)?,
+                references_ids,
+                thread_id,
+                thread_total_count: thread_total_count.map(|n| n as u32),
+                protection,
             })
         })?;
 
@@ -738,7 +1041,7 @@ impl Cache {
     /// cache immediately so the UI reflects the change without waiting
     /// for the network round-trip to the IMAP server. If the row isn't
     /// cached yet (message was never listed), the message-table UPDATE
-    /// is a no-op and we don't decrement the folder count — there's
+    /// is a no-op and we don't decrement the folder count â€” there's
     /// nothing to subtract from.
     ///
     /// Wrapped in a transaction so the message flip and the folder
@@ -786,7 +1089,7 @@ impl Cache {
         Ok(())
     }
 
-    /// Return every cached envelope UID for a folder — used by the
+    /// Return every cached envelope UID for a folder â€” used by the
     /// reconciler that diffs the cache against the server's live UID
     /// set after each incremental fetch and drops rows whose UIDs no
     /// longer exist on the server.
@@ -809,7 +1112,7 @@ impl Cache {
     }
 
     /// Newest `limit` cached envelope UIDs for a folder, sorted by
-    /// `internal_date DESC` — the same ordering the mail list
+    /// `internal_date DESC` â€” the same ordering the mail list
     /// renders.  Used by the flag-refresh path (#255 follow-up) to
     /// catch up on cross-client `\Seen` / `\Flagged` / `\Answered`
     /// changes on the visible window without re-pulling the whole
@@ -839,7 +1142,7 @@ impl Cache {
 
     /// Mark a cached envelope as having an in-flight optimistic
     /// action so envelope-list queries hide it instantly (#174).
-    /// `action` is a free-form string — `"delete"` for delete /
+    /// `action` is a free-form string â€” `"delete"` for delete /
     /// move-to-trash, `"move:<dest>"` for explicit folder moves.
     /// Cleared on IMAP failure via `clear_message_pending`; on
     /// IMAP success the existing `remove_envelope` / source-folder
@@ -865,7 +1168,7 @@ impl Cache {
     /// row when the target UID isn't cached yet (#292 follow-up).
     ///
     /// The minimize-save path APPENDs to IMAP without writing the
-    /// new envelope into the cache — `save_draft` only invokes
+    /// new envelope into the cache â€” `save_draft` only invokes
     /// `remove_envelope` on the replaced source, never `upsert` on
     /// the freshly-APPENDed copy.  A subsequent send that targets
     /// the minimize-saved UID hits a tombstone-via-UPDATE that
@@ -880,12 +1183,12 @@ impl Cache {
     /// pending flag.  `get_envelopes` filters out any row with
     /// `pending_action IS NOT NULL`, so the placeholder is
     /// invisible.  When `poll_folder`'s upsert later writes the
-    /// real envelope, the `ON CONFLICT … DO UPDATE` clause
+    /// real envelope, the `ON CONFLICT â€¦ DO UPDATE` clause
     /// deliberately *doesn't* touch `pending_action`, so the
     /// tombstone survives the merge.  On IMAP success the row
     /// gets dropped entirely via `remove_envelope`; on IMAP
     /// failure `clear_message_pending` un-tombstones, which
-    /// briefly exposes the placeholder's empty fields — accepted
+    /// briefly exposes the placeholder's empty fields â€” accepted
     /// as a rare edge case since the next poll fills them in.
     pub fn upsert_message_pending(
         &self,
@@ -903,7 +1206,7 @@ impl Cache {
         if updated > 0 {
             return Ok(());
         }
-        // Row missing — insert a placeholder.  `INSERT OR IGNORE`
+        // Row missing â€” insert a placeholder.  `INSERT OR IGNORE`
         // covers the race where a concurrent poll inserts the
         // real row between our UPDATE-found-nothing and this
         // INSERT; in that case we'd need a second UPDATE to flip
@@ -925,7 +1228,7 @@ impl Cache {
         Ok(())
     }
 
-    /// Reverse of `mark_message_pending` — called when the IMAP
+    /// Reverse of `mark_message_pending` â€” called when the IMAP
     /// action errors so the row reappears in the next list pull
     /// without the user having to restart anything.
     pub fn clear_message_pending(
@@ -947,7 +1250,7 @@ impl Cache {
     /// app startup (after `unlock_with_master_key` opens the pool)
     /// so a row left tombstoned by a crashed run doesn't stay
     /// permanently invisible.  At launch nothing is genuinely in
-    /// flight — the IMAP requests live in the previous process —
+    /// flight â€” the IMAP requests live in the previous process â€”
     /// so any surviving pending flag is by definition stale.
     /// Returns the number of rows reset.
     pub fn clear_all_pending_actions(&self) -> Result<usize, CacheError> {
@@ -963,7 +1266,7 @@ impl Cache {
     /// Remove a single cached envelope + body after the message has been
     /// expunged / moved on the server. The incremental envelope fetch
     /// only pulls UIDs `> highest_seen`, so without an explicit delete
-    /// here the cache accumulates ghost rows for every expunged UID —
+    /// here the cache accumulates ghost rows for every expunged UID â€”
     /// and MailList keeps showing them, handing the user stale UIDs
     /// that the server has since reassigned or reclaimed.
     ///
@@ -971,7 +1274,7 @@ impl Cache {
     /// `unread_count` is also decremented so the sidebar badge tracks
     /// the row disappearing. Same clamp-at-zero guard as
     /// `mark_envelope_read`. Returns `true` iff a row was actually
-    /// removed — callers can tell the difference between "cleaned up
+    /// removed â€” callers can tell the difference between "cleaned up
     /// a real stale row" and "no row existed in the first place".
     pub fn remove_envelope(
         &self,
@@ -1054,14 +1357,14 @@ impl Cache {
     /// flags for a batch of envelope rows against fresh server-side
     /// values (#255 follow-up).
     ///
-    /// The standard envelope-fetch path is incremental — it never
+    /// The standard envelope-fetch path is incremental â€” it never
     /// re-reads flags on UIDs older than the bookmark.  Without
     /// this catch-up, marks made from another mail client (read on
     /// a phone, answered from webmail, starred elsewhere) never
     /// round-trip into the local cache, and Unkai's mail list
     /// drifts out of sync with reality.
     ///
-    /// `replied_kind` is intentionally not touched — it's
+    /// `replied_kind` is intentionally not touched â€” it's
     /// Unkai-only metadata about *how* the user replied via
     /// Compose, and the IMAP `\Answered` bit doesn't carry the
     /// kind, so leave whatever the send path stamped earlier.
@@ -1070,7 +1373,7 @@ impl Cache {
     /// same transaction.
     ///
     /// Each tuple is `(uid, is_read, is_starred, is_answered)`.
-    /// UIDs that don't exist in the cache are silently skipped —
+    /// UIDs that don't exist in the cache are silently skipped â€”
     /// they got expunged between fetch and reconcile, and the
     /// envelope-fetch path will sweep them out on its own
     /// reconcile pass.
@@ -1091,7 +1394,7 @@ impl Cache {
         for (uid, is_read, is_starred, is_answered) in snapshots {
             // Fetch current flags so we know whether to bump the
             // folder's unread badge.  `query_row` returns
-            // `QueryReturnedNoRows` when the UID isn't cached —
+            // `QueryReturnedNoRows` when the UID isn't cached â€”
             // skip those.
             let prior: Option<(bool, bool, bool)> = tx
                 .query_row(
@@ -1130,8 +1433,8 @@ impl Cache {
             changed += 1;
 
             // Bump the unread accumulator: if the flag flipped
-            // unread → read, the folder count drops by one; if it
-            // flipped read → unread, it goes up by one.
+            // unread â†’ read, the folder count drops by one; if it
+            // flipped read â†’ unread, it goes up by one.
             if was_read != *is_read {
                 unread_delta += if *is_read { -1 } else { 1 };
             }
@@ -1159,7 +1462,7 @@ impl Cache {
     /// Called from the Compose send path after a successful
     /// reply / reply-all / meeting reply.  Idempotent: re-running
     /// with the same kind is a no-op; re-running with a different
-    /// kind overwrites — useful only in unusual flows where the
+    /// kind overwrites â€” useful only in unusual flows where the
     /// user replies, then later "responds with meeting" on the
     /// same source thread.
     pub fn mark_envelope_replied(
@@ -1205,7 +1508,7 @@ impl Cache {
 
     /// Total unread messages across all accounts' INBOX folders.
     ///
-    /// Feeds the tray tooltip ("Unkai Mail — 3 unread") and any
+    /// Feeds the tray tooltip ("Unkai Mail â€” 3 unread") and any
     /// aggregate badge UI. We scope to INBOX only because other folders
     /// (Archive, Trash) aren't typically surfaced as "unread" to the
     /// user even when they technically have `is_read = 0` rows.
@@ -1250,11 +1553,11 @@ impl Cache {
         Ok(out)
     }
 
-    // ── Message bodies ──────────────────────────────────────────
+    // â”€â”€ Message bodies â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Upsert a cached message body alongside its envelope.
     ///
-    /// Takes an `Email` since that's the shape the IMAP client returns — we
+    /// Takes an `Email` since that's the shape the IMAP client returns â€” we
     /// split it into an envelope row (via `upsert_envelopes_for_account`)
     /// and a body row here, in a single transaction so partial rows never
     /// survive a failed write.
@@ -1263,7 +1566,7 @@ impl Cache {
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
 
-        // Envelope row — mirrors upsert_envelopes_for_account but inside
+        // Envelope row â€” mirrors upsert_envelopes_for_account but inside
         // the same transaction as the body so the two can't drift.
         tx.execute(
             "INSERT INTO messages
@@ -1281,7 +1584,7 @@ impl Cache {
                 email.account_id,
                 email.folder,
                 // `id` from IMAP is formatted as "folder:uid" in the
-                // fetch path — we don't rely on it here, the UID is
+                // fetch path â€” we don't rely on it here, the UID is
                 // re-parsed by the caller.
                 uid_from_email_id(&email.id) as i64,
                 email.from,
@@ -1293,13 +1596,13 @@ impl Cache {
             ],
         )?;
 
-        // Addresses are stored as JSON arrays — see the v1 → v2 migration
+        // Addresses are stored as JSON arrays â€” see the v1 â†’ v2 migration
         // note. `unwrap_or_else` fallbacks are defensive; serde_json on a
         // Vec<String> can only fail if allocation fails.
         let to_json = serde_json::to_string(&email.to).unwrap_or_else(|_| "[]".into());
         let cc_json = serde_json::to_string(&email.cc).unwrap_or_else(|_| "[]".into());
-        // Attachment metadata as JSON — one record per attachment,
-        // with the stable `part_id` the IMAP re-fetch uses. See v5 → v6.
+        // Attachment metadata as JSON â€” one record per attachment,
+        // with the stable `part_id` the IMAP re-fetch uses. See v5 â†’ v6.
         let attachments_json =
             serde_json::to_string(&email.attachments).unwrap_or_else(|_| "[]".into());
 
@@ -1307,17 +1610,20 @@ impl Cache {
             "INSERT INTO message_bodies
                 (account_id, folder, uid, body_text, body_html,
                  has_attachments, raw_size, cached_at, to_addrs, cc_addrs,
-                 attachments)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 attachments, protection, signature_status, signer_fingerprint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT (account_id, folder, uid) DO UPDATE SET
-                body_text       = excluded.body_text,
-                body_html       = excluded.body_html,
-                has_attachments = excluded.has_attachments,
-                raw_size        = excluded.raw_size,
-                cached_at       = excluded.cached_at,
-                to_addrs        = excluded.to_addrs,
-                cc_addrs        = excluded.cc_addrs,
-                attachments     = excluded.attachments",
+                body_text          = excluded.body_text,
+                body_html          = excluded.body_html,
+                has_attachments    = excluded.has_attachments,
+                raw_size           = excluded.raw_size,
+                cached_at          = excluded.cached_at,
+                to_addrs           = excluded.to_addrs,
+                cc_addrs           = excluded.cc_addrs,
+                attachments        = excluded.attachments,
+                protection         = excluded.protection,
+                signature_status   = excluded.signature_status,
+                signer_fingerprint = excluded.signer_fingerprint",
             params![
                 email.account_id,
                 email.folder,
@@ -1330,6 +1636,9 @@ impl Cache {
                 to_json,
                 cc_json,
                 attachments_json,
+                email.protection,
+                email.signature_status,
+                email.signer_fingerprint,
             ],
         )?;
         tx.commit()?;
@@ -1364,7 +1673,8 @@ impl Cache {
                         m.is_read, m.is_starred,
                         b.body_text, b.body_html, b.has_attachments,
                         b.to_addrs, b.cc_addrs, b.attachments,
-                        m.message_id, m.in_reply_to, m.references_ids
+                        m.message_id, m.in_reply_to, m.references_ids,
+                        b.protection, b.signature_status, b.signer_fingerprint
                  FROM messages m
                  INNER JOIN message_bodies b USING (account_id, folder, uid)
                  WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
@@ -1398,6 +1708,9 @@ impl Cache {
                         message_id: r.get(11)?,
                         in_reply_to: r.get(12)?,
                         references_ids,
+                        protection: r.get(14)?,
+                        signature_status: r.get(15)?,
+                        signer_fingerprint: r.get(16)?,
                     })
                 },
             )
@@ -1405,7 +1718,7 @@ impl Cache {
         Ok(row)
     }
 
-    // ── Sync state ──────────────────────────────────────────────
+    // â”€â”€ Sync state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     pub fn get_sync_state(
         &self,
@@ -1460,18 +1773,18 @@ impl Cache {
         Ok(())
     }
 
-    // ── Attachment-thumbnail cache (#157) ──────────────────────
+    // â”€â”€ Attachment-thumbnail cache (#157) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //
     // MailView's chip strip used to re-fetch every image / video
     // attachment per open and re-extract its thumbnail.  These
-    // helpers persist a tiny JPEG (≤256 px on the long edge)
+    // helpers persist a tiny JPEG (â‰¤256 px on the long edge)
     // generated by the frontend so subsequent opens render
     // straight from the cache without an IPC, blob copy, or
     // GStreamer pipeline.
 
     /// Insert / replace a stored thumbnail for one attachment.
     /// `bytes` is whatever encoded image format the frontend
-    /// produced — we treat it opaquely and hand it back to
+    /// produced â€” we treat it opaquely and hand it back to
     /// callers verbatim.
     pub fn put_attachment_preview(
         &self,
@@ -1493,7 +1806,7 @@ impl Cache {
     }
 
     /// Load every stored thumbnail for one message in a single
-    /// query — MailView batches them all into the in-memory
+    /// query â€” MailView batches them all into the in-memory
     /// thumb cache when the email mounts.
     pub fn get_attachment_previews_for_message(
         &self,
@@ -1521,9 +1834,9 @@ impl Cache {
         Ok(out)
     }
 
-    // ── Outbox (#276) ────────────────────────────────────────────
+    // â”€â”€ Outbox (#276) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //
-    // Local-only "send queue" — every send routes through this
+    // Local-only "send queue" â€” every send routes through this
     // table first, the SMTP send runs in a spawned drain task.
     // Rows that drain successfully are removed within the same
     // tick (sub-second on a healthy network); rows that fail
@@ -1553,7 +1866,7 @@ impl Cache {
     /// won the claim and should proceed, `false` when another
     /// drain holds the row.  The TTL means that even if a drain
     /// task panics or the process dies mid-send the row isn't
-    /// permanently stuck — the next sweep past the TTL boundary
+    /// permanently stuck â€” the next sweep past the TTL boundary
     /// reclaims it.
     pub fn claim_outbox_for_drain(&self, id: i64, claim_ttl_secs: i64) -> Result<bool, CacheError> {
         let conn = self.conn()?;
@@ -1636,7 +1949,7 @@ impl Cache {
         Ok(out)
     }
 
-    /// Fetch one queued row by id — used by the drain task (when
+    /// Fetch one queued row by id â€” used by the drain task (when
     /// the caller knows the row it just enqueued) and by the
     /// `edit_outbox_entry` Tauri command.
     pub fn get_outbox(&self, id: i64) -> Result<Option<OutboxRow>, CacheError> {
@@ -1658,7 +1971,7 @@ impl Cache {
 
     /// Bookkeeping after a drain attempt failed: bump the count,
     /// stamp the last attempt time, store the human-readable
-    /// error.  Doesn't delete — the row stays for the next sweep.
+    /// error.  Doesn't delete â€” the row stays for the next sweep.
     pub fn record_outbox_failure(&self, id: i64, error: &str) -> Result<(), CacheError> {
         let conn = self.conn()?;
         let now = Utc::now().timestamp();
@@ -1706,7 +2019,7 @@ impl Cache {
 
     /// Queued-row counts grouped by account (#290).  Drives the
     /// per-account decision of "render the synthetic Outbox folder
-    /// in this sidebar?" — the previous global count caused the
+    /// in this sidebar?" â€” the previous global count caused the
     /// folder to leak into every account's sidebar whenever any
     /// account had a pending send.  Accounts with zero queued
     /// rows are omitted so the caller can `?? 0` without an
@@ -1734,7 +2047,7 @@ impl Cache {
 }
 
 /// Row shape inserted into `outbox_messages` by
-/// `Cache::enqueue_outbox`.  Mirrors the columns of the table —
+/// `Cache::enqueue_outbox`.  Mirrors the columns of the table â€”
 /// kept as a separate struct so callers don't have to hand-build
 /// a `params![]` tuple at every enqueue site.
 #[derive(Debug, Clone)]
@@ -1797,7 +2110,7 @@ pub struct AttachmentPreview {
 
 /// Parse the IMAP UID out of an `Email.id` produced by the IMAP client.
 ///
-/// `unkai_imap` formats ids as `"{folder}:{uid}"` — folder names can
+/// `unkai_imap` formats ids as `"{folder}:{uid}"` â€” folder names can
 /// themselves contain `:` (rare but legal), so we split on the *last*
 /// colon. A malformed id yields 0 with a warn log; this can only happen
 /// if the upstream id format changes, in which case the cache row will
@@ -1839,7 +2152,7 @@ fn is_wrong_key_error(err: &CacheError) -> bool {
 /// effective on rotational drives.  On SSDs with wear-levelling
 /// the new write may land on a different physical block,
 /// leaving the old ciphertext recoverable until the controller
-/// reclaims that block — there's no way to force a true secure
+/// reclaims that block â€” there's no way to force a true secure
 /// erase from userspace, so this is best-effort.
 fn wipe_cache_files(path: &Path) -> Result<(), CacheError> {
     for suffix in ["", "-wal", "-shm"] {
@@ -1855,7 +2168,7 @@ fn wipe_cache_files(path: &Path) -> Result<(), CacheError> {
                 // Don't refuse the wipe just because the
                 // overwrite step couldn't open the file
                 // (read-only filesystem, locked by another
-                // process, …) — unlinking the file is still
+                // process, â€¦) â€” unlinking the file is still
                 // strictly better than leaving it.
                 tracing::warn!("secure overwrite of {} failed: {e}", p.display());
             }
@@ -1898,7 +2211,7 @@ fn secure_overwrite(path: &Path) -> Result<(), CacheError> {
     Ok(())
 }
 
-// ── Tests ───────────────────────────────────────────────────────
+// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod tests {
@@ -1920,6 +2233,9 @@ mod tests {
             message_id: None,
             in_reply_to: None,
             references_ids: Vec::new(),
+            thread_id: None,
+            thread_total_count: None,
+            protection: None,
         }
     }
 
@@ -1994,6 +2310,9 @@ mod tests {
             message_id: None,
             in_reply_to: None,
             references_ids: Vec::new(),
+            protection: None,
+            signature_status: None,
+            signer_fingerprint: None,
         }
     }
 
@@ -2088,7 +2407,7 @@ mod tests {
             skip_sent_copy: false,
         };
         let a = cache.enqueue_outbox(&mk("acc-a", "first")).unwrap();
-        // Sleep one second so the queued_at timestamps differ —
+        // Sleep one second so the queued_at timestamps differ â€”
         // SQLite's strftime resolution is per-second.
         std::thread::sleep(std::time::Duration::from_secs(1));
         let b = cache.enqueue_outbox(&mk("acc-b", "second")).unwrap();
@@ -2160,7 +2479,7 @@ mod tests {
 
     /// Regression test for #63: `ORDER BY name` would put `Drafts`
     /// ahead of `INBOX` (uppercase 'I' (0x49) sorts before lowercase
-    /// 'r' (0x72), but only against same-case neighbours — once mixed
+    /// 'r' (0x72), but only against same-case neighbours â€” once mixed
     /// with mixed-case names ASCII order shuffles things). Insertion
     /// order from `upsert_folders` should be preserved verbatim.
     #[test]
@@ -2228,11 +2547,11 @@ mod tests {
 
         cache.wipe_folder("acc", "INBOX").unwrap();
 
-        // INBOX is gone…
+        // INBOX is goneâ€¦
         assert!(cache.get_envelopes("acc", "INBOX", 5).unwrap().is_empty());
         assert!(cache.get_message("acc", "INBOX", 1).unwrap().is_none());
         assert!(cache.get_sync_state("acc", "INBOX").unwrap().is_none());
-        // …but Sent is untouched.
+        // â€¦but Sent is untouched.
         assert_eq!(cache.get_envelopes("acc", "Sent", 5).unwrap().len(), 1);
         assert!(cache.get_message("acc", "Sent", 2).unwrap().is_some());
     }

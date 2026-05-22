@@ -10,6 +10,7 @@ members = [
     "crates/unkai-nextcloud",
     "crates/unkai-store",
     "crates/unkai-discovery",
+    "crates/unkai-crypto",
     "src-tauri",
 ]
 
@@ -88,7 +89,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"
 # at build time so behaviour is identical across Win/Mac/Linux —
 # the OS native trust stores would each give us slightly different
 # answers.
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 rustls-pki-types = "1"
 # Adapters between tokio I/O traits and futures-io traits. async-imap
 # is generic over `futures-io::AsyncRead + AsyncWrite`, but our TLS
@@ -139,6 +140,19 @@ hickory-resolver = "0.26"
 # Windows, Core Text on macOS, fontconfig on Linux) and gives
 # us the family-name list cheaply at app startup.
 font-kit = "0.14"
+# OpenPGP (RFC 4880 / RFC 9580) for end-to-end mail encryption
+# and signing (#57).  Pure-Rust, dual MIT/Apache-2.0 licensed,
+# actively maintained and used in production by Delta Chat.
+# Crate name on crates.io is `pgp`; we alias it locally as `rpgp`
+# in `unkai-crypto`'s Cargo.toml to disambiguate from the protocol
+# acronym.  Pinned at the minor — the 0.x line still ships
+# breaking changes between minors.
+pgp = "0.19"
+# CSPRNG passed to rpgp for session-key generation when
+# encrypting.  Version pinned to whatever the current `pgp`
+# release re-exports in its public API to avoid two `rand`s
+# in the dep graph.
+rand = "0.8"
 # Internal crates
 unkai-core = { path = "crates/unkai-core" }
 unkai-imap = { path = "crates/unkai-imap" }
@@ -149,3 +163,4 @@ unkai-carddav = { path = "crates/unkai-carddav" }
 unkai-nextcloud = { path = "crates/unkai-nextcloud" }
 unkai-store = { path = "crates/unkai-store" }
 unkai-discovery = { path = "crates/unkai-discovery" }
+unkai-crypto = { path = "crates/unkai-crypto" }

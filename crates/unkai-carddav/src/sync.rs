@@ -95,6 +95,14 @@ pub struct RawContact {
     /// `CATEGORIES` tag list (RFC 6350 Â§6.7.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
+    /// `KEY:` values from the vCard, exactly as parsed.  Each entry
+    /// is a `data:application/pgp-keys;base64,...` URI or a raw URL
+    /// -- the carddav crate doesn't decode them itself.  The Tauri
+    /// layer feeds these to `unkai_crypto::parse_public_key` when
+    /// auto-importing recipient PGP keys after a sync (#57).  Empty
+    /// for the vast majority of contacts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
 }
 
 /// Result of one sync round: what to upsert, what to delete, and the
@@ -408,6 +416,7 @@ fn parse_multiget_response(
         kind: parsed.kind,
         member_uids: parsed.members,
         categories: parsed.categories,
+        keys: parsed.keys,
     }))
 }
 

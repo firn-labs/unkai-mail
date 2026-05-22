@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-15 (`tauri-plugin-deep-link` + `tauri-plugin-single-instance` added so Unkai can register as the OS mailto handler and de-dup second-instance launches, #294 — both MIT OR Apache-2.0, no licence pressure).
+Last manual reconciliation: 2026-05-22 (`pgp` (rpgp) + `rand` added so Unkai can sign / encrypt outbound mail and verify / decrypt inbound mail, #57 — both MIT OR Apache-2.0, no licence pressure; rpgp's transitive crypto tree is the RustCrypto stack, also entirely permissive).
 
 ---
 
@@ -160,6 +160,8 @@ us, that's GPL-3.0 via `rrule`.
 | `uuid` | MIT OR Apache-2.0 | UUID generation. |
 | `hickory-resolver` | MIT OR Apache-2.0 | DNS resolver (autoconfig SRV lookup). |
 | `font-kit` | MIT OR Apache-2.0 | System font enumeration. |
+| `pgp` (rpgp) | MIT OR Apache-2.0 | OpenPGP (RFC 4880 / 9580). Pure-Rust crypto for end-to-end mail encryption (#57). Crate name `pgp` on crates.io, renamed to `rpgp` in `unkai-crypto`'s manifest to disambiguate from "PGP" the protocol family. Pulls in the RustCrypto stack transitively (`rsa`, `aes`, `ed25519-dalek`, `curve25519-dalek`, `p256`/`p384`/`p521`, `dsa`, `ripemd`, `md-5`, etc.) — all permissive. |
+| `rand` | MIT OR Apache-2.0 | CSPRNG passed to `rpgp` for session-key generation, signature nonces, and key generation when encrypting / signing (#57). |
 
 ### Tauri shell (`src-tauri/Cargo.toml`)
 
