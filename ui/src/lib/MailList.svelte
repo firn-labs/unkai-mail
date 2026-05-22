@@ -48,6 +48,22 @@
     message_id?: string | null
     in_reply_to?: string | null
     references_ids?: string[]
+    /** Local cache thread identity (#334).  Stable per
+     *  conversation, computed by the cache on upsert from
+     *  `references_ids[0]` / `message_id` / a `solo:` fallback.
+     *  `null` for envelopes that haven't been warmed up yet
+     *  (e.g. just-arrived rows on a JMAP path that doesn't fill
+     *  threading headers) — the UI hides the conversation badge
+     *  in that transient state. */
+    thread_id?: string | null
+    /** Number of cached members of this thread in
+     *  `(account_id, folder)` (#334).  Read off a per-row SQL
+     *  subquery so it stays correct even when the visible window
+     *  doesn't contain every member.  Combined with the
+     *  `references_ids.length` lower bound at render time so a
+     *  thread whose root is in cache but whose newer replies
+     *  aren't doesn't under-report. */
+    thread_total_count?: number | null
   }
 
   /** Slim account row used to render the account label on each row in
@@ -108,6 +124,13 @@
      *  always sees the latest map without one-shot fire-and-forget
      *  semantics. */
     threadMembersByEnv?: Map<string, EmailEnvelope[]>
+    /** Render conversation grouping (#334).  Default `true` — reply
+     *  chains collapse under one row with an expand chevron.  Set
+     *  `false` to fall back to the pre-#277 flat list where every
+     *  envelope renders as its own row in date order.  Mirrors the
+     *  user's `conversation_view_enabled` app preference; the
+     *  parent passes the current value through. */
+    conversationView?: boolean
   }
   let {
     accounts = [],
@@ -121,6 +144,7 @@
     onmessagemoved,
     refreshing = $bindable(false),
     threadMembersByEnv = $bindable(new Map<string, EmailEnvelope[]>()),
+    conversationView = true,
   }: Props = $props()
 
   // ── Conversation-view grouping (#277) ───────────────────────
@@ -143,7 +167,17 @@
   //      gets its own bucket → behaves like the old flat list.
   let expandedThreads = $state<Set<string>>(new Set())
 
+  /** Pick the conversation key for grouping (#334).  The cache now
+   *  stamps a stable `thread_id` on every envelope during upsert —
+   *  that's the authoritative grouping key.  We keep the header-
+   *  derived fallback for envelopes that haven't gone through the
+   *  warm-up pass yet (a JMAP-fetched row, or a brand-new envelope
+   *  just received from the IMAP path that hasn't been read back
+   *  out of the cache).  Eventually the cache stamps every row and
+   *  the fallback path is dead, but the fallback keeps the UI
+   *  resilient against any race / migration corner case. */
   function threadKeyOf(env: EmailEnvelope): string {
+    if (env.thread_id) return env.thread_id
     if (env.references_ids && env.references_ids.length > 0) {
       return env.references_ids[0]
     }
@@ -188,13 +222,54 @@
     return /^(re|fwd?|aw|wg|sv)\s*(\[\d+\])?\s*:/i.test(subject || '')
   }
 
+  /** Thread keys we've already pulled the full membership for from
+   *  the cache (#334).  Reset on folder change.  Used to skip the
+   *  per-expand IPC round-trip on a thread the user has already
+   *  expanded once. */
+  let expandBackfilled = $state<Set<string>>(new Set())
+
+  /** On-expand: pull every cached member of this thread into
+   *  `envelopes` so the visible list matches the badge count.
+   *  Cache-only (no IMAP) — fast, no network, no surprises.  Solo
+   *  threads (`__solo:` keys) have no other members to find, so we
+   *  skip the call.  Single-account only for now — unified mode
+   *  spans multiple `(account_id, folder)` pairs and would need a
+   *  shaped backfill that's not worth wiring until someone asks. */
+  async function backfillThreadOnExpand(threadKey: string): Promise<void> {
+    if (unified) return
+    if (threadKey.startsWith('__solo:')) return
+    if (expandBackfilled.has(threadKey)) return
+    const idAtCall = accountId
+    const folderAtCall = folder
+    try {
+      const members = await invoke<EmailEnvelope[]>('get_envelopes_by_thread', {
+        accountId: idAtCall,
+        folder: folderAtCall,
+        threadId: threadKey,
+      })
+      // Stale-response guard — same shape as `load()`.
+      if (!isStillCurrent(idAtCall, folderAtCall, false)) return
+      // Mark first so a second expand on the same thread (collapse
+      // + re-expand) doesn't re-issue the round-trip.
+      const next = new Set(expandBackfilled)
+      next.add(threadKey)
+      expandBackfilled = next
+      if (members.length === 0) return
+      envelopes = mergeEnvelopes(envelopes, members)
+    } catch (e) {
+      console.warn('get_envelopes_by_thread failed:', e)
+    }
+  }
+
   function toggleThread(key: string) {
     // Re-assign so Svelte 5 picks up the mutation — Set
     // mutations alone don't trigger reactivity.
     const next = new Set(expandedThreads)
-    if (next.has(key)) next.delete(key)
-    else next.add(key)
+    const expanding = !next.has(key)
+    if (expanding) next.add(key)
+    else next.delete(key)
     expandedThreads = next
+    if (expanding) void backfillThreadOnExpand(key)
   }
 
   /** One row to actually paint.  Heads carry `siblingCount`
@@ -222,6 +297,29 @@
 
   const threadView = $derived.by(():
     | { rows: RenderRow[]; threadMembersByEnv: Map<string, EmailEnvelope[]> } => {
+    // #334: Conversation grouping can be disabled by the user.  In
+    // flat mode we emit one row per envelope and skip every
+    // bucket / JWZ / orphan-merge pass.  Synthetic per-envelope
+    // threadKey so the rest of the UI (selection, drag, archive-
+    // affected-envelopes lookup) still has a stable handle to key
+    // off; nothing groups by it because the keys are all distinct.
+    if (!conversationView) {
+      const rows: RenderRow[] = envelopes.map((env) => ({
+        env,
+        siblingCount: 0,
+        isSibling: false,
+        isLastSibling: false,
+        threadKey: `__solo:${env.account_id}:${env.uid}`,
+      }))
+      // Each envelope is its own one-member "bucket" so consumers
+      // that read `threadMembersByEnv` (Archive's sweep-the-thread
+      // path) just see the single envelope and do nothing extra.
+      const single = new Map<string, EmailEnvelope[]>()
+      for (const env of envelopes) {
+        single.set(envKey(env), [env])
+      }
+      return { rows, threadMembersByEnv: single }
+    }
     // Bucket envelopes by thread key, preserving the bucket
     // order in which the *first* member appears (envelopes are
     // already date-sorted newest-first).
@@ -366,9 +464,31 @@
       if (!group) continue
       const head = group[0]
       const siblings = group.slice(1)
+      // #334: pick the authoritative member count for the badge.
+      //  1. `thread_total_count` from the cache — what the local DB
+      //     actually contains for this thread within this folder.
+      //     This is the truth source: moves and deletes update it
+      //     because the SQL aggregate is folder-scoped and skips
+      //     `pending_action` tombstones.
+      //  2. The visible group size — never under-report what's on
+      //     screen (cold-cache races aside, this stays ≤ cachedTotal).
+      //
+      // We deliberately do NOT use the References-chain depth as a
+      // lower bound: while it correctly reflects what *once existed*
+      // in the conversation, it can't see deletions/moves, so it
+      // over-reports for threads whose older members were
+      // archived or trashed (the badge would say "4" when only 2
+      // are actually in this folder).
+      let cachedTotal = 0
+      for (const m of group) {
+        if (typeof m.thread_total_count === 'number' && m.thread_total_count > cachedTotal) {
+          cachedTotal = m.thread_total_count
+        }
+      }
+      const totalCount = Math.max(group.length, cachedTotal)
       out.push({
         env: head,
-        siblingCount: siblings.length,
+        siblingCount: totalCount - 1,
         isSibling: false,
         isLastSibling: false,
         threadKey: key,
@@ -921,6 +1041,15 @@
     if (key !== lastFolderKey) {
       envelopes = []
       lastFolderKey = key
+      // #334: on-expand backfill is folder-scoped — start the new
+      // folder with a fresh "haven't pulled the rest of any thread
+      // yet" slate.
+      expandBackfilled = new Set()
+      // #334: suppress the conversation badge until the eager
+      // prefetch for this folder has settled.  Without this the
+      // badge briefly shows the cache-as-of-now count, then jumps
+      // as the prefetch lands more thread members.
+      prefetchSettled = false
     }
     loadingOlder = false
     olderExhausted = false
@@ -1031,13 +1160,27 @@
     }
   }
 
-  /** Compute the smallest UID per account in the currently-rendered
-   *  envelope list — the anchor for the next "load older" round.
-   *  Returned as a Map<accountId, smallestUid> for the unified mode,
-   *  or as a single number for single-account mode. */
+  /** The "main pagination window" — the newest PAGE_SIZE envelopes
+   *  by date, excluding any thread-member extras the cache merged
+   *  in beyond that window (#334).  We can't anchor `loadOlder` on
+   *  the absolute-smallest UID across `envelopes` because thread
+   *  extras may have older UIDs than the newest-PAGE_SIZE main
+   *  window — using them as the cursor would cause `loadOlder` to
+   *  skip the intervening UIDs.  Sort then slice gives us the
+   *  same set the UI considers "the current page". */
+  function paginationWindow(): EmailEnvelope[] {
+    if (envelopes.length <= PAGE_SIZE) return envelopes
+    const sorted = [...envelopes].sort((a, b) => b.date.localeCompare(a.date))
+    return sorted.slice(0, PAGE_SIZE)
+  }
+
+  /** Compute the smallest UID per account in the main pagination
+   *  window — the anchor for the next "load older" round.  Returned
+   *  as a Map<accountId, smallestUid> for the unified mode, or as a
+   *  single number for single-account mode. */
   function smallestUidPerAccount(): Map<string, number> {
     const out = new Map<string, number>()
-    for (const e of envelopes) {
+    for (const e of paginationWindow()) {
       const prev = out.get(e.account_id)
       if (prev === undefined || e.uid < prev) {
         out.set(e.account_id, e.uid)
@@ -1086,7 +1229,11 @@
           limit: PAGE_SIZE,
         })
       } else {
-        const smallest = envelopes.reduce<number | null>(
+        // Smallest UID in the main pagination window — thread-member
+        // extras (#334) may have older UIDs but they aren't part of
+        // the visible page sequence, so anchoring on them would cause
+        // the next round to skip over real messages.
+        const smallest = paginationWindow().reduce<number | null>(
           (acc, e) => (acc === null || e.uid < acc ? e.uid : acc),
           null,
         )
@@ -1165,14 +1312,36 @@
    *  folder; subsequent pages still come via the scroll-based
    *  trigger. */
   let prefetchedFor = $state<string | null>(null)
+  /** Has the initial eager prefetch for the current folder *settled*
+   *  (returned, regardless of outcome)?  #334: while it's in flight,
+   *  the conversation-count badge can still be growing — a thread
+   *  whose older members are about to arrive will report a too-low
+   *  count from the cache.  We suppress the badge during this brief
+   *  window so the user never sees a "2 → 4" jump; once the
+   *  prefetch lands and the cache has the right shape, the badge
+   *  pops in at the correct number. */
+  let prefetchSettled = $state<boolean>(false)
   $effect(() => {
     const key = `${unified ? '__all__' : accountId}::${folder}`
     if (prefetchedFor === key) return
     if (loading || loadingOlder) return
     if (envelopes.length === 0) return
-    if (olderExhausted) return
+    if (olderExhausted) {
+      // No older page to fetch — nothing to wait for; badge is as
+      // stable as it'll ever get.
+      prefetchedFor = key
+      prefetchSettled = true
+      return
+    }
     prefetchedFor = key
-    void loadOlder()
+    prefetchSettled = false
+    void loadOlder().finally(() => {
+      // Re-check the key in case the user changed folders before
+      // the round-trip landed; in that case `lastFolderKey` has
+      // moved on and our settle signal would be stale.
+      const liveKey = `${unified ? '__all__' : accountId}::${folder}`
+      if (liveKey === key) prefetchSettled = true
+    })
   })
 
   // ── Answered-indicator (#255) ───────────────────────────────
@@ -1530,9 +1699,9 @@
                      trails to the right via `ml-auto`.  Only renders
                      if at least one piece has content; otherwise the
                      row stays compact. -->
-                {#if row.siblingCount > 0 || (unified && env.account_id)}
+                {#if (row.siblingCount > 0 && prefetchSettled) || (unified && env.account_id)}
                   <div class="flex items-center gap-2 mt-1 text-[11px] text-surface-500 min-w-0">
-                    {#if row.siblingCount > 0}
+                    {#if row.siblingCount > 0 && prefetchSettled}
                       <!-- Modern pill badge: rounded-full, soft
                            primary tint, primary-coloured count, and
                            an inline SVG chevron that rotates 180° on

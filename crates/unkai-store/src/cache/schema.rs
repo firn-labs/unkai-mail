@@ -1046,6 +1046,44 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_messages_message_id
         ON messages (message_id);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v31 → v32: stored threading index (#334).
+    //
+    // The frontend used to do all the grouping work at render time
+    // off `message_id` / `references_ids[0]`, and tried to bring in
+    // missing thread members via an IMAP UID SEARCH at every poll.
+    // Result: the conversation-count badge under-reported until the
+    // user scrolled, and even after backfill the count would flicker
+    // because cache reads and IMAP backfill landed at different times.
+    //
+    // New shape:
+    //   - Every cached envelope carries a stable `thread_id` (the
+    //     canonical thread key — `references_ids[0]` for replies, or
+    //     the envelope's own `message_id` for the chain root, with a
+    //     `solo:` fallback for envelopes that have neither).
+    //   - `thread_total_count` is the number of cached members of
+    //     that thread *within this folder*; maintained incrementally
+    //     on upsert / remove / move so reads never have to aggregate.
+    //
+    // Both columns are nullable for the upgrade path — existing rows
+    // start as NULL and get populated by a one-shot warm-up the
+    // first time a folder is read after migration (see
+    // `Cache::assign_pending_thread_ids`).  The frontend hides the
+    // conversation badge while warm-up is in progress so the user
+    // never sees a temporarily-wrong count.
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN thread_id TEXT;
+    ALTER TABLE messages
+        ADD COLUMN thread_total_count INTEGER;
+
+    -- Grouping by thread is the hot path for the MailList view;
+    -- without this index, every fetch would scan the whole folder
+    -- to count members.  Composite with `(account_id, folder)`
+    -- because the count is folder-scoped.
+    CREATE INDEX IF NOT EXISTS idx_messages_thread
+        ON messages (account_id, folder, thread_id);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

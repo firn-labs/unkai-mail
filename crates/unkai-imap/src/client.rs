@@ -1,4 +1,4 @@
-//! IMAP client — connects to a mail server via TLS and provides
+//! IMAP client â€” connects to a mail server via TLS and provides
 //! methods to interact with mailboxes.
 
 use async_imap::Session;
@@ -174,23 +174,23 @@ pub fn parse_eml_bytes(
 /// `async-imap`'s `Session` is generic over its underlying I/O. We
 /// pin the alias to the concrete `Compat<TlsStream<TcpStream>>` so
 /// downstream callers don't have to think about the four layers of
-/// generics — and so the `session: Option<...>` field below has a
+/// generics â€” and so the `session: Option<...>` field below has a
 /// nameable type.
 type ImapSession = Session<Compat<TlsStream<TcpStream>>>;
 
 /// Encode a UTF-8 mailbox name into the IMAP Modified UTF-7 form that
 /// `SELECT` / `EXAMINE` / `STATUS` / `APPEND` etc. expect on the wire.
 /// Pure ASCII names round-trip unchanged so this is a no-op for the
-/// common case (`INBOX`, `Sent`, `Drafts`, …).
+/// common case (`INBOX`, `Sent`, `Drafts`, â€¦).
 ///
-/// **Quoting is the caller's responsibility — but the `async-imap`
+/// **Quoting is the caller's responsibility â€” but the `async-imap`
 /// crate handles it for most commands.**  `select`, `examine`,
 /// `create`, `delete`, `subscribe`, `unsubscribe`, `status`,
 /// `append`, `rename`, `list`, etc. all run their mailbox argument
 /// through `validate_str` internally, which calls the `quote!`
 /// macro and emits `"<name>"` on the wire when needed.  The one
 /// exception is `uid_copy` (and `uid_move`), which passes the
-/// mailbox argument straight through to the wire — names with
+/// mailbox argument straight through to the wire â€” names with
 /// atom-special characters (space, `(`, `)`, `{`, `*`, `%`, `\`,
 /// `"`, controls) get parsed up to the first such char and the
 /// rest becomes syntax junk.  Use [`quoted_mailbox_arg`] at those
@@ -204,7 +204,7 @@ fn to_wire(name: &str) -> String {
 /// form (`"..."`, with `\` and `"` backslash-escaped) when it
 /// contains any RFC 3501 atom-special character.  Pure-ASCII
 /// names without specials round-trip unquoted.  Used **only**
-/// for `uid_copy` / `uid_move` arguments — async-imap doesn't
+/// for `uid_copy` / `uid_move` arguments â€” async-imap doesn't
 /// auto-quote those, and a folder named `"Audi TT"` would
 /// otherwise be parsed by the server as the bare atom `Audi`
 /// with `TT` becoming dangling syntax.
@@ -268,12 +268,12 @@ async fn tls_connect(
 /// trust the server.
 ///
 /// Returns every cert the server presented in handshake order
-/// (leaf first, then intermediates). Trusting the whole chain — not
-/// just the leaf — is the robust thing to do: the server may
+/// (leaf first, then intermediates). Trusting the whole chain â€” not
+/// just the leaf â€” is the robust thing to do: the server may
 /// reorder certs, the active leaf may be reissued under the same
 /// intermediate, and the verifier matches against the trust list
 /// by walking the entire presented chain anyway. Caller is
-/// responsible for never using this for actual mail traffic — we
+/// responsible for never using this for actual mail traffic â€” we
 /// drop the connection immediately after the handshake succeeds.
 pub async fn probe_server_certificate(host: &str, port: u16) -> Result<Vec<Vec<u8>>, UnkaiError> {
     let addr = format!("{host}:{port}");
@@ -318,7 +318,7 @@ pub struct ImapClient {
     session: Option<ImapSession>,
 }
 
-/// Result of a sync fetch — envelopes plus the folder's `UIDVALIDITY`.
+/// Result of a sync fetch â€” envelopes plus the folder's `UIDVALIDITY`.
 ///
 /// Callers store the `uidvalidity` alongside the envelopes. On the next
 /// sync they compare the server's value against the stored one; if it
@@ -334,7 +334,7 @@ pub struct EnvelopeBatch {
 ///
 /// Returned by `fetch_flags`, which exists to refresh the
 /// `\Seen` / `\Flagged` / `\Answered` bits on already-cached
-/// envelopes — the standard envelope-fetch path is incremental and
+/// envelopes â€” the standard envelope-fetch path is incremental and
 /// doesn't re-read flags on UIDs the cache already knows about, so
 /// flag changes another mail client makes (mark-read on a phone,
 /// answer from webmail, etc.) need this catch-up to round-trip.
@@ -351,7 +351,7 @@ impl ImapClient {
     ///
     /// `trusted_certs` is the per-account list of additional roots
     /// (the user's self-signed certs they've explicitly trusted in
-    /// settings). Empty for "trust webpki-roots only" — the
+    /// settings). Empty for "trust webpki-roots only" â€” the
     /// historical behaviour.
     pub async fn connect(
         host: &str,
@@ -366,7 +366,7 @@ impl ImapClient {
         let imap_client = async_imap::Client::new(stream);
 
         let session = imap_client.login(username, password).await.map_err(|e| {
-            // login() returns (error, client) on failure — we only need the error
+            // login() returns (error, client) on failure â€” we only need the error
             UnkaiError::Auth(format!("IMAP login failed: {}", e.0))
         })?;
 
@@ -400,7 +400,7 @@ impl ImapClient {
 
         // Build folder list, then query each folder for its unread count.
         // Mailbox names come over the wire in IMAP Modified UTF-7
-        // (RFC 3501 §5.1.3) — decode them to plain UTF-8 here so the
+        // (RFC 3501 Â§5.1.3) â€” decode them to plain UTF-8 here so the
         // cache and the UI never see the encoded form. We re-encode
         // when sending names back to the server (`STATUS`, `SELECT`,
         // `APPEND`, etc.) via `to_wire`.
@@ -431,15 +431,15 @@ impl ImapClient {
                 Ok(mailbox_status) => {
                     folder.unread_count = mailbox_status.unseen;
                     debug!(
-                        "  Folder: {} — unread: {:?} (attrs: {:?})",
+                        "  Folder: {} â€” unread: {:?} (attrs: {:?})",
                         folder.name, folder.unread_count, folder.attributes
                     );
                 }
                 Err(e) => {
-                    // Some folders (e.g. \Noselect) don't support STATUS — that's fine,
+                    // Some folders (e.g. \Noselect) don't support STATUS â€” that's fine,
                     // we just leave unread_count as None.
                     debug!(
-                        "  Folder: {} — could not get STATUS: {e} (attrs: {:?})",
+                        "  Folder: {} â€” could not get STATUS: {e} (attrs: {:?})",
                         folder.name, folder.attributes
                     );
                 }
@@ -456,8 +456,8 @@ impl ImapClient {
     /// `"Projects"` for a top-level folder, `"INBOX/Projects/2026"`
     /// for a subfolder using the `/` delimiter that most servers
     /// report via LIST). We re-encode to Modified UTF-7 on the wire
-    /// via `to_wire` — the same path every other mailbox-naming
-    /// command uses — so non-ASCII folder names round-trip correctly.
+    /// via `to_wire` â€” the same path every other mailbox-naming
+    /// command uses â€” so non-ASCII folder names round-trip correctly.
     pub async fn create_folder(&mut self, name: &str) -> Result<(), UnkaiError> {
         let session = self
             .session
@@ -474,7 +474,7 @@ impl ImapClient {
     /// Delete a mailbox via IMAP `DELETE`.
     ///
     /// Most servers refuse to delete a folder that still holds
-    /// messages — the error bubbles up to the UI unchanged so the
+    /// messages â€” the error bubbles up to the UI unchanged so the
     /// user sees a real reason ("Mailbox has children" / "Mailbox
     /// is not empty"). Callers that want "delete even if full"
     /// semantics should first move the messages to Trash.
@@ -497,7 +497,7 @@ impl ImapClient {
     /// intact; our local cache needs a parallel update so envelopes
     /// and bodies that were stored under the old name carry over
     /// to the new one. That's handled in the caller (`main.rs`)
-    /// via `Cache::rename_folder` — this method only drives the
+    /// via `Cache::rename_folder` â€” this method only drives the
     /// IMAP side.
     pub async fn rename_folder(&mut self, from: &str, to: &str) -> Result<(), UnkaiError> {
         let session = self
@@ -512,12 +512,12 @@ impl ImapClient {
         Ok(())
     }
 
-    /// Select a folder for reading (uses EXAMINE — read-only, no state changes).
+    /// Select a folder for reading (uses EXAMINE â€” read-only, no state changes).
     ///
     /// In IMAP you must SELECT (or EXAMINE) a folder before you can fetch messages
     /// from it. EXAMINE is like SELECT but opens the mailbox read-only, so marking
     /// messages as seen, etc. won't happen as a side effect. Returns the number
-    /// of messages (`exists`) and the folder's `UIDVALIDITY` — a server-assigned
+    /// of messages (`exists`) and the folder's `UIDVALIDITY` â€” a server-assigned
     /// counter that changes whenever the folder is recreated or its UID space
     /// resets. Callers compare this against a cached copy to detect when their
     /// cached UIDs are no longer valid.
@@ -542,9 +542,9 @@ impl ImapClient {
     ///
     /// `since_uid` toggles the strategy:
     ///
-    /// - `None` → full mode: pull the newest `limit` messages by sequence number.
+    /// - `None` â†’ full mode: pull the newest `limit` messages by sequence number.
     ///   Used on a cold cache or after a UIDVALIDITY reset.
-    /// - `Some(u)` → incremental mode: pull everything with UID `> u` via
+    /// - `Some(u)` â†’ incremental mode: pull everything with UID `> u` via
     ///   `UID FETCH (u+1):*`. Cheap because only genuinely new messages come
     ///   back; the cache already has everything up to `u`.
     ///
@@ -553,7 +553,7 @@ impl ImapClient {
     ///
     /// IMAP messages have two kinds of identifiers:
     /// - **sequence numbers**: 1..N in current session, change as messages are deleted
-    /// - **UIDs**: stable across sessions — this is what we store and return
+    /// - **UIDs**: stable across sessions â€” this is what we store and return
     pub async fn fetch_envelopes(
         &mut self,
         folder: &str,
@@ -575,10 +575,10 @@ impl ImapClient {
 
         // Two FETCH forms depending on mode. `uid_fetch` uses UIDs directly
         // (survives server-side deletions), while `fetch` uses sequence numbers
-        // — the only way to say "newest N" without knowing UIDs in advance.
+        // â€” the only way to say "newest N" without knowing UIDs in advance.
         let fetches: Vec<_> = match since_uid {
             Some(hi) => {
-                // `hi+1:*` — everything strictly newer than the last UID we saw.
+                // `hi+1:*` â€” everything strictly newer than the last UID we saw.
                 // `*` means "the largest UID in the folder", so this always
                 // terminates even when there's nothing new (returns empty).
                 let range = format!("{}:*", hi.saturating_add(1));
@@ -622,7 +622,7 @@ impl ImapClient {
                 let uid = fetch.uid?;
                 let envelope = fetch.envelope()?;
 
-                // Subject — decode the RFC 2047 header if needed. async-imap
+                // Subject â€” decode the RFC 2047 header if needed. async-imap
                 // returns raw bytes; mail-parser's header_to_string handles
                 // the encoded-word decoding for us.
                 let subject = envelope
@@ -631,7 +631,7 @@ impl ImapClient {
                     .map(|s| decode_header(s))
                     .unwrap_or_default();
 
-                // From — take the first address, formatted as "Name <addr>"
+                // From â€” take the first address, formatted as "Name <addr>"
                 let from = envelope
                     .from
                     .as_ref()
@@ -652,8 +652,8 @@ impl ImapClient {
                     })
                     .unwrap_or_else(Utc::now);
 
-                // Flags: \Seen → read, \Flagged → starred,
-                // \Answered → user-or-other-client replied to this
+                // Flags: \Seen â†’ read, \Flagged â†’ starred,
+                // \Answered â†’ user-or-other-client replied to this
                 // message (#255).
                 let mut is_read = false;
                 let mut is_starred = false;
@@ -679,7 +679,7 @@ impl ImapClient {
                     is_starred,
                     is_answered,
                     // The IMAP client doesn't track *how* the user
-                    // replied — that's Unkai-only metadata stamped
+                    // replied â€” that's Unkai-only metadata stamped
                     // by the send path (#255), so leave it None
                     // here; the cache merge preserves whatever's
                     // already on disk.
@@ -692,6 +692,10 @@ impl ImapClient {
                     message_id,
                     in_reply_to,
                     references_ids,
+                    // #334: cache populates these on upsert; off-the-wire
+                    // envelopes don't know their thread identity yet.
+                    thread_id: None,
+                    thread_total_count: None,
                 })
             })
             .collect();
@@ -721,7 +725,7 @@ impl ImapClient {
     /// transfer encodings (base64, quoted-printable), and convert charsets.
     ///
     /// BODY.PEEK[] is used instead of BODY[] so the server does NOT mark the
-    /// message as \Seen — we want marking-as-read to be an explicit action.
+    /// message as \Seen â€” we want marking-as-read to be an explicit action.
     pub async fn fetch_message(
         &mut self,
         folder: &str,
@@ -744,7 +748,7 @@ impl ImapClient {
             .map_err(|e| UnkaiError::Protocol(format!("Failed to read UID FETCH: {e}")))?;
 
         // No fetch row back means the server's expunged this UID
-        // since we cached the envelope — surface `MessageGone` so the
+        // since we cached the envelope â€” surface `MessageGone` so the
         // Tauri layer can evict the dead row + the UI can auto-advance.
         let fetch = fetches.into_iter().next().ok_or(UnkaiError::MessageGone)?;
 
@@ -795,7 +799,7 @@ impl ImapClient {
         //
         // mail-parser returns text with CRLF (\r\n) line endings as required
         // by the MIME RFC. We normalise to LF-only here so the frontend's
-        // `white-space: pre-wrap` renders line breaks correctly — some
+        // `white-space: pre-wrap` renders line breaks correctly â€” some
         // WebKit builds treat a bare \r as a carriage-return (cursor-to-BOL)
         // rather than a newline, collapsing multi-line text onto one line.
         let body_text = (0..parsed.text_body_count())
@@ -821,7 +825,7 @@ impl ImapClient {
         let has_attachments = parsed.attachment_count() > 0;
 
         // Metadata for each attachment. We store only name/type/size
-        // here — the bytes are left on the server and fetched on demand
+        // here â€” the bytes are left on the server and fetched on demand
         // when the user clicks "Download" or "Save to Nextcloud". This
         // keeps the message payload (and its cache row) small even for
         // messages with 20 MB of PDFs.
@@ -850,7 +854,7 @@ impl ImapClient {
                 // RFC 2392 Content-ID, when the part carried one. The
                 // body's `<a href="cid:abc-123">` anchors resolve to
                 // this attachment via case-insensitive equality with
-                // the cid value (no angle brackets — mail-parser
+                // the cid value (no angle brackets â€” mail-parser
                 // strips them already).
                 let content_id = part.content_id().map(|s| s.to_string());
                 EmailAttachment {
@@ -890,7 +894,7 @@ impl ImapClient {
             parsed.attachment_count()
         );
 
-        // RFC 5322 threading headers — same parse as in
+        // RFC 5322 threading headers â€” same parse as in
         // `parse_eml_bytes`.  Mirror that helper inline because
         // the two paths walk slightly different `parsed` shapes.
         let header_first = |name: &str| {
@@ -937,18 +941,18 @@ impl ImapClient {
     /// We re-fetch the whole message body (BODY.PEEK[]) and re-parse it
     /// to extract the attachment at `part_id`. That's simpler than
     /// issuing a targeted BODYSTRUCTURE + BODY[part] pair, which would
-    /// mean teaching the UI about MIME section numbers — and re-fetching
+    /// mean teaching the UI about MIME section numbers â€” and re-fetching
     /// is cheap enough for the "user clicked Download" case. BODY.PEEK[]
     /// keeps the message unread.
     /// Find any iCalendar payload in the message and return its
-    /// raw bytes — regardless of whether mail-parser classified
+    /// raw bytes â€” regardless of whether mail-parser classified
     /// it as an attachment or a body alternative.  Walks
     /// `Message::parts` directly so canonical iMIP messages
     /// (where `text/calendar` lives inside
     /// `multipart/alternative` with no separate `.ics`
     /// download) still surface their calendar payload.
     /// Returns `None` when no calendar-shaped part exists in
-    /// the message — caller treats that as "this isn't an
+    /// the message â€” caller treats that as "this isn't an
     /// invite mail at all".
     pub async fn fetch_calendar_payload(
         &mut self,
@@ -1034,7 +1038,7 @@ impl ImapClient {
         // (matches the listing path's primary indexing) and
         // fall back to the parts-array.  The fallback rescues
         // metadata that was cached during an earlier build
-        // where part_ids referenced the parts-array directly —
+        // where part_ids referenced the parts-array directly â€”
         // without it those legacy entries fail to download
         // and any UI keying off `download_email_attachment`
         // (RSVP card, attachment download button) silently
@@ -1074,7 +1078,7 @@ impl ImapClient {
         ))
     }
 
-    /// Clear the `\Seen` flag on a message — i.e. mark it unread.
+    /// Clear the `\Seen` flag on a message â€” i.e. mark it unread.
     /// Mirror of `mark_as_read`; uses `UID STORE -FLAGS (\Seen)`.
     pub async fn mark_as_unread(&mut self, folder: &str, uid: u32) -> Result<(), UnkaiError> {
         let session = self
@@ -1100,7 +1104,7 @@ impl ImapClient {
 
     /// Mark a message as read by setting the `\Seen` flag on the server.
     ///
-    /// Uses `UID STORE <uid> +FLAGS (\Seen)` — idempotent, so calling it on
+    /// Uses `UID STORE <uid> +FLAGS (\Seen)` â€” idempotent, so calling it on
     /// an already-read message is a no-op. We SELECT (not EXAMINE) here
     /// because EXAMINE opens the folder read-only and rejects STORE.
     pub async fn mark_as_read(&mut self, folder: &str, uid: u32) -> Result<(), UnkaiError> {
@@ -1114,7 +1118,7 @@ impl ImapClient {
             UnkaiError::Protocol(format!("Failed to select folder '{folder}': {e}"))
         })?;
 
-        // uid_store returns a stream of updated flag sets — we don't need them,
+        // uid_store returns a stream of updated flag sets â€” we don't need them,
         // just drain so the command completes.
         let _updates: Vec<_> = session
             .uid_store(uid.to_string(), "+FLAGS (\\Seen)")
@@ -1132,7 +1136,7 @@ impl ImapClient {
     ///
     /// Called after Compose's send path delivers a successful reply
     /// (or reply-all, or "respond with meeting") so the original
-    /// message is marked answered on the server — round-trips to
+    /// message is marked answered on the server â€” round-trips to
     /// other mail clients the user might have open, and gives
     /// Unkai's mail-list a stable signal across cache rebuilds.
     /// Uses `UID STORE <uid> +FLAGS (\Answered)`; idempotent.
@@ -1163,7 +1167,7 @@ impl ImapClient {
     /// snapshot of `\Seen` / `\Flagged` / `\Answered` per UID.
     ///
     /// The standard envelope-fetch path (`fetch_envelopes`) only
-    /// pulls UIDs strictly newer than the cache bookmark — so flag
+    /// pulls UIDs strictly newer than the cache bookmark â€” so flag
     /// changes another client makes (marked-read on a phone,
     /// answered from webmail) never round-trip to Unkai on their
     /// own.  This is the catch-up: cheap (`UID FETCH x,y,z (UID
@@ -1185,7 +1189,7 @@ impl ImapClient {
             .as_mut()
             .ok_or_else(|| UnkaiError::Protocol("Session is closed".into()))?;
 
-        // EXAMINE (read-only) is enough — we're not flipping flags
+        // EXAMINE (read-only) is enough â€” we're not flipping flags
         // here, just observing them, and read-only avoids
         // accidentally clearing the server's `\Recent` flag
         // bookkeeping for the folder.
@@ -1194,7 +1198,7 @@ impl ImapClient {
         })?;
 
         // Comma-separated UID set is the canonical IMAP way to
-        // address a discrete list — no "1:50" range wastefulness if
+        // address a discrete list â€” no "1:50" range wastefulness if
         // the cached UIDs aren't contiguous, and the server folds
         // adjacent ones into ranges in its parser anyway.
         let uid_set = uids
@@ -1249,10 +1253,10 @@ impl ImapClient {
     /// Used by the "save sent mail to Sent folder" path: SMTP delivers
     /// the message to recipients, then we APPEND a copy here so the
     /// user can see what they sent. `flags` is the literal IMAP flag
-    /// list (e.g. `&["\\Seen"]` — pre-marked read because the user
+    /// list (e.g. `&["\\Seen"]` â€” pre-marked read because the user
     /// just wrote it themselves).
     ///
-    /// `raw` must already be properly CRLF-terminated RFC 822 bytes —
+    /// `raw` must already be properly CRLF-terminated RFC 822 bytes â€”
     /// `lettre::Message::formatted()` produces exactly that.
     pub async fn append_message(
         &mut self,
@@ -1267,7 +1271,7 @@ impl ImapClient {
 
         // async-imap 0.10's `append` takes the flag list as a single
         // pre-formatted parenthesised IMAP atom. We pass `\Seen` so
-        // the appended copy doesn't add to the unread badge — the
+        // the appended copy doesn't add to the unread badge â€” the
         // user wrote it themselves and has already "read" it.
         let flag_atom = if flags.is_empty() {
             None
@@ -1302,7 +1306,7 @@ impl ImapClient {
     /// `Message-ID` works as a stable handle because lettre stamps
     /// every outgoing message with a UUID-anchored `<uuid@host>` value
     /// (see `build_outgoing_message`), so the search criterion is
-    /// effectively unique. Returns the highest matching UID — on the
+    /// effectively unique. Returns the highest matching UID â€” on the
     /// unlikely event of a collision the most recent server-assigned
     /// UID is the one we just wrote.
     ///
@@ -1320,7 +1324,7 @@ impl ImapClient {
             .as_mut()
             .ok_or_else(|| UnkaiError::Protocol("Session is closed".into()))?;
 
-        // IMAP quoted strings only need to escape `\` and `"` — the
+        // IMAP quoted strings only need to escape `\` and `"` â€” the
         // Message-ID's `<uuid@host>` shape contains neither, but
         // escape defensively anyway in case a future caller passes
         // a less well-behaved value through.
@@ -1340,13 +1344,13 @@ impl ImapClient {
     ///
     /// Why not `UID MOVE` (RFC 6851)? MOVE is cleaner but requires the
     /// server to advertise the `MOVE` capability, which still isn't
-    /// universal in 2026 — the COPY+EXPUNGE fallback works on every
+    /// universal in 2026 â€” the COPY+EXPUNGE fallback works on every
     /// IMAP4rev1 server. We pay for one extra round-trip vs MOVE but
     /// never surprise the user with a "your server doesn't support
     /// that" error on an Archive/Delete button press.
     ///
     /// Used by the Archive and (future) Trash flows in MailView. The
-    /// destination folder must already exist — callers locate it via
+    /// destination folder must already exist â€” callers locate it via
     /// `pick_archive_folder` / `pick_trash_folder` before calling.
     pub async fn move_message(
         &mut self,
@@ -1402,12 +1406,12 @@ impl ImapClient {
     /// but does the UID COPY and UID STORE with a comma-joined UID
     /// set so the server processes the lot in one round-trip, and
     /// EXPUNGEs once at the end.  Single SELECT, single COPY,
-    /// single STORE, single EXPUNGE — N×3 round-trips collapse to
+    /// single STORE, single EXPUNGE â€” NÃ—3 round-trips collapse to
     /// 4, and there's no chance of racing per-message connection
     /// state across rapid sequential calls.
     ///
     /// Used by the multi-select drag-and-drop and right-click move
-    /// flows in MailList where N can easily be 5–50 messages and a
+    /// flows in MailList where N can easily be 5â€“50 messages and a
     /// per-message connect/login/logout dance was both slow and,
     /// on some servers, dropping the last move outright due to
     /// rate-limiting / connection-recycling weirdness.
@@ -1430,7 +1434,7 @@ impl ImapClient {
         })?;
 
         // IMAP allows comma-separated UID sets in UID COPY / UID
-        // STORE — one round-trip moves the whole batch.
+        // STORE â€” one round-trip moves the whole batch.
         let uid_set: String = uids
             .iter()
             .map(u32::to_string)
@@ -1495,7 +1499,7 @@ impl ImapClient {
         );
 
         // Probe the UID first. If this comes back empty, the UID we
-        // were handed isn't in this folder at all — the envelope
+        // were handed isn't in this folder at all â€” the envelope
         // cache is out of sync with the server, or (far more likely
         // in practice) the backend is driving the wrong folder for
         // the message the user is looking at. Surfacing *which* of
@@ -1521,7 +1525,7 @@ impl ImapClient {
         }
 
         // STORE the `\Deleted` flag and keep the returned FETCH
-        // responses — if the set is empty the server accepted the
+        // responses â€” if the set is empty the server accepted the
         // STORE but didn't actually modify anything, which almost
         // always means the SELECT landed on a read-only view or the
         // server suppresses the FETCH echo for \Deleted (rare). We
@@ -1538,7 +1542,7 @@ impl ImapClient {
         if updates.is_empty() {
             tracing::warn!(
                 "delete_message: UID STORE (\\Deleted) on UID {uid} in '{folder}' \
-                 returned no FETCH updates even though the UID probe found the message — \
+                 returned no FETCH updates even though the UID probe found the message â€” \
                  proceeding to EXPUNGE anyway, the flag may have been set silently"
             );
         } else {
@@ -1548,7 +1552,7 @@ impl ImapClient {
             );
         }
 
-        // Prefer `UID EXPUNGE` (RFC 4315 / UIDPLUS) — it only expunges
+        // Prefer `UID EXPUNGE` (RFC 4315 / UIDPLUS) â€” it only expunges
         // the specific UID we just marked, leaving any other
         // `\Deleted`-flagged messages other clients might be juggling
         // in the same mailbox untouched. Most servers advertise
@@ -1559,7 +1563,7 @@ impl ImapClient {
         // The inner helper consumes the returned stream fully before
         // returning, which is what lets us fall back to a second
         // mutable borrow of `session` on the outer error branch
-        // without tripping the borrow checker — if we kept the
+        // without tripping the borrow checker â€” if we kept the
         // Stream around we'd be holding a mutable borrow into the
         // Err arm.
         let uid_set = uid.to_string();
@@ -1585,7 +1589,7 @@ impl ImapClient {
             Err(e) => {
                 // UIDPLUS not supported (or the server rejected the
                 // command for another reason). Fall back to plain
-                // EXPUNGE — we only flagged one UID in this session
+                // EXPUNGE â€” we only flagged one UID in this session
                 // so the broader command is still targeted enough.
                 tracing::warn!("delete_message: UID EXPUNGE failed ({e}), falling back to EXPUNGE");
                 let expunged: Vec<_> = session
@@ -1605,7 +1609,7 @@ impl ImapClient {
 
         if expunged_count == 0 {
             return Err(UnkaiError::Protocol(format!(
-                "EXPUNGE in '{folder}' removed 0 messages after flagging UID {uid} — \
+                "EXPUNGE in '{folder}' removed 0 messages after flagging UID {uid} â€” \
                  the \\Deleted flag didn't stick on this server"
             )));
         }
@@ -1645,7 +1649,7 @@ impl ImapClient {
     /// Used when the FTS5 cache misses (e.g. the user is looking for an
     /// old message that was never opened on this machine).
     ///
-    /// IMAP SEARCH is server-implementation-dependent and can be slow —
+    /// IMAP SEARCH is server-implementation-dependent and can be slow â€”
     /// this is the "last resort" path. The frontend calls it only after
     /// the local cache search returns fewer results than expected, or on
     /// explicit user action ("search server too").
@@ -1679,7 +1683,7 @@ impl ImapClient {
         uids.sort_unstable_by(|a, b| b.cmp(a));
         uids.truncate(limit as usize);
 
-        // Build a UID set like `42,17,9` — async-imap accepts this form.
+        // Build a UID set like `42,17,9` â€” async-imap accepts this form.
         let set = uids
             .iter()
             .map(|u| u.to_string())
@@ -1752,12 +1756,19 @@ impl ImapClient {
                     message_id: thread_msg_id,
                     in_reply_to: thread_in_reply_to,
                     references_ids: thread_refs,
+                    // #334: cache populates these on upsert; off-the-wire
+                    // envelopes don't know their thread identity yet.
+                    thread_id: None,
+                    thread_total_count: None,
                 })
             })
             .collect();
         envelopes.sort_unstable_by_key(|e| std::cmp::Reverse(e.date));
 
-        info!("SEARCH '{folder}' '{criterion}' → {} hits", envelopes.len());
+        info!(
+            "SEARCH '{folder}' '{criterion}' â†’ {} hits",
+            envelopes.len()
+        );
         Ok(envelopes)
     }
 
@@ -1789,7 +1800,7 @@ impl ImapClient {
 
         // AND the user's query with `UID 1:<before_uid-1>` so the
         // server returns only matches strictly older than the
-        // anchor — saves us a client-side filter pass.
+        // anchor â€” saves us a client-side filter pass.
         let combined = format!("UID 1:{} {}", before_uid - 1, criterion);
         debug!("UID SEARCH (older) in '{folder}': {combined}");
         let mut uids: Vec<u32> = session
@@ -1873,6 +1884,10 @@ impl ImapClient {
                     message_id: thread_msg_id,
                     in_reply_to: thread_in_reply_to,
                     references_ids: thread_refs,
+                    // #334: cache populates these on upsert; off-the-wire
+                    // envelopes don't know their thread identity yet.
+                    thread_id: None,
+                    thread_total_count: None,
                 })
             })
             .collect();
@@ -1891,7 +1906,7 @@ impl ImapClient {
     ///
     /// Returns the freshly-fetched envelopes; the caller is
     /// responsible for writing them through to the cache. An empty
-    /// return means there's nothing older — frontend can stop
+    /// return means there's nothing older â€” frontend can stop
     /// asking.
     ///
     /// Two round trips (SEARCH then FETCH) on purpose: a single
@@ -1937,7 +1952,7 @@ impl ImapClient {
             });
         }
 
-        // Top `limit` by descending UID — those are the newest
+        // Top `limit` by descending UID â€” those are the newest
         // among "older than before_uid".
         uids.sort_unstable_by(|a, b| b.cmp(a));
         uids.truncate(limit as usize);
@@ -2014,6 +2029,10 @@ impl ImapClient {
                     message_id: thread_msg_id,
                     in_reply_to: thread_in_reply_to,
                     references_ids: thread_refs,
+                    // #334: cache populates these on upsert; off-the-wire
+                    // envelopes don't know their thread identity yet.
+                    thread_id: None,
+                    thread_total_count: None,
                 })
             })
             .collect();
@@ -2031,7 +2050,7 @@ impl ImapClient {
 
     /// Log out from the IMAP server and close the connection cleanly.
     ///
-    /// Always call this when you're done — it sends the LOGOUT command
+    /// Always call this when you're done â€” it sends the LOGOUT command
     /// so the server knows we're leaving properly.
     pub async fn logout(mut self) -> Result<(), UnkaiError> {
         if let Some(mut session) = self.session.take() {
@@ -2045,7 +2064,7 @@ impl ImapClient {
     }
 }
 
-// ── Helpers ────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Decode a possibly RFC 2047-encoded header value (e.g. `=?UTF-8?B?...?=`).
 fn decode_header(bytes: &[u8]) -> String {
@@ -2065,7 +2084,7 @@ fn decode_header(bytes: &[u8]) -> String {
 /// (case-insensitive), we drop the name and emit just the address.
 /// Some senders / mail servers populate the personal-name component
 /// with the email itself, which would produce malformed RFC 5322
-/// like `alex@example.com <alex@example.com>` — the unquoted `@` in
+/// like `alex@example.com <alex@example.com>` â€” the unquoted `@` in
 /// the phrase makes the result unparseable, and a plain reply would
 /// fail with "Invalid 'to' address".  Collapsing the redundant name
 /// also cleans up the mail-list display.
@@ -2114,8 +2133,8 @@ fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
 /// Pull RFC 5322 threading headers off a `Fetch` response (#277).
 ///
 /// Returns `(message_id, in_reply_to, references)` where each
-/// Message-ID has its angle brackets stripped — `<abc@h>` →
-/// `abc@h` — so cache lookups don't have to be bracket-aware.
+/// Message-ID has its angle brackets stripped â€” `<abc@h>` â†’
+/// `abc@h` â€” so cache lookups don't have to be bracket-aware.
 ///
 /// `Message-ID` and `In-Reply-To` come from the IMAP `ENVELOPE`
 /// response (cheap, already in the FETCH).  `References` is *not*
@@ -2142,7 +2161,7 @@ fn extract_threading_headers(
     (message_id, in_reply_to, references)
 }
 
-/// `<abc@host>` → `Some("abc@host")`.  Tolerates surrounding
+/// `<abc@host>` â†’ `Some("abc@host")`.  Tolerates surrounding
 /// whitespace and a value that's already bare (no brackets).
 /// Empty / whitespace-only inputs return `None` so the caller can
 /// store a clean `NULL` instead of an empty string.
@@ -2165,7 +2184,7 @@ fn strip_msgid_brackets(s: &str) -> Option<String> {
 /// Parse the body of a `BODY[HEADER.FIELDS (REFERENCES)]` response
 /// into the ordered Message-ID list from the `References:` header.
 /// The body is one or more lines starting with `References:`, with
-/// continuation lines (RFC 5322 §2.2.3) folded by leading
+/// continuation lines (RFC 5322 Â§2.2.3) folded by leading
 /// whitespace.  We unfold by joining all non-empty lines that
 /// follow `References:` until a blank line.  Each resulting token
 /// matching `<...>` becomes one entry, brackets stripped.
@@ -2185,7 +2204,7 @@ fn parse_references_header(raw: &str) -> Vec<String> {
             joined.push(' ');
             joined.push_str(line);
         } else if in_refs {
-            // Reached the next header or a blank line — done.
+            // Reached the next header or a blank line â€” done.
             break;
         }
     }
@@ -2227,7 +2246,7 @@ mod tests {
 
     #[test]
     fn to_wire_is_bare_mutf7_no_quoting() {
-        // `to_wire` must NOT add IMAP quoting — async-imap's
+        // `to_wire` must NOT add IMAP quoting â€” async-imap's
         // `validate_str` quotes for SELECT / EXAMINE / CREATE
         // / etc. internally, so quoting here would result in
         // double-quoting on the wire.  Pure-ASCII names pass
@@ -2237,7 +2256,7 @@ mod tests {
         assert_eq!(to_wire("Sent"), "Sent");
         assert_eq!(to_wire("Audi TT"), "Audi TT"); // no quoting at this layer
         assert_eq!(to_wire("INBOX/Projects"), "INBOX/Projects");
-        let unicode = to_wire("Bücher");
+        let unicode = to_wire("BÃ¼cher");
         assert!(unicode.is_ascii());
     }
 

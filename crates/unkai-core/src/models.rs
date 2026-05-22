@@ -62,6 +62,16 @@ pub struct AppSettings {
     /// behaviour.  Turn off to fall back to the previous behaviour
     /// where the reading pane goes blank after every delete.
     pub auto_advance_after_remove: bool,
+    /// Group same-conversation messages under a single MailList row
+    /// (#334).  Default on — the conversation badge collapses
+    /// reply chains into one entry with an expand chevron.  Off
+    /// renders every envelope as its own flat row (the pre-#277
+    /// behaviour) for users who prefer chronological scrolling
+    /// over conversation bundling.  The cache still computes
+    /// `thread_id` either way, so toggling back on is a free
+    /// re-render with no IMAP traffic.
+    #[serde(default = "default_true")]
+    pub conversation_view_enabled: bool,
     /// Default calendar for events created in CalendarView and for
     /// inbound RSVPs that the user accepts.  Stored as the app-side
     /// calendar id (`{nc_id}::{path}`) so it's stable across syncs.
@@ -279,6 +289,7 @@ impl Default for AppSettings {
             mail_html_white_background: true,
             auto_load_remote_images: false,
             auto_advance_after_remove: true,
+            conversation_view_enabled: true,
             default_calendar_id: None,
             meeting_reminders_enabled: true,
             calendar_reminders_enabled: true,
@@ -507,6 +518,26 @@ pub struct EmailEnvelope {
     /// branched.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references_ids: Vec<String>,
+    /// Stable thread identity assigned by the local cache (#334):
+    /// `references_ids[0]` for replies, the envelope's own
+    /// `message_id` for chain roots, or a `solo:<account>:<folder>:<uid>`
+    /// fallback for envelopes that have neither.  Two envelopes share
+    /// `thread_id` iff they belong to the same conversation.  `None`
+    /// for envelopes coming straight off the wire from IMAP/JMAP —
+    /// the cache write-through path stamps it during upsert.  Also
+    /// `None` for cached rows that pre-date the schema migration
+    /// until the warm-up has run; the UI hides the count badge in
+    /// that transient state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Number of cached members of this thread within
+    /// `(account_id, folder)` (#334).  Maintained incrementally by
+    /// the cache on every upsert / remove / move so the MailList
+    /// row can paint the conversation badge from a single column
+    /// read instead of grouping at query time.  `None` mirrors
+    /// `thread_id` (envelope hasn't been assigned a thread yet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_total_count: Option<u32>,
 }
 
 /// Represents an email message.
