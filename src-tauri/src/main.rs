@@ -6012,6 +6012,9 @@ async fn fetch_envelopes_inner(
     // the sync bookmark; we return the newest `limit` from the cache
     // rather than just the delta, because the UI expects a full list
     // regardless of whether this was an incremental or full sync.
+    // The cache read populates `thread_id` and `thread_total_count`
+    // per row (#334) so the UI's conversation badge paints with the
+    // right number on first frame.
     cache
         .get_envelopes(account_id, folder, limit)
         .map_err(Into::into)
@@ -8579,6 +8582,9 @@ fn get_cached_envelopes(
     limit: u32,
     cache: State<'_, Cache>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
+    // #334: `get_envelopes` now warms up `thread_id` and computes
+    // `thread_total_count` per row in a single read; no separate
+    // backfill query needed.
     cache
         .get_envelopes(&account_id, &folder, limit)
         .map_err(Into::into)
@@ -8595,6 +8601,25 @@ fn get_unified_cached_envelopes(
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
     cache
         .get_unified_envelopes(&folder, limit)
+        .map_err(Into::into)
+}
+
+/// Fetch every cached envelope belonging to a single conversation
+/// in `(account_id, folder)` (#334).  Used by the MailList expand
+/// path: when the user clicks a thread head's chevron we want to
+/// reveal every member the local cache knows about, not just those
+/// that happened to be in the newest-`PAGE_SIZE` window.  Lean
+/// folder-scoped lookup keyed off the stored `thread_id` — no IMAP,
+/// no IPC echoes, just the index hit.
+#[tauri::command]
+fn get_envelopes_by_thread(
+    account_id: String,
+    folder: String,
+    thread_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, UnkaiError> {
+    cache
+        .get_envelopes_by_thread(&account_id, &folder, &thread_id)
         .map_err(Into::into)
 }
 
@@ -12131,6 +12156,7 @@ fn main() {
             move_messages,
             get_cached_envelopes,
             get_unified_cached_envelopes,
+            get_envelopes_by_thread,
             get_cached_message,
             get_cached_folders,
             test_jmap_connection,

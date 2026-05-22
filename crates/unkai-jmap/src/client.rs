@@ -362,6 +362,9 @@ impl JmapClient {
                     message_id: None,
                     in_reply_to: None,
                     references_ids: Vec::new(),
+                    // #334: cache populates these on upsert.
+                    thread_id: None,
+                    thread_total_count: None,
                 }
             })
             .collect();

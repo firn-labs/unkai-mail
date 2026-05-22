@@ -16,6 +16,9 @@
   "settings_general_file_assoc_hint": "Unkai is registered with your operating system as a possible handler. Mark it as the default in your OS settings to have double-clicked calendar invites and email files open here.",
   "settings_general_file_assoc_button": "Open OS settings",
 
+  "settings_mail_conversation_view_label": "Group messages by conversation",
+  "settings_mail_conversation_view_hint": "Bundle replies in the same thread under a single row with an expand chevron. Turn off to see every message as its own row in date order.",
+
   "account_setup_welcome_title": "Welcome to Unkai Mail",
   "account_setup_welcome_subtitle": "Let's set up your email account",
   "account_setup_close_label": "Close setup wizard",

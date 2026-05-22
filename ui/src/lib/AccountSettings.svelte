@@ -207,6 +207,10 @@
     mail_html_white_background: boolean
     auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
+    /** #334 — when off, the MailList renders every envelope as
+     *  its own row instead of bundling reply chains under one
+     *  conversation head with an expand chevron.  Default on. */
+    conversation_view_enabled: boolean
     /** #165 master toggle for the URLhaus link checker.
      *  Off → no pills, no click interception, refresh worker
      *  sleeps.  On (default) → links in rendered email show
@@ -281,6 +285,7 @@
     mail_html_white_background: true,
     auto_load_remote_images: false,
     auto_advance_after_remove: true,
+    conversation_view_enabled: true,
     link_check_enabled: true,
     default_calendar_id: null,
     meeting_reminders_enabled: true,
@@ -1596,6 +1601,25 @@
             onchange={() => scheduleSave()}
           />
           <span>Show desktop notifications for new mail</span>
+        </div>
+
+        <!-- #334 — group replies into a single conversation row in
+             the MailList.  When off, every envelope renders as its
+             own row (the pre-#277 flat-list behaviour).  The cache
+             still tracks thread_id either way so flipping back on
+             is an immediate re-render with no IMAP traffic. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.conversation_view_enabled}
+            label={m.settings_mail_conversation_view_label()}
+            onchange={() => scheduleSave()}
+          />
+          <div>
+            <span>{m.settings_mail_conversation_view_label()}</span>
+            <p class="text-xs text-surface-400 mt-0.5">
+              {m.settings_mail_conversation_view_hint()}
+            </p>
+          </div>
         </div>
 
         <!-- Auto-load remote images (#197).  Off by default —

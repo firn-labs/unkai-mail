@@ -601,6 +601,10 @@
     mail_html_white_background: boolean
     auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
+    /** #334 — when off, the MailList renders every envelope as
+     *  its own flat row instead of bundling conversations under a
+     *  single head with an expand chevron.  Default on. */
+    conversation_view_enabled?: boolean
     /** #203: gates reminders for events that carry a meeting URL. */
     meeting_reminders_enabled: boolean
     /** #203: gates reminders for events without a meeting URL. */
@@ -3002,6 +3006,7 @@
               unified={unifiedMode}
               selectedUid={selectedUid}
               refreshToken={refreshToken}
+              conversationView={appPrefs?.conversation_view_enabled ?? true}
               onselect={selectMessage}
               bind:envelopes={mailListEnvelopes}
               bind:refreshing={mailListRefreshing}
