@@ -1,0 +1,16 @@
+[package]
+name = "unkai-carddav"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+unkai-core.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+quick-xml.workspace = true
+ical.workspace = true
+base64.workspace = true

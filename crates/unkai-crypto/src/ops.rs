@@ -1,0 +1,424 @@
+//! Encrypt / decrypt / sign / verify operations on OpenPGP messages.
+//!
+//! All functions return *armored* OpenPGP byte blobs — i.e. the
+//! `-----BEGIN PGP MESSAGE-----` ASCII form.  RFC 3156 PGP/MIME requires
+//! the payload of `application/octet-stream` to be the binary form, but
+//! we keep armored bytes here for symmetry and let the SMTP send path
+//! de-armor at MIME-wrap time.  Armoring is a no-op overhead at this
+//! layer and makes the round-trip tests in this module trivially
+//! human-readable when they fail.
+
+use rpgp::composed::{
+    ArmorOptions, Deserializable, DetachedSignature, Message, MessageBuilder, SignedPublicKey,
+    SignedPublicSubKey,
+};
+use rpgp::crypto::hash::HashAlgorithm;
+use rpgp::crypto::sym::SymmetricKeyAlgorithm;
+use rpgp::types::KeyDetails;
+use unkai_core::UnkaiError;
+
+use crate::keys::{PrivateKey, PublicKey, looks_armored};
+use crate::types::SignatureStatus;
+
+/// Result of decrypting and verifying a PGP/MIME message in one pass.
+///
+/// We bundle the plaintext with the signature outcome because RFC 3156
+/// allows signing-inside-encryption (the encrypted payload is itself
+/// a signed message) — splitting these into two API calls would force
+/// the caller to re-parse the inner OpenPGP packets, which `rpgp`
+/// already did once during decryption.
+#[derive(Debug, Clone)]
+pub struct DecryptedMessage {
+    /// The recovered plaintext bytes.  For PGP/MIME, this is the full
+    /// inner MIME body (headers + body) that the IMAP receive path
+    /// will hand back to `mail-parser`.
+    pub plaintext: Vec<u8>,
+
+    /// Outcome of verifying the inner signature, if any.  `None` means
+    /// the message wasn't signed at all (encrypt-only).  See
+    /// [`SignatureStatus`] for the meaning of each variant.
+    pub signature_status: Option<SignatureStatus>,
+
+    /// Hex fingerprint of the signing key, when we can identify it.
+    /// `None` for encrypt-only messages or for signatures we couldn't
+    /// attribute to a trusted key.  Surfaced to the UI as
+    /// "signed by 9F2A…AAAA" so the user can compare against their
+    /// expected sender.
+    pub signer_fingerprint: Option<String>,
+}
+
+/// Encrypt `plaintext` to one or more public keys.  No signature.
+///
+/// Uses **SEIPD v1** (RFC 4880 §5.13) with AES-256 — the broadest-
+/// compatible encryption mode across mail clients in 2026.  SEIPD v2
+/// (RFC 9580 / "OpenPGP crypto refresh") is newer and stronger but
+/// many deployed mail clients can't decrypt it yet; we'll switch the
+/// default when interop catches up.
+pub fn encrypt(plaintext: &[u8], recipients: &[&PublicKey]) -> Result<Vec<u8>, UnkaiError> {
+    if recipients.is_empty() {
+        return Err(UnkaiError::Crypto(
+            "Cannot encrypt: no recipient public keys supplied".into(),
+        ));
+    }
+
+    let mut rng = rand::thread_rng();
+    let mut builder = MessageBuilder::from_bytes("", plaintext.to_vec())
+        .seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
+
+    for r in recipients {
+        // `pick_encryption_subkey` returns Some(subkey) when the
+        // primary is sign-only (Ed25519 / DSA), None when the
+        // primary is itself encryption-capable (RSA + a few older
+        // shapes).  The if-let dance is the cheapest way to feed
+        // two different concrete EncryptionKey types to the same
+        // builder call site without lifting the type into a `dyn
+        // EncryptionKey` (which the trait doesn't allow).
+        if let Some(subkey) = pick_encryption_subkey(&r.inner)? {
+            builder
+                .encrypt_to_key(&mut rng, subkey)
+                .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key (subkey) failed: {e}")))?;
+        } else {
+            builder
+                .encrypt_to_key(&mut rng, &r.inner)
+                .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key failed: {e}")))?;
+        }
+    }
+
+    let armored = builder
+        .to_armored_string(&mut rng, ArmorOptions::default())
+        .map_err(|e| UnkaiError::Crypto(format!("Failed to armor encrypted message: {e}")))?;
+    Ok(armored.into_bytes())
+}
+
+/// Encrypt and sign in one pass.  The signature is *inside* the
+/// encryption envelope — i.e. only the recipient can read both the
+/// ciphertext and the signature, which is the form RFC 3156 prefers
+/// for confidentiality.
+///
+/// `rpgp`'s `SigningKey` trait isn't implemented on the wrapping
+/// `SignedSecretKey`; it's on the inner `packet::SecretKey`.  We reach
+/// in via `inner.primary_key`.  If we ever need to sign with a subkey
+/// (the more typical OpenPGP practice for newer keys), we'd pick the
+/// signing-capable subkey here instead.
+pub fn sign_and_encrypt(
+    plaintext: &[u8],
+    signer: &PrivateKey,
+    recipients: &[&PublicKey],
+) -> Result<Vec<u8>, UnkaiError> {
+    if recipients.is_empty() {
+        return Err(UnkaiError::Crypto(
+            "Cannot encrypt: no recipient public keys supplied".into(),
+        ));
+    }
+
+    let mut rng = rand::thread_rng();
+    let mut builder = MessageBuilder::from_bytes("", plaintext.to_vec())
+        .seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
+
+    for r in recipients {
+        // `pick_encryption_subkey` returns Some(subkey) when the
+        // primary is sign-only (Ed25519 / DSA), None when the
+        // primary is itself encryption-capable (RSA + a few older
+        // shapes).  The if-let dance is the cheapest way to feed
+        // two different concrete EncryptionKey types to the same
+        // builder call site without lifting the type into a `dyn
+        // EncryptionKey` (which the trait doesn't allow).
+        if let Some(subkey) = pick_encryption_subkey(&r.inner)? {
+            builder
+                .encrypt_to_key(&mut rng, subkey)
+                .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key (subkey) failed: {e}")))?;
+        } else {
+            builder
+                .encrypt_to_key(&mut rng, &r.inner)
+                .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key failed: {e}")))?;
+        }
+    }
+
+    builder.sign(
+        &signer.inner.primary_key,
+        signer.password(),
+        HashAlgorithm::Sha256,
+    );
+
+    let armored = builder
+        .to_armored_string(&mut rng, ArmorOptions::default())
+        .map_err(|e| {
+            UnkaiError::Crypto(format!("Failed to armor signed+encrypted message: {e}"))
+        })?;
+    Ok(armored.into_bytes())
+}
+
+/// Produce a detached signature over `plaintext`, returned in armored
+/// `-----BEGIN PGP SIGNATURE-----` form.  Used by the RFC 3156
+/// `multipart/signed` envelope where the signature lives in a separate
+/// MIME part from the signed body.
+pub fn sign_detached(plaintext: &[u8], signer: &PrivateKey) -> Result<Vec<u8>, UnkaiError> {
+    let rng = rand::thread_rng();
+    let sig = DetachedSignature::sign_binary_data(
+        rng,
+        &signer.inner.primary_key,
+        &signer.password(),
+        HashAlgorithm::Sha256,
+        plaintext,
+    )
+    .map_err(|e| UnkaiError::Crypto(format!("Failed to sign: {e}")))?;
+
+    let armored = sig
+        .to_armored_string(ArmorOptions::default())
+        .map_err(|e| UnkaiError::Crypto(format!("Failed to armor signature: {e}")))?;
+    Ok(armored.into_bytes())
+}
+
+/// Verify a detached signature.  Returns:
+///
+/// - [`SignatureStatus::Valid`] — signature verifies against one of the
+///   supplied trusted keys.
+/// - [`SignatureStatus::UnknownSigner`] — signature is well-formed but
+///   none of `trusted_keys` was able to verify it.  The caller can still
+///   display the message, just without attribution.
+///
+/// **Note**: we don't currently produce `Invalid` here because `rpgp`'s
+/// `verify` returns `Err` for both "wrong key" and "tampered" without an
+/// easy way to distinguish — a follow-up could parse the signature's
+/// issuer-id subpacket and compare it against the trusted keys' ids to
+/// promote a key-id-match-but-math-fail to `Invalid`.  Conservative
+/// behaviour for now is to fall back to `UnknownSigner`.
+pub fn verify_detached(
+    plaintext: &[u8],
+    signature: &[u8],
+    trusted_keys: &[&PublicKey],
+) -> Result<SignatureStatus, UnkaiError> {
+    let sig = if looks_armored(signature) {
+        DetachedSignature::from_armor_single(std::io::Cursor::new(signature))
+            .map_err(|e| UnkaiError::Crypto(format!("Failed to parse armored signature: {e}")))?
+            .0
+    } else {
+        DetachedSignature::from_bytes(std::io::Cursor::new(signature))
+            .map_err(|e| UnkaiError::Crypto(format!("Failed to parse binary signature: {e}")))?
+    };
+
+    for k in trusted_keys {
+        if sig.verify(&k.inner, plaintext).is_ok() {
+            return Ok(SignatureStatus::Valid);
+        }
+    }
+    Ok(SignatureStatus::UnknownSigner)
+}
+
+/// Decrypt an armored OpenPGP message and, if it carries an inner
+/// signature, verify that signature against `trusted_keys` in one pass.
+pub fn decrypt_and_verify(
+    ciphertext: &[u8],
+    decrypt_key: &PrivateKey,
+    trusted_keys: &[&PublicKey],
+) -> Result<DecryptedMessage, UnkaiError> {
+    let msg = if looks_armored(ciphertext) {
+        let (m, _headers) = Message::from_armor(std::io::Cursor::new(ciphertext))
+            .map_err(|e| UnkaiError::Crypto(format!("Failed to parse armored message: {e}")))?;
+        m
+    } else {
+        Message::from_bytes(std::io::Cursor::new(ciphertext))
+            .map_err(|e| UnkaiError::Crypto(format!("Failed to parse binary message: {e}")))?
+    };
+
+    let mut decrypted = msg
+        .decrypt(&decrypt_key.password(), &decrypt_key.inner)
+        .map_err(|e| {
+            // rpgp surfaces a wrong passphrase as `missing key`: the
+            // locked secret packets can't be unlocked, so no key is
+            // "available" for the ESK to match against and rpgp gives
+            // up.  In practice this is by far the most common cause
+            // of `decrypt` failing for users who already imported a
+            // valid key, so translate it into a sentence the user
+            // can act on.  Anything else falls through with the
+            // original rpgp message so logs stay useful.
+            let raw = format!("{e}").to_lowercase();
+            if raw.contains("missing key") {
+                UnkaiError::Crypto("Wrong encryption passphrase".into())
+            } else {
+                UnkaiError::Crypto(format!("Decryption failed: {e}"))
+            }
+        })?;
+
+    let was_signed = decrypted.is_one_pass_signed();
+
+    // Drain the literal data first — `verify` checks the cached payload
+    // against the trailing signature packet, so we must read the body
+    // *before* calling verify.
+    let plaintext = decrypted
+        .as_data_vec()
+        .map_err(|e| UnkaiError::Crypto(format!("Decrypted message has no literal data: {e}")))?;
+
+    let (signature_status, signer_fingerprint) = if was_signed {
+        let mut status = SignatureStatus::UnknownSigner;
+        let mut fingerprint = None;
+        for k in trusted_keys {
+            if decrypted.verify(&k.inner).is_ok() {
+                status = SignatureStatus::Valid;
+                fingerprint = Some(format!("{:X}", k.inner.fingerprint()));
+                break;
+            }
+        }
+        (Some(status), fingerprint)
+    } else {
+        (None, None)
+    };
+
+    Ok(DecryptedMessage {
+        plaintext,
+        signature_status,
+        signer_fingerprint,
+    })
+}
+
+/// Look at a recipient certificate and return the subkey we should
+/// encrypt against — or `None` if the primary itself is encryption-
+/// capable, in which case the caller hands the primary cert
+/// directly to `encrypt_to_key`.
+///
+/// Modern OpenPGP certificates carry a *signing-only* primary
+/// (Ed25519 / EdDSA / DSA) plus one or more encryption-capable
+/// subkeys (ECDH on Curve25519, RSA, X25519, …) — the layout rpgp
+/// emits by default and the one Nextcloud's web UI and most
+/// mainstream tools produce.  Passing the whole `SignedPublicKey`
+/// to `encrypt_to_key` makes rpgp use the *primary*, which fails
+/// with `"EdDSALegacy is only used for signing"` for that common
+/// case.  We scan `public_subkeys` for the first encryption-capable
+/// entry instead.  An error means neither the primary nor any
+/// subkey can encrypt — the cert is signing-only and the caller
+/// should surface this as a real "no usable key for recipient"
+/// failure.
+fn pick_encryption_subkey(
+    cert: &SignedPublicKey,
+) -> Result<Option<&SignedPublicSubKey>, UnkaiError> {
+    if cert.algorithm().can_encrypt() {
+        return Ok(None);
+    }
+    cert.public_subkeys
+        .iter()
+        .find(|sk| sk.algorithm().can_encrypt())
+        .map(Some)
+        .ok_or_else(|| {
+            UnkaiError::Crypto(format!(
+                "Public key fp={:X} has no encryption-capable subkey \
+                 (primary algorithm {:?} is sign-only)",
+                cert.fingerprint(),
+                cert.algorithm()
+            ))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rpgp::composed::{
+        ArmorOptions, EncryptionCaps, KeyType, SecretKeyParamsBuilder, SignedPublicKey,
+    };
+
+    /// Generate a fresh RSA-2048 keypair suitable for both signing and
+    /// encryption.  RSA generation is the slowest path in our keypair
+    /// matrix (Ed25519 + X25519 subkey would be faster) but it lets one
+    /// primary key cover both roles, which keeps test setup trivial.
+    /// Each call costs roughly 0.5–1 second on a developer machine.
+    fn make_test_keypair(user_id: &str) -> PrivateKey {
+        let params = SecretKeyParamsBuilder::default()
+            .key_type(KeyType::Rsa(2048))
+            .can_sign(true)
+            .can_certify(true)
+            .can_encrypt(EncryptionCaps::Communication)
+            .primary_user_id(user_id.into())
+            .build()
+            .expect("test: build key params");
+        let signed = params
+            .generate(rand::thread_rng())
+            .expect("test: generate keypair");
+        PrivateKey {
+            inner: signed,
+            password_bytes: Vec::new(),
+        }
+    }
+
+    /// Re-derive the matching public-key view of a private key, going
+    /// through serialization so the test exercises the same parse path
+    /// the real app will use when a recipient's key arrives over CardDAV.
+    fn public_view(private: &PrivateKey) -> PublicKey {
+        let sp: SignedPublicKey = private.inner.clone().into();
+        let bytes = sp
+            .to_armored_bytes(ArmorOptions::default())
+            .expect("test: armor public key");
+        crate::keys::parse_public_key(&bytes).expect("test: parse public key")
+    }
+
+    #[test]
+    fn encrypt_then_decrypt_round_trip() {
+        let alice = make_test_keypair("Alice <alice@example.com>");
+        let alice_pub = public_view(&alice);
+        let plaintext = b"top secret memo";
+
+        let ciphertext = encrypt(plaintext, &[&alice_pub]).expect("encrypt");
+        let decrypted = decrypt_and_verify(&ciphertext, &alice, &[]).expect("decrypt");
+
+        assert_eq!(decrypted.plaintext, plaintext);
+        assert_eq!(
+            decrypted.signature_status, None,
+            "encrypt-only carries no sig"
+        );
+        assert_eq!(decrypted.signer_fingerprint, None);
+    }
+
+    #[test]
+    fn encrypt_with_no_recipients_is_an_error() {
+        let err = encrypt(b"x", &[]).expect_err("must reject");
+        assert!(
+            matches!(err, UnkaiError::Crypto(ref m) if m.contains("no recipient")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sign_detached_then_verify() {
+        let alice = make_test_keypair("Alice <alice@example.com>");
+        let alice_pub = public_view(&alice);
+        let payload = b"hello, world";
+
+        let sig = sign_detached(payload, &alice).expect("sign");
+        let status = verify_detached(payload, &sig, &[&alice_pub]).expect("verify");
+
+        assert_eq!(status, SignatureStatus::Valid);
+    }
+
+    #[test]
+    fn verify_detached_reports_unknown_signer_when_no_trusted_key_matches() {
+        let alice = make_test_keypair("Alice <alice@example.com>");
+        let bob = make_test_keypair("Bob <bob@example.com>");
+        let bob_pub = public_view(&bob);
+        let payload = b"signed by alice";
+
+        let sig = sign_detached(payload, &alice).expect("sign");
+        // We hand the verifier only Bob's key.  Alice's signature can't
+        // be attributed; status falls back to UnknownSigner.
+        let status = verify_detached(payload, &sig, &[&bob_pub]).expect("verify");
+
+        assert_eq!(status, SignatureStatus::UnknownSigner);
+    }
+
+    #[test]
+    fn sign_and_encrypt_then_decrypt_and_verify_round_trip() {
+        let alice = make_test_keypair("Alice <alice@example.com>");
+        let bob = make_test_keypair("Bob <bob@example.com>");
+        let alice_pub = public_view(&alice);
+        let bob_pub = public_view(&bob);
+        let plaintext = b"hi bob, signed by alice";
+
+        // Alice sends to Bob: encrypt to Bob, sign with Alice's key.
+        let ciphertext = sign_and_encrypt(plaintext, &alice, &[&bob_pub]).expect("sign+encrypt");
+
+        // Bob decrypts and verifies, treating Alice's key as trusted.
+        let decrypted =
+            decrypt_and_verify(&ciphertext, &bob, &[&alice_pub]).expect("decrypt+verify");
+
+        assert_eq!(decrypted.plaintext, plaintext);
+        assert_eq!(decrypted.signature_status, Some(SignatureStatus::Valid));
+        assert_eq!(decrypted.signer_fingerprint, Some(alice_pub.fingerprint()));
+    }
+}

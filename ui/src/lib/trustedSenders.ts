@@ -1,7 +1,7 @@
 // Trusted-senders allow-list for the "Always show images from
 // [sender]" affordance.
 //
-// Stored in `localStorage` under `nimbus-trusted-senders` as a
+// Stored in `localStorage` under `unkai-trusted-senders` as a
 // JSON array of lower-cased bare email addresses.  The key is
 // listed in `settingsBundle.ts#SYNCED_LOCAL_STORAGE_KEYS`, so it
 // rides along with every settings-bundle write (manual export +
@@ -15,7 +15,7 @@
 
 import { notifySettingsChanged } from './settingsBundle'
 
-const TRUSTED_SENDERS_KEY = 'nimbus-trusted-senders'
+const TRUSTED_SENDERS_KEY = 'unkai-trusted-senders'
 
 /**
  * Strip the angle-bracketed address out of an RFC 5322 `From:`

@@ -46,8 +46,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-clippy-
+          # See smoke.yml — `github.repository` scopes caches
+          # per-repo so a rename doesn't restore stale `target/`
+          # artifacts with absolute paths pointing at the old name.
+          key: ${{ runner.os }}-cargo-clippy-${{ github.repository }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-clippy-${{ github.repository }}-
       # Install Tauri system dependencies (needed for compilation on Linux)
       - name: Install system dependencies
         run: |
@@ -67,8 +70,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-
+          # See smoke.yml — repo-scoped cache key avoids stale
+          # post-rename build artifacts.
+          key: ${{ runner.os }}-cargo-test-${{ github.repository }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-${{ github.repository }}-
       - name: Install system dependencies
         run: |
           sudo apt-get update

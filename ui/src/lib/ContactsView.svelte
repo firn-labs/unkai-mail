@@ -13,11 +13,13 @@
   import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
+  import Avatar from './Avatar.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import Select from './Select.svelte'
   import DateField from './DateField.svelte'
   import AddressSuggestField from './AddressSuggestField.svelte'
+  import { contactsStore, contactPhotoSrc } from './contactsStore.svelte'
   import { resizableSidebar } from './resizableSidebar'
 
   interface Props {
@@ -52,7 +54,7 @@
     kind: string
     value: string
   }
-  /** Mirrors `nimbus_core::models::StructuredName`. */
+  /** Mirrors `unkai_core::models::StructuredName`. */
   interface StructuredName {
     family: string
     given: string
@@ -60,7 +62,7 @@
     prefix: string
     suffix: string
   }
-  /** Mirrors `nimbus_core::models::ContactImpp`. */
+  /** Mirrors `unkai_core::models::ContactImpp`. */
   interface ContactImpp143 {
     kind: string
     value: string
@@ -125,6 +127,11 @@
     geo?: string | null
     timezone?: string | null
     categories?: string[]
+    /** #57 — armored OpenPGP `KEY:` values to round-trip through
+     *  the vCard.  Optional so callers that don't include the
+     *  field leave existing keys intact via the backend's
+     *  merge-over-cached-vCard semantics. */
+    keys?: string[]
   }
   interface AddressbookSummary {
     path: string
@@ -134,7 +141,12 @@
 
   // ── State ───────────────────────────────────────────────────
   let accounts = $state<NextcloudAccount[]>([])
-  let contacts = $state<Contact[]>([])
+  // Contact list lives on the shared `contactsStore` (`./contactsStore.svelte`)
+  // so MailList rows (#305) can resolve sender → contact without
+  // having to mount ContactsView first.  Reads still use the same
+  // `contactsStore.list` shape that this view's local state used to
+  // expose.
+  const contacts = $derived(contactsStore.list)
   let loading = $state(true)
   let syncing = $state(false)
   let error = $state('')
@@ -197,6 +209,14 @@
   let formTitle = $state('')
   let formBirthday = $state('')
   let formNote = $state('')
+  /** OpenPGP keys (#57).  One row per `KEY:` value on the
+   *  vCard — armored ASCII pasted by the user.  Same shape as
+   *  `formWebsites` so the add / remove / save patterns can be
+   *  reused.  Wrapped in an object because Svelte's `bind:value`
+   *  on a primitive `string` in an array can't write back through
+   *  `bind:` without a wrapping shape. */
+  let formKeys = $state<{ value: string }[]>([])
+
   /** Websites — one row per URL, mirroring the phone / email
    *  per-row pattern so the user can add and remove entries
    *  without juggling a multi-line textarea. */
@@ -629,7 +649,7 @@
           ? { ...m, members: [...m.members, memberView] }
           : m,
       )
-      contacts = contacts.map((c) => {
+      contactsStore.list = contacts.map((c) => {
         if (c.id !== contactId) return c
         const cats = c.categories ?? []
         return cats.includes(ml.name) ? c : { ...c, categories: [...cats, ml.name] }
@@ -688,7 +708,7 @@
           ? { ...m, members: m.members.filter((mm) => mm.email.toLowerCase() !== lower) }
           : m,
       )
-      contacts = contacts.map((c) =>
+      contactsStore.list = contacts.map((c) =>
         c.id === target.id
           ? { ...c, categories: (c.categories ?? []).filter((cat) => cat !== ml.name) }
           : c,
@@ -827,10 +847,7 @@
   }
 
   async function reloadContacts() {
-    contacts = await invoke<Contact[]>('get_contacts', { ncId: null })
-    contacts.sort((a, b) =>
-      a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }),
-    )
+    await contactsStore.load()
     await loadSidebarData()
   }
 
@@ -896,6 +913,7 @@
     formBirthday = c.birthday ?? ''
     formNote = c.note ?? ''
     formWebsites = (c.urls ?? []).map((u) => ({ value: u }))
+    formKeys = (c.keys ?? []).map((k) => ({ value: k }))
     formAddresses = (c.addresses ?? []).map((a) => ({ ...a }))
     selectedPhotoBytes = null
     formPhotoMime = c.photo_mime ?? null
@@ -934,6 +952,7 @@
     formBirthday = ''
     formNote = ''
     formWebsites = []
+    formKeys = []
     formAddresses = []
     selectedPhotoBytes = null
     formPhotoMime = null
@@ -1049,7 +1068,7 @@
   }
 
   // Pull just the bytes via IPC so we can round-trip them on save.
-  // Display elsewhere uses `photoSrc()` against the URI scheme.
+  // Display elsewhere uses `contactPhotoSrc()` against the URI scheme.
   async function loadSelectedPhotoBytes(id: string) {
     try {
       const photo = await invoke<{ mime: string; data: number[] } | null>(
@@ -1063,28 +1082,9 @@
     }
   }
 
-  // URL for `<img src>` against the custom Tauri URI scheme. Bytes
-  // are streamed straight from the cache to the webview — no JSON
-  // bloat, browser handles caching, `loading="lazy"` defers off-
-  // screen rows. Returns `null` when the contact has no photo so
-  // callers can render the initial-letter placeholder instead.
-  function photoSrc(c: Contact): string | null {
-    if (!c.photo_mime) return null
-    return convertFileSrc(c.id, 'contact-photo')
-  }
-
-  /** Lookup map keyed by lowercase email so the mailing-list
-   *  member rows (which only carry `{displayName, email}`)
-   *  can resolve a matching Contact for its photo (#179). */
-  const contactByEmail = $derived.by(() => {
-    const m = new Map<string, Contact>()
-    for (const c of contacts) {
-      for (const e of c.email) {
-        if (e.value) m.set(e.value.toLowerCase(), c)
-      }
-    }
-    return m
-  })
+  // `contactPhotoSrc` (custom URI scheme → `<img src>`) and the
+  // by-email lookup index both live on `contactsStore` so MailList
+  // can use them too (#305).
 
   function onAccountChange() {
     void loadAddressbooksFor(formAccountId)
@@ -1125,6 +1125,13 @@
       urls: formWebsites
         .map((w) => w.value.trim())
         .filter((u) => u.length > 0),
+      // #57 — OpenPGP keys round-trip through the vCard's `KEY:`
+      // property.  Empty rows the user added but never filled in
+      // are dropped here so they don't end up as phantom KEY lines
+      // on the server.
+      keys: formKeys
+        .map((k) => k.value.trim())
+        .filter((v) => v.length > 0),
       // Strip empty rows so the user can't end up with a phantom
       // address from forgetting to fill in the slots they added.
       addresses: formAddresses.filter(
@@ -1220,7 +1227,7 @@
       for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin[i])
       return `data:${formPhotoMime};base64,${btoa(s)}`
     }
-    if (selectedContact && photoSrc(selectedContact)) return photoSrc(selectedContact)
+    if (selectedContact && contactPhotoSrc(selectedContact)) return contactPhotoSrc(selectedContact)
     return null
   }
 
@@ -1284,6 +1291,12 @@
   }
   function removeWebsite(idx: number) {
     formWebsites = formWebsites.filter((_, i) => i !== idx)
+  }
+  function addKey() {
+    formKeys = [...formKeys, { value: '' }]
+  }
+  function removeKey(idx: number) {
+    formKeys = formKeys.filter((_, i) => i !== idx)
   }
 
   // Shared option lists for the modern <Select> popover (#143).
@@ -1402,6 +1415,31 @@
       || c.note?.trim()
     )
   }
+  function hasEncryptionDetails(c: Contact): boolean {
+    return (c.keys?.length ?? 0) > 0
+  }
+
+  /** Best-effort upsert of every newly-pasted public key into the
+   *  pgp_public_keys cache (#57).  We do this *after* a successful
+   *  contact save so Compose can find the key without waiting for
+   *  a CardDAV sync round-trip.  Failures are logged and ignored
+   *  per-key — a malformed paste shouldn't roll back the contact
+   *  edit, since the vCard write already succeeded.  The
+   *  `email_hint` ties the key to the contact's primary email so
+   *  the Compose recipient lookup resolves it. */
+  async function pushKeysToCryptoCache(contact: Contact) {
+    const primaryEmail = contact.email[0]?.value ?? null
+    for (const armored of contact.keys ?? []) {
+      try {
+        await invoke<string>('pgp_import_public_key', {
+          armoredKey: armored,
+          emailHint: primaryEmail,
+        })
+      } catch (e) {
+        console.warn('pgp_import_public_key failed for contact key', e)
+      }
+    }
+  }
 
   async function saveContact() {
     formError = ''
@@ -1429,6 +1467,10 @@
         // the user can immediately see the saved record without
         // a stray editable form sticking around.
         selectContact(created.id)
+        // #57 — best-effort push of any pasted PGP keys into the
+        // recipient-key cache so Compose can encrypt to this
+        // contact without waiting for the next CardDAV sync.
+        void pushKeysToCryptoCache(created)
       } else if (selectedId) {
         const updated = await invoke<Contact>('update_contact', {
           contactId: selectedId,
@@ -1438,6 +1480,7 @@
         // Re-select to refresh the view-mode display from the
         // cached row, then flip out of edit mode.
         selectContact(updated.id)
+        void pushKeysToCryptoCache(updated)
       }
     } catch (e) {
       formError = formatError(e) || 'Failed to save contact'
@@ -1942,18 +1985,12 @@
             }}
             onclick={() => selectContact(c.id)}
           >
-            {#if photoSrc(c)}
-              <img
-                src={photoSrc(c)}
-                alt=""
-                loading="lazy"
-                class="w-8 h-8 rounded-full object-cover shrink-0"
-              />
-            {:else}
-              <span class="w-8 h-8 rounded-full bg-surface-300 dark:bg-surface-700 text-xs font-semibold flex items-center justify-center shrink-0">
-                {c.display_name.slice(0, 1).toUpperCase()}
-              </span>
-            {/if}
+            <Avatar
+              photo={contactPhotoSrc(c)}
+              displayName={c.display_name}
+              seed={c.email[0]?.value ?? c.id}
+              size={32}
+            />
             <span class="flex flex-col min-w-0 text-left">
               <span class="truncate">{c.display_name || '(no name)'}</span>
               {#if c.email.length > 0}
@@ -2088,9 +2125,12 @@
                 class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors border-b border-surface-100 dark:border-surface-800 hover:bg-surface-100 dark:hover:bg-surface-800"
                 onclick={() => void addContactToSelectedList(c.id)}
               >
-                <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
-                  {c.display_name.slice(0, 1).toUpperCase()}
-                </span>
+                <Avatar
+                  photo={contactPhotoSrc(c)}
+                  displayName={c.display_name}
+                  seed={c.email[0]?.value ?? c.id}
+                  size={28}
+                />
                 <div class="flex-1 min-w-0">
                   <p class="font-medium truncate">{c.display_name || '(no name)'}</p>
                   {#if c.email.length > 0}
@@ -2109,8 +2149,8 @@
               </p>
             {/if}
             {#each filteredMembers as m, i (`${m.email}::${i}`)}
-              {@const linkedContact = m.email ? contactByEmail.get(m.email.toLowerCase()) : undefined}
-              {@const memberPhoto = linkedContact ? photoSrc(linkedContact) : null}
+              {@const linkedContact = m.email ? contactsStore.byEmail.get(m.email.toLowerCase()) : undefined}
+              {@const memberPhoto = linkedContact ? contactPhotoSrc(linkedContact) : null}
               {@const isOpenable = !!linkedContact}
               <!-- Members that resolve to an in-cache contact open
                    the right pane on click — same affordance as
@@ -2140,18 +2180,12 @@
                   }
                 }}
               >
-                {#if memberPhoto}
-                  <img
-                    src={memberPhoto}
-                    alt=""
-                    loading="lazy"
-                    class="w-7 h-7 rounded-full object-cover shrink-0"
-                  />
-                {:else}
-                  <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
-                    {(m.displayName || m.email || '?').slice(0, 1).toUpperCase()}
-                  </span>
-                {/if}
+                <Avatar
+                  photo={memberPhoto}
+                  displayName={m.displayName || m.email || '?'}
+                  seed={m.email || m.displayName}
+                  size={28}
+                />
                 <div class="flex-1 min-w-0">
                   <p class="font-medium truncate">{m.displayName || m.email || '(unnamed)'}</p>
                   <p class="text-xs text-surface-500 truncate">
@@ -2193,17 +2227,12 @@
            `editing` flag and the form template below takes over. -->
       <div class="max-w-2xl w-full mx-auto p-6 flex flex-col gap-5">
         <div class="flex items-start gap-4">
-          {#if photoSrc(selectedContact)}
-            <img
-              src={photoSrc(selectedContact)}
-              alt=""
-              class="w-20 h-20 rounded-full object-cover bg-surface-300 dark:bg-surface-700"
-            />
-          {:else}
-            <div class="w-20 h-20 rounded-full bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-2xl font-semibold">
-              {(selectedContact.display_name || '?').slice(0, 1).toUpperCase()}
-            </div>
-          {/if}
+          <Avatar
+            photo={contactPhotoSrc(selectedContact)}
+            displayName={selectedContact.display_name || '?'}
+            seed={selectedContact.email[0]?.value ?? selectedContact.id}
+            size={80}
+          />
           <div class="flex flex-col flex-1 min-w-0">
             <h3 class="text-xl font-semibold truncate">
               {structuredFullName(selectedContact) || selectedContact.display_name || m.contact_form_no_name()}
@@ -2372,6 +2401,22 @@
           </section>
         {/if}
 
+        {#if hasEncryptionDetails(selectedContact)}
+          <section class="contact-view-section">
+            <h4 class="contact-view-section-title">{m.contact_form_section_encryption()}</h4>
+            <div class="contact-view-block">
+              <span class="contact-view-block-label">{m.contact_form_label_pgp_keys()}</span>
+              {#each selectedContact.keys ?? [] as key, i (i)}
+                <div class="contact-view-row">
+                  <span class="contact-view-row-value font-mono text-xs break-all truncate">
+                    {key.length > 80 ? key.slice(0, 80) + '…' : key}
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </section>
+        {/if}
+
         {#if hasOtherDetails(selectedContact)}
           <section class="contact-view-section">
             <h4 class="contact-view-section-title">{m.contact_form_section_other()}</h4>
@@ -2405,6 +2450,7 @@
           && !hasCommunicationDetails(selectedContact)
           && !hasWorkDetails(selectedContact)
           && !hasAddressWebDetails(selectedContact)
+          && !hasEncryptionDetails(selectedContact)
           && !hasOtherDetails(selectedContact)}
           <p class="text-sm text-surface-500 italic">
             {m.contact_view_empty_state()}
@@ -2776,6 +2822,43 @@
                 title={m.contact_form_button_add_website()}
                 onclick={addWebsite}
               >+</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- ── Encryption (#57) ─────────────────────────────── -->
+        <details class="contact-form-section" open>
+          <summary class="contact-form-section-title">{m.contact_form_section_encryption()}</summary>
+          <div class="contact-form-section-body">
+            <div class="space-y-2">
+              <span class="text-sm font-medium block">{m.contact_form_label_pgp_keys()}</span>
+              {#each formKeys as key, i (i)}
+                <div class="flex items-start gap-2">
+                  <textarea
+                    class="input flex-1 rounded-md font-mono text-xs"
+                    rows="4"
+                    bind:value={key.value}
+                    placeholder={m.contact_form_placeholder_pgp_key()}
+                  ></textarea>
+                  <button
+                    type="button"
+                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    aria-label={m.contact_form_button_remove()}
+                    title={m.contact_form_button_remove()}
+                    onclick={() => removeKey(i)}
+                  ><Icon name="trash" size={14} /></button>
+                </div>
+              {/each}
+              <button
+                type="button"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                aria-label={m.contact_form_button_add_pgp_key()}
+                title={m.contact_form_button_add_pgp_key()}
+                onclick={addKey}
+              >+</button>
+              <p class="text-xs text-surface-400 leading-snug">
+                {m.contact_form_hint_pgp_keys()}
+              </p>
             </div>
           </div>
         </details>

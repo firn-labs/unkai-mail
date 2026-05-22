@@ -19,6 +19,17 @@
   import Toggle from './Toggle.svelte'
   import { ncProbeBundle, ncRestoreBundle } from './settingsBundle'
 
+  // ── Props ───────────────────────────────────────────────────
+  interface Props {
+    /** Fired whenever the connected-account set or its capabilities
+     *  change (account added, removed, or capabilities re-probed).
+     *  App.svelte uses this to re-aggregate `ncCaps` so the IconRail
+     *  lights up the new integration icons without waiting for the
+     *  Settings panel to close. */
+    onnextcloudchanged?: () => void
+  }
+  let { onnextcloudchanged }: Props = $props()
+
   // ── Types (mirror the Rust models) ──────────────────────────
   interface NextcloudCapabilities {
     version?: string | null
@@ -304,6 +315,28 @@
     }
   }
 
+  /** First-time sync after a successful connect (#318).  Runs the
+   *  contacts and calendars sync in parallel for the just-added
+   *  account — but only for capabilities the server actually exposes
+   *  (no point hitting CalDAV on a server with `caldav: false`).
+   *  After both finish, re-notify the parent so any capabilities the
+   *  background `refresh_nextcloud_capabilities` probe surfaced
+   *  late (or any newly-discovered calendars) feed into `ncCaps`. */
+  async function autoSyncNewAccount(ncId: string) {
+    const acct = accounts.find((a) => a.id === ncId)
+    if (!acct) return
+    const tasks: Promise<void>[] = []
+    if (acct.capabilities?.carddav) {
+      tasks.push(syncContacts(acct))
+    }
+    if (acct.capabilities?.caldav) {
+      tasks.push(syncCalendars(acct))
+    }
+    if (tasks.length === 0) return
+    await Promise.allSettled(tasks)
+    onnextcloudchanged?.()
+  }
+
   /** Heuristic: does `msg` look like a TLS-trust failure?  Same
    *  fingerprint-style match `AccountSetup.svelte` uses for IMAP. */
   function looksLikeCertError(msg: string): boolean {
@@ -449,6 +482,19 @@
           pendingLoginUrl = ''
           serverInput = ''
           await loadAccounts()
+          // Surface the new account's capabilities to the rest of
+          // the shell immediately (#318) — without this the IconRail
+          // wouldn't show Contacts / Calendar / Files / etc. until
+          // the user closed Settings.
+          onnextcloudchanged?.()
+          // First-time sync (#318): a freshly-connected NC has no
+          // local contacts/calendars yet, so the integration views
+          // would open onto an empty list until the user remembers
+          // to click "Sync". Kick both off in the background here
+          // — `syncContacts` / `syncCalendars` drive the same UI
+          // state the manual buttons do, so the SyncStatusRow
+          // reflects progress and errors normally.
+          void autoSyncNewAccount(result.id)
           // Recovery prompt — only on the very first NC connect
           // (per the agreed spec: a recovery option, not a sync
           // option).  Failures during the probe stay silent: a
@@ -483,12 +529,12 @@
         }
       })()
       const ok = confirm(
-        `Found a Nimbus settings backup on this Nextcloud (saved ${formatted}). Restore it now? Existing accounts on this machine are kept; the bundle just adds back any that were missing and updates metadata.`,
+        `Found a Unkai settings backup on this Nextcloud (saved ${formatted}). Restore it now? Existing accounts on this machine are kept; the bundle just adds back any that were missing and updates metadata.`,
       )
       if (!ok) return
       await ncRestoreBundle(ncId)
       alert(
-        'Settings restored. Reload the window (or restart Nimbus) to see every preference apply.',
+        'Settings restored. Reload the window (or restart Unkai) to see every preference apply.',
       )
     } catch (e) {
       console.warn('post-connect bundle probe / restore failed', e)

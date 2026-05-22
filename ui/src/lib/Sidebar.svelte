@@ -23,6 +23,14 @@
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import { resizableSidebar } from './resizableSidebar'
+  import { m } from '../paraglide/messages'
+  import {
+    UNIFIED_SENT_FOLDER,
+    UNIFIED_DRAFTS_FOLDER,
+    UNIFIED_JUNK_FOLDER,
+    UNIFIED_ARCHIVE_FOLDER,
+    UNIFIED_TRASH_FOLDER,
+  } from './unifiedFolders'
 
   interface Folder {
     name: string
@@ -121,7 +129,7 @@
 
   // ── Drag-and-drop drop targets (#89) ───────────────────────────
   // Folder rows accept drags from `MailList` carrying our private
-  // `application/x-nimbus-mail` payload.  `dragOverFolder` drives a
+  // `application/x-unkai-mail` payload.  `dragOverFolder` drives a
   // subtle highlight on the hovered row.  We swallow drops onto the
   // current source folder (`folder === payload.folder`) so a misfire
   // doesn't trip the IMAP server with a move-to-self request.
@@ -136,7 +144,7 @@
     // array; `Array.from` normalises both shapes so the `.some`
     // call below works either way.
     const types = Array.from(e.dataTransfer?.types ?? [])
-    return types.includes('application/x-nimbus-mail')
+    return types.includes('application/x-unkai-mail')
   }
 
   function onFolderDragOver(e: DragEvent, target: Folder) {
@@ -181,7 +189,7 @@
     // Outbox is local-only (#276) — bail before parsing any
     // payload so the drop is a hard no-op.
     if (target.name === OUTBOX_FOLDER) return
-    const raw = e.dataTransfer?.getData('application/x-nimbus-mail')
+    const raw = e.dataTransfer?.getData('application/x-unkai-mail')
     // No payload → not our drag (or the engine forgot to
     // hand it over); silently bail.
     if (!raw) return
@@ -928,25 +936,136 @@
        otherwise sit at the very top edge of `overflow-y-auto`. -->
   <nav class="flex-1 overflow-y-auto px-2 py-1">
     {#if unified}
+      <!-- Unified mode surfaces three global views: All Inboxes
+           (existing), All Sent (#322), All Drafts (#322).  Sent and
+           Drafts can't reuse the literal IMAP folder name the way
+           Inbox does — see `unifiedFolders.ts` — so we route them
+           through sentinel folder names that MailList recognises and
+           dispatches to the per-account-resolving backend commands. -->
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm bg-primary-500/10 text-primary-500 font-medium"
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === 'INBOX'
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
         onclick={() => onselectfolder('INBOX')}
       >
-        <!-- Fixed-size icon box so the emoji centers consistently
-             regardless of the system font's emoji metrics. The
-             absolute-positioned 🌐 corner badge signals "across all
-             accounts" at a glance — same visual idiom as a notification
-             dot on an app icon. -->
         <span
           class="inline-flex items-center justify-center w-5 h-5 shrink-0"
           aria-hidden="true"
         >
           <Icon name="global-inbox" size={16} />
         </span>
-        <span class="flex-1 text-left truncate">All Inboxes</span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_inbox_label()}</span>
         {#if unifiedUnread > 0}
           <span class="badge preset-filled-primary-500 text-xs">{unifiedUnread}</span>
         {/if}
+      </button>
+      {#if outboxCount > 0}
+        <!-- Global Outbox (#322 follow-up): only rendered when at
+             least one queued message exists across all accounts —
+             matches the per-account synthetic Outbox's "hide when
+             empty" behaviour, so a healthy install with nothing
+             queued sees the same three-button list as before.
+             Routing reuses the existing OUTBOX_FOLDER channel: when
+             selected with `unifiedMode = true`, App.svelte mounts
+             OutboxList with `unified={true}`, which already calls
+             `list_all_outbox` to merge every account's queue. -->
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+            {selectedFolder === OUTBOX_FOLDER
+              ? 'bg-primary-500/10 text-primary-500 font-medium'
+              : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+          onclick={() => onselectfolder(OUTBOX_FOLDER)}
+        >
+          <span
+            class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+            aria-hidden="true"
+          >
+            <Icon name="sent" size={16} />
+          </span>
+          <span class="flex-1 text-left truncate">{m.sidebar_unified_outbox_label()}</span>
+          <span class="badge preset-filled-primary-500 text-xs">{outboxCount}</span>
+        </button>
+      {/if}
+      <!-- Order mirrors the per-account standard-folder ranking
+           (`standardRank` below): Inbox → Outbox → Drafts → Sent →
+           Archive → Junk → Trash. Same shape on both surfaces so a
+           user toggling between unified and a single account never
+           sees their outgoing-mail folders shuffle. -->
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_DRAFTS_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_DRAFTS_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="drafts" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_drafts_label()}</span>
+      </button>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_SENT_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_SENT_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="sent" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_sent_label()}</span>
+      </button>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_ARCHIVE_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_ARCHIVE_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="archive" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_archive_label()}</span>
+      </button>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_JUNK_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_JUNK_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="spam" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_junk_label()}</span>
+      </button>
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          {selectedFolder === UNIFIED_TRASH_FOLDER
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectfolder(UNIFIED_TRASH_FOLDER)}
+      >
+        <span
+          class="inline-flex items-center justify-center w-5 h-5 shrink-0"
+          aria-hidden="true"
+        >
+          <Icon name="trash" size={16} />
+        </span>
+        <span class="flex-1 text-left truncate">{m.sidebar_unified_trash_label()}</span>
       </button>
     {:else if loading}
       <p class="px-3 py-2 text-xs text-surface-500">Loading folders…</p>

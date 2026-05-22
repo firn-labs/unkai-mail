@@ -27,7 +27,7 @@ export async function openMailInStandaloneWindow(
   })
   new WebviewWindow(label, {
     url: `index.html?${params.toString()}`,
-    title: 'Nimbus Mail',
+    title: 'Unkai Mail',
     width: 900,
     height: 700,
     minWidth: 500,

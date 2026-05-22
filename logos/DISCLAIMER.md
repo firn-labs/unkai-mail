@@ -1,1 +1,1 @@
-Original logos designed for Nimbus Mail, 2026
+Original logos designed for Unkai Mail, 2026

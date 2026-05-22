@@ -16,7 +16,7 @@
 // error if the engine doesn't expose it; the Settings UI surfaces
 // that as a tooltip on the disabled button.
 
-const RP_NAME = 'Nimbus Mail'
+const RP_NAME = 'Unkai Mail'
 
 // The Relying Party ID must be a registrable suffix of (or equal to)
 // the current page's effective domain, otherwise the browser refuses

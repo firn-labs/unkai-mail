@@ -31,7 +31,8 @@
     type ExtraTab,
   } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
-  import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
+  import NextcloudFilePicker from './NextcloudFilePicker.svelte'
+  import { type ShareLink } from './NextcloudShareDialog.svelte'
   import Icon from './Icon.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import AttachmentThumb, { prewarm as prewarmAttachmentThumb } from './AttachmentThumb.svelte'
@@ -79,7 +80,7 @@
     read_only?: boolean
   }
 
-  interface Attachment {
+  export interface Attachment {
     filename: string
     content_type: string
     data: number[]
@@ -224,6 +225,75 @@
      *  the new row up and surface it as the selected Outbox
      *  preview after an edit-from-outbox send. */
     onsentenqueued?: (newRowId: number) => void
+    /** When true, the modal wrapper is hidden (display:none) so the
+     *  parent can stash the Compose into a "shrunken" bar (#292)
+     *  without losing in-flight state (editor body, attachments,
+     *  Talk-room token, share-link bookkeeping).  Component stays
+     *  mounted; only its visual surface and event listeners go
+     *  dormant.  No-op in standalone-window mode — the OS window
+     *  itself is the minimise surface there. */
+    minimized?: boolean
+    /** Fires when the user clicks the header's "minimise" button.
+     *  Parent should flip its `activeComposeId` (or equivalent) so
+     *  this instance's `minimized` prop becomes true on the next
+     *  render.  Omitted when the parent doesn't support shrinking
+     *  (e.g. standalone window) — the button is hidden in that
+     *  case. */
+    onminimize?: () => void
+    /** Fires whenever the subject field changes (#292).  Used by
+     *  App.svelte to keep the shrunken-composes bar label in sync
+     *  as the user types — the bar only sees the entry-level
+     *  snapshot, not Compose's internal state, so without this
+     *  the tab would freeze on whatever subject was set at open
+     *  time. */
+    onsubjectchange?: (subject: string) => void
+    /** One-shot callback handing the parent a reference to this
+     *  Compose's `cancel` function (#292).  Lets the shrunken-bar
+     *  × close-tab gesture trigger the full cancel flow (Talk-room
+     *  delete, share-link cleanup, draft-source expunge) without
+     *  the user having to restore the modal first.  Fires once on
+     *  mount; the function reference is stable for the lifetime
+     *  of the component. */
+    oncancelref?: (cancel: () => void) => void
+    /** One-shot callback handing the parent a function it can call
+     *  to append attachments to this Compose from the outside
+     *  (#329).  Used by the forward-with-attachments flow: the
+     *  parent opens Compose, asks the user whether to bring the
+     *  original message's attachments along, and on "yes"
+     *  downloads the bytes in the background and pushes them in
+     *  through this handle once they're ready.  Fires once on
+     *  mount; the function reference is stable.  Reuses the
+     *  picker's append-and-prewarm path so a parent-pushed
+     *  attachment is indistinguishable from a user-picked one. */
+    onaddattachmentsref?: (
+      addAttachments: (atts: Attachment[]) => void,
+    ) => void
+    /** Fires whenever this Compose's tracked Drafts-folder pointer
+     *  changes (#292).  Seeded from `initial.draftSource` and
+     *  updated after every successful `save_draft` round-trip with
+     *  the new server-assigned UID.  App.svelte mirrors it onto the
+     *  per-entry state so the "Edit draft" path can detect "I
+     *  already have a Compose mounted for this UID" and restore
+     *  the existing tab instead of pushing a duplicate. */
+    ondraftsourcechange?: (
+      src: { accountId: string; folder: string; uid: number } | null,
+    ) => void
+    /** Fires the moment we kick off an IMAP operation that will
+     *  expunge a previously-saved draft — the replaceSource path of
+     *  `save_draft` and the post-send draft cleanup (#292 follow-up).
+     *  Used by App.svelte to splice the row out of the mail list
+     *  immediately so the user doesn't briefly see both the
+     *  about-to-be-deleted draft and its successor (MailList's
+     *  `mergeEnvelopes` preserves rows the fresh batch didn't
+     *  return, to support pagination, so a passive refresh leaves
+     *  the stale row visible).  Optimistic: if the IMAP delete
+     *  later fails, the row reappears on next sync from the
+     *  backend tombstone-clear path. */
+    ondraftexpunged?: (src: {
+      accountId: string
+      folder: string
+      uid: number
+    }) => void
   }
   let {
     accounts,
@@ -234,6 +304,13 @@
     initialError = '',
     inStandaloneWindow = false,
     onsentenqueued,
+    minimized = false,
+    onminimize,
+    onsubjectchange,
+    oncancelref,
+    onaddattachmentsref,
+    ondraftsourcechange,
+    ondraftexpunged,
   }: Props = $props()
 
   /**
@@ -291,8 +368,30 @@
   // leave it alone.
   $effect(() => {
     if (!wrapperEl) return
+    // Don't steal focus while minimised — the wrapper is
+    // display:none so this would visibly do nothing, but it
+    // also moves focus *off* whatever the user just clicked
+    // (e.g. a button in the shrunken-composes bar), which
+    // would be jarring.
+    if (minimized) return
     const id = setTimeout(() => {
       // If focus is already inside the wrapper, don't steal it.
+      if (wrapperEl?.contains(document.activeElement)) return
+      wrapperEl?.focus({ preventScroll: true })
+    }, 0)
+    return () => clearTimeout(id)
+  })
+
+  // Re-focus the wrapper whenever we transition out of
+  // minimised state — `display:none` removes the modal from
+  // the focus tree, so on restore we need to grab focus back
+  // (Esc handling depends on it).  Separate effect from the
+  // mount one so a restore re-fires without the wrapperEl
+  // identity changing.
+  $effect(() => {
+    if (minimized) return
+    if (!wrapperEl) return
+    const id = setTimeout(() => {
       if (wrapperEl?.contains(document.activeElement)) return
       wrapperEl?.focus({ preventScroll: true })
     }, 0)
@@ -302,8 +401,12 @@
   // Layer 3: global window-capture listener.  Fires regardless
   // of where focus is — covers the path between Compose mount
   // and our autofocus actually landing, plus any future
-  // refactor that keeps focus outside Compose.
+  // refactor that keeps focus outside Compose.  Gated on
+  // `minimized` so Esc on a minimised Compose doesn't cancel
+  // the draft; with multiple instances mounted at once (#292)
+  // we'd otherwise have every instance fight to handle Esc.
   $effect(() => {
+    if (minimized) return
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
       if (showNcPicker || showNcImagePicker || showTalkModal) return
@@ -365,10 +468,61 @@
   let bcc = $state(initial?.bcc ?? '')
   // svelte-ignore state_referenced_locally
   let subject = $state(initial?.subject ?? '')
+  // Push subject changes up to the parent so the shrunken-composes
+  // bar's tab label tracks the user's typing in real time (#292).
+  // No-op when the parent doesn't subscribe (popout window etc.).
+  $effect(() => {
+    onsubjectchange?.(subject)
+  })
   // svelte-ignore state_referenced_locally
   let body = $state(initial?.body ?? '')
   // svelte-ignore state_referenced_locally
   let attachments = $state<Attachment[]>(initial?.attachments ?? [])
+  /** Promise of the currently-in-flight `persistDraftToImap` call,
+   *  or `null` when no save is running.  `send()` and concurrent
+   *  saves both await this before proceeding so the
+   *  `currentDraftSource` reassignment that a save performs at the
+   *  end of its IPC roundtrip can't shift the target UID out from
+   *  under a send that started mid-save (#292 follow-up).
+   *
+   *  Without this lock the symptom is: save captures `src` = uid X
+   *  and fires `ondraftexpunged(X)`, then awaits the IMAP
+   *  APPEND+DELETE; meanwhile the user clicks Send, whose
+   *  `snap.draftSource` reads `currentDraftSource` while still X;
+   *  save returns and reassigns `currentDraftSource` to uid Y;
+   *  the send's later reads of `snap.draftSource.uid` resolve to
+   *  Y (Svelte 5 keeps object state deeply reactive, so a property
+   *  read through the captured reference reflects the live inner
+   *  value).  The tombstone fired against X and the expunge fires
+   *  against Y, so the row never actually gets marked
+   *  pending-delete in the cache and the next poll re-surfaces it. */
+  let persistPromise: Promise<void> | null = null
+
+  /** The Drafts-folder pointer this Compose's saves should
+   *  supersede (#292).  Seeded from `initial.draftSource` (the
+   *  edit-existing-draft entry point); each successful save_draft
+   *  updates it with the newly-APPENDed UID returned by the
+   *  backend.  Without this, repeated minimize-saves would APPEND
+   *  fresh copies and leave the Drafts folder full of duplicates
+   *  for one in-flight compose.  `null` means "no previous copy
+   *  to expunge" — first save of a brand-new draft.
+   *
+   *  Local state (not a prop) because Compose owns it for the
+   *  whole lifetime of the modal: the parent doesn't need to know,
+   *  and re-deriving from `initial.draftSource` would lose the
+   *  post-save UID. */
+  // svelte-ignore state_referenced_locally
+  let currentDraftSource = $state<
+    { accountId: string; folder: string; uid: number } | null
+  >(initial?.draftSource ?? null)
+  // Mirror the current draft pointer up to the parent so
+  // `openCompose` can detect "the user is opening a draft I
+  // already have a Compose for" and restore that tab rather than
+  // pushing a duplicate (#292 follow-up).  Fires on mount with
+  // the initial pointer and on every post-save update.
+  $effect(() => {
+    ondraftsourcechange?.(currentDraftSource)
+  })
   // Pre-warm thumb caches for any attachments seeded by the
   // host (FilesView's "New mail with attachment", reply-with-
   // attachment paths) so the `/` picker is instant on its
@@ -420,6 +574,16 @@
       label: 'Meetings',
       iconName: 'meetings',
       content: meetingsTabContent,
+    },
+    // #57 — End-to-end encryption tab.  Houses the encrypt toggle,
+    // passphrase prompt, and the per-account key status hint so the
+    // user can manage encryption in a dedicated surface instead of
+    // crowding the Send actions row.
+    {
+      id: 'encryption',
+      label: 'Encryption',
+      iconName: 'encrypted',
+      content: encryptionTabContent,
     },
   ])
 
@@ -512,7 +676,7 @@
    *  quoted thread we're replying to should never fire the
    *  warning:
    *
-   *    1. `<div data-nimbus-block="quoted-history">…</div>` —
+   *    1. `<div data-unkai-block="quoted-history">…</div>` —
    *       the wrapper Compose stamps around the quoted
    *       original message on reply / forward.  Wraps a
    *       multi-paragraph block, so the closing `</div>` is
@@ -533,7 +697,7 @@
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html')
       doc
-        .querySelectorAll('div[data-nimbus-block="quoted-history"], blockquote')
+        .querySelectorAll('div[data-unkai-block="quoted-history"], blockquote')
         .forEach((el) => el.remove())
       // Inject `\n` at block-element boundaries before grabbing
       // textContent, so a paragraph break in the source HTML
@@ -561,8 +725,8 @@
 
   // Cards (Talk + meeting + quoted-history) all live IN the
   // editor's HTML body (#195 follow-up²). The RichTextEditor's
-  // `NimbusBlock` Tiptap extension recognises every
-  // `<div data-nimbus-block="…">` wrapper and renders it via a
+  // `UnkaiBlock` Tiptap extension recognises every
+  // `<div data-unkai-block="…">` wrapper and renders it via a
   // NodeView so the styled markup survives schema parsing.
   // The chrome carries no `<img>` (we tried both a remote URL
   // and an inline data URI; mail clients ate both), so the
@@ -585,7 +749,7 @@
             files in the in-Compose picker, same shape the
             `onlinks` callback emits)
          5. body — plain-text reply or the styled
-            `<div data-nimbus-block="quoted-history">` for replies
+            `<div data-unkai-block="quoted-history">` for replies
 
       Drafts re-opened from the Drafts folder skip steps 1+2 —
       the saved HTML already contains whatever the user had at
@@ -593,6 +757,19 @@
       double-stamping breaklines or a signature. */
   function initialBodyHtml(): string {
     if (initial?.draftSource) {
+      // Saved draft body already carries the signature from the
+      // user's previous save — pin `insertedSignatureHtml` to the
+      // current account's signature so the late-load `$effect`
+      // below knows "the signature is already there, don't splice
+      // another one in".  Without this pin, every edit/save round-
+      // trip would stack a fresh signature on top of the prior
+      // one because the effect's `insertedSignatureHtml === null`
+      // branch would re-stamp on every re-open (#292 follow-up).
+      // Mirrors the `skipSignatureInsert` else-branch below.
+      const embeddedSig = signatureBlock(
+        (accounts.find((a) => a.id === accountId) ?? accounts[0])?.signature,
+      )
+      if (embeddedSig) insertedSignatureHtml = embeddedSig
       return textToHtml(body)
     }
 
@@ -698,7 +875,7 @@
       if (leadIdx !== -1) {
         const afterLead = leadIdx + '<p></p><p></p>'.length
         const quoteIdx = bodyHtml.indexOf(
-          '<div data-nimbus-block="quoted-history"',
+          '<div data-unkai-block="quoted-history"',
           afterLead,
         )
         const insertAt = quoteIdx !== -1 ? quoteIdx : afterLead
@@ -813,6 +990,22 @@
   }
 
   let sending = $state(false)
+  // End-to-end encryption toggle (#57).  When true, the send IPC
+  // sets `encryption_mode = "pgp"` and `signing_enabled = true` on
+  // the OutgoingEmail payload and prompts the user for their PGP
+  // passphrase — pre-send modal below.  The toggle defaults off so
+  // the historical plaintext send path is untouched for accounts
+  // that haven't imported a key.
+  let encryptEnabled = $state(false)
+  // Inline passphrase entry shown when the user clicks Send with
+  // encryption on.  Cleared on submit and on cancel so a freshly-
+  // opened Compose never inherits a stale passphrase.
+  let pgpPassphrase = $state('')
+  /** `true` once the user has clicked Send with encryption on but
+   *  before they've supplied the passphrase.  Drives the inline
+   *  passphrase prompt block (rendered just above the Send
+   *  button). */
+  let awaitingPassphrase = $state(false)
   // `initialError` seeds the banner when Compose is re-opened
   // after a background send failure (#156).  Cleared by the next
   // `send()` validation pass — the user retrying is the implicit
@@ -1059,47 +1252,11 @@
       description: saved.description ?? null,
       talkUrl: isUrl ? loc : null,
     }
-    const html = meetingInviteHtml(invite)
-    if (!editorApi) return
-    // Body order we want, from top to bottom:
-    //   1. lead spacer
-    //   2. **meeting card**            ← new
-    //   3. signature
-    //   4. (Talk / file-share cards)
-    //   5. quoted history (replies / forwards)
-    //
-    // The signature is a plain `<p>-- <br>...</p>` (no
-    // NimbusBlock wrapper), so `insertBeforeNimbusBlock` can't
-    // target it.  We do a string splice on `bodyHtml` instead:
-    // find the previously-inserted signature substring and
-    // splice the card just before it.  Fallback paths cover
-    // every shape the body might be in:
-    //
-    //   - signature present in source → splice before it.
-    //   - signature missing (no signature configured, or the
-    //     signature `$effect` hasn't run yet) → splice after
-    //     the lead spacer so future signature insertion still
-    //     lands below the card.
-    //   - neither marker found (e.g. an opened draft with a
-    //     bespoke shape) → fall back to the existing
-    //     before-quoted-history target so the card still
-    //     reads above the reply quote.
-    if (insertedSignatureHtml && bodyHtml.includes(insertedSignatureHtml)) {
-      const idx = bodyHtml.indexOf(insertedSignatureHtml)
-      const replaced = bodyHtml.slice(0, idx) + html + bodyHtml.slice(idx)
-      editorApi.setHtml(replaced)
-      bodyHtml = replaced
-      return
-    }
-    const leadIdx = bodyHtml.indexOf('<p></p><p></p>')
-    if (leadIdx !== -1) {
-      const after = leadIdx + '<p></p><p></p>'.length
-      const replaced = bodyHtml.slice(0, after) + html + bodyHtml.slice(after)
-      editorApi.setHtml(replaced)
-      bodyHtml = replaced
-      return
-    }
-    editorApi.insertBeforeNimbusBlock(html, 'quoted-history')
+    // The editor walks its own ProseMirror doc to find the top
+    // of the signoff region; new cards stack above any existing
+    // ones so a later insert isn't buried below a previously
+    // dropped block (#320 + follow-up).
+    editorApi?.insertAboveSignature(meetingInviteHtml(invite))
   }
 
   /** Combined To + Cc list as bare/RFC-formatted address strings,
@@ -1109,19 +1266,15 @@
   }
 
   /** Insert a Talk invite card into the editor body when the
-      user creates a Talk room mid-compose.  The new
-      `insertBeforeNimbusBlock` editor API drops the card just
-      above any existing quoted-history block (so reading order
-      is card → reply text → previous conversation); on a fresh
-      compose with no quote it appends at the end. The card is
-      parsed by the editor's `NimbusBlock` extension into an
-      atom node, so a single Backspace deletes the whole thing
-      if the user changes their mind. */
+      user creates a Talk room mid-compose.  Lands the card at
+      the top of the signoff region, above any existing
+      integration cards so the newest insert is the most visible
+      (#320 + follow-up).  The card is parsed by the editor's
+      `UnkaiBlock` extension into an atom node, so a single
+      Backspace deletes the whole thing if the user changes
+      their mind. */
   function injectTalkBlock(link: { name: string; url: string }) {
-    const html = talkInviteHtml(link)
-    if (editorApi) {
-      editorApi.insertBeforeNimbusBlock(html, 'quoted-history')
-    }
+    editorApi?.insertAboveSignature(talkInviteHtml(link))
   }
 
   function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
@@ -1220,32 +1373,7 @@
     error = ''
     sending = true
     try {
-      // `replaceSource` lets the backend APPEND + EXPUNGE in a single
-      // IMAP session — critical for "edit an existing draft" because
-      // two separate commands were sometimes leaving the original
-      // copy behind (server hadn't flushed the APPEND before the
-      // DELETE ran on a fresh connection). Letting the backend batch
-      // the two also guarantees APPEND and DELETE target the *same*
-      // folder (the one the user opened the draft from), even on
-      // servers where `pick_drafts_folder` would otherwise choose a
-      // different `\Drafts`-attributed mailbox than the one the user
-      // is looking at.
-      const src = initial?.draftSource
-      await invoke('save_draft', {
-        accountId: src?.accountId ?? fromAccountId,
-        email: {
-          from: fromHeader,
-          to: splitAddrs(to),
-          cc: splitAddrs(cc),
-          bcc: splitAddrs(bcc),
-          reply_to: null,
-          subject,
-          body_text: htmlToText(bodyHtmlForSubmission()),
-          body_html: bodyHtmlForSubmission() || null,
-          attachments,
-        },
-        replaceSource: src ? { folder: src.folder, uid: src.uid } : null,
-      })
+      await persistDraftToImap()
       // Disarm the share-cleanup branch in cancel() (#193): the
       // draft we just persisted has the share URLs baked into its
       // body, so the user expects them to keep working when they
@@ -1259,6 +1387,124 @@
       error = formatError(e) || 'Failed to save draft'
     } finally {
       sending = false
+    }
+  }
+
+  /** Save-then-minimise (#292).  Same backend call as `saveDraft`
+   *  but doesn't run `onclose` afterwards — the Compose stays
+   *  mounted (display:none from the `minimized` prop the parent
+   *  flips) so the user can keep editing on restore.  We disarm
+   *  the share-cleanup branch on success for the same reason
+   *  `saveDraft` does: the persisted draft references the share
+   *  URLs, so they must keep working until the user explicitly
+   *  closes the compose.
+   *
+   *  Errors don't surface a banner — by the time this fires the
+   *  modal is already hidden behind the minimize.  We log them to
+   *  the console and leave the in-memory draft intact so the user
+   *  can restore and retry. */
+  async function minimizeAndSave() {
+    // Trigger the hide first so the user gets instant feedback —
+    // the persist runs in the background.  Calling `onminimize`
+    // before the await means the modal closes before the IMAP
+    // round-trip rather than after it.
+    onminimize?.()
+    try {
+      await persistDraftToImap()
+      // Same disarm rationale as `saveDraft`: the persisted copy
+      // references any minted shares, so a later cancel() must
+      // not nuke them.
+      createdShares = []
+    } catch (e: any) {
+      console.warn(
+        'save_draft on minimize failed (in-memory draft preserved):',
+        e,
+      )
+    }
+  }
+
+  /** APPEND the current Compose state to the user's Drafts folder
+   *  and update `currentDraftSource` with the new (folder, uid) so
+   *  the next save can EXPUNGE this copy via `replaceSource`.
+   *
+   *  `replaceSource` lets the backend APPEND + EXPUNGE in a single
+   *  IMAP session — critical for "edit an existing draft" because
+   *  two separate commands were sometimes leaving the original
+   *  copy behind (server hadn't flushed the APPEND before the
+   *  DELETE ran on a fresh connection). Letting the backend batch
+   *  the two also guarantees APPEND and DELETE target the *same*
+   *  folder (the one the user opened the draft from), even on
+   *  servers where `pick_drafts_folder` would otherwise choose a
+   *  different `\Drafts`-attributed mailbox than the one the user
+   *  is looking at.
+   *
+   *  The backend returns the SEARCH-discovered UID of the newly-
+   *  APPENDed message; a `null` uid means we couldn't find it (no
+   *  Message-ID in the raw, SEARCH failed, server hasn't indexed
+   *  yet) and the caller should accept that the next save will
+   *  leave a duplicate.  Throws on any backend error — callers
+   *  decide how to surface it. */
+  async function persistDraftToImap(): Promise<void> {
+    // Coalesce against any concurrent persist so two near-simultaneous
+    // saves don't both try to APPEND + DELETE the same source UID
+    // (the second would hit a 'isn't in folder' error after the first
+    // already expunged it).  Also lets `send()` await the in-flight
+    // persist before reading `currentDraftSource` so the snap can't
+    // capture an about-to-be-stale UID.
+    if (persistPromise) {
+      await persistPromise
+    }
+    persistPromise = persistDraftToImapInner()
+    try {
+      await persistPromise
+    } finally {
+      persistPromise = null
+    }
+  }
+
+  async function persistDraftToImapInner(): Promise<void> {
+    const src = currentDraftSource
+    // Optimistically tell the parent the old Drafts row is gone
+    // BEFORE the IMAP roundtrip — without this the mail-list's
+    // `mergeEnvelopes` keeps the soon-to-be-deleted UID visible
+    // until the eventual sync evicts it, and the user briefly sees
+    // (and can click!) both the old and new copies in the Drafts
+    // folder (#292 follow-up).  Backend's tombstone covers the
+    // cache side; this covers the in-memory list.  If the save
+    // ultimately fails, the row reappears on the next sync /
+    // refresh from the backend's tombstone-clear path.
+    if (src) ondraftexpunged?.(src)
+    const result = await invoke<{ folder: string; uid: number | null }>(
+      'save_draft',
+      {
+        accountId: src?.accountId ?? fromAccountId,
+        email: {
+          from: fromHeader,
+          to: splitAddrs(to),
+          cc: splitAddrs(cc),
+          bcc: splitAddrs(bcc),
+          reply_to: null,
+          subject,
+          body_text: htmlToText(bodyHtmlForSubmission()),
+          body_html: bodyHtmlForSubmission() || null,
+          attachments,
+        },
+        replaceSource: src ? { folder: src.folder, uid: src.uid } : null,
+      },
+    )
+    // Update the pointer for the next save.  `result.uid === null`
+    // means SEARCH didn't find the new copy; clear `currentDraftSource`
+    // so the next save APPENDs fresh rather than re-deleting the
+    // *old* UID (which is now gone — the server already EXPUNGEd
+    // it as part of this save).
+    if (result.uid !== null) {
+      currentDraftSource = {
+        accountId: src?.accountId ?? fromAccountId,
+        folder: result.folder,
+        uid: result.uid,
+      }
+    } else {
+      currentDraftSource = null
     }
   }
 
@@ -1517,11 +1763,49 @@
   }
 
   async function send() {
+    // Re-entrancy guard (#292 follow-up): `send()` is async and the
+    // first `await invoke('tombstone_draft_for_expunge', …)` yields
+    // for an IPC round-trip before `onclose()` removes the modal.
+    // If the user double-clicks Send (or some other event re-fires
+    // the click within that window) the second invocation would
+    // race the first — both call `invoke('send_email')` which is
+    // an outright enqueue, so the recipient gets the mail twice
+    // and the draft cleanup runs against a UID that's already
+    // gone.  `sending = true` immediately disables the Send button
+    // (it's gated on this flag) and short-circuits any in-flight
+    // re-entry.  Leave it `true` for the rest of the function
+    // since the modal unmounts via `onclose()` anyway.
+    // Temporary diagnostic for the "mail sent twice" report — we
+    // need to see whether the guard is actually triggering or
+    // whether `send_email` is being invoked twice via a different
+    // path.  Cheap (a few console lines per click) and removable.
+    if (sending) return
+    sending = true
+
     error = ''
     const toList = splitAddrs(to)
     if (toList.length === 0) {
       error = 'At least one recipient is required.'
+      sending = false
       return
+    }
+
+    // Wait for any in-flight save to complete before snapshotting
+    // `currentDraftSource` (#292 follow-up).  If a save is mid-IPC
+    // the source UID is about to change from X to Y; capturing
+    // either value out of order leaves us tombstoning one UID and
+    // expunging another (the cache marker lands on a row that
+    // already got expunged, and the next poll surfaces the new
+    // row that was never marked).
+    if (persistPromise) {
+      try {
+        await persistPromise
+      } catch (e) {
+        console.warn(
+          'in-flight persistDraftToImap threw during send; continuing',
+          e,
+        )
+      }
     }
 
     // #156: close the modal immediately and run the IMAP
@@ -1550,7 +1834,30 @@
       ncAccountId,
       accountsAtSend: accounts,
       initialAtSend: initial,
-      draftSource: initial?.draftSource ?? null,
+      // Use `currentDraftSource` (the LIVE pointer) instead of
+      // `initial.draftSource` (frozen at mount) — without this, a
+      // user who minimised the Compose (which APPENDs to Drafts
+      // and updates `currentDraftSource` to the new UID) and then
+      // restored + sent would leave their Drafts copy behind: the
+      // send pipeline would have no source UID to expunge because
+      // the mount-time pointer was null for a brand-new compose.
+      // (#292 follow-up).
+      //
+      // Spread the fields into a plain object so the snapshot is
+      // frozen at this moment.  Svelte 5 keeps object state deeply
+      // reactive, and storing the reactive reference in `snap`
+      // would let any later mutation of `currentDraftSource`
+      // (e.g. a concurrent save reassigning to a new UID) leak
+      // into reads of `snap.draftSource.uid` further down in
+      // `runSendPipeline`, causing tombstone and expunge to
+      // target different UIDs.
+      draftSource: currentDraftSource
+        ? {
+            accountId: currentDraftSource.accountId,
+            folder: currentDraftSource.folder,
+            uid: currentDraftSource.uid,
+          }
+        : null,
       // #152 — staged meeting event.  Snapshotted here so the
       // background pipeline can fire `create_calendar_event`
       // *after* `send_email` succeeds.  We clear the in-scope
@@ -1576,6 +1883,54 @@
     // event; the background pipeline will create it on
     // send-success.
     stagedEvent = null
+
+    // Tombstone the source draft BEFORE `onclose()` (#292
+    // follow-up).  `onclose` triggers the parent's `refreshToken`
+    // bump which immediately schedules a `fetch_envelopes`; the
+    // background `runSendPipeline` doesn't reach its
+    // `invoke('delete_message')` for another ~30-100ms, so without
+    // this upfront mark the fresh batch comes back carrying the
+    // about-to-be-expunged UID and `mergeEnvelopes` puts it back in
+    // the visible list (it lingers until the next sync evicts it).
+    // We also fire `ondraftexpunged` here so the in-memory mail
+    // list state is spliced in the same beat — covers the cache-
+    // hit phase of MailList's load() too.  Both are best-effort:
+    // a failure leaves the row visible briefly but doesn't undo
+    // the send.
+    if (snap.draftSource) {
+      try {
+        await invoke('tombstone_draft_for_expunge', {
+          accountId: snap.draftSource.accountId,
+          folder: snap.draftSource.folder,
+          uid: snap.draftSource.uid,
+        })
+      } catch (e) {
+        console.warn('tombstone_draft_for_expunge before send onclose failed', e)
+      }
+      ondraftexpunged?.(snap.draftSource)
+    }
+
+    // Standalone-window path (#304): the popped-out window IS the
+    // JS context that runs `runSendPipeline`.  If we close the
+    // window before the pipeline awaits `invoke('send_email')`,
+    // the webview is destroyed and the IPC never fires — the
+    // user clicked Send and nothing happened.  So in standalone
+    // we run the pipeline inline before closing and surface any
+    // failure to the still-open window so the user can retry.
+    if (inStandaloneWindow) {
+      try {
+        await runSendPipeline(snap)
+        onclose()
+      } catch (e) {
+        // `runSendPipeline` already logged the underlying error
+        // for us; only `send_email` itself rethrows in standalone
+        // mode (the Talk-participants / staged-event / expunge
+        // legs are best-effort and swallow their own errors).
+        error = formatError(e) || 'Failed to send'
+        sending = false
+      }
+      return
+    }
 
     onclose()
 
@@ -1651,6 +2006,11 @@
           attachments: snap.attachments,
           in_reply_to: parentMessageId,
           references: newReferences,
+          // #57: when the encryption toggle is on, ask the SMTP
+          // layer to wrap as RFC-3156 PGP/MIME + inner-sign with
+          // the account's key.  Off → historical plaintext send.
+          encryption_mode: encryptEnabled ? 'pgp' : null,
+          signing_enabled: encryptEnabled,
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list
@@ -1664,7 +2024,17 @@
         // path doesn't reach this invoke, so cancelling leaves
         // the source row alone — what the user expects.
         outboxSource: snap.initialAtSend?.outboxSource ?? null,
+        // #57: passphrase that unlocks the account's PGP private
+        // key — captured from the inline prompt below.  Only
+        // meaningful when `encryption_mode == 'pgp'`; the backend
+        // ignores it for plaintext sends.  Cleared the moment the
+        // IPC resolves so it doesn't linger across re-renders.
+        pgpPassphrase: encryptEnabled ? pgpPassphrase : null,
       })
+      // Wipe the in-memory passphrase before yielding back to the
+      // outer flow so a successful send doesn't leave it sitting
+      // on the heap for the rest of Compose's lifetime.
+      pgpPassphrase = ''
       // Send was accepted into the local queue (#276 follow-up).
       // Hand the new row id to the parent so App.svelte can
       // surface it as the selected Outbox preview after an
@@ -1673,7 +2043,17 @@
       onsentenqueued?.(newOutboxId)
     } catch (e: any) {
       const msg = formatError(e) || 'Failed to send'
-      console.warn('send_email failed (modal already closed)', e)
+      console.warn('send_email failed', e)
+      // #304: in a popped-out Compose the modal is still on screen
+      // (we await this pipeline inline before closing).  Rethrow
+      // so `send()` can surface the error inline and keep the
+      // window open for retry — `onsendfailed` is a modal-flow
+      // concern (it tells the parent to re-open Compose pre-
+      // filled), and the parent of a popped-out window doesn't
+      // own that surface.
+      if (inStandaloneWindow) {
+        throw e
+      }
       onsendfailed?.({
         errorMessage: msg,
         draft: {
@@ -1787,9 +2167,30 @@
     // exactly one version of the message.  Best-effort post-
     // close: a failure leaves a stale draft which the user can
     // discard manually, but it doesn't undo the send.
+    //
+    // Routes through `expunge_draft_after_send` (not the user-
+    // facing `delete_message`) for two reasons:
+    //
+    //   1. `delete_message` moves Drafts UIDs to Trash by default
+    //      — leaving a copy of every sent draft in the user's
+    //      Trash folder.  Wrong semantics for "the draft was
+    //      consumed by send"; matches what the inline
+    //      save_draft replace path does.
+    //   2. On a real IMAP DELETE failure, `delete_message` clears
+    //      the cache tombstone so the row reappears in Drafts.
+    //      That's right for a user-initiated delete (they can
+    //      retry) but wrong here: the mail already shipped, so
+    //      the user expects the draft to disappear regardless
+    //      of cleanup status.  The dedicated IPC keeps the
+    //      tombstone planted (#292 follow-up).
+    //
+    // `ondraftexpunged` fires BEFORE the invoke so the mail-list
+    // splices the row out immediately, instead of letting it
+    // linger in the Drafts folder until the next sync.
     if (snap.draftSource) {
+      ondraftexpunged?.(snap.draftSource)
       try {
-        await invoke('delete_message', {
+        await invoke('expunge_draft_after_send', {
           accountId: snap.draftSource.accountId,
           folder: snap.draftSource.folder,
           uid: snap.draftSource.uid,
@@ -1823,7 +2224,13 @@
           in_reply_to: initial?.in_reply_to ?? null,
           nextcloudLinks: initial?.nextcloudLinks,
           talkLink: initial?.talkLink,
-          draftSource: initial?.draftSource,
+          // Use the live `currentDraftSource` so a popout after a
+          // minimize-save points at the post-APPEND UID, not the
+          // mount-time pointer (which is null for a brand-new
+          // compose).  Without this the popped-out window would
+          // re-save without `replaceSource` and leave a duplicate
+          // in Drafts.
+          draftSource: currentDraftSource ?? undefined,
         },
       })
     } catch (e) {
@@ -1835,6 +2242,39 @@
     // which is harmless here.
     onclose()
   }
+
+  // Hand the parent a stable reference to `cancel` so the
+  // shrunken-composes bar's × close-tab gesture can run the full
+  // cleanup flow (Talk room, share links, draft-source expunge)
+  // without first restoring the modal (#292).  Fires once on mount
+  // — the function reference doesn't change across re-renders, so
+  // a one-shot register is sufficient.
+  $effect(() => {
+    oncancelref?.(cancel)
+  })
+
+  /** External attachment-append handle (#329).  Same shape the
+   *  picker's `onPickFiles` uses: append to the reactive list, then
+   *  pre-warm thumbs off the critical path so the `/` picker's
+   *  first open lands on fully rendered tiles.  Called by the
+   *  parent once the forward-with-attachments download finishes,
+   *  with a list whose `content_id`s were minted before the bytes
+   *  arrived so the cache key stays stable. */
+  function appendExternalAttachments(atts: Attachment[]) {
+    if (atts.length === 0) return
+    attachments = [...attachments, ...atts]
+    for (const a of atts) {
+      prewarmAttachmentThumb({
+        bytes: a.data,
+        contentType: a.content_type,
+        filename: a.filename,
+        cacheKey: a.content_id,
+      })
+    }
+  }
+  $effect(() => {
+    onaddattachmentsref?.(appendExternalAttachments)
+  })
 
   function cancel() {
     // No local persistence — if the user wants to resume later they
@@ -1938,11 +2378,19 @@
     {@render composeBody()}
   </div>
 {:else}
+  <!-- `minimized` flips the wrapper to display:none so the
+       Compose instance can sit alongside any number of other
+       Composes without their backdrops stacking.  The Tiptap
+       editor, attachments, Talk-room token, and share-link
+       bookkeeping all live in component state so they survive
+       the round-trip without re-mount (#292). -->
   <div
     bind:this={wrapperEl}
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 outline-none"
+    class:hidden={minimized}
     role="dialog"
     aria-modal="true"
+    aria-hidden={minimized}
     tabindex="-1"
     onkeydowncapture={onComposeKeydownCapture}
   >
@@ -1966,7 +2414,21 @@
 
 {#snippet composeBody()}
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-2">
-      <h2 class="text-base font-semibold">New message</h2>
+      <div class="flex items-center gap-2 min-w-0">
+        <h2 class="text-base font-semibold whitespace-nowrap">New message</h2>
+        <!-- #57 — Encrypted indicator promoted out of the ribbon
+             so the user sees the state from anywhere in the
+             window, not just from the send-actions row. -->
+        {#if encryptEnabled}
+          <span
+            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
+            title="This message will be sent as PGP/MIME"
+          >
+            <Icon name="encrypted" size={14} />
+            <span>Encrypted</span>
+          </span>
+        {/if}
+      </div>
       <div class="flex items-center gap-2">
         {#if !inStandaloneWindow}
           <!-- Pop the modal out into its own resizable window (#110).
@@ -1977,6 +2439,22 @@
             onclick={() => void popoutCompose()}
             title="Open this draft in a separate window"
           ><Icon name="full-screen" size={14} /> Pop out</button>
+        {/if}
+        {#if !inStandaloneWindow && onminimize}
+          <!-- Minimise this draft into the shrunken-composes bar
+               (#292).  Routes through `minimizeAndSave` rather than
+               `onminimize` directly so the in-flight draft also
+               lands in the user's Drafts folder — minimise is the
+               "park this for later" gesture, and "later" might be
+               a different device.  Hidden in standalone-window mode
+               because the OS window itself is the minimise surface
+               there. -->
+          <button
+            class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100 px-1 text-lg leading-none"
+            onclick={() => void minimizeAndSave()}
+            aria-label={m.compose_button_minimize_aria_label()}
+            title={m.compose_button_minimize_title()}
+          >–</button>
         {/if}
         <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
       </div>
@@ -2219,16 +2697,74 @@
     <span class="ctb-icon"><Icon name="save-draft" size={20} /></span>
     <span class="ctb-label">Save</span>
   </button>
+  <!-- #57 — the Encrypted indicator pill lives next to the
+       "New Message" title in the header (see Compose's modal
+       header below).  Send-actions row stays focused on the two
+       commit buttons. -->
   <button
     type="button"
     class="ctb-send"
-    disabled={sending}
-    title="Send the message"
+    disabled={sending || (encryptEnabled && !pgpPassphrase)}
+    title={encryptEnabled && !pgpPassphrase
+      ? 'Open the Encryption tab and enter your PGP passphrase to send'
+      : 'Send the message'}
     onclick={send}
   >
     <span>{sending ? 'Sending…' : 'Send'}</span>
     <Icon name="sent" size={18} />
   </button>
+{/snippet}
+
+<!-- Encryption tab panel — toggle + passphrase + account-key status
+     (#57).  Mirrors the visual style of the Attach / Meetings tab
+     panels above so it reads as another peer of the ribbon, not a
+     bolted-on dialog.  Lives on its own tab specifically so the
+     passphrase field isn't crowded into the Send actions row where
+     it doesn't fit. -->
+{#snippet encryptionTabContent()}
+  <!-- Primary toggle: a `rt-btn` so the encrypt toggle is visually
+       a sibling to the Attach / NC Files / Talk / Event buttons
+       in the other panels. -->
+  <button
+    type="button"
+    class="rt-btn"
+    class:active={encryptEnabled}
+    title={encryptEnabled
+      ? 'Encryption on — click to switch back to plaintext'
+      : 'Encrypt + sign this message with your account PGP key'}
+    aria-pressed={encryptEnabled}
+    onclick={() => {
+      encryptEnabled = !encryptEnabled
+      if (!encryptEnabled) {
+        pgpPassphrase = ''
+      }
+    }}
+  >
+    <span class="rt-btn-icon">
+      <Icon name={encryptEnabled ? 'encrypted' : 'lock'} size={20} />
+    </span>
+    <span class="rt-btn-label">{encryptEnabled ? 'Encrypted' : 'Encrypt'}</span>
+  </button>
+  <!-- Passphrase entry only when encryption is on.  Same compact
+       input shape as the per-field text inputs the rest of Compose
+       uses, but inside the ribbon — keeps the user's hand close to
+       the Send button without crowding it. -->
+  {#if encryptEnabled}
+    <div class="flex items-center gap-2 px-2">
+      <label for="pgp-passphrase-input" class="text-xs text-surface-500 whitespace-nowrap">
+        PGP passphrase
+      </label>
+      <input
+        id="pgp-passphrase-input"
+        type="password"
+        class="input text-xs px-2 py-1 rounded-md w-56"
+        placeholder="Unlocks your account key"
+        bind:value={pgpPassphrase}
+        disabled={sending}
+        autocomplete="off"
+      />
+    </div>
+  {/if}
 {/snippet}
 
 {#if showNcPicker}
@@ -2271,27 +2807,15 @@
       const items = links
         .map(
           (l) =>
-            `<p>🔗 <a href="${l.url}" data-nimbus-share-id="${esc(l.id)}" data-nimbus-share-nc="${esc(l.ncId)}">${esc(l.filename)}</a></p>`,
+            `<p>🔗 <a href="${l.url}" data-unkai-share-id="${esc(l.id)}" data-unkai-share-nc="${esc(l.ncId)}">${esc(l.filename)}</a></p>`,
         )
         .join('')
       const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`
-      // Splice the block ABOVE an auto-inserted signature when one
-      // is sitting at the end of the body so the share renders
-      // inline with the message rather than below the user's
-      // sign-off.  Same pattern the Talk-link injection uses
-      // earlier in this component.
-      if (
-        insertedSignatureHtml
-        && bodyHtml.endsWith(insertedSignatureHtml)
-        && editorApi
-      ) {
-        const without = bodyHtml.slice(0, bodyHtml.length - insertedSignatureHtml.length)
-        const replaced = without + block + insertedSignatureHtml
-        editorApi.setHtml(replaced)
-        bodyHtml = replaced
-      } else {
-        editorApi?.appendHtml(block)
-      }
+      // Land the block at the top of the signoff region — a
+      // short share-link paragraph reads above any existing
+      // meeting / Talk card so it isn't buried beneath the big
+      // styled chrome (#320 + follow-up).
+      editorApi?.insertAboveSignature(block)
     }}
     onclose={() => (showNcPicker = false)}
   />

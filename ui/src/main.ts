@@ -5,13 +5,17 @@ import StandaloneMail from './lib/StandaloneMail.svelte'
 import StandaloneMailFile from './lib/StandaloneMailFile.svelte'
 import StandaloneCompose from './lib/StandaloneCompose.svelte'
 import StandaloneReminder from './lib/StandaloneReminder.svelte'
+import StandaloneEventEditor from './lib/StandaloneEventEditor.svelte'
+import StandaloneSignatureEditor from './lib/StandaloneSignatureEditor.svelte'
 
-// Same Vite bundle, five entry routes selected via the URL query:
+// Same Vite bundle, seven entry routes selected via the URL query:
 //
 //   ?view=mail&account=…&folder=…&uid=…  → standalone mail reader (#104)
 //   ?view=mailfile&path=…                → view-only .eml from disk (#254)
 //   ?view=compose&key=…                  → standalone compose window (#110)
 //   ?view=reminder&key=…                 → calendar reminder popup (#203)
+//   ?view=event-editor&key=…             → standalone event editor (#304)
+//   ?view=signature-editor&key=…         → standalone signature editor (#314)
 //   anything else                        → the full 3-pane app
 //
 // Reusing one bundle keeps the build simple and gives every route
@@ -42,6 +46,16 @@ if (view === 'mail') {
   })
 } else if (view === 'reminder') {
   app = mount(StandaloneReminder, {
+    target,
+    props: { popoutKey: params.get('key') ?? '' },
+  })
+} else if (view === 'event-editor') {
+  app = mount(StandaloneEventEditor, {
+    target,
+    props: { popoutKey: params.get('key') ?? '' },
+  })
+} else if (view === 'signature-editor') {
+  app = mount(StandaloneSignatureEditor, {
     target,
     props: { popoutKey: params.get('key') ?? '' },
   })

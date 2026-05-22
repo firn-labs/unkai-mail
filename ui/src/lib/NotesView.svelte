@@ -45,7 +45,7 @@
     display_name?: string | null
   }
 
-  /** Mirrors `nimbus_core::models::Note`. */
+  /** Mirrors `unkai_core::models::Note`. */
   interface Note {
     id: number
     nextcloud_account_id: string
@@ -77,7 +77,7 @@
      *  with.  Null when no mail account is configured / active. */
     mailAccountId?: string | null
     /** `mail://acc/folder/uid` link handler (#260).  Called when
-     *  the user clicks an in-Note Nimbus mail reference in the
+     *  the user clicks an in-Note Unkai mail reference in the
      *  preview pane; the parent composes the corresponding view /
      *  account / folder / message state changes. */
     onopenmail?: (accountId: string, folder: string, uid: number) => void
@@ -152,7 +152,7 @@
   /** MIME type for our private drag payload — kept distinct from
    *  the mail one so a stray drop between views never tries to
    *  re-categorise as if it were a mail UID. */
-  const NOTE_DND_MIME = 'application/x-nimbus-note'
+  const NOTE_DND_MIME = 'application/x-unkai-note'
 
   /** Currently selected note id, or `null` for the empty-state pane. */
   let selectedId = $state<number | null>(null)
@@ -417,7 +417,7 @@
 
   // ── Pending folder persistence ──────────────────────────────
   function pendingFoldersKey(): string {
-    return `nimbus.notes.pendingFolders.${accountId}`
+    return `unkai.notes.pendingFolders.${accountId}`
   }
   function loadPendingFolders() {
     try {
@@ -1293,6 +1293,7 @@
               {showPreview}
               accountId={mailAccountId}
               {onopenmail}
+              onmailto={(init) => oncompose(init)}
             />
           {/if}
         {/if}

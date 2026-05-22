@@ -1,10 +1,10 @@
 # Software Bill of Materials (SBOM)
 
-Inventory of every direct dependency Nimbus Mail pulls in, the licence
+Inventory of every direct dependency Unkai Mail pulls in, the licence
 each one ships under, and what that combination means for distributing
 the app commercially.
 
-> **TL;DR:** Nimbus is licensed **GPL-3.0**. The strongest copyleft
+> **TL;DR:** Unkai is licensed **GPL-3.0**. The strongest copyleft
 > dependency in the tree (`rrule`, GPL-3.0) is what forces that choice —
 > we can market and sell the app, but we must offer the source to every
 > user we ship a binary to. The public GitHub repository already
@@ -41,7 +41,7 @@ screen or a `LICENSES.md` shipped with the binary).
 - **Zlib** — permissive with one extra clause (don't claim you wrote
   the original). Treat like MIT.
 
-For Nimbus this means: anything pure-permissive can ship in any
+For Unkai this means: anything pure-permissive can ship in any
 distribution model we pick.
 
 ### Weak copyleft (must remain replaceable)
@@ -68,11 +68,11 @@ distribution model we pick.
   user we sell to has the right to a copy of the complete source
   (`src/` plus our build instructions). AGPL adds an extra trigger: if
   the software runs as a network service, anyone interacting with it
-  over the network is also a "user" entitled to the source. Nimbus is
+  over the network is also a "user" entitled to the source. Unkai is
   a desktop client, not a service, so AGPL would behave like GPL for
   our distribution model.
 
-For Nimbus this is what `rrule` brings in — and is why our own
+For Unkai this is what `rrule` brings in — and is why our own
 licence is GPL-3.0. **Adding AGPL-3.0 anywhere in the tree would
 upgrade the obligation** (network-service trigger), so flag carefully.
 
@@ -88,12 +88,12 @@ above still applies — pick the one that fits.
 
 ### What "GPL-3.0 forces our licence" means in practice
 
-- ✅ We can sell Nimbus binaries.
+- ✅ We can sell Unkai binaries.
 - ✅ We can run paid hosting / support / consulting around it.
 - ✅ We can make the source available *only* on the GitHub repo;
   the repo URL counts as "offer to provide source".
 - ❌ We cannot ship a closed-source proprietary fork.
-- ❌ We cannot dual-license Nimbus under a non-GPL licence without
+- ❌ We cannot dual-license Unkai under a non-GPL licence without
   swapping or relicensing every GPL dep first.
 - ❌ We cannot add code under a licence incompatible with GPL-3.0
   (e.g. older GPL-2.0-only, BUSL, SSPL).
@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-15 (`vitest` added for frontend pure-function tests, #295 — MIT, devDependency only, no licence pressure).
+Last manual reconciliation: 2026-05-22 (`pgp` (rpgp) + `rand` added so Unkai can sign / encrypt outbound mail and verify / decrypt inbound mail, #57 — both MIT OR Apache-2.0, no licence pressure; rpgp's transitive crypto tree is the RustCrypto stack, also entirely permissive).
 
 ---
 
@@ -160,6 +160,8 @@ us, that's GPL-3.0 via `rrule`.
 | `uuid` | MIT OR Apache-2.0 | UUID generation. |
 | `hickory-resolver` | MIT OR Apache-2.0 | DNS resolver (autoconfig SRV lookup). |
 | `font-kit` | MIT OR Apache-2.0 | System font enumeration. |
+| `pgp` (rpgp) | MIT OR Apache-2.0 | OpenPGP (RFC 4880 / 9580). Pure-Rust crypto for end-to-end mail encryption (#57). Crate name `pgp` on crates.io, renamed to `rpgp` in `unkai-crypto`'s manifest to disambiguate from "PGP" the protocol family. Pulls in the RustCrypto stack transitively (`rsa`, `aes`, `ed25519-dalek`, `curve25519-dalek`, `p256`/`p384`/`p521`, `dsa`, `ripemd`, `md-5`, etc.) — all permissive. |
+| `rand` | MIT OR Apache-2.0 | CSPRNG passed to `rpgp` for session-key generation, signature nonces, and key generation when encrypting / signing (#57). |
 
 ### Tauri shell (`src-tauri/Cargo.toml`)
 
@@ -170,6 +172,8 @@ us, that's GPL-3.0 via `rrule`.
 | `tauri-plugin-notification` | MIT OR Apache-2.0 | OS notifications. |
 | `tauri-plugin-dialog` | MIT OR Apache-2.0 | Native file dialogs. |
 | `tauri-plugin-autostart` | MIT OR Apache-2.0 | Run-on-login registration. |
+| `tauri-plugin-deep-link` | MIT OR Apache-2.0 | `mailto:` protocol-handler registration (#294). |
+| `tauri-plugin-single-instance` | MIT OR Apache-2.0 | Forwards a second-launch `mailto:` argv to the running instance (#294). |
 | `notify-rust` | MIT OR Apache-2.0 | Cross-platform desktop notifications. |
 | `windows` (winapi) | MIT OR Apache-2.0 | Windows API bindings (taskbar overlay). |
 
@@ -251,7 +255,7 @@ or terms change.
 | Dual-licence under e.g. commercial + GPL | ❌ | Same. Would need to swap `rrule` for an MIT/Apache RRULE expander. |
 | Ship in a closed-source company-internal tool only | ✅ | GPL-3.0's redistribution clause only triggers on distribution. Internal use is unrestricted. |
 
-If at some point we want the option of relicensing Nimbus to a
+If at some point we want the option of relicensing Unkai to a
 permissive licence (MIT / Apache / a commercial dual-licence), the
 single hard blocker is `rrule`. It would need replacing — either by
 forking it under a permissive licence (which is itself a GPL violation

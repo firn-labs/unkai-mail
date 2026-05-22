@@ -1,6 +1,6 @@
 # Third-Party Licenses
 
-Nimbus Mail is licensed under [**GPL-3.0**](LICENSE). The compiled
+Unkai Mail is licensed under [**GPL-3.0**](LICENSE). The compiled
 binary bundles, statically links, or otherwise relies on the
 third-party software listed below. Each item is governed by its
 own license, reproduced or referenced inline.
@@ -26,7 +26,7 @@ applies to every package listed underneath it.
 | [BSD-3-Clause](#bsd-3-clause-license) | SQLCipher (vendored) |
 | [ISC](#isc-license) | rustls, ring (parts) |
 | [MPL-2.0](#mozilla-public-license-20) | webpki-roots, dompurify |
-| [GPL-3.0](#gnu-general-public-license-v3) | rrule (and Nimbus itself) |
+| [GPL-3.0](#gnu-general-public-license-v3) | rrule (and Unkai itself) |
 | [CC0-1.0](#cc0-10-runtime-data-feeds) (data only) | URLhaus malicious-URL feed (#165) |
 | Multi-licence components | [ring](#ring-tls-crypto-provider) (ISC + MIT + OpenSSL) |
 
@@ -42,9 +42,10 @@ The following packages are distributed under the MIT License:
 `open`, `hex`, `async-imap`, `futures`, `tokio-rustls`,
 `rustls-pki-types`, `tokio-util`, `sha2`, `lettre`, `mail-parser`,
 `quick-xml`, `ical`, `base64`, `aes-gcm`, `pbkdf2`, `hmac`, `uuid`,
-`hickory-resolver`, `font-kit`, `tauri`, `tauri-build`,
-`tauri-plugin-notification`, `tauri-plugin-dialog`,
-`tauri-plugin-autostart`, `notify-rust`, `windows`.
+`hickory-resolver`, `font-kit`, `pgp` (rpgp), `rand`, `tauri`,
+`tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
+`tauri-plugin-autostart`, `tauri-plugin-deep-link`,
+`tauri-plugin-single-instance`, `notify-rust`, `windows`.
 
 **npm packages**: `@tauri-apps/api`, `@tauri-apps/plugin-autostart`,
 `@tauri-apps/plugin-dialog`, `@tauri-apps/plugin-notification`,
@@ -103,9 +104,11 @@ with downstream consumers who require it):
 `chrono-tz`, `dirs`, `keyring`, `r2d2`, `r2d2_sqlite`, `getrandom`,
 `open`, `hex`, `async-imap`, `futures`, `rustls`, `tokio-rustls`,
 `rustls-pki-types`, `mail-parser`, `ical`, `base64`, `aes-gcm`,
-`pbkdf2`, `hmac`, `uuid`, `hickory-resolver`, `font-kit`, `tauri`,
-`tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
-`tauri-plugin-autostart`, `notify-rust`, `windows`.
+`pbkdf2`, `hmac`, `uuid`, `hickory-resolver`, `font-kit`,
+`pgp` (rpgp), `rand`, `tauri`, `tauri-build`,
+`tauri-plugin-notification`, `tauri-plugin-dialog`,
+`tauri-plugin-autostart`, `tauri-plugin-deep-link`,
+`tauri-plugin-single-instance`, `notify-rust`, `windows`.
 
 **Vendored libraries**: OpenSSL (statically linked through
 `rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature).
@@ -166,9 +169,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-The Nimbus Mail project is not affiliated with or endorsed by Zetetic
+The Unkai Mail project is not affiliated with or endorsed by Zetetic
 LLC. Per clause 3 of the BSD-3-Clause licence, we do not use Zetetic's
-name to promote Nimbus.
+name to promote Unkai.
 
 ---
 
@@ -228,10 +231,10 @@ The full MPL-2.0 text is at: <https://www.mozilla.org/en-US/MPL/2.0/>
 ## GNU General Public License v3
 
 - **`rrule`** (Rust crate) — RFC 5545 recurrence-rule expansion engine,
-  used by `nimbus-caldav` to materialise recurring calendar events
+  used by `unkai-caldav` to materialise recurring calendar events
   into concrete occurrences. Source:
   <https://github.com/fmeringdal/rust-rrule>
-- **Nimbus Mail itself** is licensed under GPL-3.0 (see [LICENSE](LICENSE)
+- **Unkai Mail itself** is licensed under GPL-3.0 (see [LICENSE](LICENSE)
   in the repository root). The presence of `rrule` in the dependency
   tree is the load-bearing reason — every binary we distribute must be
   accompanied by source under GPL-3.0 or a compatible licence.
@@ -241,7 +244,7 @@ links to GPL-3.0 code requires:
 - Distributing the complete corresponding source, or making it
   available via a written offer that any recipient can act on for at
   least three years. Our public GitHub repository at
-  <https://github.com/Videothek/nimbus-mail> serves as that
+  <https://github.com/Videothek/unkai-mail> serves as that
   availability.
 - Preserving copyright notices.
 - Licensing any work that combines with GPL-3.0 code under GPL-3.0
@@ -259,7 +262,7 @@ feed published by [abuse.ch](https://urlhaus.abuse.ch/). The data
 itself is dedicated to the public domain under
 [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/) — no
 attribution clause forces redistribution semantics, and no
-copyleft pressure spreads to the rest of Nimbus. We still credit
+copyleft pressure spreads to the rest of Unkai. We still credit
 abuse.ch in the Settings UI as a goodwill gesture: the project
 runs on community contributions and a visible "powered by" link
 helps them keep funding the work.
@@ -291,7 +294,7 @@ The full notice is reproduced in the `ring` source archive at
 inside the package's source distribution. By transitively including
 all the constituent licences (ISC / BSD / Apache-2.0 / OpenSSL / SSLeay)
 we satisfy the attribution obligation; none of these licences are
-copyleft, so they impose no licence pressure on Nimbus beyond
+copyleft, so they impose no licence pressure on Unkai beyond
 attribution preservation.
 
 ---

@@ -65,13 +65,22 @@
      *  from Nextcloud" flow: the parent opens the file picker,
      *  downloads bytes, converts to a data URL, and calls this. */
     insertImage: (src: string) => void
-    /** Insert HTML at the position just before the first
-     *  `nimbusBlock` atom node carrying the given `kind` attr.
-     *  Used by Compose's mid-compose Talk-room creation so the
-     *  new invite card lands *above* the quoted-history block on
-     *  a reply. Falls back to appending at the end when no
-     *  matching block exists (fresh compose). */
-    insertBeforeNimbusBlock: (html: string, kind: string) => void
+    /** Insert HTML at the **top** of the user's sign-off region.
+     *
+     *  The signoff region is everything between the lead-spacer
+     *  typing area and the signature (a `<p>` whose text starts
+     *  with the RFC 3676 `-- ` separator).  New blocks stack
+     *  *above* any existing `unkaiBlock` cards already sitting in
+     *  that region, so a freshly inserted share-link paragraph
+     *  isn't buried beneath a previously inserted meeting card
+     *  (#320 follow-up).  Falls back to just-above-signature when
+     *  the region is empty, then to just-above the first
+     *  `unkaiBlock` overall (signature absent → quoted-history is
+     *  the only landmark), then to appending at the end (fresh
+     *  compose).  Used by Compose's mid-compose meeting / Talk /
+     *  Nextcloud-share block injection — all three want the same
+     *  landing zone. */
+    insertAboveSignature: (html: string) => void
   }
 
   interface Props {
@@ -118,6 +127,13 @@
      *  divider, which is what every future embedder without send-
      *  style actions gets by default. */
     actionsTrailing?: import('svelte').Snippet
+    /** When true the trailing-actions block is rendered without
+     *  the heavier vertical divider, so the caller's buttons sit
+     *  flush against undo / redo with only the `gap-1` between
+     *  them — used by surfaces like the signature editor (#314)
+     *  where the trailing action is a single small icon, not a
+     *  weight-bearing Save / Send group like in Compose. */
+    actionsTrailingCompact?: boolean
     /** Extra tabs the embedder wants to add to the toolbar (#103
      *  follow-up).  Compose contributes a single "Attach" tab so
      *  Attach / NC Files / Talk / Event live in the same ribbon as
@@ -193,6 +209,7 @@
     oncontactpicked,
     attachmentsForRef = [],
     actionsTrailing,
+    actionsTrailingCompact = false,
     extraTabs = [],
   }: Props = $props()
 
@@ -308,13 +325,13 @@
     return event.key === 'Escape'
   }
 
-  // ── NimbusBlock — atom node for embedded styled HTML blocks ─
+  // ── UnkaiBlock — atom node for embedded styled HTML blocks ─
   //
   // Tiptap's StarterKit schema unwraps generic <div> wrappers and
   // strips inline styles, so the modern invite cards + the muted
   // "previous conversation" block (#195) couldn't survive a round
-  // trip through the editor. NimbusBlock recognises any element
-  // carrying `data-nimbus-block="<kind>"`, captures its full
+  // trip through the editor. UnkaiBlock recognises any element
+  // carrying `data-unkai-block="<kind>"`, captures its full
   // outerHTML into the node attribute, and renders it as a
   // contentEditable=false NodeView. The editor displays the
   // styled card verbatim; `editor.getHTML()` re-emits the
@@ -330,8 +347,8 @@
   // the inline data URI versions, leaving recipients with a
   // broken-icon. Brand header is typography-only now, so the
   // editor and the recipient see exactly the same thing.)
-  const NimbusBlock = TiptapNode.create({
-    name: 'nimbusBlock',
+  const UnkaiBlock = TiptapNode.create({
+    name: 'unkaiBlock',
     group: 'block',
     atom: true,
     selectable: true,
@@ -339,10 +356,10 @@
     parseHTML() {
       return [
         {
-          tag: 'div[data-nimbus-block]',
+          tag: 'div[data-unkai-block]',
           getAttrs: (el) => {
             const dom = el as HTMLElement
-            return { html: dom.outerHTML, kind: dom.getAttribute('data-nimbus-block') }
+            return { html: dom.outerHTML, kind: dom.getAttribute('data-unkai-block') }
           },
         },
       ]
@@ -368,7 +385,7 @@
       return [
         'div',
         mergeAttributes({
-          'data-nimbus-block': (node.attrs as { kind: string }).kind || '',
+          'data-unkai-block': (node.attrs as { kind: string }).kind || '',
         }),
       ]
     },
@@ -386,7 +403,7 @@
   // svelte-ignore state_referenced_locally
   const editor = createEditor({
     extensions: [
-      NimbusBlock,
+      UnkaiBlock,
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
         // Tiptap 3 renamed `History` to `UndoRedo`. `newGroupDelay`
@@ -598,7 +615,7 @@
       // keep `style` attrs and `title` tooltips, so recipients
       // see a styled pill + can hover to read the full address.
       // The `data-contact-mention` marker survives the round-trip
-      // so a Nimbus reply re-parses our own pills.
+      // so a Unkai reply re-parses our own pills.
       Mention.extend({
         name: 'contactMention',
         renderHTML({ node, HTMLAttributes }) {
@@ -729,10 +746,10 @@
       // tray, not a missing inline link.
       Mention.extend({
         name: 'attachmentRef',
-        // Render as <a href="cid:..."> so Nimbus's own reader
+        // Render as <a href="cid:..."> so Unkai's own reader
         // (MailView.processEmailHtml) picks it up the same way
         // it always did — by matching cid: anchors and routing
-        // their click to the attachment via `data-nimbus-cid`.
+        // their click to the attachment via `data-unkai-cid`.
         // The data-* attrs (data-cid, data-filename,
         // data-attachment-ref) ride along for the new robust
         // click handler and as a cross-client identifier.
@@ -740,7 +757,7 @@
         // surface a "can't open cid:..." error if the user
         // *clicks* the link.  The visible badge + filename is
         // the part those recipients are meant to read; the
-        // hyperlink is purely a Nimbus affordance.
+        // hyperlink is purely a Unkai affordance.
         renderHTML({ node, HTMLAttributes }) {
           const cid = node.attrs.id ?? ''
           const label = node.attrs.label ?? cid
@@ -977,24 +994,52 @@
           // the document and the image lands in the wrong place.
           ed.chain().focus().setImage({ src }).run()
         },
-        insertBeforeNimbusBlock: (html: string, kind: string) => {
-          let pos: number | null = null
+        insertAboveSignature: (html: string) => {
+          // Single doc walk collects the two landmark positions
+          // we need: the topmost `unkaiBlock` (any kind —
+          // meeting / Talk / share-card or quoted-history) and
+          // the signature paragraph.  RFC 3676 separator is
+          // exactly `-- ` (dash-dash-space) on its own line;
+          // Tiptap may strip the trailing space on parse so we
+          // accept both `-- ` and a bare `--` paragraph as the
+          // signature marker.
+          let firstBlockPos: number | null = null
+          let sigPos: number | null = null
           ed.state.doc.descendants((node, p) => {
-            if (pos !== null) return false
-            if (
-              node.type.name === 'nimbusBlock'
-              && (node.attrs as { kind?: string }).kind === kind
-            ) {
-              pos = p
-              return false
+            if (firstBlockPos === null && node.type.name === 'unkaiBlock') {
+              firstBlockPos = p
+            }
+            if (sigPos === null && node.type.name === 'paragraph') {
+              const text = node.textContent
+              if (text === '--' || text.startsWith('-- ')) {
+                sigPos = p
+              }
             }
             return true
           })
-          if (pos !== null) {
-            ed.chain().insertContentAt(pos, html).run()
+
+          // Land at the top of the signoff region so new blocks
+          // stack ABOVE previously inserted cards (a tiny share
+          // link otherwise disappears beneath a big meeting card
+          // — #320).  Cases:
+          //
+          //   - unkaiBlock sitting above sig (or sig absent) →
+          //     insert at that block's position so the new
+          //     content reads first.
+          //   - sig present, no block above it → insert at sig
+          //     position (first card in the signoff region).
+          //   - neither found → append at end (fresh compose
+          //     with no signature and no cards yet — the block
+          //     lands below the lead-spacer typing area).
+          let pos: number
+          if (firstBlockPos !== null && (sigPos === null || firstBlockPos < sigPos)) {
+            pos = firstBlockPos
+          } else if (sigPos !== null) {
+            pos = sigPos
           } else {
-            ed.chain().insertContentAt(ed.state.doc.content.size, html).run()
+            pos = ed.state.doc.content.size
           }
+          ed.chain().insertContentAt(pos, html).run()
         },
       })
     }
@@ -1017,15 +1062,68 @@
   function doUndo() { cmd().undo().run() }
   function doRedo() { cmd().redo().run() }
 
-  function setLink() {
-    const prev = $editor?.getAttributes('link')?.href ?? ''
-    const url = window.prompt('URL', prev)
-    if (url === null) return
+  // ── Link popover ────────────────────────────────────────────
+  // #317 — `window.prompt` is disabled in Tauri 2 webviews and even
+  // when supported it stole focus from the editor and dropped the
+  // selection, leaving us with no range for `extendMarkRange` to
+  // operate on.  Replaced with an inline popover anchored to the
+  // Link toolbar button, matching the font / table / emoji picker
+  // idiom already in this file.
+  let showLinkPopover = $state(false)
+  let linkPopoverPos = $state<{ x: number; y: number }>({ x: 0, y: 0 })
+  let linkUrlInput = $state('')
+  /** Whether the click that opened the popover landed inside an
+   *  existing link.  Drives the visibility of the Remove button —
+   *  there's nothing to remove when the user is creating a new
+   *  link, so hiding the button keeps the popover compact. */
+  let linkPopoverHasExisting = $state(false)
+  /** Reference to the URL input so we can autofocus + select on
+   *  open without round-tripping through a `bind:this` snapshot. */
+  let linkInputEl: HTMLInputElement | null = $state(null)
+
+  function openLinkPopover(e: MouseEvent) {
+    const prev = ($editor?.getAttributes('link')?.href as string) ?? ''
+    linkUrlInput = prev
+    linkPopoverHasExisting = prev !== ''
+    linkPopoverPos = anchorPopover(e)
+    showLinkPopover = true
+  }
+
+  /** Apply the URL currently in the input.  Empty string removes
+   *  the link (matches the previous `window.prompt` behaviour).
+   *
+   *  Three cases:
+   *    1. URL empty + on existing link → strip the link mark.
+   *    2. URL non-empty + range selected → apply the link mark to
+   *       the selection (Tiptap's `extendMarkRange('link')` widens
+   *       the range to cover the full anchor text when the cursor
+   *       sits inside one).
+   *    3. URL non-empty + cursor only (no selection) → insert the
+   *       URL as visible text with the link mark.  Without this
+   *       branch `setLink` silently no-ops because there's no
+   *       range to apply the mark to — which is exactly the
+   *       "Insert link does nothing" symptom from #317. */
+  function commitLink() {
+    const url = linkUrlInput.trim()
     if (url === '') {
       cmd().extendMarkRange('link').unsetLink().run()
+    } else if ($editor && $editor.state.selection.empty) {
+      cmd()
+        .insertContent({
+          type: 'text',
+          text: url,
+          marks: [{ type: 'link', attrs: { href: url } }],
+        })
+        .run()
     } else {
       cmd().extendMarkRange('link').setLink({ href: url }).run()
     }
+    showLinkPopover = false
+  }
+
+  function removeLink() {
+    cmd().extendMarkRange('link').unsetLink().run()
+    showLinkPopover = false
   }
 
   /** Insert an image from a local file (embedded as data URL). */
@@ -1359,7 +1457,13 @@
    *  the document level catches Escape from anywhere in the
    *  Compose window. */
   $effect(() => {
-    if (!showFontPicker && !showTablePicker && !showEmojiPicker) return
+    if (
+      !showFontPicker &&
+      !showTablePicker &&
+      !showEmojiPicker &&
+      !showLinkPopover
+    )
+      return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (showFontPicker) {
@@ -1368,9 +1472,42 @@
       }
       if (showTablePicker) showTablePicker = false
       if (showEmojiPicker) showEmojiPicker = false
+      if (showLinkPopover) showLinkPopover = false
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
+  })
+
+  // Click-outside dismissal for the link popover — same idiom as
+  // the emoji popup below.  Crucial here because the popover takes
+  // input focus on open, so the user expects clicking elsewhere
+  // (back into the editor, the toolbar, …) to dismiss it.
+  $effect(() => {
+    if (!showLinkPopover) return
+    const close = () => (showLinkPopover = false)
+    const handle = setTimeout(() => {
+      window.addEventListener('click', close)
+    }, 0)
+    return () => {
+      clearTimeout(handle)
+      window.removeEventListener('click', close)
+    }
+  })
+
+  // Autofocus the URL input every time the popover opens, and pre-
+  // select its content so the user can immediately overtype an
+  // existing URL.  Keyed on `showLinkPopover` so re-opening the
+  // popover (close → reopen on a different word) re-runs the focus.
+  // setTimeout(0) rather than queueMicrotask so we land *after* the
+  // DOM has actually committed — queueMicrotask can race the render
+  // and find `linkInputEl` still null.
+  $effect(() => {
+    if (!showLinkPopover) return
+    const t = setTimeout(() => {
+      linkInputEl?.focus()
+      linkInputEl?.select()
+    }, 0)
+    return () => clearTimeout(t)
   })
 
   function insertEmoji(e: string | null) {
@@ -1438,7 +1575,7 @@
      afterthought next to the wider tabs.  Same idiom as before
      otherwise; the ribbon's panel buttons get `.rt-btn` styling
      instead. */
-  .tb {
+  :global(.tb) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1453,20 +1590,55 @@
     background: transparent;
     color: inherit;
   }
-  .tb:hover {
+  :global(.tb:hover:not(:disabled)) {
     background: var(--color-surface-200);
   }
-  :global(.dark) .tb:hover {
+  :global(.dark .tb:hover:not(:disabled)) {
     background: var(--color-surface-700);
   }
-  .tb.is-active {
+  :global(.tb:disabled) {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  :global(.tb.is-active) {
     background: var(--color-surface-300);
   }
-  :global(.dark) .tb.is-active {
+  :global(.dark .tb.is-active) {
     background: var(--color-surface-600);
   }
 
   /* ── Ribbon-style tab strip (#103 follow-up) ─────────────────── */
+
+  /* Horizontally-scrolling tab list (#57 follow-up).  Shows a thin
+     themed scrollbar only when the tab list actually overflows the
+     available width — the user needs the visual cue that more tabs
+     exist off to the side and the bar gives a draggable handle.
+     Kept thin (6px) so it doesn't compete with the tabs'
+     active-state underline; tinted to the surface palette so it
+     reads as ribbon chrome rather than browser default. */
+  :global(.rt-tab-scroller) {
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: var(--color-surface-400) transparent;
+  }
+  :global(.dark .rt-tab-scroller) {
+    scrollbar-color: var(--color-surface-600) transparent;
+  }
+  :global(.rt-tab-scroller::-webkit-scrollbar) {
+    height: 6px;
+  }
+  :global(.rt-tab-scroller::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+  :global(.rt-tab-scroller::-webkit-scrollbar-thumb) {
+    background-color: var(--color-surface-400);
+    border-radius: 3px;
+  }
+  :global(.dark .rt-tab-scroller::-webkit-scrollbar-thumb) {
+    background-color: var(--color-surface-600);
+  }
+  :global(.rt-tab-scroller::-webkit-scrollbar-thumb:hover) {
+    background-color: var(--color-surface-500);
+  }
 
   /* Tab buttons.  Rounded-top chip with a primary-colour underline
      when active, matching the ribbon-style tab look. */
@@ -1693,54 +1865,74 @@
        icon-above-label buttons for a less flat, more discoverable
        look than the previous single-row layout. -->
   <div class="border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800">
-    <!-- Tab strip -->
-    <div class="flex items-stretch gap-0 px-2 pt-0.5" role="tablist">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'format'}
-        class="rt-tab"
-        class:rt-tab-active={activeTab === 'format'}
-        onclick={() => (activeTab = 'format')}
-      >Format</button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'insert'}
-        class="rt-tab"
-        class:rt-tab-active={activeTab === 'insert'}
-        onclick={() => (activeTab = 'insert')}
-      >Insert</button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'layout'}
-        class="rt-tab"
-        class:rt-tab-active={activeTab === 'layout'}
-        onclick={() => (activeTab = 'layout')}
-      >Layout</button>
-      {#each extraTabs as t (t.id)}
+    <!-- Tab strip.  Two-column flex layout:
+         - LEFT column: the tab labels themselves.  Wrapped in a
+           horizontally-scrolling container with `min-w-0` so a
+           narrow Compose window can grow the embedder's tab list
+           (e.g. Compose's Attach / Meetings / Encryption tabs)
+           without ever pushing the trailing send island off-screen.
+         - RIGHT column: undo / redo + `actionsTrailing` (Save +
+           Send + the encrypted-status chip embedders contribute).
+           Pinned with `shrink-0` so it stays anchored even
+           when the tab strip overflows — the user's primary
+           commit action must always be reachable. -->
+    <div class="flex items-stretch pt-0.5">
+      <!-- Scrolling tab list.  `role="tablist"` moves here so the
+           buttons stay a direct child of the labelled list per
+           ARIA's relationship rules. -->
+      <div
+        class="flex items-stretch gap-0 px-2 overflow-x-auto min-w-0 flex-1 rt-tab-scroller"
+        role="tablist"
+      >
         <button
           type="button"
           role="tab"
-          aria-selected={activeTab === t.id}
+          aria-selected={activeTab === 'format'}
           class="rt-tab"
-          class:rt-tab-active={activeTab === t.id}
-          onclick={() => (activeTab = t.id)}
-        >
-          {#if t.iconName}<span class="mr-1 inline-flex"><Icon name={t.iconName} size={14} /></span>{:else if t.icon}<span class="mr-1">{t.icon}</span>{/if}{t.label}
-        </button>
-      {/each}
+          class:rt-tab-active={activeTab === 'format'}
+          onclick={() => (activeTab = 'format')}
+        >Format</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'insert'}
+          class="rt-tab"
+          class:rt-tab-active={activeTab === 'insert'}
+          onclick={() => (activeTab = 'insert')}
+        >Insert</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'layout'}
+          class="rt-tab"
+          class:rt-tab-active={activeTab === 'layout'}
+          onclick={() => (activeTab = 'layout')}
+        >Layout</button>
+        {#each extraTabs as t (t.id)}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === t.id}
+            class="rt-tab"
+            class:rt-tab-active={activeTab === t.id}
+            onclick={() => (activeTab = t.id)}
+          >
+            {#if t.iconName}<span class="mr-1 inline-flex"><Icon name={t.iconName} size={14} /></span>{:else if t.icon}<span class="mr-1">{t.icon}</span>{/if}{t.label}
+          </button>
+        {/each}
+      </div>
 
-      <!-- Top-right: undo/redo + caller's send-side actions.  Lives
-           in the tab strip rather than inside any panel because the
-           user expects Send + Save + Undo to be reachable
-           regardless of which tab is open. -->
-      <div class="ml-auto flex items-center gap-1 px-1">
+      <!-- Pinned send island: undo / redo + the embedder's
+           trailing actions (Save / Send).  `shrink-0` so it
+           survives a narrow window; `border-l` plus a tiny inset
+           separates it from the scrolling tabs visually. -->
+      <div class="shrink-0 flex items-center gap-1 px-1 border-l border-surface-200 dark:border-surface-700">
         <button class="tb" title="Undo (Ctrl+Z)" aria-label="Undo" onclick={() => doUndo()}><Icon name="undo" size={18} /></button>
         <button class="tb" title="Redo (Ctrl+Y)" aria-label="Redo" onclick={() => doRedo()}><Icon name="redo" size={18} /></button>
         {#if actionsTrailing}
-          <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
+          {#if !actionsTrailingCompact}
+            <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
+          {/if}
           {@render actionsTrailing()}
         {/if}
       </div>
@@ -1869,10 +2061,65 @@
           <span class="rt-btn-label">Clear</span>
         </button>
       {:else if activeTab === 'insert'}
-        <button class="rt-btn {active('link')}" title="Insert link" onclick={setLink}>
-          <span class="rt-btn-icon"><Icon name="open-link" size={20} /></span>
-          <span class="rt-btn-label">Link</span>
-        </button>
+        <!-- #317 — the click opens an inline popover, not
+             `window.prompt`, which is disabled in Tauri 2 webviews
+             and stole the editor's selection anyway. -->
+        <div class="inline-block">
+          <button
+            class="rt-btn {active('link')}"
+            title="Insert link"
+            onclick={openLinkPopover}
+          >
+            <span class="rt-btn-icon"><Icon name="open-link" size={20} /></span>
+            <span class="rt-btn-label">Link</span>
+          </button>
+          {#if showLinkPopover}
+            <!-- Pointer + key handlers exist only to shield the popover
+                 contents from the document-level click-outside-to-dismiss
+                 handler; they're not user-actionable. role="dialog" +
+                 aria-label gives the wrapper accurate ARIA semantics. -->
+            <div
+              role="dialog"
+              aria-label="Insert link"
+              tabindex="-1"
+              class="fixed z-60 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md p-2 flex items-center gap-2"
+              style="left: {Math.min(linkPopoverPos.x, window.innerWidth - 320)}px; top: {linkPopoverPos.y}px; width: 304px;"
+              onclick={(e) => e.stopPropagation()}
+              onmousedown={(e) => e.stopPropagation()}
+              onkeydown={(e) => e.stopPropagation()}
+            >
+              <input
+                bind:this={linkInputEl}
+                bind:value={linkUrlInput}
+                type="url"
+                placeholder="https://example.com"
+                class="flex-1 min-w-0 px-2 py-1 text-sm rounded border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900"
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    commitLink()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    showLinkPopover = false
+                  }
+                }}
+              />
+              <button
+                type="button"
+                class="text-xs px-2 py-1 rounded bg-primary-500 text-white hover:bg-primary-600"
+                onclick={commitLink}
+              >Apply</button>
+              {#if linkPopoverHasExisting}
+                <button
+                  type="button"
+                  class="text-xs px-2 py-1 rounded text-error-500 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  title="Remove link"
+                  onclick={removeLink}
+                >Remove</button>
+              {/if}
+            </div>
+          {/if}
+        </div>
         <button class="rt-btn" title="Insert image from local file" onclick={() => addImageFromFile()}>
           <span class="rt-btn-icon"><Icon name="insert-image" size={20} /></span>
           <span class="rt-btn-label">Image</span>

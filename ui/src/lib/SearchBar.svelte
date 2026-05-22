@@ -11,6 +11,7 @@
 
   import { onMount, onDestroy } from 'svelte'
   import Icon from './Icon.svelte'
+  import { displayFolderName } from './unifiedFolders'
 
   export type SearchScope = {
     accountId?: string
@@ -242,7 +243,7 @@
       aria-label="Search scope"
       title="Search scope"
     >
-      <option value="current">This folder ({currentFolder})</option>
+      <option value="current">This folder ({displayFolderName(currentFolder)})</option>
       <option value="allFolders">All folders</option>
     </select>
   </div>
