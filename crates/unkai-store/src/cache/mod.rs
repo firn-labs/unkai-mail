@@ -2205,6 +2205,8 @@ mod tests {
             message_id: None,
             in_reply_to: None,
             references_ids: Vec::new(),
+            thread_id: None,
+            thread_total_count: None,
         }
     }
 
