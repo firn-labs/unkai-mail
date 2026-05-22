@@ -2081,10 +2081,21 @@ fn auto_import_pgp_keys(cache: &Cache, raw_contacts: &[RawContact]) {
 /// forms we don't handle (HTTP/HTTPS URLs that would require a
 /// keyserver fetch, malformed data URIs, etc.) so the caller skips
 /// them cleanly rather than emitting a hard error.
+///
+/// The vCard writer in `unkai_carddav` unconditionally runs `KEY:`
+/// values through the RFC 6350 §3.4 text-escape pass (`\\` for
+/// backslash, `\n` for newline, `\,`, `\;`).  The upstream ical
+/// parser surfaces the *escaped* form unchanged, so the first
+/// thing we do here is unescape — without it, an inline armored
+/// block round-trips as `…\\n\\n<base64>\\n…` and rpgp's armor
+/// parser fails on the `\n` literal where it expects an actual
+/// CRLF.  Same story for `data:` URIs whose `;base64,` separators
+/// get escaped on the way out.
 fn decode_vcard_key_value(value: &str) -> Option<Vec<u8>> {
     use base64::Engine;
 
-    let trimmed = value.trim();
+    let unescaped = unescape_vcard_text(value);
+    let trimmed = unescaped.trim();
 
     // Inline armored ASCII — pass through unchanged.
     if trimmed.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----") {
@@ -2110,6 +2121,113 @@ fn decode_vcard_key_value(value: &str) -> Option<Vec<u8>> {
 
     // HTTP/HTTPS reference — out-of-band fetch is a follow-up.
     None
+}
+
+/// Unescape RFC 6350 §3.4 vCard text-value escape sequences:
+///
+///   `\\` → `\`,  `\n` or `\N` → newline,  `\,` → `,`,  `\;` → `;`
+///
+/// Unknown `\<char>` escapes are preserved verbatim so we don't
+/// silently lose data on a malformed input; a lone trailing `\` is
+/// also preserved.  Idempotent on already-unescaped strings —
+/// none of the escape-pair forms appear in pure base64 or
+/// armored OpenPGP content (the armored format uses `=`, `+`, `/`,
+/// real `\n` LFs, never `\<char>` pairs).
+fn unescape_vcard_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') | Some('N') => out.push('\n'),
+            Some('\\') => out.push('\\'),
+            Some(',') => out.push(','),
+            Some(';') => out.push(';'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod vcard_key_decode_tests {
+    use super::{decode_vcard_key_value, unescape_vcard_text};
+
+    #[test]
+    fn unescape_round_trips_armored_newlines() {
+        // The vCard writer turns real newlines into `\n` literals.
+        // Unescape must turn them back so rpgp sees a clean
+        // PEM-style block.
+        let escaped = "-----BEGIN PGP PUBLIC KEY BLOCK-----\\n\\nABCD\\n-----END PGP PUBLIC KEY BLOCK-----\\n";
+        let got = unescape_vcard_text(escaped);
+        assert_eq!(
+            got,
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nABCD\n-----END PGP PUBLIC KEY BLOCK-----\n"
+        );
+    }
+
+    #[test]
+    fn unescape_preserves_double_backslash_n() {
+        // A literal backslash followed by `n` must NOT collapse to a
+        // newline — that's `\\` + `n`, two characters, which the
+        // writer emits as `\\\\n` (four chars: backslash, backslash,
+        // backslash, n).  After one unescape pass we get the
+        // original literal `\n` (backslash + n).
+        assert_eq!(unescape_vcard_text("\\\\n"), "\\n");
+    }
+
+    #[test]
+    fn unescape_handles_data_uri_separators() {
+        // `data:application/pgp-keys;base64,…` writes with `\;` and
+        // `\,` escapes; unescape restores the raw URI form.
+        let escaped = "data:application/pgp-keys\\;base64\\,AAAA";
+        assert_eq!(
+            unescape_vcard_text(escaped),
+            "data:application/pgp-keys;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn unescape_lone_trailing_backslash_is_preserved() {
+        assert_eq!(unescape_vcard_text("abc\\"), "abc\\");
+    }
+
+    #[test]
+    fn unescape_unknown_escape_is_preserved() {
+        // `\?` isn't a recognised escape; emit both characters
+        // verbatim rather than swallowing the `?`.
+        assert_eq!(unescape_vcard_text("a\\?b"), "a\\?b");
+    }
+
+    #[test]
+    fn decode_armored_with_escapes_yields_clean_bytes() {
+        // End-to-end: the value the carddav layer hands us has
+        // escaped newlines, but the bytes we return to
+        // `unkai_crypto::parse_public_key` must have real `\n`s.
+        let escaped = "-----BEGIN PGP PUBLIC KEY BLOCK-----\\n\\nABCD\\n-----END PGP PUBLIC KEY BLOCK-----\\n";
+        let bytes = decode_vcard_key_value(escaped).expect("must decode");
+        let s = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            s.contains("\n\n"),
+            "armored body must contain real newlines, got: {s:?}"
+        );
+    }
+
+    #[test]
+    fn decode_data_uri_with_escaped_separators_decodes_base64() {
+        // Same `data:` shape Nextcloud Contacts writes, escaped
+        // through the vCard layer.  Base64 of `hello` is `aGVsbG8=`.
+        let escaped = "data:application/pgp-keys\\;base64\\,aGVsbG8=";
+        let bytes = decode_vcard_key_value(escaped).expect("must decode");
+        assert_eq!(bytes, b"hello");
+    }
 }
 
 /// Cache-only list of contacts, optionally scoped to a single NC account.
