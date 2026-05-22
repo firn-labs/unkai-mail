@@ -1609,6 +1609,20 @@
 
   /* ── Ribbon-style tab strip (#103 follow-up) ─────────────────── */
 
+  /* Horizontally-scrolling tab list (#57 follow-up).  Hides the
+     OS scrollbar because the ribbon already reads as a divided row
+     of clickable chips — a permanent scrollbar across the bottom
+     would compete with the tabs' active-state underline.  Users
+     still scroll via mouse wheel + horizontal touchpad swipe;
+     overflowing tabs also reveal the scrollbar momentarily during
+     interactive drag in browsers that support it. */
+  :global(.rt-tab-scroller) {
+    scrollbar-width: none; /* Firefox */
+  }
+  :global(.rt-tab-scroller::-webkit-scrollbar) {
+    display: none; /* Chromium + WebKit */
+  }
+
   /* Tab buttons.  Rounded-top chip with a primary-colour underline
      when active, matching the ribbon-style tab look. */
   :global(.rt-tab) {
@@ -1834,50 +1848,68 @@
        icon-above-label buttons for a less flat, more discoverable
        look than the previous single-row layout. -->
   <div class="border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800">
-    <!-- Tab strip -->
-    <div class="flex items-stretch gap-0 px-2 pt-0.5" role="tablist">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'format'}
-        class="rt-tab"
-        class:rt-tab-active={activeTab === 'format'}
-        onclick={() => (activeTab = 'format')}
-      >Format</button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'insert'}
-        class="rt-tab"
-        class:rt-tab-active={activeTab === 'insert'}
-        onclick={() => (activeTab = 'insert')}
-      >Insert</button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'layout'}
-        class="rt-tab"
-        class:rt-tab-active={activeTab === 'layout'}
-        onclick={() => (activeTab = 'layout')}
-      >Layout</button>
-      {#each extraTabs as t (t.id)}
+    <!-- Tab strip.  Two-column flex layout:
+         - LEFT column: the tab labels themselves.  Wrapped in a
+           horizontally-scrolling container with `min-w-0` so a
+           narrow Compose window can grow the embedder's tab list
+           (e.g. Compose's Attach / Meetings / Encryption tabs)
+           without ever pushing the trailing send island off-screen.
+         - RIGHT column: undo / redo + `actionsTrailing` (Save +
+           Send + the encrypted-status chip embedders contribute).
+           Pinned with `shrink-0` so it stays anchored even
+           when the tab strip overflows — the user's primary
+           commit action must always be reachable. -->
+    <div class="flex items-stretch pt-0.5">
+      <!-- Scrolling tab list.  `role="tablist"` moves here so the
+           buttons stay a direct child of the labelled list per
+           ARIA's relationship rules. -->
+      <div
+        class="flex items-stretch gap-0 px-2 overflow-x-auto min-w-0 flex-1 rt-tab-scroller"
+        role="tablist"
+      >
         <button
           type="button"
           role="tab"
-          aria-selected={activeTab === t.id}
+          aria-selected={activeTab === 'format'}
           class="rt-tab"
-          class:rt-tab-active={activeTab === t.id}
-          onclick={() => (activeTab = t.id)}
-        >
-          {#if t.iconName}<span class="mr-1 inline-flex"><Icon name={t.iconName} size={14} /></span>{:else if t.icon}<span class="mr-1">{t.icon}</span>{/if}{t.label}
-        </button>
-      {/each}
+          class:rt-tab-active={activeTab === 'format'}
+          onclick={() => (activeTab = 'format')}
+        >Format</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'insert'}
+          class="rt-tab"
+          class:rt-tab-active={activeTab === 'insert'}
+          onclick={() => (activeTab = 'insert')}
+        >Insert</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'layout'}
+          class="rt-tab"
+          class:rt-tab-active={activeTab === 'layout'}
+          onclick={() => (activeTab = 'layout')}
+        >Layout</button>
+        {#each extraTabs as t (t.id)}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === t.id}
+            class="rt-tab"
+            class:rt-tab-active={activeTab === t.id}
+            onclick={() => (activeTab = t.id)}
+          >
+            {#if t.iconName}<span class="mr-1 inline-flex"><Icon name={t.iconName} size={14} /></span>{:else if t.icon}<span class="mr-1">{t.icon}</span>{/if}{t.label}
+          </button>
+        {/each}
+      </div>
 
-      <!-- Top-right: undo/redo + caller's send-side actions.  Lives
-           in the tab strip rather than inside any panel because the
-           user expects Send + Save + Undo to be reachable
-           regardless of which tab is open. -->
-      <div class="ml-auto flex items-center gap-1 px-1">
+      <!-- Pinned send island: undo / redo + the embedder's
+           trailing actions (Save / Send).  `shrink-0` so it
+           survives a narrow window; `border-l` plus a tiny inset
+           separates it from the scrolling tabs visually. -->
+      <div class="shrink-0 flex items-center gap-1 px-1 border-l border-surface-200 dark:border-surface-700">
         <button class="tb" title="Undo (Ctrl+Z)" aria-label="Undo" onclick={() => doUndo()}><Icon name="undo" size={18} /></button>
         <button class="tb" title="Redo (Ctrl+Y)" aria-label="Redo" onclick={() => doRedo()}><Icon name="redo" size={18} /></button>
         {#if actionsTrailing}
