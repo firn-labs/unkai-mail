@@ -365,6 +365,11 @@ impl JmapClient {
                     // #334: cache populates these on upsert.
                     thread_id: None,
                     thread_total_count: None,
+                    // See note on the IMAP envelope: the JMAP envelope
+                    // response doesn't carry enough to detect
+                    // encryption either; the cache LEFT-JOIN fills it
+                    // in once a body fetch has stamped the value.
+                    protection: None,
                 }
             })
             .collect();

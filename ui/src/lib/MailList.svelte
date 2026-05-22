@@ -64,6 +64,13 @@
      *  thread whose root is in cache but whose newer replies
      *  aren't doesn't under-report. */
     thread_total_count?: number | null
+    /** Kebab-case `unkai_crypto::Protection` lifted from
+     *  `message_bodies` via the cache's LEFT JOIN (#57).
+     *  `"encrypted"` / `"signed"` / `"signed-and-encrypted"` —
+     *  drives the small PGP / Signed pill rendered under the
+     *  date on each row.  `null` for plain mail and for
+     *  envelopes whose body hasn't been fetched yet. */
+    protection?: string | null
   }
 
   /** Slim account row used to render the account label on each row in
@@ -1673,11 +1680,41 @@
                 size={36}
               />
               <div class="flex-1 min-w-0">
-                <div class="flex items-center justify-between mb-1">
+                <div class="flex items-start justify-between mb-1 gap-2">
                   <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
                     {env.from || '(unknown sender)'}
                   </span>
-                  <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
+                  <!-- Date + crypto pill stacked vertically on the right
+                       so the chip can sit *under* the date without
+                       crowding the sender line.  #57 — only renders
+                       when the envelope's `protection` field is
+                       populated (i.e. the body has been fetched at
+                       least once); plain mail keeps the original
+                       date-only layout. -->
+                  <div class="flex flex-col items-end gap-0.5 shrink-0">
+                    <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'}">
+                      {formatDate(env.date)}
+                    </span>
+                    {#if env.protection === 'encrypted' || env.protection === 'signed-and-encrypted'}
+                      <span
+                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
+                        title="Encrypted with OpenPGP"
+                        aria-label="Encrypted with OpenPGP"
+                      >
+                        <Icon name="encrypted" size={11} />
+                        <span class="font-medium">PGP</span>
+                      </span>
+                    {:else if env.protection === 'signed'}
+                      <span
+                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200"
+                        title="Signed with OpenPGP"
+                        aria-label="Signed with OpenPGP"
+                      >
+                        <Icon name="signed" size={11} />
+                        <span class="font-medium">Signed</span>
+                      </span>
+                    {/if}
+                  </div>
                 </div>
                 <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
                   {#if answeredIconName(env)}
