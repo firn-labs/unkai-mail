@@ -16,6 +16,9 @@
   "settings_general_file_assoc_hint": "Unkai is registered with your operating system as a possible handler. Mark it as the default in your OS settings to have double-clicked calendar invites and email files open here.",
   "settings_general_file_assoc_button": "Open OS settings",
 
+  "settings_mail_conversation_view_label": "Group messages by conversation",
+  "settings_mail_conversation_view_hint": "Bundle replies in the same thread under a single row with an expand chevron. Turn off to see every message as its own row in date order.",
+
   "account_setup_welcome_title": "Welcome to Unkai Mail",
   "account_setup_welcome_subtitle": "Let's set up your email account",
   "account_setup_close_label": "Close setup wizard",
@@ -47,6 +50,20 @@
   "account_setup_jmap_hint": "Modern push-based mail protocol. Only enable if your provider supports it.",
   "account_setup_signature_label": "Signature (optional)",
   "account_setup_signature_hint": "Appended to new messages sent from this account. You can change it later in Settings.",
+
+  "signature_popout_button_title": "Edit signature in a separate window",
+  "signature_popout_button_aria": "Open signature editor in a separate window",
+  "signature_popout_locked_banner": "Editing in pop-out window — close that window to edit here again.",
+  "signature_popout_header": "Edit signature",
+  "signature_popout_done": "Done",
+  "signature_popout_placeholder": "Appended to new messages sent from this account.",
+  "signature_popout_loading": "Loading…",
+  "signature_popout_missing_state": "No popout state found for this signature editor window.",
+  "signature_popout_account_missing": "The account this window was opened for is no longer configured.",
+  "signature_popout_load_failed": "Could not load account information.",
+  "signature_status_saving": "Saving…",
+  "signature_status_saved": "Saved",
+  "signature_status_error": "Save failed",
   "account_setup_button_back": "Back",
   "account_setup_button_next": "Next",
   "account_setup_button_add_account": "Add Account",
@@ -76,6 +93,17 @@
   "compose_attachment_warning_title": "You mentioned an attachment but didn't attach a file.",
   "compose_attachment_warning_body": "Add a file before sending, or dismiss this warning if it's a false alarm.",
   "compose_attachment_warning_dismiss": "Dismiss",
+
+  "compose_forward_attachments_title": "Include original attachments?",
+  "compose_forward_attachments_body_one": "The forwarded message has 1 attachment. Add it to your forward?",
+  "compose_forward_attachments_body_many": "The forwarded message has {n} attachments. Add them to your forward?",
+  "compose_forward_attachments_include": "Include attachments",
+  "compose_forward_attachments_skip": "Forward without",
+  "compose_forward_attachments_download_failed": "Could not load some attachments: {reason}",
+
+  "nc_share_set_expiration_label": "Set expiration date",
+  "nc_share_expiration_aria": "Pick expiration date for the share link",
+  "nc_share_expiration_hint": "Recipients can't open the link after this date.",
 
   "compose_button_minimize_aria_label": "Minimize",
   "compose_button_minimize_title": "Minimize draft to bar",
@@ -218,5 +246,49 @@
 
   "chrome_sidebar_resize_handle_label": "Resize sidebar",
 
-  "mail_view_message_gone": "This message no longer exists on the server."
+  "mail_view_message_gone": "This message no longer exists on the server.",
+
+  "sidebar_unified_inbox_label": "All Inboxes",
+  "sidebar_unified_outbox_label": "All Outgoing",
+  "sidebar_unified_sent_label": "All Sent",
+  "sidebar_unified_drafts_label": "All Drafts",
+  "sidebar_unified_archive_label": "All Archive",
+  "sidebar_unified_junk_label": "All Junk",
+  "sidebar_unified_trash_label": "All Trash",
+
+  "maillist_empty_in_folder": "No messages in {folder}.",
+
+  "folder_name_inbox": "Inbox",
+  "folder_name_sent": "Sent",
+  "folder_name_drafts": "Drafts",
+  "folder_name_junk": "Junk",
+  "folder_name_archive": "Archive",
+  "folder_name_trash": "Trash",
+
+  "encryption_section_title": "End-to-end encryption",
+  "encryption_status_loading": "Loading…",
+  "encryption_active_key_label": "Active OpenPGP key fingerprint",
+  "encryption_remove_button": "Remove key",
+  "encryption_replace_button": "Replace…",
+  "encryption_no_key_explanation": "Import an OpenPGP private key to sign outgoing mail and decrypt incoming mail on this account. The armored key is stored in the OS keychain; the passphrase is not retained.",
+  "encryption_import_button": "Import private key…",
+  "encryption_paste_label": "Paste armored OpenPGP private key",
+  "encryption_passphrase_label": "Passphrase",
+  "encryption_passphrase_placeholder": "Required to unlock the key",
+  "encryption_passphrase_hint": "The passphrase is used once to verify the key parses, then dropped. Compose will prompt for it again on every encrypted send.",
+  "encryption_import_submit": "Import",
+  "encryption_import_cancel": "Cancel",
+
+  "mail_view_cannot_decrypt_banner": "This message is encrypted. The server didn't expose the raw bytes so it can't be decrypted here — open it via IMAP or a desktop PGP client.",
+  "mail_view_chip_decrypted": "Decrypted",
+  "mail_view_chip_encrypted": "Encrypted",
+  "mail_view_chip_signed_valid": "Signed by {fp}",
+  "mail_view_chip_signed_invalid": "Signature invalid",
+  "mail_view_chip_signed_unknown": "Signed (signer unknown)",
+
+  "contact_form_section_encryption": "Encryption",
+  "contact_form_label_pgp_keys": "OpenPGP keys",
+  "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+  "contact_form_button_add_pgp_key": "Add a key",
+  "contact_form_hint_pgp_keys": "Paste an ASCII-armored OpenPGP public key. Round-trips through the contact's vCard and is also cached locally so Compose can encrypt to this address."
 }

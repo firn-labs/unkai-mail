@@ -62,6 +62,16 @@ pub struct AppSettings {
     /// behaviour.  Turn off to fall back to the previous behaviour
     /// where the reading pane goes blank after every delete.
     pub auto_advance_after_remove: bool,
+    /// Group same-conversation messages under a single MailList row
+    /// (#334).  Default on — the conversation badge collapses
+    /// reply chains into one entry with an expand chevron.  Off
+    /// renders every envelope as its own flat row (the pre-#277
+    /// behaviour) for users who prefer chronological scrolling
+    /// over conversation bundling.  The cache still computes
+    /// `thread_id` either way, so toggling back on is a free
+    /// re-render with no IMAP traffic.
+    #[serde(default = "default_true")]
+    pub conversation_view_enabled: bool,
     /// Default calendar for events created in CalendarView and for
     /// inbound RSVPs that the user accepts.  Stored as the app-side
     /// calendar id (`{nc_id}::{path}`) so it's stable across syncs.
@@ -279,6 +289,7 @@ impl Default for AppSettings {
             mail_html_white_background: true,
             auto_load_remote_images: false,
             auto_advance_after_remove: true,
+            conversation_view_enabled: true,
             default_calendar_id: None,
             meeting_reminders_enabled: true,
             calendar_reminders_enabled: true,
@@ -394,6 +405,18 @@ pub struct Account {
     /// pre-115 behaviour for users who haven't set it.
     #[serde(default)]
     pub person_name: Option<String>,
+    /// Hex fingerprint of the OpenPGP private key stored for this
+    /// account (#57).  Display-only hint that a key exists; the
+    /// armored key material itself lives in the OS keychain under
+    /// the service `unkai-mail-pgp-private-key`, keyed by
+    /// `account_id`, with the passphrase under
+    /// `unkai-mail-pgp-passphrase` (set in Phase 4).  Surfaced in
+    /// the AccountSettings "Encryption Keys" panel as
+    /// "Key 9F2A…AAAA" so the user can confirm the right key is
+    /// active without having to unlock the keychain.  `None`
+    /// when the user hasn't imported a key for this account yet.
+    #[serde(default)]
+    pub pgp_key_fingerprint: Option<String>,
 }
 
 /// One TLS leaf certificate the user has chosen to trust for an
@@ -507,6 +530,36 @@ pub struct EmailEnvelope {
     /// branched.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references_ids: Vec<String>,
+    /// Stable thread identity assigned by the local cache (#334):
+    /// `references_ids[0]` for replies, the envelope's own
+    /// `message_id` for chain roots, or a `solo:<account>:<folder>:<uid>`
+    /// fallback for envelopes that have neither.  Two envelopes share
+    /// `thread_id` iff they belong to the same conversation.  `None`
+    /// for envelopes coming straight off the wire from IMAP/JMAP —
+    /// the cache write-through path stamps it during upsert.  Also
+    /// `None` for cached rows that pre-date the schema migration
+    /// until the warm-up has run; the UI hides the count badge in
+    /// that transient state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Number of cached members of this thread within
+    /// `(account_id, folder)` (#334).  Maintained incrementally by
+    /// the cache on every upsert / remove / move so the MailList
+    /// row can paint the conversation badge from a single column
+    /// read instead of grouping at query time.  `None` mirrors
+    /// `thread_id` (envelope hasn't been assigned a thread yet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_total_count: Option<u32>,
+    /// Kebab-case `unkai_crypto::Protection` (#57) lifted from the
+    /// `message_bodies` row via a LEFT JOIN when the envelope is
+    /// read out of the cache.  Surfaces the encryption + signature
+    /// state of the message in the mail-list row so it can render
+    /// a shield-with-lock chip alongside the date — same data the
+    /// MailView header chip uses.  `None` for messages whose body
+    /// hasn't been fetched yet (the receive path stamps the
+    /// column on first full open) and for plain-text mail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection: Option<String>,
 }
 
 /// Represents an email message.
@@ -550,6 +603,29 @@ pub struct Email {
     /// (#277).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references_ids: Vec<String>,
+    /// Cryptographic protection detected on this message (#57).
+    /// Kebab-case string form of `unkai_crypto::Protection`:
+    /// `"signed" | "encrypted" | "signed-and-encrypted"`.  Stored
+    /// as a string rather than the typed enum to keep
+    /// `unkai-core` independent of `unkai-crypto` and to match
+    /// the existing JSON-over-IPC convention (e.g. `replied_kind`).
+    /// `None` = plain message or legacy cache row that pre-dates
+    /// this field; the UI renders no chip in either case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection: Option<String>,
+    /// Signature-verification outcome (#57).  Kebab-case string
+    /// form of `unkai_crypto::SignatureStatus`:
+    /// `"valid" | "invalid" | "unknown-signer"`.  `None` when
+    /// the message wasn't signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_status: Option<String>,
+    /// Hex fingerprint of the verified signer (#57).  Only set
+    /// when `signature_status == Some("valid")` *and* the
+    /// signer's public key was in our trusted set; otherwise
+    /// `None`.  Surfaced to the UI as "signed by 9F2A…AAAA"
+    /// so the user can compare against the expected sender.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_fingerprint: Option<String>,
 }
 
 /// Metadata for one attachment on a received email.
@@ -667,6 +743,22 @@ pub struct OutgoingEmail {
     /// original mails.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,
+    /// End-to-end encryption mode for this send (#57).  Kebab-case
+    /// string: `"pgp"` triggers the SMTP layer to wrap the built
+    /// MIME as RFC 3156 PGP/MIME using the account's signing key
+    /// and the recipients' cached public keys.  Future `"smime"`
+    /// will trigger RFC 8551 enveloped-data wrapping (#338).
+    /// `None` = plaintext, the historical behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_mode: Option<String>,
+    /// Sign this message with the sending account's OpenPGP key (#57).
+    /// Independent of `encryption_mode`: a message can be signed
+    /// without being encrypted (`multipart/signed`), encrypted
+    /// without being signed (encrypt-only), or both.  Defaults to
+    /// `false` so existing send call sites that don't set it
+    /// preserve the historical plaintext behaviour.
+    #[serde(default)]
+    pub signing_enabled: bool,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body

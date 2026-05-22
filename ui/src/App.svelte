@@ -13,6 +13,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+  import DOMPurify from 'dompurify'
   import {
     isPermissionGranted,
     requestPermission,
@@ -24,9 +25,10 @@
   import MailList from './lib/MailList.svelte'
   import MailView from './lib/MailView.svelte'
   import AccountSetup from './lib/AccountSetup.svelte'
-  import AccountSettings from './lib/AccountSettings.svelte'
+  import AccountSettings, { type SettingsCategory } from './lib/AccountSettings.svelte'
   import LockScreen from './lib/LockScreen.svelte'
   import Compose, {
+    type Attachment as ComposeAttachment,
     type ComposeInitial,
     type SendFailurePayload,
   } from './lib/Compose.svelte'
@@ -41,12 +43,17 @@
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
+  import { unifiedSpecialKind } from './lib/unifiedFolders'
   import { openMailInStandaloneWindow } from './lib/standaloneMailWindow'
   import { openComposeInStandaloneWindow } from './lib/standaloneComposeWindow'
   import { openEventEditorInStandaloneWindow } from './lib/standaloneEventEditorWindow'
   import { resizableSidebar } from './lib/resizableSidebar'
   import EventEditor, { type SavedEvent } from './lib/EventEditor.svelte'
-  import { quotedHistoryHtml, type MeetingInvite } from './lib/inviteHtml'
+  import {
+    forwardedMailHtml,
+    quotedHistoryHtml,
+    type MeetingInvite,
+  } from './lib/inviteHtml'
   import { parseMailtoUrl } from './lib/mailtoUrl'
   import SearchBar, {
     type SearchScope,
@@ -69,6 +76,8 @@
     UI_SCALE_STEP,
   } from './lib/uiScale'
   import { locales } from './paraglide/runtime'
+  import { m } from './paraglide/messages'
+  import { formatError } from './lib/errors'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -130,6 +139,13 @@
       notes?: boolean
     } | null
   }
+  // Settings category persistence (#318) — lifted out of
+  // AccountSettings so a remount (e.g. user clicks a freshly-revealed
+  // Nextcloud integration icon and then comes back to Settings) keeps
+  // the user on the category they were last viewing instead of
+  // snapping back to General.
+  let settingsCategory = $state<SettingsCategory>('general')
+
   let ncCaps = $state({
     /** True when at least one NC account is connected — gates
      *  every integration icon at once.  Without this, a user
@@ -212,6 +228,16 @@
   // the row's `account_id` so MailView opens the right message even
   // though the folder picker isn't pointing at that account.
   let selectedMessageAccountId = $state<string | null>(null)
+  /** The folder a clicked message belongs to, when the parent's
+   *  `selectedFolder` doesn't match the row's actual folder. Set by
+   *  the global "All Sent" / "All Drafts" sentinel views (#322): the
+   *  parent's folder is a sentinel like `__UnifiedSent__`, but the
+   *  message lives in this row's actual per-account Sent folder
+   *  ("Sent", "Sent Items", "Gesendete Elemente", `[Gmail]/Sent
+   *  Mail`, …). Read sites use `messageFolder` (derived where
+   *  `selectedFolder` itself is declared) which falls back to
+   *  `selectedFolder` when this is null. */
+  let selectedMessageFolder = $state<string | null>(null)
   // Compose modals (#292).  Each user-triggered Compose pushes a
   // new entry; the entry with `id === activeComposeId` is the one
   // currently rendered as a full-screen modal, everyone else sits
@@ -238,6 +264,19 @@
      *  cleanup + draft-source expunge that a naive entry-removal
      *  would skip. */
     cancelFn?: () => void
+    /** Resolved with this Compose's external "append attachments"
+     *  function once it has mounted and registered via
+     *  `onaddattachmentsref` (#329).  The forward-with-attachments
+     *  flow downloads bytes in the background after the user picks
+     *  "Include" in the post-open prompt, then `await`s this to
+     *  push them into an already-mounted Compose — survives the
+     *  rare race where the user picks before Compose's mount
+     *  effect has fired. */
+    addAttachmentsReady: Promise<(atts: ComposeAttachment[]) => void>
+    /** Resolver paired with `addAttachmentsReady`. */
+    resolveAddAttachments: (
+      fn: (atts: ComposeAttachment[]) => void,
+    ) => void
     /** Live mirror of the Compose's internal `currentDraftSource`
      *  pointer (#292 follow-up).  Seeded from `initial.draftSource`
      *  and updated via Compose's `ondraftsourcechange` after every
@@ -264,6 +303,12 @@
   // Default to INBOX — the Sidebar replaces this as soon as the user
   // picks a folder, or could switch it automatically if INBOX is absent.
   let selectedFolder = $state<string>('INBOX')
+  /** The folder MailView should fetch from for the currently-open
+   *  message. Mirrors `selectedMessageAccountId`'s relationship to
+   *  `activeAccountId`: the per-row override wins when set, otherwise
+   *  the sidebar's current selection. Used for the MailView prop and
+   *  for the thread-membership cache key (#322). */
+  const messageFolder = $derived<string>(selectedMessageFolder ?? selectedFolder)
   let selectedUid = $state<number | null>(null)
   // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
   let refreshToken = $state(0)
@@ -280,7 +325,7 @@
   let currentThreadMemberUids = $derived.by((): number[] | null => {
     if (selectedUid == null) return null
     const accId = selectedMessageAccountId ?? activeAccountId
-    const fld = selectedFolder
+    const fld = messageFolder
     const key = `${accId}::${fld}::${selectedUid}`
     const members = mailListThreadMembers.get(key)
     if (!members || members.length <= 1) return null
@@ -556,6 +601,10 @@
     mail_html_white_background: boolean
     auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
+    /** #334 — when off, the MailList renders every envelope as
+     *  its own flat row instead of bundling conversations under a
+     *  single head with an expand chevron.  Default on. */
+    conversation_view_enabled?: boolean
     /** #203: gates reminders for events that carry a meeting URL. */
     meeting_reminders_enabled: boolean
     /** #203: gates reminders for events without a meeting URL. */
@@ -1010,19 +1059,29 @@
       // have active.
       unlistenComposeFromMail = await listen<{
         kind: 'reply' | 'reply-all' | 'forward'
-        mail: ReplyableMail
+        mail: ForwardableMail
       }>('compose-from-mail', (e) => {
         const { kind, mail } = e.payload
-        let initial: ComposeInitial
-        if (kind === 'reply') initial = buildReplyInitial(mail)
-        else if (kind === 'reply-all') initial = buildReplyAllInitial(mail)
-        else initial = buildForwardInitial(mail)
-        void openComposeInStandaloneWindow({
-          accountId: mail.account_id,
-          initial,
-        }).catch((err) =>
-          console.warn('openComposeInStandaloneWindow from #304 failed', err),
-        )
+        void (async () => {
+          // Forward needs the async builder so the
+          // include-attachments popup (#329) and the
+          // download_email_attachment fan-out can run before the
+          // popped-out Compose window opens.  Reply / reply-all
+          // stay synchronous — their initial doesn't depend on
+          // the original attachments.
+          const initial: ComposeInitial =
+            kind === 'reply'
+              ? buildReplyInitial(mail)
+              : kind === 'reply-all'
+                ? buildReplyAllInitial(mail)
+                : await buildForwardInitialForPopout(mail)
+          void openComposeInStandaloneWindow({
+            accountId: mail.account_id,
+            initial,
+          }).catch((err) =>
+            console.warn('openComposeInStandaloneWindow from #304 failed', err),
+          )
+        })()
       })
       unlistenEditDraftFromMail = await listen<{ mail: DraftMail }>(
         'edit-draft-from-mail',
@@ -1247,6 +1306,7 @@
       selectedFolder = 'INBOX'
       selectedUid = null
       selectedMessageAccountId = null
+      selectedMessageFolder = null
       searchQuery = ''
       searchScope = {}
       searchFilters = {}
@@ -1259,6 +1319,7 @@
     selectedFolder = 'INBOX'
     selectedUid = null
     selectedMessageAccountId = null
+    selectedMessageFolder = null
     searchQuery = ''
     searchScope = {}
     searchFilters = {}
@@ -1297,6 +1358,9 @@
     selectedFolder = folder
     selectedUid = uid
     selectedMessageAccountId = accId
+    // Notes deep-links flip out of unified mode, so the row's folder
+    // matches `selectedFolder` — no override needed.
+    selectedMessageFolder = null
     searchQuery = ''
     searchScope = {}
     searchFilters = {}
@@ -1336,12 +1400,17 @@
     currentView = 'inbox'
   }
 
-  function selectMessage(uid: number, accountId?: string) {
+  function selectMessage(uid: number, accountId?: string, folder?: string) {
     selectedUid = uid
     // Unified mode: each row carries its owning account id so MailView
     // can fetch from the right account. Outside unified mode, the
     // active account is implicit.
     selectedMessageAccountId = accountId ?? null
+    // Unified-special views (#322): the row's actual folder differs
+    // from the sentinel `selectedFolder`, so MailList hands it back
+    // here. `null` when not set falls back to `selectedFolder` at the
+    // read site (`messageFolder` derived below).
+    selectedMessageFolder = folder ?? null
   }
 
   // Changing the folder resets the open message — the UID that was
@@ -1350,6 +1419,10 @@
   function selectFolder(name: string) {
     selectedFolder = name
     selectedUid = null
+    // The per-row folder override only makes sense while the user
+    // stays on the sentinel view that set it — switching folders
+    // invalidates it.
+    selectedMessageFolder = null
     // Clear the Outbox preview when switching away — the
     // right-pane routing is folder-conditional, but the
     // selectedOutboxRow value would otherwise linger and
@@ -1396,6 +1469,7 @@
     if (wasSelected) {
       let nextUid: number | null = null
       let nextAccountId: string | null = null
+      let nextFolder: string | null = null
 
       if (appPrefs?.auto_advance_after_remove ?? true) {
         const idx = mailListEnvelopes.findIndex((e) => e.uid === removedUid)
@@ -1409,12 +1483,21 @@
           if (next) {
             nextUid = next.uid
             nextAccountId = next.account_id || null
+            // On a unified-special sentinel view (#322) the next row
+            // may live in a different per-account folder than the
+            // removed one — carry it forward so MailView opens the
+            // right mailbox.
+            nextFolder =
+              unifiedMode && unifiedSpecialKind(selectedFolder) !== null
+                ? next.folder || null
+                : null
           }
         }
       }
 
       selectedUid = nextUid
       selectedMessageAccountId = nextAccountId
+      selectedMessageFolder = nextFolder
     }
 
     // Drop the matching envelope from the bound list (#174
@@ -1460,7 +1543,13 @@
     folder: string
     uid: number
   }) {
-    if (selectedFolder !== src.folder) return
+    // On the global "All Drafts" sentinel view (#322) the user's
+    // `selectedFolder` is the sentinel, not the per-account folder
+    // the expunged draft actually lived in — accept the splice
+    // anyway, since the bound list is genuinely showing that
+    // account's draft row.
+    const onUnifiedDrafts = unifiedMode && unifiedSpecialKind(selectedFolder) === 'drafts'
+    if (!onUnifiedDrafts && selectedFolder !== src.folder) return
     if (
       !unifiedMode
       && selectedMessageAccountId !== src.accountId
@@ -1514,6 +1603,18 @@
     }
 
     const id = crypto.randomUUID()
+    // Deferred handle for the attachment-injection path (#329).
+    // Resolved inside Compose's mount $effect — by the time any
+    // caller `await`s this, it's either already settled or will
+    // settle in microseconds when Svelte runs the queued effect.
+    let resolveAddAttachments!: (
+      fn: (atts: ComposeAttachment[]) => void,
+    ) => void
+    const addAttachmentsReady = new Promise<
+      (atts: ComposeAttachment[]) => void
+    >((resolve) => {
+      resolveAddAttachments = resolve
+    })
     composes.push({
       id,
       accountId: options.accountId ?? activeAccountId ?? '',
@@ -1522,6 +1623,8 @@
       currentSubject: initial.subject ?? '',
       currentDraftSource: initial.draftSource ?? null,
       openedAsEditOfOutbox: initial.outboxSource != null,
+      addAttachmentsReady,
+      resolveAddAttachments,
     })
     activeComposeId = id
     return id
@@ -1737,9 +1840,34 @@
    *  the editor body — Tiptap's schema unwraps generic <div>
    *  wrappers and strips inline styles, so we keep this out of
    *  the editor and let Compose render it as its own read-only
-   *  preview block + splice it in at send time. */
-  function quoteBody(from: string, date: string, body: string | null): string {
-    const bodyHtml = htmlOrEscape(body ?? '')
+   *  preview block + splice it in at send time.
+   *
+   *  Prefers `body_html` when present so HTML content (forwarded
+   *  newsletters, rich signatures, table-based layouts) survives
+   *  into the quoted history.  Falls back to escaping `body_text`
+   *  for plain-text mail.  Sanitises via DOMPurify with the same
+   *  FORBID_TAGS list `MailView.processEmailHtml` uses, so foreign
+   *  scripts / iframes / style blocks from the original sender
+   *  don't ride along into the editor and outgoing message.  The
+   *  outer `quotedHistoryHtml` wrapper carries a `data-unkai-block`
+   *  attribute so Tiptap's `UnkaiBlock` extension treats the whole
+   *  chunk as an atom node and leaves the interior untouched. */
+  function quoteBody(
+    from: string,
+    date: string,
+    bodyText: string | null,
+    bodyHtmlSource?: string | null,
+  ): string {
+    const bodyHtml = bodyHtmlSource
+      ? DOMPurify.sanitize(bodyHtmlSource, {
+          FORBID_TAGS: [
+            'script', 'noscript', 'object', 'embed', 'applet',
+            'iframe', 'frame', 'frameset',
+            'form', 'input', 'textarea', 'select', 'button',
+            'base', 'meta', 'link', 'style',
+          ],
+        })
+      : htmlOrEscape(bodyText ?? '')
     const when = new Date(date).toLocaleString()
     return quotedHistoryHtml({
       fromHeader: from,
@@ -1774,6 +1902,7 @@
     cc: string[]
     subject: string
     body_text: string | null
+    body_html?: string | null
     date: string
     /** RFC 5322 threading anchors (#277).  Optional because
      *  older cached payloads predate the parser; absent values
@@ -1796,6 +1925,21 @@
     uid: number
   }
 
+  /** Forward (#329) needs everything reply-shaping needs plus the
+   *  original attachment list, so the user can opt to re-attach the
+   *  source message's files to the outgoing forward.  `part_id` is
+   *  the stable index into the original MIME tree the backend uses
+   *  to re-fetch a single attachment's bytes via
+   *  `download_email_attachment` (see `onEditDraft` for the same
+   *  shape, used by the draft-rehydrate flow). */
+  type ForwardableMail = ReplyableMail & {
+    attachments: {
+      filename: string
+      content_type: string
+      part_id: number
+    }[]
+  }
+
   // Pure builders for the reply / reply-all / forward initial
   // (#304).  Extracted so the popped-out-mail event path can reuse
   // the same shaping logic and route the result into a popped-out
@@ -1806,7 +1950,7 @@
     return {
       to: mail.from,
       subject: replySubject(mail.subject),
-      body: quoteBody(mail.from, mail.date, mail.body_text),
+      body: quoteBody(mail.from, mail.date, mail.body_text, mail.body_html),
       repliedTo: {
         accountId: mail.account_id,
         folder: mail.folder,
@@ -1830,7 +1974,7 @@
       to: mail.from,
       cc: others.join(', '),
       subject: replySubject(mail.subject),
-      body: quoteBody(mail.from, mail.date, mail.body_text),
+      body: quoteBody(mail.from, mail.date, mail.body_text, mail.body_html),
       repliedTo: {
         accountId: mail.account_id,
         folder: mail.folder,
@@ -1941,30 +2085,157 @@
   }
 
   function buildForwardInitial(mail: OpenMail): ComposeInitial {
-    // Forwards use the same blockquote treatment as replies so the
-    // original message sits inside a visually distinct container.
-    // Unlike reply, we prefix with a small header block that states
-    // the original From/Date/Subject so the recipient can see the
-    // chain even if they collapse the quote.
-    const esc = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const when = new Date(mail.date).toLocaleString()
-    const header =
-      `<p><strong>---------- Forwarded message ----------</strong></p>` +
-      `<p>From: ${esc(mail.from)}<br>` +
-      `Date: ${esc(when)}<br>` +
-      `Subject: ${esc(mail.subject)}</p>`
-    const body = htmlOrEscape(mail.body_text ?? '')
+    // Forwards preserve the original message verbatim inside an
+    // UnkaiBlock atom (#319) so the editor doesn't reflow the
+    // sender's table layout, strip their inline styles, or
+    // duplicate <img> nodes while reconciling the HTML against
+    // Tiptap's block schema.  The header bar marks the chunk as a
+    // forward; the body below renders with the original CSS
+    // intact.  Sanitise via DOMPurify with the same posture
+    // MailView uses so scripts / iframes / style blocks from the
+    // sender don't ride along into our editor (and from there
+    // into the outgoing message).
+    const bodyHtml = mail.body_html
+      ? DOMPurify.sanitize(mail.body_html, {
+          FORBID_TAGS: [
+            'script', 'noscript', 'object', 'embed', 'applet',
+            'iframe', 'frame', 'frameset',
+            'form', 'input', 'textarea', 'select', 'button',
+            'base', 'meta', 'link', 'style',
+          ],
+        })
+      : htmlOrEscape(mail.body_text ?? '')
+    const block = forwardedMailHtml({
+      fromHeader: mail.from,
+      whenText: new Date(mail.date).toLocaleString(),
+      subjectText: mail.subject,
+      toHeader: mail.to.join(', '),
+      bodyHtml,
+    })
     return {
       subject: forwardSubject(mail.subject),
-      body:
-        `<p></p><p></p>` +
-        `<blockquote>${header}${body}</blockquote>`,
+      body: `<p></p><p></p>${block}`,
     }
   }
 
-  function onForward(mail: OpenMail) {
-    openCompose(buildForwardInitial(mail))
+  /** #329 — when the user forwards a message that carries
+   *  attachments, ask whether to bring them along.  Held as
+   *  `{ count, resolve }` so the async forward flow below can
+   *  `await` the user's choice via a promise; the modal's
+   *  buttons (and the backdrop dismiss) call `resolve` and clear
+   *  this state. */
+  let pendingForwardPrompt = $state<{
+    count: number
+    resolve: (include: boolean) => void
+  } | null>(null)
+
+  function resolveForwardPrompt(include: boolean) {
+    if (!pendingForwardPrompt) return
+    const { resolve } = pendingForwardPrompt
+    pendingForwardPrompt = null
+    resolve(include)
+  }
+
+  /** #329 — show the "include original attachments?" prompt and
+   *  return the user's choice.  Setting `pendingForwardPrompt`
+   *  mounts the modal; the modal's buttons (and backdrop /
+   *  Escape) call `resolveForwardPrompt`, which fulfils this
+   *  promise and clears the state. */
+  function promptIncludeForwardAttachments(count: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      pendingForwardPrompt = { count, resolve }
+    })
+  }
+
+  /** #329 — download every attachment on `mail` in parallel and
+   *  reshape into Compose's `Attachment` form.  Each gets a fresh
+   *  `content_id` so the `/` editor shortcut can still anchor
+   *  cid: links into the body after the bytes arrive — same
+   *  shape `onEditDraft` builds for the draft-edit flow. */
+  function downloadForwardAttachments(
+    mail: ForwardableMail,
+  ): Promise<ComposeAttachment[]> {
+    return Promise.all(
+      mail.attachments.map(async (att) => ({
+        filename: att.filename,
+        content_type: att.content_type,
+        data: await invoke<number[]>('download_email_attachment', {
+          accountId: mail.account_id,
+          folder: mail.folder,
+          uid: mail.uid,
+          partId: att.part_id,
+        }),
+        content_id: crypto.randomUUID().replaceAll('-', ''),
+      })),
+    )
+  }
+
+  /** #329 — main-window forward.  Opens Compose immediately with
+   *  the base initial (no attachments) so the user can already
+   *  start editing the body / addressing the recipient.  If the
+   *  source carries attachments, then prompts on top of the open
+   *  Compose; on "include" the bytes download in the background
+   *  and stream into the open Compose through the
+   *  `addAttachmentsReady` handle Compose registers at mount.
+   *  Dismissing the prompt is "forward without".  A download
+   *  failure surfaces via `alert` and leaves the Compose
+   *  attachment-less — partial-include would silently confuse
+   *  the user about what's actually attached.  If the user
+   *  closes the Compose before the download finishes, the
+   *  injection is dropped silently (lookup misses). */
+  async function onForward(mail: ForwardableMail) {
+    const composeId = openCompose(buildForwardInitial(mail))
+    if (mail.attachments.length === 0) return
+    const include = await promptIncludeForwardAttachments(
+      mail.attachments.length,
+    )
+    if (!include) return
+    try {
+      const downloaded = await downloadForwardAttachments(mail)
+      const entry = composes.find((c) => c.id === composeId)
+      if (!entry) return
+      const addAttachments = await entry.addAttachmentsReady
+      addAttachments(downloaded)
+    } catch (e) {
+      alert(
+        m.compose_forward_attachments_download_failed({
+          reason: formatError(e),
+        }),
+      )
+    }
+  }
+
+  /** #329 — popped-out-window forward (#304).  Compose lives in a
+   *  separate window, so the open-then-inject pattern the
+   *  main-window path uses doesn't apply — we can't reach the
+   *  popout's Compose state from this main-window process
+   *  without a fresh IPC channel, and showing the prompt in the
+   *  main window *after* the popout's Compose has appeared on
+   *  potentially another screen would be easy to miss.  So this
+   *  path keeps the bake-then-open ordering: prompt first
+   *  (the popout-mail trigger came from the main window's
+   *  listener, so focus is here already), download, then open the
+   *  popout's Compose with attachments baked into the initial. */
+  async function buildForwardInitialForPopout(
+    mail: ForwardableMail,
+  ): Promise<ComposeInitial> {
+    const base = buildForwardInitial(mail)
+    if (mail.attachments.length === 0) return base
+    const include = await promptIncludeForwardAttachments(
+      mail.attachments.length,
+    )
+    if (!include) return base
+    try {
+      const attachments = await downloadForwardAttachments(mail)
+      return { ...base, attachments }
+    } catch (e) {
+      alert(
+        m.compose_forward_attachments_download_failed({
+          reason: formatError(e),
+        }),
+      )
+      return base
+    }
   }
 
   // ── "Respond with meeting" flow ────────────────────────────
@@ -2232,7 +2503,12 @@
       // Body holds the styled quoted-history block; the meeting
       // card lands above it via `initialBodyHtml` in Compose,
       // which prepends `meetingInvite`-rendered HTML.
-      body: quoteBody(original.from, original.date, original.body_text),
+      body: quoteBody(
+        original.from,
+        original.date,
+        original.body_text,
+        original.body_html,
+      ),
       meetingInvite,
       // #255 — flag the original as `\Answered` once the meeting
       // reply lands.  The icon distinguishes "respond with
@@ -2622,6 +2898,8 @@
           onclose={goToInbox}
           onaddaccount={goToSetup}
           onappprefschanged={(p) => (appPrefs = p)}
+          onnextcloudchanged={refreshNextcloudCapabilities}
+          bind:activeCategory={settingsCategory}
         />
       </div>
     {:else if currentView === 'contacts'}
@@ -2728,6 +3006,7 @@
               unified={unifiedMode}
               selectedUid={selectedUid}
               refreshToken={refreshToken}
+              conversationView={appPrefs?.conversation_view_enabled ?? true}
               onselect={selectMessage}
               bind:envelopes={mailListEnvelopes}
               bind:refreshing={mailListRefreshing}
@@ -2750,7 +3029,7 @@
       {:else}
         <MailView
           accountId={selectedMessageAccountId ?? activeAccountId}
-          folder={selectedFolder}
+          folder={messageFolder}
           uid={selectedUid}
           forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
           autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
@@ -2809,10 +3088,70 @@
         onsentenqueued={(rowId) => onComposeSentEnqueued(c, rowId)}
         onsubjectchange={(s) => (c.currentSubject = s)}
         oncancelref={(fn) => (c.cancelFn = fn)}
+        onaddattachmentsref={(fn) => c.resolveAddAttachments(fn)}
         ondraftsourcechange={(src) => (c.currentDraftSource = src)}
         ondraftexpunged={onDraftExpunged}
       />
     {/each}
+  </div>
+{/if}
+
+<!-- Forward-with-attachments confirm modal (#329).  Driven
+     entirely by `pendingForwardPrompt`: setting it opens the
+     prompt; either button (or the backdrop click) resolves the
+     awaited promise inside `buildForwardInitialWithAttachments`
+     with the user's choice and clears the state.  Backdrop /
+     Escape dismiss is treated as "Forward without" — matches
+     the UX choice locked in when this feature shipped.  Sized
+     and styled after the language-restart prompt in
+     AccountSettings so the visual treatment of confirm-style
+     overlays stays consistent across the app. -->
+{#if pendingForwardPrompt}
+  <div
+    class="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="forward-attachments-title"
+    tabindex="-1"
+    onclick={(e) => {
+      // Only the backdrop itself counts as "dismiss" — button
+      // clicks inside the card bubble up to this handler too, and
+      // without the target check an "Include attachments" click
+      // would also fire the skip path on its way past.
+      if (e.target === e.currentTarget) resolveForwardPrompt(false)
+    }}
+    onkeydown={(e) => e.key === 'Escape' && resolveForwardPrompt(false)}
+  >
+    <div
+      class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl"
+    >
+      <h2 id="forward-attachments-title" class="text-base font-semibold mb-2">
+        {m.compose_forward_attachments_title()}
+      </h2>
+      <p class="text-sm text-surface-600 dark:text-surface-300 mb-4">
+        {pendingForwardPrompt.count === 1
+          ? m.compose_forward_attachments_body_one()
+          : m.compose_forward_attachments_body_many({
+              n: pendingForwardPrompt.count,
+            })}
+      </p>
+      <div class="flex justify-end gap-2">
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500"
+          onclick={() => resolveForwardPrompt(false)}
+        >
+          {m.compose_forward_attachments_skip()}
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-filled-primary-500"
+          onclick={() => resolveForwardPrompt(true)}
+        >
+          {m.compose_forward_attachments_include()}
+        </button>
+      </div>
+    </div>
   </div>
 {/if}
 

@@ -30,7 +30,7 @@
     | 'refresh' | 'sync' | 'loading'
     | 'add-account' | 'sign-out' | 'lock'
     | 'notification' | 'mute' | 'do-not-disturb'
-    | 'encrypted' | 'signed' | 'verified'
+    | 'encrypted' | 'decrypted' | 'signed' | 'verified'
     // v3 — presence, status, writing tools, navigation
     | 'online' | 'offline' | 'typing' | 'away'
     | 'help' | 'info' | 'warning' | 'error' | 'success'
@@ -103,6 +103,7 @@
   import Mute from './icons/Mute.svelte'
   import DoNotDisturb from './icons/DoNotDisturb.svelte'
   import Encrypted from './icons/Encrypted.svelte'
+  import Decrypted from './icons/Decrypted.svelte'
   import Signed from './icons/Signed.svelte'
   import Verified from './icons/Verified.svelte'
   // v3
@@ -229,6 +230,7 @@
     'mute': Mute,
     'do-not-disturb': DoNotDisturb,
     'encrypted': Encrypted,
+    'decrypted': Decrypted,
     'signed': Signed,
     'verified': Verified,
     'online': Online,

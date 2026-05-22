@@ -144,16 +144,18 @@ pub async fn create_public_share(
     password: Option<&str>,
     label: Option<&str>,
     permissions: u8,
+    expire_date: Option<&str>,
     trusted_certs: &[TrustedCert],
 ) -> Result<PublicShare, UnkaiError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json");
 
     tracing::debug!(
-        "POST {url} for path {path} (password: {}, label: {}, permissions: {})",
+        "POST {url} for path {path} (password: {}, label: {}, permissions: {}, expiry: {})",
         if password.is_some() { "yes" } else { "no" },
         if label.is_some() { "yes" } else { "no" },
-        permissions
+        permissions,
+        if expire_date.is_some() { "yes" } else { "no" }
     );
 
     let http = client::build(trusted_certs)?;
@@ -179,6 +181,17 @@ pub async fn create_public_share(
         && !lbl.is_empty()
     {
         form.push(("label", lbl));
+    }
+    // `expireDate` accepts `YYYY-MM-DD` -- the same format our
+    // `DateField` component emits.  Once the date passes the
+    // recipient sees a "Link expired" page instead of the file
+    // contents.  Server-side default-expiration policies (admin
+    // configured) may still clamp this down to a shorter window;
+    // the OCS response surfaces that case via `meta.message`.
+    if let Some(exp) = expire_date
+        && !exp.is_empty()
+    {
+        form.push(("expireDate", exp));
     }
 
     let resp = http

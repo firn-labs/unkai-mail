@@ -29,6 +29,9 @@
     type FileEntry,
     type NextcloudAccount,
   } from './NextcloudFileBrowser.svelte'
+  import NextcloudShareDialog, {
+    type ShareLink,
+  } from './NextcloudShareDialog.svelte'
   import type { ComposeInitial } from './Compose.svelte'
 
   interface Attachment {
@@ -56,36 +59,18 @@
   let error = $state('')
 
   let attaching = $state(false)
-  let sharing = $state(false)
-
-  // Same password-prompt shape as NextcloudFilePicker — see commit
-  // notes there. Snapshot the selection at click time so toggling
-  // the file tree behind the modal can't change what gets shared.
-  // `permissions` is the OCS bitfield value; `hasFolders` drives
-  // the dropdown's folder-only options.
-  let sharePrompt = $state<{
+  // Snapshot of the selection at the moment "New mail with link" was
+  // clicked.  The shared `NextcloudShareDialog` owns the form state
+  // (password / permissions / expiry); we just hand off paths +
+  // hasFolders and wait for `onresolve` / `oncancel`.
+  let shareTarget = $state<{
     paths: string[]
-    password: string
-    permissions: number
     hasFolders: boolean
   } | null>(null)
-
-  /** Permission combinations Nextcloud's own share UI exposes.
-   *  Same shape as NextcloudFilePicker — kept in lockstep so the
-   *  two surfaces' Share dialogs offer identical choices. */
-  const PERMISSION_OPTIONS = [
-    { value: 1, label: 'View only', hint: 'Recipient can read / download.', folderOnly: false },
-    { value: 3, label: 'View and edit', hint: 'Recipient can edit the file in Nextcloud.', folderOnly: false },
-    { value: 15, label: 'View, edit, upload, delete', hint: 'Folder share with full read-write — recipient can drop files in and modify existing ones.', folderOnly: true },
-    { value: 4, label: 'File drop (upload only)', hint: 'Folder share where recipients can upload but not see the contents.', folderOnly: true },
-  ] as const
-
-  function visiblePermissionOptions(hasFolders: boolean) {
-    return PERMISSION_OPTIONS.filter((o) => !o.folderOnly || hasFolders)
-  }
-  function permHint(value: number): string {
-    return PERMISSION_OPTIONS.find((o) => o.value === value)?.hint ?? ''
-  }
+  // True while the share dialog is mounted.  The dialog blocks
+  // clicks behind it via its backdrop, so this just gates the
+  // footer buttons + the Esc handler.
+  let sharing = $derived(shareTarget !== null)
 
   let selectedFileCount = $derived.by(() => {
     let n = 0
@@ -161,66 +146,42 @@
     }
   }
 
-  /** Mint a public link for every selection (files *and* folders) and
-      open Compose with them rendered into the body as a "Shared via
-      Nextcloud" block — same shape Compose already produces when the
-      share button inside the picker is used. */
+  /** Open the share dialog instead of jumping straight to OCS.
+      The dialog lets the user opt into password / permissions /
+      expiry before any link is minted. */
   function sendAsLink() {
     if (selected.size === 0) return
-    const hasFolders = entries.some((e) => e.is_dir && selected.has(e.path)) || selectedFolderCount > 0
-    sharePrompt = {
+    const hasFolders =
+      entries.some((e) => e.is_dir && selected.has(e.path)) ||
+      selectedFolderCount > 0
+    shareTarget = {
       paths: Array.from(selected),
-      password: '',
-      permissions: 1,
       hasFolders,
     }
     error = ''
   }
 
-  /** Mint the share links with the password + permissions the
-      user picked (empty password = unprotected, omitted from the
-      OCS form on the Rust side) and hand them off to Compose.
-      Same error shape as the previous one-click flow. */
-  async function commitShare() {
-    if (!sharePrompt) return
-    const { paths, password, permissions } = sharePrompt
-    sharing = true
-    error = ''
-    try {
-      const pw = password.trim() ? password : null
-      const links = await Promise.all(
-        paths.map(async (p) => {
-          const url = await invoke<string>('create_nextcloud_share', {
-            ncId: accountId,
-            path: p,
-            password: pw,
-            permissions,
-          })
-          return { filename: basename(p), url }
-        }),
-      )
-      sharePrompt = null
-      oncompose({ nextcloudLinks: links })
-    } catch (e) {
-      error = formatError(e) || 'Failed to create share link(s)'
-    } finally {
-      sharing = false
-    }
+  /** Dialog resolved with freshly-minted share links.  Project the
+      result down to the `{filename, url}` shape `ComposeInitial`
+      expects and open Compose pre-filled with the link block. */
+  function onShareResolved(links: ShareLink[]) {
+    shareTarget = null
+    oncompose({
+      nextcloudLinks: links.map((l) => ({ filename: l.filename, url: l.url })),
+    })
   }
 
   /**
-   * Esc handler for the share prompt (#192).  Wired via
-   * `<svelte:window onkeydown>` in the template so the key
-   * works wherever focus is in the modal — the existing
-   * input-level handler at line 385 only catches the password
-   * field.  Inert while `sharing` is in flight.
+   * Esc handler for the share dialog (#192).  Wired via
+   * `<svelte:window onkeydown>` in the template so the key works
+   * wherever focus is in the dialog — the dialog's own input-level
+   * handler only catches the password field.
    */
   function onSharePromptKeydown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return
-    if (!sharePrompt) return
-    if (sharing) return
+    if (!shareTarget) return
     e.preventDefault()
-    sharePrompt = null
+    shareTarget = null
   }
 </script>
 
@@ -367,82 +328,19 @@
   </div>
 </div>
 
-<!-- Password prompt for the public share link. Same UX as the
-     equivalent modal inside NextcloudFilePicker — Enter / "Create
-     with password" gates the share, blank input + "Share without
-     password" preserves the previous one-click flow. -->
-{#if sharePrompt}
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-    role="dialog"
-    aria-modal="true"
-    tabindex="-1"
-    onmousedown={(e) => { if (e.target === e.currentTarget && !sharing) sharePrompt = null }}
-  >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-[28rem] max-w-full p-5">
-      <h3 class="text-base font-semibold mb-1">Password-protect link?</h3>
-      <p class="text-xs text-surface-500 mb-3">
-        {sharePrompt.paths.length === 1
-          ? 'Anyone with the link can open the file.'
-          : `Anyone with each link can open ${sharePrompt.paths.length} files.`}
-        Setting a password gates the recipient behind it; leave it empty
-        to share without one.
-      </p>
-
-      <label class="block text-xs text-surface-500 mb-1" for="files-share-pw">Password (optional)</label>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
-        id="files-share-pw"
-        type="password"
-        class="input w-full text-sm px-2 py-1.5 rounded-md mb-3"
-        placeholder="Leave blank for no password"
-        bind:value={sharePrompt.password}
-        disabled={sharing}
-        autofocus
-        onkeydown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); void commitShare() }
-          else if (e.key === 'Escape' && !sharing) { e.preventDefault(); sharePrompt = null }
-        }}
-      />
-
-      <!-- Permissions dropdown — mirrors the NextcloudFilePicker
-           share-prompt so both surfaces' Share dialogs offer the
-           same set of choices.  Folder-only options are filtered
-           out when the selection is purely files. -->
-      <label class="block text-xs text-surface-500 mb-1" for="files-share-perms">Permissions</label>
-      <select
-        id="files-share-perms"
-        class="input w-full text-sm px-2 py-1.5 rounded-md mb-1"
-        bind:value={sharePrompt.permissions}
-        disabled={sharing}
-      >
-        {#each visiblePermissionOptions(sharePrompt.hasFolders) as opt}
-          <option value={opt.value}>{opt.label}</option>
-        {/each}
-      </select>
-      <p class="text-[11px] text-surface-500 mb-3">
-        {permHint(sharePrompt.permissions)}
-      </p>
-
-      {#if error}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>
-      {/if}
-
-      <div class="flex justify-end gap-2">
-        <button
-          class="btn preset-outlined-surface-500 shrink-0"
-          disabled={sharing}
-          onclick={() => (sharePrompt = null)}
-        >Cancel</button>
-        <button
-          class="btn preset-filled-primary-500 shrink-0 whitespace-nowrap"
-          disabled={sharing}
-          onclick={() => void commitShare()}
-        >{#if sharing}Sharing…{:else}Share{/if}</button>
-      </div>
-    </div>
-  </div>
-{/if}
+<!-- Share dialog (password / permissions / expiry).  Shared with
+     the Compose-side picker — see NextcloudShareDialog.svelte for
+     the modal body itself.  z-50 because no other modal sits
+     behind this surface. -->
+<NextcloudShareDialog
+  open={shareTarget !== null}
+  accountId={accountId}
+  paths={shareTarget?.paths ?? []}
+  hasFolders={shareTarget?.hasFolders ?? false}
+  zIndex={50}
+  onresolve={onShareResolved}
+  oncancel={() => (shareTarget = null)}
+/>
 
 <style>
   /* Indeterminate per-file progress head (#160).  Animates

@@ -8,6 +8,7 @@
    */
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import { listen } from '@tauri-apps/api/event'
   import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
@@ -15,6 +16,12 @@
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
+  import EncryptionSettings from './EncryptionSettings.svelte'
+  import {
+    openSignatureEditorInStandaloneWindow,
+    SIGNATURE_POPOUT_CLOSED_EVENT,
+    SIGNATURE_UPDATED_EVENT,
+  } from './standaloneSignatureEditorWindow'
   import Toggle from './Toggle.svelte'
   import {
     STOCK_THEMES,
@@ -103,6 +110,12 @@
     sort_order?: number
     /** Human's full name for outbound From: header (#115). */
     person_name?: string | null
+    /** Uppercase hex fingerprint of the account's imported OpenPGP
+     *  private key (#57).  Display-only — the armored key itself
+     *  lives in the OS keychain.  `null` / undefined means no key
+     *  imported; the AccountSettings encryption section then
+     *  surfaces the "Import private key" affordance. */
+    pgp_key_fingerprint?: string | null
   }
 
   interface TrustedCert {
@@ -116,6 +129,20 @@
     added_at: number
   }
 
+  // ── Category navigation (#131) ──────────────────────────────
+  // Settings used to be one long scroll; #131 split it into the
+  // categories users actually look for.  The nav lives in a
+  // left column and `activeCategory` gates which section block
+  // renders so each panel stays focused.
+  export type SettingsCategory =
+    | 'general'
+    | 'design'
+    | 'mail'
+    | 'calendar'
+    | 'nextcloud'
+    | 'security'
+    | 'backup'
+
   // ── Props ───────────────────────────────────────────────────
   interface Props {
     onclose: () => void         // Go back to the inbox view
@@ -125,23 +152,25 @@
         `$effect` it drives — in sync. Optional so callers that don't
         care about live updates aren't forced to handle it. */
     onappprefschanged?: (prefs: AppSettings) => void
+    /** Notify the parent when the connected Nextcloud accounts (or
+        their capabilities) change so the IconRail can refresh its
+        integration icons immediately, without waiting for the
+        Settings panel to close (#318). */
+    onnextcloudchanged?: () => void
+    /** Which settings category the panel is currently showing.
+        Lifted to the parent (#318) so that a remount of Settings
+        — e.g. the user clicks a freshly-revealed Nextcloud
+        integration icon, looks at it, then comes back to Settings
+        — preserves the category instead of snapping to General. */
+    activeCategory?: SettingsCategory
   }
-  let { onclose, onaddaccount, onappprefschanged }: Props = $props()
-
-  // ── Category navigation (#131) ──────────────────────────────
-  // Settings used to be one long scroll; #131 split it into the
-  // categories users actually look for.  The nav lives in a
-  // left column and `activeCategory` gates which section block
-  // renders so each panel stays focused.
-  type SettingsCategory =
-    | 'general'
-    | 'design'
-    | 'mail'
-    | 'calendar'
-    | 'nextcloud'
-    | 'security'
-    | 'backup'
-  let activeCategory = $state<SettingsCategory>('general')
+  let {
+    onclose,
+    onaddaccount,
+    onappprefschanged,
+    onnextcloudchanged,
+    activeCategory = $bindable('general'),
+  }: Props = $props()
   interface CategoryEntry {
     id: SettingsCategory
     label: string
@@ -185,6 +214,10 @@
     mail_html_white_background: boolean
     auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
+    /** #334 — when off, the MailList renders every envelope as
+     *  its own row instead of bundling reply chains under one
+     *  conversation head with an expand chevron.  Default on. */
+    conversation_view_enabled: boolean
     /** #165 master toggle for the URLhaus link checker.
      *  Off → no pills, no click interception, refresh worker
      *  sleeps.  On (default) → links in rendered email show
@@ -259,6 +292,7 @@
     mail_html_white_background: true,
     auto_load_remote_images: false,
     auto_advance_after_remove: true,
+    conversation_view_enabled: true,
     link_check_enabled: true,
     default_calendar_id: null,
     meeting_reminders_enabled: true,
@@ -895,6 +929,62 @@
     )
   }
 
+  // #314 — popped-out signature editor.  Tracks which accounts
+  // currently have a popout window open so we can lock the inline
+  // editor (the user otherwise sees two live editors fighting over
+  // the same `account.signature`).  Keyed by account id; the popout
+  // emits `signature-popout-closed` on close, which clears the flag
+  // and re-enables the inline editor.
+  const sigPopoutOpen = $state<Record<string, boolean>>({})
+
+  function openSignaturePopout(account: Account) {
+    if (sigPopoutOpen[account.id]) return
+    sigPopoutOpen[account.id] = true
+    void openSignatureEditorInStandaloneWindow({
+      accountId: account.id,
+      accountLabel:
+        account.display_name?.trim() || account.email || account.id,
+      initialHtml: account.signature ?? '',
+    }).catch((e) => {
+      console.warn('openSignatureEditorInStandaloneWindow failed', e)
+      // Roll back the lock so the user can retry — keeping it set
+      // would leave the inline editor permanently disabled for a
+      // window that never actually opened.
+      sigPopoutOpen[account.id] = false
+    })
+  }
+
+  // Listen for save / close events emitted by the popped-out window.
+  // Save events keep the inline `account.signature` in sync (so when
+  // the user closes the popout the locked editor flashes the final
+  // content rather than the stale launch-time snapshot); close events
+  // re-enable the inline editor.
+  $effect(() => {
+    const unlisten: Array<Promise<() => void>> = []
+
+    unlisten.push(
+      listen<{ accountId: string; html: string }>(
+        SIGNATURE_UPDATED_EVENT,
+        (event) => {
+          const acc = accounts.find((a) => a.id === event.payload.accountId)
+          if (!acc) return
+          acc.signature = event.payload.html.trim() || null
+        },
+      ),
+    )
+    unlisten.push(
+      listen<{ accountId: string }>(SIGNATURE_POPOUT_CLOSED_EVENT, (event) => {
+        sigPopoutOpen[event.payload.accountId] = false
+      }),
+    )
+
+    return () => {
+      for (const p of unlisten) {
+        void p.then((fn) => fn()).catch(() => {})
+      }
+    }
+  })
+
   // ── Custom folder icons (Issue #63) ─────────────────────────
   // Each account carries a list of `{keyword, icon}` rules. The
   // sidebar applies them before its built-in icon heuristics. Edits
@@ -1520,6 +1610,25 @@
           <span>Show desktop notifications for new mail</span>
         </div>
 
+        <!-- #334 — group replies into a single conversation row in
+             the MailList.  When off, every envelope renders as its
+             own row (the pre-#277 flat-list behaviour).  The cache
+             still tracks thread_id either way so flipping back on
+             is an immediate re-render with no IMAP traffic. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.conversation_view_enabled}
+            label={m.settings_mail_conversation_view_label()}
+            onchange={() => scheduleSave()}
+          />
+          <div>
+            <span>{m.settings_mail_conversation_view_label()}</span>
+            <p class="text-xs text-surface-400 mt-0.5">
+              {m.settings_mail_conversation_view_hint()}
+            </p>
+          </div>
+        </div>
+
         <!-- Auto-load remote images (#197).  Off by default —
              every loaded remote image is a tracking signal back
              to the sender ("yes, this address is alive and the
@@ -1932,6 +2041,21 @@
       })}
       <div class="space-y-4">
         {#each sortedRows as account, accountIdx (account.id)}
+          <!-- #314 — popout trigger rendered inside the inline
+               RichTextEditor's `actionsTrailing` slot.  Lives in
+               the loop body so it closes over the per-iteration
+               `account` and the right account gets popped out
+               when the user clicks. -->
+          {#snippet signaturePopoutAction()}
+            <button
+              type="button"
+              class="tb"
+              title={m.signature_popout_button_title()}
+              aria-label={m.signature_popout_button_aria()}
+              disabled={sigPopoutOpen[account.id]}
+              onclick={() => openSignaturePopout(account)}
+            ><Icon name="full-screen" size={18} /></button>
+          {/snippet}
           <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg">
             <div class="flex items-start justify-between">
               <div class="flex items-start gap-3">
@@ -2037,11 +2161,11 @@
               <div class="flex items-center justify-between mb-1">
                 <label class="text-sm font-medium" for="sig-{account.id}">Signature</label>
                 {#if sigSaveStatus[account.id] === 'saving'}
-                  <span class="text-xs text-surface-400">Saving…</span>
+                  <span class="text-xs text-surface-400">{m.signature_status_saving()}</span>
                 {:else if sigSaveStatus[account.id] === 'saved'}
-                  <span class="text-xs text-success-500">Saved</span>
+                  <span class="text-xs text-success-500">{m.signature_status_saved()}</span>
                 {:else if sigSaveStatus[account.id] === 'error'}
-                  <span class="text-xs text-error-500">Save failed</span>
+                  <span class="text-xs text-error-500">{m.signature_status_error()}</span>
                 {/if}
               </div>
               <!-- #248 — rich-text signature.  Same Tiptap editor
@@ -2052,14 +2176,29 @@
                    HTML output rides through `update_account` →
                    `Account.signature` and Compose's `signatureBlock`
                    passes it through verbatim with the RFC 3676
-                   `-- ` separator above. -->
-              <div class="signature-editor-shell">
-                <RichTextEditor
-                  content={account.signature ?? ''}
-                  placeholder="Appended to new messages sent from this account."
-                  onchange={(html) => onSignatureChange(account, html)}
-                />
-              </div>
+                   `-- ` separator above.
+                   #314 — when the popout window is open for this
+                   account we lock the inline editor instead of
+                   keeping two live editors over the same field. -->
+              {#if sigPopoutOpen[account.id]}
+                <div
+                  class="signature-editor-shell flex items-center justify-center text-center px-6"
+                >
+                  <span class="text-sm text-surface-500">
+                    {m.signature_popout_locked_banner()}
+                  </span>
+                </div>
+              {:else}
+                <div class="signature-editor-shell">
+                  <RichTextEditor
+                    content={account.signature ?? ''}
+                    placeholder="Appended to new messages sent from this account."
+                    onchange={(html) => onSignatureChange(account, html)}
+                    actionsTrailing={signaturePopoutAction}
+                    actionsTrailingCompact={true}
+                  />
+                </div>
+              {/if}
             </div>
 
             <!-- Folder icon rules (Issue #63). Match a folder name
@@ -2149,6 +2288,12 @@
                 name contains the keyword.
               </p>
             </div>
+
+            <!-- End-to-end mail encryption (#57). -->
+            <EncryptionSettings
+              account={{ id: account.id, email: account.email }}
+              oncrypto_changed={() => { void loadAccounts() }}
+            />
           </div>
         {/each}
       </div>
@@ -2163,7 +2308,7 @@
     {/if}
 
     {#if activeCategory === 'nextcloud'}
-    <NextcloudSettings />
+    <NextcloudSettings {onnextcloudchanged} />
     {/if}
 
     {#if activeCategory === 'security'}

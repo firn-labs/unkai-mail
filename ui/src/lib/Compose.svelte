@@ -31,7 +31,8 @@
     type ExtraTab,
   } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
-  import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
+  import NextcloudFilePicker from './NextcloudFilePicker.svelte'
+  import { type ShareLink } from './NextcloudShareDialog.svelte'
   import Icon from './Icon.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import AttachmentThumb, { prewarm as prewarmAttachmentThumb } from './AttachmentThumb.svelte'
@@ -79,7 +80,7 @@
     read_only?: boolean
   }
 
-  interface Attachment {
+  export interface Attachment {
     filename: string
     content_type: string
     data: number[]
@@ -254,6 +255,19 @@
      *  mount; the function reference is stable for the lifetime
      *  of the component. */
     oncancelref?: (cancel: () => void) => void
+    /** One-shot callback handing the parent a function it can call
+     *  to append attachments to this Compose from the outside
+     *  (#329).  Used by the forward-with-attachments flow: the
+     *  parent opens Compose, asks the user whether to bring the
+     *  original message's attachments along, and on "yes"
+     *  downloads the bytes in the background and pushes them in
+     *  through this handle once they're ready.  Fires once on
+     *  mount; the function reference is stable.  Reuses the
+     *  picker's append-and-prewarm path so a parent-pushed
+     *  attachment is indistinguishable from a user-picked one. */
+    onaddattachmentsref?: (
+      addAttachments: (atts: Attachment[]) => void,
+    ) => void
     /** Fires whenever this Compose's tracked Drafts-folder pointer
      *  changes (#292).  Seeded from `initial.draftSource` and
      *  updated after every successful `save_draft` round-trip with
@@ -294,6 +308,7 @@
     onminimize,
     onsubjectchange,
     oncancelref,
+    onaddattachmentsref,
     ondraftsourcechange,
     ondraftexpunged,
   }: Props = $props()
@@ -559,6 +574,16 @@
       label: 'Meetings',
       iconName: 'meetings',
       content: meetingsTabContent,
+    },
+    // #57 — End-to-end encryption tab.  Houses the encrypt toggle,
+    // passphrase prompt, and the per-account key status hint so the
+    // user can manage encryption in a dedicated surface instead of
+    // crowding the Send actions row.
+    {
+      id: 'encryption',
+      label: 'Encryption',
+      iconName: 'encrypted',
+      content: encryptionTabContent,
     },
   ])
 
@@ -965,6 +990,22 @@
   }
 
   let sending = $state(false)
+  // End-to-end encryption toggle (#57).  When true, the send IPC
+  // sets `encryption_mode = "pgp"` and `signing_enabled = true` on
+  // the OutgoingEmail payload and prompts the user for their PGP
+  // passphrase — pre-send modal below.  The toggle defaults off so
+  // the historical plaintext send path is untouched for accounts
+  // that haven't imported a key.
+  let encryptEnabled = $state(false)
+  // Inline passphrase entry shown when the user clicks Send with
+  // encryption on.  Cleared on submit and on cancel so a freshly-
+  // opened Compose never inherits a stale passphrase.
+  let pgpPassphrase = $state('')
+  /** `true` once the user has clicked Send with encryption on but
+   *  before they've supplied the passphrase.  Drives the inline
+   *  passphrase prompt block (rendered just above the Send
+   *  button). */
+  let awaitingPassphrase = $state(false)
   // `initialError` seeds the banner when Compose is re-opened
   // after a background send failure (#156).  Cleared by the next
   // `send()` validation pass — the user retrying is the implicit
@@ -1211,47 +1252,11 @@
       description: saved.description ?? null,
       talkUrl: isUrl ? loc : null,
     }
-    const html = meetingInviteHtml(invite)
-    if (!editorApi) return
-    // Body order we want, from top to bottom:
-    //   1. lead spacer
-    //   2. **meeting card**            ← new
-    //   3. signature
-    //   4. (Talk / file-share cards)
-    //   5. quoted history (replies / forwards)
-    //
-    // The signature is a plain `<p>-- <br>...</p>` (no
-    // UnkaiBlock wrapper), so `insertBeforeUnkaiBlock` can't
-    // target it.  We do a string splice on `bodyHtml` instead:
-    // find the previously-inserted signature substring and
-    // splice the card just before it.  Fallback paths cover
-    // every shape the body might be in:
-    //
-    //   - signature present in source → splice before it.
-    //   - signature missing (no signature configured, or the
-    //     signature `$effect` hasn't run yet) → splice after
-    //     the lead spacer so future signature insertion still
-    //     lands below the card.
-    //   - neither marker found (e.g. an opened draft with a
-    //     bespoke shape) → fall back to the existing
-    //     before-quoted-history target so the card still
-    //     reads above the reply quote.
-    if (insertedSignatureHtml && bodyHtml.includes(insertedSignatureHtml)) {
-      const idx = bodyHtml.indexOf(insertedSignatureHtml)
-      const replaced = bodyHtml.slice(0, idx) + html + bodyHtml.slice(idx)
-      editorApi.setHtml(replaced)
-      bodyHtml = replaced
-      return
-    }
-    const leadIdx = bodyHtml.indexOf('<p></p><p></p>')
-    if (leadIdx !== -1) {
-      const after = leadIdx + '<p></p><p></p>'.length
-      const replaced = bodyHtml.slice(0, after) + html + bodyHtml.slice(after)
-      editorApi.setHtml(replaced)
-      bodyHtml = replaced
-      return
-    }
-    editorApi.insertBeforeUnkaiBlock(html, 'quoted-history')
+    // The editor walks its own ProseMirror doc to find the top
+    // of the signoff region; new cards stack above any existing
+    // ones so a later insert isn't buried below a previously
+    // dropped block (#320 + follow-up).
+    editorApi?.insertAboveSignature(meetingInviteHtml(invite))
   }
 
   /** Combined To + Cc list as bare/RFC-formatted address strings,
@@ -1261,19 +1266,15 @@
   }
 
   /** Insert a Talk invite card into the editor body when the
-      user creates a Talk room mid-compose.  The new
-      `insertBeforeUnkaiBlock` editor API drops the card just
-      above any existing quoted-history block (so reading order
-      is card → reply text → previous conversation); on a fresh
-      compose with no quote it appends at the end. The card is
-      parsed by the editor's `UnkaiBlock` extension into an
-      atom node, so a single Backspace deletes the whole thing
-      if the user changes their mind. */
+      user creates a Talk room mid-compose.  Lands the card at
+      the top of the signoff region, above any existing
+      integration cards so the newest insert is the most visible
+      (#320 + follow-up).  The card is parsed by the editor's
+      `UnkaiBlock` extension into an atom node, so a single
+      Backspace deletes the whole thing if the user changes
+      their mind. */
   function injectTalkBlock(link: { name: string; url: string }) {
-    const html = talkInviteHtml(link)
-    if (editorApi) {
-      editorApi.insertBeforeUnkaiBlock(html, 'quoted-history')
-    }
+    editorApi?.insertAboveSignature(talkInviteHtml(link))
   }
 
   function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
@@ -2005,6 +2006,11 @@
           attachments: snap.attachments,
           in_reply_to: parentMessageId,
           references: newReferences,
+          // #57: when the encryption toggle is on, ask the SMTP
+          // layer to wrap as RFC-3156 PGP/MIME + inner-sign with
+          // the account's key.  Off → historical plaintext send.
+          encryption_mode: encryptEnabled ? 'pgp' : null,
+          signing_enabled: encryptEnabled,
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list
@@ -2018,7 +2024,17 @@
         // path doesn't reach this invoke, so cancelling leaves
         // the source row alone — what the user expects.
         outboxSource: snap.initialAtSend?.outboxSource ?? null,
+        // #57: passphrase that unlocks the account's PGP private
+        // key — captured from the inline prompt below.  Only
+        // meaningful when `encryption_mode == 'pgp'`; the backend
+        // ignores it for plaintext sends.  Cleared the moment the
+        // IPC resolves so it doesn't linger across re-renders.
+        pgpPassphrase: encryptEnabled ? pgpPassphrase : null,
       })
+      // Wipe the in-memory passphrase before yielding back to the
+      // outer flow so a successful send doesn't leave it sitting
+      // on the heap for the rest of Compose's lifetime.
+      pgpPassphrase = ''
       // Send was accepted into the local queue (#276 follow-up).
       // Hand the new row id to the parent so App.svelte can
       // surface it as the selected Outbox preview after an
@@ -2237,6 +2253,29 @@
     oncancelref?.(cancel)
   })
 
+  /** External attachment-append handle (#329).  Same shape the
+   *  picker's `onPickFiles` uses: append to the reactive list, then
+   *  pre-warm thumbs off the critical path so the `/` picker's
+   *  first open lands on fully rendered tiles.  Called by the
+   *  parent once the forward-with-attachments download finishes,
+   *  with a list whose `content_id`s were minted before the bytes
+   *  arrived so the cache key stays stable. */
+  function appendExternalAttachments(atts: Attachment[]) {
+    if (atts.length === 0) return
+    attachments = [...attachments, ...atts]
+    for (const a of atts) {
+      prewarmAttachmentThumb({
+        bytes: a.data,
+        contentType: a.content_type,
+        filename: a.filename,
+        cacheKey: a.content_id,
+      })
+    }
+  }
+  $effect(() => {
+    onaddattachmentsref?.(appendExternalAttachments)
+  })
+
   function cancel() {
     // No local persistence — if the user wants to resume later they
     // need to click "Save draft" first (which APPENDs to IMAP Drafts).
@@ -2375,7 +2414,21 @@
 
 {#snippet composeBody()}
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-2">
-      <h2 class="text-base font-semibold">New message</h2>
+      <div class="flex items-center gap-2 min-w-0">
+        <h2 class="text-base font-semibold whitespace-nowrap">New message</h2>
+        <!-- #57 — Encrypted indicator promoted out of the ribbon
+             so the user sees the state from anywhere in the
+             window, not just from the send-actions row. -->
+        {#if encryptEnabled}
+          <span
+            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
+            title="This message will be sent as PGP/MIME"
+          >
+            <Icon name="encrypted" size={14} />
+            <span>Encrypted</span>
+          </span>
+        {/if}
+      </div>
       <div class="flex items-center gap-2">
         {#if !inStandaloneWindow}
           <!-- Pop the modal out into its own resizable window (#110).
@@ -2644,16 +2697,74 @@
     <span class="ctb-icon"><Icon name="save-draft" size={20} /></span>
     <span class="ctb-label">Save</span>
   </button>
+  <!-- #57 — the Encrypted indicator pill lives next to the
+       "New Message" title in the header (see Compose's modal
+       header below).  Send-actions row stays focused on the two
+       commit buttons. -->
   <button
     type="button"
     class="ctb-send"
-    disabled={sending}
-    title="Send the message"
+    disabled={sending || (encryptEnabled && !pgpPassphrase)}
+    title={encryptEnabled && !pgpPassphrase
+      ? 'Open the Encryption tab and enter your PGP passphrase to send'
+      : 'Send the message'}
     onclick={send}
   >
     <span>{sending ? 'Sending…' : 'Send'}</span>
     <Icon name="sent" size={18} />
   </button>
+{/snippet}
+
+<!-- Encryption tab panel — toggle + passphrase + account-key status
+     (#57).  Mirrors the visual style of the Attach / Meetings tab
+     panels above so it reads as another peer of the ribbon, not a
+     bolted-on dialog.  Lives on its own tab specifically so the
+     passphrase field isn't crowded into the Send actions row where
+     it doesn't fit. -->
+{#snippet encryptionTabContent()}
+  <!-- Primary toggle: a `rt-btn` so the encrypt toggle is visually
+       a sibling to the Attach / NC Files / Talk / Event buttons
+       in the other panels. -->
+  <button
+    type="button"
+    class="rt-btn"
+    class:active={encryptEnabled}
+    title={encryptEnabled
+      ? 'Encryption on — click to switch back to plaintext'
+      : 'Encrypt + sign this message with your account PGP key'}
+    aria-pressed={encryptEnabled}
+    onclick={() => {
+      encryptEnabled = !encryptEnabled
+      if (!encryptEnabled) {
+        pgpPassphrase = ''
+      }
+    }}
+  >
+    <span class="rt-btn-icon">
+      <Icon name={encryptEnabled ? 'encrypted' : 'lock'} size={20} />
+    </span>
+    <span class="rt-btn-label">{encryptEnabled ? 'Encrypted' : 'Encrypt'}</span>
+  </button>
+  <!-- Passphrase entry only when encryption is on.  Same compact
+       input shape as the per-field text inputs the rest of Compose
+       uses, but inside the ribbon — keeps the user's hand close to
+       the Send button without crowding it. -->
+  {#if encryptEnabled}
+    <div class="flex items-center gap-2 px-2">
+      <label for="pgp-passphrase-input" class="text-xs text-surface-500 whitespace-nowrap">
+        PGP passphrase
+      </label>
+      <input
+        id="pgp-passphrase-input"
+        type="password"
+        class="input text-xs px-2 py-1 rounded-md w-56"
+        placeholder="Unlocks your account key"
+        bind:value={pgpPassphrase}
+        disabled={sending}
+        autocomplete="off"
+      />
+    </div>
+  {/if}
 {/snippet}
 
 {#if showNcPicker}
@@ -2700,23 +2811,11 @@
         )
         .join('')
       const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`
-      // Splice the block ABOVE an auto-inserted signature when one
-      // is sitting at the end of the body so the share renders
-      // inline with the message rather than below the user's
-      // sign-off.  Same pattern the Talk-link injection uses
-      // earlier in this component.
-      if (
-        insertedSignatureHtml
-        && bodyHtml.endsWith(insertedSignatureHtml)
-        && editorApi
-      ) {
-        const without = bodyHtml.slice(0, bodyHtml.length - insertedSignatureHtml.length)
-        const replaced = without + block + insertedSignatureHtml
-        editorApi.setHtml(replaced)
-        bodyHtml = replaced
-      } else {
-        editorApi?.appendHtml(block)
-      }
+      // Land the block at the top of the signoff region — a
+      // short share-link paragraph reads above any existing
+      // meeting / Talk card so it isn't buried beneath the big
+      // styled chrome (#320 + follow-up).
+      editorApi?.insertAboveSignature(block)
     }}
     onclose={() => (showNcPicker = false)}
   />
