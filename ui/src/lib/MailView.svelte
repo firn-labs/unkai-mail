@@ -1861,35 +1861,41 @@
         <!-- #57 — Decrypt prompt.  Appears when the receive path
              marked the message encrypted but body is empty (no
              bridge was supplied on first fetch, by design — we
-             re-prompt for the passphrase on every decrypt). -->
+             re-prompt for the passphrase on every decrypt).  Two-
+             row layout: explanation line at the top, then the
+             input + button on a second row so the user reads the
+             "what's going on" copy before reaching for the field. -->
         <div
-          class="mt-2 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 text-sm flex flex-wrap items-center gap-2"
+          class="mt-2 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
         >
-          <span class="flex-1 min-w-48">
+          <p class="text-sm text-primary-800 dark:text-primary-200">
             This message is encrypted with your OpenPGP key.  Enter your
             passphrase to decrypt and view it.
-          </span>
-          <input
-            type="password"
-            class="input text-xs px-2 py-1 rounded-md w-48"
-            placeholder="PGP passphrase"
-            bind:value={decryptPassphrase}
-            disabled={decrypting}
-            autocomplete="off"
-            onkeydown={(e) => {
-              if (e.key === 'Enter' && decryptPassphrase) {
-                void runDecrypt()
-              }
-            }}
-          />
-          <button
-            type="button"
-            class="btn btn-sm preset-filled-primary"
-            disabled={decrypting || !decryptPassphrase}
-            onclick={() => void runDecrypt()}
-          >
-            {decrypting ? 'Decrypting…' : 'Decrypt'}
-          </button>
+          </p>
+          <div class="flex items-center gap-2">
+            <input
+              type="password"
+              class="input text-sm px-2 py-1.5 rounded-md flex-1"
+              placeholder="PGP passphrase"
+              bind:value={decryptPassphrase}
+              disabled={decrypting}
+              autocomplete="off"
+              onkeydown={(e) => {
+                if (e.key === 'Enter' && decryptPassphrase) {
+                  void runDecrypt()
+                }
+              }}
+            />
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5 hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 shrink-0"
+              disabled={decrypting || !decryptPassphrase}
+              onclick={() => void runDecrypt()}
+              title="Decrypt this message"
+            >
+              {decrypting ? 'Decrypting…' : 'Decrypt'}
+            </button>
+          </div>
         </div>
         {#if decryptError}
           <div class="mt-1 text-xs text-error-500" data-test="decrypt-error">
