@@ -33,6 +33,7 @@ pub mod contacts;
 pub mod geocode;
 pub mod key;
 pub mod notes;
+pub mod pgp_keys;
 pub mod pool;
 pub mod schema;
 pub mod search;
@@ -43,6 +44,7 @@ pub use calendars::{
 };
 pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 pub use notes::NotesSyncState;
+pub use pgp_keys::{PgpKeySource, PgpPublicKeyRow};
 pub use search::{SearchFilters, SearchHit, SearchScope};
 
 use std::path::{Path, PathBuf};
@@ -1592,17 +1594,20 @@ impl Cache {
             "INSERT INTO message_bodies
                 (account_id, folder, uid, body_text, body_html,
                  has_attachments, raw_size, cached_at, to_addrs, cc_addrs,
-                 attachments)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 attachments, protection, signature_status, signer_fingerprint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT (account_id, folder, uid) DO UPDATE SET
-                body_text       = excluded.body_text,
-                body_html       = excluded.body_html,
-                has_attachments = excluded.has_attachments,
-                raw_size        = excluded.raw_size,
-                cached_at       = excluded.cached_at,
-                to_addrs        = excluded.to_addrs,
-                cc_addrs        = excluded.cc_addrs,
-                attachments     = excluded.attachments",
+                body_text          = excluded.body_text,
+                body_html          = excluded.body_html,
+                has_attachments    = excluded.has_attachments,
+                raw_size           = excluded.raw_size,
+                cached_at          = excluded.cached_at,
+                to_addrs           = excluded.to_addrs,
+                cc_addrs           = excluded.cc_addrs,
+                attachments        = excluded.attachments,
+                protection         = excluded.protection,
+                signature_status   = excluded.signature_status,
+                signer_fingerprint = excluded.signer_fingerprint",
             params![
                 email.account_id,
                 email.folder,
@@ -1615,6 +1620,9 @@ impl Cache {
                 to_json,
                 cc_json,
                 attachments_json,
+                email.protection,
+                email.signature_status,
+                email.signer_fingerprint,
             ],
         )?;
         tx.commit()?;
@@ -1649,7 +1657,8 @@ impl Cache {
                         m.is_read, m.is_starred,
                         b.body_text, b.body_html, b.has_attachments,
                         b.to_addrs, b.cc_addrs, b.attachments,
-                        m.message_id, m.in_reply_to, m.references_ids
+                        m.message_id, m.in_reply_to, m.references_ids,
+                        b.protection, b.signature_status, b.signer_fingerprint
                  FROM messages m
                  INNER JOIN message_bodies b USING (account_id, folder, uid)
                  WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
@@ -1683,6 +1692,9 @@ impl Cache {
                         message_id: r.get(11)?,
                         in_reply_to: r.get(12)?,
                         references_ids,
+                        protection: r.get(14)?,
+                        signature_status: r.get(15)?,
+                        signer_fingerprint: r.get(16)?,
                     })
                 },
             )
@@ -2281,6 +2293,9 @@ mod tests {
             message_id: None,
             in_reply_to: None,
             references_ids: Vec::new(),
+            protection: None,
+            signature_status: None,
+            signer_fingerprint: None,
         }
     }
 

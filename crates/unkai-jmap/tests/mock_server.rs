@@ -408,6 +408,8 @@ async fn test_send_email() {
         skip_sent_copy: false,
         in_reply_to: None,
         references: vec![],
+        encryption_mode: None,
+        signing_enabled: false,
     };
 
     client

@@ -264,5 +264,25 @@
   "folder_name_drafts": "Entwürfe",
   "folder_name_junk": "Spam",
   "folder_name_archive": "Archiv",
-  "folder_name_trash": "Papierkorb"
+  "folder_name_trash": "Papierkorb",
+
+  "encryption_section_title": "Ende-zu-Ende-Verschlüsselung",
+  "encryption_status_loading": "Wird geladen…",
+  "encryption_active_key_label": "Aktiver OpenPGP-Schlüssel-Fingerabdruck",
+  "encryption_remove_button": "Schlüssel entfernen",
+  "encryption_replace_button": "Ersetzen…",
+  "encryption_no_key_explanation": "Importiere einen privaten OpenPGP-Schlüssel, um ausgehende E-Mails dieses Kontos zu signieren und eingehende zu entschlüsseln. Der ASCII-armierte Schlüssel wird im Schlüsselbund des Betriebssystems gespeichert; die Passphrase wird nicht behalten.",
+  "encryption_import_button": "Privaten Schlüssel importieren…",
+  "encryption_paste_label": "Armierten privaten OpenPGP-Schlüssel einfügen",
+  "encryption_passphrase_label": "Passphrase",
+  "encryption_passphrase_placeholder": "Wird benötigt, um den Schlüssel zu entsperren",
+  "encryption_passphrase_hint": "Die Passphrase wird einmal zur Validierung verwendet und dann verworfen. Compose fragt sie bei jeder verschlüsselten Sendung erneut ab.",
+  "encryption_import_submit": "Importieren",
+  "encryption_import_cancel": "Abbrechen",
+
+  "mail_view_cannot_decrypt_banner": "Diese Nachricht ist verschlüsselt. Der Server liefert die Rohbytes nicht aus, daher kann sie hier nicht entschlüsselt werden – öffne sie über IMAP oder einen Desktop-PGP-Client.",
+  "mail_view_chip_decrypted": "Entschlüsselt",
+  "mail_view_chip_signed_valid": "Signiert von {fp}",
+  "mail_view_chip_signed_invalid": "Signatur ungültig",
+  "mail_view_chip_signed_unknown": "Signiert (Unterzeichner unbekannt)"
 }

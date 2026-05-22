@@ -405,6 +405,18 @@ pub struct Account {
     /// pre-115 behaviour for users who haven't set it.
     #[serde(default)]
     pub person_name: Option<String>,
+    /// Hex fingerprint of the OpenPGP private key stored for this
+    /// account (#57).  Display-only hint that a key exists; the
+    /// armored key material itself lives in the OS keychain under
+    /// the service `unkai-mail-pgp-private-key`, keyed by
+    /// `account_id`, with the passphrase under
+    /// `unkai-mail-pgp-passphrase` (set in Phase 4).  Surfaced in
+    /// the AccountSettings "Encryption Keys" panel as
+    /// "Key 9F2A…AAAA" so the user can confirm the right key is
+    /// active without having to unlock the keychain.  `None`
+    /// when the user hasn't imported a key for this account yet.
+    #[serde(default)]
+    pub pgp_key_fingerprint: Option<String>,
 }
 
 /// One TLS leaf certificate the user has chosen to trust for an
@@ -581,6 +593,29 @@ pub struct Email {
     /// (#277).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references_ids: Vec<String>,
+    /// Cryptographic protection detected on this message (#57).
+    /// Kebab-case string form of `unkai_crypto::Protection`:
+    /// `"signed" | "encrypted" | "signed-and-encrypted"`.  Stored
+    /// as a string rather than the typed enum to keep
+    /// `unkai-core` independent of `unkai-crypto` and to match
+    /// the existing JSON-over-IPC convention (e.g. `replied_kind`).
+    /// `None` = plain message or legacy cache row that pre-dates
+    /// this field; the UI renders no chip in either case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection: Option<String>,
+    /// Signature-verification outcome (#57).  Kebab-case string
+    /// form of `unkai_crypto::SignatureStatus`:
+    /// `"valid" | "invalid" | "unknown-signer"`.  `None` when
+    /// the message wasn't signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_status: Option<String>,
+    /// Hex fingerprint of the verified signer (#57).  Only set
+    /// when `signature_status == Some("valid")` *and* the
+    /// signer's public key was in our trusted set; otherwise
+    /// `None`.  Surfaced to the UI as "signed by 9F2A…AAAA"
+    /// so the user can compare against the expected sender.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_fingerprint: Option<String>,
 }
 
 /// Metadata for one attachment on a received email.
@@ -698,6 +733,22 @@ pub struct OutgoingEmail {
     /// original mails.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,
+    /// End-to-end encryption mode for this send (#57).  Kebab-case
+    /// string: `"pgp"` triggers the SMTP layer to wrap the built
+    /// MIME as RFC 3156 PGP/MIME using the account's signing key
+    /// and the recipients' cached public keys.  Future `"smime"`
+    /// will trigger RFC 8551 enveloped-data wrapping (#338).
+    /// `None` = plaintext, the historical behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_mode: Option<String>,
+    /// Sign this message with the sending account's OpenPGP key (#57).
+    /// Independent of `encryption_mode`: a message can be signed
+    /// without being encrypted (`multipart/signed`), encrypted
+    /// without being signed (encrypt-only), or both.  Defaults to
+    /// `false` so existing send call sites that don't set it
+    /// preserve the historical plaintext behaviour.
+    #[serde(default)]
+    pub signing_enabled: bool,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body

@@ -485,6 +485,52 @@ impl JmapClient {
         let is_starred = email.keywords.contains_key("$flagged");
         let has_attachments = email.has_attachment;
 
+        // PGP/MIME detection on JMAP (#57): the server has already
+        // parsed the message into `bodyValues`, so we can't get at
+        // the raw `multipart/encrypted` MIME structure cheaply.
+        // Instead we sniff for the OpenPGP armor headers in the
+        // body text — if the server returned the application/
+        // octet-stream content as a body part (which Fastmail and
+        // others do), the value starts with `-----BEGIN PGP MESSAGE-----`.
+        //
+        // When we recognise that signature, we mark the message as
+        // encrypted-cannot-decrypt: the MailView banner kicks in
+        // and tells the user to open the message via the IMAP path
+        // (or a desktop client) for decryption.  Properly decrypting
+        // server-side requires an extra `Blob/get` round-trip and
+        // running the recovered raw bytes through
+        // `unkai_imap::parse_eml_bytes_with_crypto`; that's a real
+        // follow-up tracked under #57 once we've validated the
+        // banner UX with real users.
+        let looks_pgp_encrypted = body_text
+            .as_deref()
+            .map(|s| s.trim_start().starts_with("-----BEGIN PGP MESSAGE-----"))
+            .unwrap_or(false)
+            || body_html
+                .as_deref()
+                .map(|s| s.contains("-----BEGIN PGP MESSAGE-----"))
+                .unwrap_or(false);
+
+        let (protection, body_text, body_html) = if looks_pgp_encrypted {
+            tracing::info!(
+                "JMAP: message '{}' appears to be PGP-encrypted; flagging for banner",
+                email.id
+            );
+            // Replace the body with a deterministic marker the UI
+            // can match on — keeps the cache row meaningful even
+            // for users who never enable encryption.
+            (
+                Some("encrypted-cannot-decrypt".to_string()),
+                Some(
+                    "(encrypted message — open via IMAP or a PGP-capable client to decrypt)"
+                        .to_string(),
+                ),
+                None,
+            )
+        } else {
+            (None, body_text, body_html)
+        };
+
         info!("JMAP: fetched message '{}'", email.id);
 
         Ok(Email {
@@ -515,6 +561,9 @@ impl JmapClient {
             message_id: None,
             in_reply_to: None,
             references_ids: Vec::new(),
+            protection,
+            signature_status: None,
+            signer_fingerprint: None,
         })
     }
 

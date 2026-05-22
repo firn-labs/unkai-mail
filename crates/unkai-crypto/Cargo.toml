@@ -1,0 +1,16 @@
+[package]
+name = "unkai-crypto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+unkai-core.workspace = true
+serde.workspace = true
+tracing.workspace = true
+# Crate name on crates.io is `pgp`; we rename it locally to `rpgp`
+# to avoid talking past ourselves — "pgp" the crate vs "PGP" the
+# protocol family is one collision too many in code.
+rpgp = { package = "pgp", version = "0.19" }
+rand = { workspace = true }
+thiserror = { workspace = true }

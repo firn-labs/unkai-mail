@@ -980,6 +980,22 @@
   }
 
   let sending = $state(false)
+  // End-to-end encryption toggle (#57).  When true, the send IPC
+  // sets `encryption_mode = "pgp"` and `signing_enabled = true` on
+  // the OutgoingEmail payload and prompts the user for their PGP
+  // passphrase — pre-send modal below.  The toggle defaults off so
+  // the historical plaintext send path is untouched for accounts
+  // that haven't imported a key.
+  let encryptEnabled = $state(false)
+  // Inline passphrase entry shown when the user clicks Send with
+  // encryption on.  Cleared on submit and on cancel so a freshly-
+  // opened Compose never inherits a stale passphrase.
+  let pgpPassphrase = $state('')
+  /** `true` once the user has clicked Send with encryption on but
+   *  before they've supplied the passphrase.  Drives the inline
+   *  passphrase prompt block (rendered just above the Send
+   *  button). */
+  let awaitingPassphrase = $state(false)
   // `initialError` seeds the banner when Compose is re-opened
   // after a background send failure (#156).  Cleared by the next
   // `send()` validation pass — the user retrying is the implicit
@@ -1980,6 +1996,11 @@
           attachments: snap.attachments,
           in_reply_to: parentMessageId,
           references: newReferences,
+          // #57: when the encryption toggle is on, ask the SMTP
+          // layer to wrap as RFC-3156 PGP/MIME + inner-sign with
+          // the account's key.  Off → historical plaintext send.
+          encryption_mode: encryptEnabled ? 'pgp' : null,
+          signing_enabled: encryptEnabled,
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list
@@ -1993,7 +2014,17 @@
         // path doesn't reach this invoke, so cancelling leaves
         // the source row alone — what the user expects.
         outboxSource: snap.initialAtSend?.outboxSource ?? null,
+        // #57: passphrase that unlocks the account's PGP private
+        // key — captured from the inline prompt below.  Only
+        // meaningful when `encryption_mode == 'pgp'`; the backend
+        // ignores it for plaintext sends.  Cleared the moment the
+        // IPC resolves so it doesn't linger across re-renders.
+        pgpPassphrase: encryptEnabled ? pgpPassphrase : null,
       })
+      // Wipe the in-memory passphrase before yielding back to the
+      // outer flow so a successful send doesn't leave it sitting
+      // on the heap for the rest of Compose's lifetime.
+      pgpPassphrase = ''
       // Send was accepted into the local queue (#276 follow-up).
       // Hand the new row id to the parent so App.svelte can
       // surface it as the selected Outbox preview after an
@@ -2642,11 +2673,48 @@
     <span class="ctb-icon"><Icon name="save-draft" size={20} /></span>
     <span class="ctb-label">Save</span>
   </button>
+  <!-- #57 — end-to-end encryption.  Toggled per message; the inline
+       passphrase input below it appears when on, so the user has a
+       single place to opt into encryption + enter the passphrase
+       without a separate modal. -->
+  <button
+    type="button"
+    class="ctb"
+    class:active={encryptEnabled}
+    disabled={sending}
+    title={encryptEnabled
+      ? 'Encryption on — the message will be sent as PGP/MIME'
+      : 'Encrypt + sign this message with your account PGP key'}
+    aria-pressed={encryptEnabled}
+    onclick={() => {
+      encryptEnabled = !encryptEnabled
+      if (!encryptEnabled) {
+        pgpPassphrase = ''
+      }
+    }}
+  >
+    <span class="ctb-icon">
+      <Icon name={encryptEnabled ? 'encrypted' : 'lock'} size={20} />
+    </span>
+    <span class="ctb-label">{encryptEnabled ? 'Encrypted' : 'Plain'}</span>
+  </button>
+  {#if encryptEnabled}
+    <input
+      type="password"
+      class="input text-xs px-2 py-1 rounded-md w-48"
+      placeholder="PGP passphrase"
+      bind:value={pgpPassphrase}
+      disabled={sending}
+      autocomplete="off"
+    />
+  {/if}
   <button
     type="button"
     class="ctb-send"
-    disabled={sending}
-    title="Send the message"
+    disabled={sending || (encryptEnabled && !pgpPassphrase)}
+    title={encryptEnabled && !pgpPassphrase
+      ? 'Enter your PGP passphrase to send encrypted'
+      : 'Send the message'}
     onclick={send}
   >
     <span>{sending ? 'Sending…' : 'Send'}</span>

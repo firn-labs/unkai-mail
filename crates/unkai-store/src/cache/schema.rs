@@ -1084,6 +1084,61 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_messages_thread
         ON messages (account_id, folder, thread_id);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v32 → v33: end-to-end mail encryption metadata (#57).
+    //
+    // Three additions, all driven by the OpenPGP rollout:
+    //
+    // 1. `accounts.pgp_key_fingerprint` — hex fingerprint of the
+    //    user's own private signing/decryption key for this account.
+    //    The armored key bytes themselves live in the OS keychain
+    //    (`unkai-mail-pgp-private-key`); this column just carries
+    //    the fingerprint so the UI can display "Key 9F2A…AAAA"
+    //    without unlocking the keychain on every render.  `NULL`
+    //    means "no PGP key imported yet" — historical behaviour
+    //    rolls forward unchanged.
+    //
+    // 2. `message_bodies.{protection,signature_status,signer_fingerprint}`
+    //    — three nullable text columns capturing the crypto state of
+    //    an inbound message at decrypt/verify time.  Populated by
+    //    the IMAP / JMAP receive path (Phases 5 + 7); legacy rows
+    //    stay `NULL` and the UI treats `NULL` as "plain message, no
+    //    chip".  Stored as plain text strings rather than enum codes
+    //    so the schema stays self-explanatory and matches the
+    //    existing `replied_kind` precedent.
+    //
+    // 3. `pgp_public_keys` — local cache of trusted recipients'
+    //    OpenPGP public keys.  Keyed by `fingerprint` (the
+    //    canonical OpenPGP identifier) with a secondary index on
+    //    `email` so the Compose layer can answer "do we have a key
+    //    for bob@example.com?" in one indexed lookup.  `source`
+    //    records where the key came from (`'vcard'` for keys
+    //    auto-imported from a contact's vCard KEY property,
+    //    `'manual'` for paste-in-the-key, `'inbound-message'` for
+    //    autocrypt-style discovery from a signed inbound mail) so
+    //    a future UI can show provenance.  No FK to anything — the
+    //    trust model is "key fingerprint, period"; the email
+    //    column is a hint for lookup, not a constraint.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE accounts
+        ADD COLUMN pgp_key_fingerprint TEXT;
+
+    ALTER TABLE message_bodies ADD COLUMN protection TEXT;
+    ALTER TABLE message_bodies ADD COLUMN signature_status TEXT;
+    ALTER TABLE message_bodies ADD COLUMN signer_fingerprint TEXT;
+
+    CREATE TABLE pgp_public_keys (
+        fingerprint   TEXT NOT NULL PRIMARY KEY,
+        email         TEXT,
+        armored_key   TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        added_at      INTEGER NOT NULL
+    );
+
+    CREATE INDEX pgp_public_keys_by_email
+        ON pgp_public_keys (email);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

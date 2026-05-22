@@ -16,6 +16,7 @@
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
+  import EncryptionSettings from './EncryptionSettings.svelte'
   import {
     openSignatureEditorInStandaloneWindow,
     SIGNATURE_POPOUT_CLOSED_EVENT,
@@ -109,6 +110,12 @@
     sort_order?: number
     /** Human's full name for outbound From: header (#115). */
     person_name?: string | null
+    /** Uppercase hex fingerprint of the account's imported OpenPGP
+     *  private key (#57).  Display-only — the armored key itself
+     *  lives in the OS keychain.  `null` / undefined means no key
+     *  imported; the AccountSettings encryption section then
+     *  surfaces the "Import private key" affordance. */
+    pgp_key_fingerprint?: string | null
   }
 
   interface TrustedCert {
@@ -2281,6 +2288,12 @@
                 name contains the keyword.
               </p>
             </div>
+
+            <!-- End-to-end mail encryption (#57). -->
+            <EncryptionSettings
+              account={{ id: account.id, email: account.email }}
+              oncrypto_changed={() => { void loadAccounts() }}
+            />
           </div>
         {/each}
       </div>

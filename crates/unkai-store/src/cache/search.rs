@@ -469,6 +469,9 @@ mod tests {
             message_id: None,
             in_reply_to: None,
             references_ids: Vec::new(),
+            protection: None,
+            signature_status: None,
+            signer_fingerprint: None,
         }
     }
 

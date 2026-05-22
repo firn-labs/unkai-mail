@@ -55,6 +55,23 @@ pub enum UnkaiError {
     #[error("CalDAV write forbidden: {0}")]
     CalDavWriteForbidden(String),
 
+    /// End-to-end crypto operation failed (PGP/MIME or S/MIME).  Covers
+    /// malformed key material, decryption failures, signature-verification
+    /// errors, passphrase prompt failures, etc.  Kept as a single variant
+    /// because the UI surfaces one toast either way — the wrapped string
+    /// carries the specifics for the log line.  Issue #57.
+    #[error("Crypto error: {0}")]
+    Crypto(String),
+
+    /// We were asked to encrypt to a recipient whose public key isn't in
+    /// our local store and isn't carried on their vCard.  Distinct from
+    /// `Crypto` so the Compose layer can prompt for a paste-in-the-key
+    /// affordance instead of surfacing a raw "no key for bob@…" string.
+    /// The wrapped value is the recipient address that's missing.
+    /// Issue #57.
+    #[error("No encryption key available for recipient: {0}")]
+    CryptoKeyNotFound(String),
+
     #[error("{0}")]
     Other(String),
 }
