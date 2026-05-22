@@ -226,7 +226,13 @@
       // user could leave open.
       decryptPassphrase = ''
     } catch (e: any) {
-      decryptError = formatError(e) || 'Decrypt failed'
+      // Strip the `Crypto: ` variant prefix from UnkaiError so the
+      // user sees a clean sentence in the badge ("Wrong encryption
+      // passphrase") rather than "Crypto: Wrong encryption
+      // passphrase".  Log-side errors still carry the prefix via
+      // the IPC channel, so debugging info isn't lost.
+      const raw = formatError(e) || 'Decrypt failed'
+      decryptError = raw.replace(/^Crypto:\s*/i, '')
     } finally {
       decrypting = false
     }

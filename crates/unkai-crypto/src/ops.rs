@@ -223,7 +223,22 @@ pub fn decrypt_and_verify(
 
     let mut decrypted = msg
         .decrypt(&decrypt_key.password(), &decrypt_key.inner)
-        .map_err(|e| UnkaiError::Crypto(format!("Decryption failed: {e}")))?;
+        .map_err(|e| {
+            // rpgp surfaces a wrong passphrase as `missing key`: the
+            // locked secret packets can't be unlocked, so no key is
+            // "available" for the ESK to match against and rpgp gives
+            // up.  In practice this is by far the most common cause
+            // of `decrypt` failing for users who already imported a
+            // valid key, so translate it into a sentence the user
+            // can act on.  Anything else falls through with the
+            // original rpgp message so logs stay useful.
+            let raw = format!("{e}").to_lowercase();
+            if raw.contains("missing key") {
+                UnkaiError::Crypto("Wrong encryption passphrase".into())
+            } else {
+                UnkaiError::Crypto(format!("Decryption failed: {e}"))
+            }
+        })?;
 
     let was_signed = decrypted.is_one_pass_signed();
 
