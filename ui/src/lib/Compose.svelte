@@ -2414,7 +2414,21 @@
 
 {#snippet composeBody()}
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-2">
-      <h2 class="text-base font-semibold">New message</h2>
+      <div class="flex items-center gap-2 min-w-0">
+        <h2 class="text-base font-semibold whitespace-nowrap">New message</h2>
+        <!-- #57 — Encrypted indicator promoted out of the ribbon
+             so the user sees the state from anywhere in the
+             window, not just from the send-actions row. -->
+        {#if encryptEnabled}
+          <span
+            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
+            title="This message will be sent as PGP/MIME"
+          >
+            <Icon name="encrypted" size={14} />
+            <span>Encrypted</span>
+          </span>
+        {/if}
+      </div>
       <div class="flex items-center gap-2">
         {#if !inStandaloneWindow}
           <!-- Pop the modal out into its own resizable window (#110).
@@ -2683,22 +2697,10 @@
     <span class="ctb-icon"><Icon name="save-draft" size={20} /></span>
     <span class="ctb-label">Save</span>
   </button>
-  <!-- #57 — the encryption controls live on their own ribbon tab
-       (see `encryptionTabContent`); we surface a compact indicator
-       here when encryption is *on* so the user can tell at a
-       glance from any tab whether the next Send will be encrypted.
-       Clicking the indicator jumps to the Encryption tab if the
-       editor wires the ribbon tab API into it; for now it's a
-       read-only chip. -->
-  {#if encryptEnabled}
-    <span
-      class="ctb-indicator inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
-      title="This message will be sent as PGP/MIME"
-    >
-      <Icon name="encrypted" size={14} />
-      <span>Encrypted</span>
-    </span>
-  {/if}
+  <!-- #57 — the Encrypted indicator pill lives next to the
+       "New Message" title in the header (see Compose's modal
+       header below).  Send-actions row stays focused on the two
+       commit buttons. -->
   <button
     type="button"
     class="ctb-send"
@@ -2761,12 +2763,6 @@
         disabled={sending}
         autocomplete="off"
       />
-    </div>
-    <div class="px-2 text-xs text-surface-400 max-w-md leading-snug">
-      The passphrase unlocks your account's OpenPGP private key for this one
-      send.  It isn't stored and the field clears as soon as the send
-      resolves.  Recipients without a cached public key will trigger a
-      "no key" error — paste theirs into Settings → Encryption first.
     </div>
   {/if}
 {/snippet}
