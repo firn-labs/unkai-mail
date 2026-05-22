@@ -505,6 +505,52 @@ impl Cache {
     /// sync will move the token forward and will simply find no
     /// changes for the row we just wrote (or report it as our own
     /// edit, also fine).
+    /// Pull every cached `vcard_raw` whose `emails_json` mentions the
+    /// given address (#57 follow-up).  Used by the encrypted-send
+    /// path's fallback: when the recipient isn't in the dedicated
+    /// `pgp_public_keys` cache, scan the user's contacts for a vCard
+    /// that has the recipient as one of its emails and re-parse it
+    /// for a `KEY:` value.
+    ///
+    /// The match is performed with a LOWER + LIKE prefilter on the
+    /// JSON blob (no dedicated email index on `contacts`) plus a
+    /// second JSON-parse + case-insensitive equality check in Rust
+    /// to weed out false positives from substring matches.  The
+    /// caller does the actual vCard parsing because re-using
+    /// `unkai_carddav` here would pull the carddav crate into
+    /// `unkai-store`'s dep tree for one helper.
+    pub fn find_contact_vcards_with_email(&self, email: &str) -> Result<Vec<String>, CacheError> {
+        let conn = self.conn()?;
+        // The LIKE pattern is a *prefilter*: it knocks down the
+        // candidate set cheaply on the JSON text before we burn
+        // cycles deserialising.  The `LOWER` makes it case-
+        // insensitive so `Alice@Example.com` cached under a
+        // mixed-case vCard still matches the lowercase recipient
+        // address.
+        let needle = format!("%{}%", email.to_ascii_lowercase());
+        let mut stmt = conn.prepare(
+            "SELECT emails_json, vcard_raw
+             FROM contacts
+             WHERE LOWER(emails_json) LIKE ?1",
+        )?;
+        let rows = stmt.query_map(params![needle], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let target = email.to_ascii_lowercase();
+        let mut out = Vec::new();
+        for r in rows {
+            let (emails_json, vcard_raw) = r?;
+            let parsed: Vec<unkai_core::models::ContactEmail> =
+                serde_json::from_str(&emails_json).unwrap_or_default();
+            // Confirm the LIKE wasn't a fluke — only return vcards
+            // whose parsed email list actually contains the target.
+            if parsed.iter().any(|e| e.value.eq_ignore_ascii_case(&target)) {
+                out.push(vcard_raw);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn upsert_single_contact(
         &self,
         nc_account_id: &str,

@@ -12001,26 +12001,92 @@ impl TauriCryptoBridge {
     }
 
     /// Resolve `recipient_emails` to the cached public keys we hold for
-    /// each address.  Returns `CryptoKeyNotFound` on the first
-    /// recipient with no cached key so the Compose layer can prompt
-    /// for a paste — same contract as the trait doc on
-    /// `CryptoBridge::encrypt`.
+    /// each address.  Two-stage lookup:
+    ///   1. The dedicated `pgp_public_keys` cache (fast path — hit on
+    ///      any address whose key was imported via the AccountSettings
+    ///      panel, the Compose paste flow, or the auto-import from a
+    ///      vCard `KEY:` property on the last CardDAV sync).
+    ///   2. Fallback: scan the `contacts` table for a vCard that has
+    ///      this recipient as one of its emails *and* carries a
+    ///      `KEY:` value.  Covers the case where the user added a
+    ///      key directly via the contact form's Encryption section
+    ///      but the post-save push into `pgp_public_keys` failed
+    ///      silently (#57 follow-up — was the symptom that made this
+    ///      fallback necessary in the first place).  On success the
+    ///      key is best-effort upserted into `pgp_public_keys` so
+    ///      the next send hits the fast path.
+    ///
+    /// Returns `CryptoKeyNotFound` only when *both* stages come up
+    /// empty so the Compose layer can prompt the user to paste a key.
     fn collect_recipient_keys(
         &self,
         recipient_emails: &[String],
     ) -> Result<Vec<unkai_crypto::PublicKey>, UnkaiError> {
         let mut out = Vec::with_capacity(recipient_emails.len());
         for email in recipient_emails {
+            // Stage 1 — fast path against pgp_public_keys.
             let rows = self
                 .cache
                 .get_pgp_public_keys_for_email(email)
                 .map_err(UnkaiError::from)?;
-            let row = rows
-                .into_iter()
-                .next()
-                .ok_or_else(|| UnkaiError::CryptoKeyNotFound(email.clone()))?;
-            let key = unkai_crypto::parse_public_key(row.armored_key.as_bytes())?;
-            out.push(key);
+            if let Some(row) = rows.into_iter().next() {
+                let key = unkai_crypto::parse_public_key(row.armored_key.as_bytes())?;
+                out.push(key);
+                continue;
+            }
+
+            // Stage 2 — scan vCards.  `find_contact_vcards_with_email`
+            // already filters down to vCards whose email list
+            // contains the recipient, so this loop is bounded by
+            // however many contacts share this address (typically 1).
+            let vcards = self
+                .cache
+                .find_contact_vcards_with_email(email)
+                .map_err(UnkaiError::from)?;
+            let mut found: Option<unkai_crypto::PublicKey> = None;
+            for vcard_raw in vcards {
+                let parsed = match unkai_carddav::parse_vcard(&vcard_raw) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                for raw_key in parsed.keys {
+                    let armored = match decode_vcard_key_value(&raw_key) {
+                        Some(b) => b,
+                        None => continue,
+                    };
+                    let key = match unkai_crypto::parse_public_key(&armored) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Skipping unparseable PGP key on vCard for {email}: {e}"
+                            );
+                            continue;
+                        }
+                    };
+                    // Best-effort warm the dedicated cache so the
+                    // next send for this recipient hits stage 1.
+                    let armored_string =
+                        String::from_utf8(armored.clone()).unwrap_or_else(|_| String::new());
+                    if !armored_string.is_empty() {
+                        let _ = self.cache.upsert_pgp_public_key(&PgpPublicKeyRow {
+                            fingerprint: key.fingerprint(),
+                            email: Some(email.clone()),
+                            armored_key: armored_string,
+                            source: PgpKeySource::Vcard,
+                            added_at: chrono::Utc::now().timestamp(),
+                        });
+                    }
+                    found = Some(key);
+                    break;
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            match found {
+                Some(key) => out.push(key),
+                None => return Err(UnkaiError::CryptoKeyNotFound(email.clone())),
+            }
         }
         Ok(out)
     }
