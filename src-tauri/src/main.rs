@@ -6819,6 +6819,65 @@ async fn fetch_message_inner(
     Ok(email)
 }
 
+/// Decrypt an encrypted message on demand (#57).
+///
+/// Called by MailView when the user clicks "Decrypt" on a message
+/// the receive path marked `protection = "encrypted"`.  Re-fetches
+/// the raw bytes from IMAP (no cache shortcut yet — we never
+/// persisted the armored ciphertext), composes a
+/// `TauriCryptoBridge` from the freshly-prompted passphrase, and
+/// runs the bytes through `parse_eml_bytes_with_crypto` so
+/// decryption + re-parse happen in one place.
+///
+/// IMAP flags (Seen / Flagged) ride along by re-fetching the
+/// envelope via `fetch_message` first and overlaying them onto the
+/// decrypted body — keeps the read state honest for the cache
+/// write that follows.  JMAP isn't wired into this path yet; that's
+/// the same banner-fallback case the JMAP receive path already
+/// surfaces.
+#[tauri::command]
+async fn decrypt_message(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    pgp_passphrase: String,
+    cache: State<'_, Cache>,
+) -> Result<Email, UnkaiError> {
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Err(UnkaiError::Protocol(
+            "JMAP encrypted-message decryption needs Blob/get plumbing — \
+             switch the account to IMAP to decrypt locally"
+                .into(),
+        ));
+    }
+
+    let bridge = TauriCryptoBridge::for_account(&account_id, &pgp_passphrase, (*cache).clone())?;
+
+    let mut client = connect_imap(&account).await?;
+    // Get IMAP flags + envelope from one fetch, then the raw bytes
+    // from a second on the same session so we can hand the bytes to
+    // the bridge-aware parser without losing the IMAP-level read /
+    // flagged state.
+    let envelope_email = client.fetch_message(&folder, uid, &account_id).await?;
+    let raw = client.fetch_raw_message(&folder, uid).await?;
+    let _ = client.logout().await;
+
+    let id = format!("{folder}:{uid}");
+    let mut decrypted =
+        unkai_imap::parse_eml_bytes_with_crypto(&raw, &id, &account_id, &folder, Some(&bridge))?;
+    // Overlay IMAP flags so the cache write below doesn't reset
+    // them — `parse_eml_bytes_with_crypto` defaults to is_read=true
+    // when it has no IMAP context.
+    decrypted.is_read = envelope_email.is_read;
+    decrypted.is_starred = envelope_email.is_starred;
+
+    if let Err(e) = cache.upsert_message(&decrypted) {
+        tracing::warn!("cache.upsert_message after decrypt failed: {e}");
+    }
+    Ok(decrypted)
+}
+
 /// Download the decoded bytes of a single attachment on a message.
 ///
 /// The UI renders attachment metadata from the (cached or freshly
@@ -13015,6 +13074,8 @@ fn main() {
             pgp_remove_public_key,
             pgp_list_public_keys,
             pgp_get_keys_for_email,
+            // #57 — on-demand decrypt for inbound PGP/MIME messages
+            decrypt_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Unkai");

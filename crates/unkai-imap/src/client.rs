@@ -910,6 +910,41 @@ impl ImapClient {
         })
     }
 
+    /// Fetch the raw RFC 5322 bytes for a single message, with no
+    /// parsing.  Used by the encrypted-message decrypt flow (#57) at
+    /// the Tauri layer: it builds a `CryptoBridge` from the user's
+    /// freshly-prompted passphrase and feeds the bytes here to
+    /// `parse_eml_bytes_with_crypto` so the decryption + re-parse
+    /// happens in one place.  Mirrors the wire shape of
+    /// `fetch_message` exactly (UID FETCH BODY.PEEK[]) — same FOLDER
+    /// SELECT cost, same `MessageGone` semantics, just no parse step.
+    pub async fn fetch_raw_message(
+        &mut self,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Vec<u8>, UnkaiError> {
+        let _ = self.select_folder(folder).await?;
+
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| UnkaiError::Protocol("Session is closed".into()))?;
+
+        let fetches: Vec<_> = session
+            .uid_fetch(uid.to_string(), "(BODY.PEEK[])")
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("UID FETCH failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to read UID FETCH: {e}")))?;
+
+        let fetch = fetches.into_iter().next().ok_or(UnkaiError::MessageGone)?;
+        let raw = fetch
+            .body()
+            .ok_or_else(|| UnkaiError::Protocol("FETCH returned no body".into()))?;
+        Ok(raw.to_vec())
+    }
+
     /// Fetch a single full message (headers + body) by its UID.
     ///
     /// This uses UID FETCH BODY.PEEK[] to grab the entire raw RFC 5322 message,
@@ -1107,6 +1142,20 @@ impl ImapClient {
             .map(parse_references_header)
             .unwrap_or_default();
 
+        // PGP/MIME detection (#57).  Stamping `protection` here even
+        // without a bridge lets MailView render a Decrypt affordance
+        // and the inline chips instead of silently falling back to an
+        // empty body (which is what the user sees today when an
+        // encrypted message lands — the application/octet-stream
+        // ciphertext has no text/plain peer, so `body_text` is
+        // `None`).  The Tauri layer's `decrypt_message` command will
+        // re-fetch with a bridge to actually populate the body.
+        let protection = match detect_pgp_mime_envelope(raw)? {
+            Some(PgpMimeEnvelope::Encrypted { .. }) => Some("encrypted".to_string()),
+            Some(PgpMimeEnvelope::Signed) => Some("signed".to_string()),
+            None => None,
+        };
+
         Ok(Email {
             id: format!("{folder}:{uid}"),
             account_id: account_id.to_string(),
@@ -1125,9 +1174,12 @@ impl ImapClient {
             message_id,
             in_reply_to,
             references_ids,
-            // See note in `parse_eml_bytes`: filled in by the
-            // Phase 5 receive-path interceptor; default-None here.
-            protection: None,
+            protection,
+            // Inner-signature fields stay None until a bridge is
+            // available — the unauthenticated fetch path can only
+            // tell the user "this is encrypted", not "and signed by
+            // X".  `decrypt_message` overwrites all three once the
+            // passphrase comes in.
             signature_status: None,
             signer_fingerprint: None,
         })

@@ -192,6 +192,46 @@
   let loading = $state(false)
   let error = $state('')
 
+  /** #57 — PGP decrypt prompt state.  Lives in MailView (not in
+   *  the chip subcomponent) so the IPC result swaps the local
+   *  `email` state directly, no event plumbing.  All three are
+   *  reset whenever the user opens a different message (see the
+   *  `$effect` in `load()`) so a passphrase typed on one mail
+   *  never leaks into another. */
+  let decryptPassphrase = $state('')
+  let decrypting = $state(false)
+  let decryptError = $state('')
+
+  async function runDecrypt() {
+    if (!email || !decryptPassphrase || decrypting) {
+      return
+    }
+    decrypting = true
+    decryptError = ''
+    try {
+      // Pull `(account, folder, uid)` off the existing email
+      // record — the message stays selected while we re-fetch,
+      // so the props the parent component holds for `accountId`,
+      // `folder`, and `uid` haven't changed.
+      const uidNum = Number(email.id.split(':').pop())
+      const decrypted = await invoke<Email>('decrypt_message', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid: uidNum,
+        pgpPassphrase: decryptPassphrase,
+      })
+      email = decrypted
+      // Clear the passphrase the moment the IPC resolves so it
+      // never lingers on the heap or in a DOM input that the
+      // user could leave open.
+      decryptPassphrase = ''
+    } catch (e: any) {
+      decryptError = formatError(e) || 'Decrypt failed'
+    } finally {
+      decrypting = false
+    }
+  }
+
   /** Pre-fetch persisted thumbnails for one message and seed
    *  the in-memory thumb cache so AttachmentThumb's first
    *  mount hits straight away (no bytesProvider call, no
@@ -343,6 +383,12 @@
     showImagesForMessage = false
     trustedSender = false
     whiteBackgroundOverride = null
+    // #57 — clear any in-flight decrypt state from the previous
+    // message; a passphrase the user typed for `mail A` must not
+    // ride along to `mail B`.
+    decryptPassphrase = ''
+    decryptError = ''
+    decrypting = false
 
     // Cache first — lets the reading pane paint instantly when the user
     // re-opens a previously read message (the common case).
@@ -1809,6 +1855,47 @@
         signatureStatus={email.signature_status}
         signerFingerprint={email.signer_fingerprint}
       />
+      {#if (email.protection === 'encrypted' || email.protection === 'signed-and-encrypted')
+        && !email.body_text && !email.body_html}
+        <!-- #57 — Decrypt prompt.  Appears when the receive path
+             marked the message encrypted but body is empty (no
+             bridge was supplied on first fetch, by design — we
+             re-prompt for the passphrase on every decrypt). -->
+        <div
+          class="mt-2 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 text-sm flex flex-wrap items-center gap-2"
+        >
+          <span class="flex-1 min-w-48">
+            This message is encrypted with your OpenPGP key.  Enter your
+            passphrase to decrypt and view it.
+          </span>
+          <input
+            type="password"
+            class="input text-xs px-2 py-1 rounded-md w-48"
+            placeholder="PGP passphrase"
+            bind:value={decryptPassphrase}
+            disabled={decrypting}
+            autocomplete="off"
+            onkeydown={(e) => {
+              if (e.key === 'Enter' && decryptPassphrase) {
+                void runDecrypt()
+              }
+            }}
+          />
+          <button
+            type="button"
+            class="btn btn-sm preset-filled-primary"
+            disabled={decrypting || !decryptPassphrase}
+            onclick={() => void runDecrypt()}
+          >
+            {decrypting ? 'Decrypting…' : 'Decrypt'}
+          </button>
+        </div>
+        {#if decryptError}
+          <div class="mt-1 text-xs text-error-500" data-test="decrypt-error">
+            {decryptError}
+          </div>
+        {/if}
+      {/if}
       {#if email.to.length > 0}
         <div class="text-xs text-surface-500 mt-1">
           To: {email.to.join(', ')}
