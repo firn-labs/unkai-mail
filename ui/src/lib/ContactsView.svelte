@@ -127,6 +127,11 @@
     geo?: string | null
     timezone?: string | null
     categories?: string[]
+    /** #57 — armored OpenPGP `KEY:` values to round-trip through
+     *  the vCard.  Optional so callers that don't include the
+     *  field leave existing keys intact via the backend's
+     *  merge-over-cached-vCard semantics. */
+    keys?: string[]
   }
   interface AddressbookSummary {
     path: string
@@ -204,6 +209,14 @@
   let formTitle = $state('')
   let formBirthday = $state('')
   let formNote = $state('')
+  /** OpenPGP keys (#57).  One row per `KEY:` value on the
+   *  vCard — armored ASCII pasted by the user.  Same shape as
+   *  `formWebsites` so the add / remove / save patterns can be
+   *  reused.  Wrapped in an object because Svelte's `bind:value`
+   *  on a primitive `string` in an array can't write back through
+   *  `bind:` without a wrapping shape. */
+  let formKeys = $state<{ value: string }[]>([])
+
   /** Websites — one row per URL, mirroring the phone / email
    *  per-row pattern so the user can add and remove entries
    *  without juggling a multi-line textarea. */
@@ -900,6 +913,7 @@
     formBirthday = c.birthday ?? ''
     formNote = c.note ?? ''
     formWebsites = (c.urls ?? []).map((u) => ({ value: u }))
+    formKeys = (c.keys ?? []).map((k) => ({ value: k }))
     formAddresses = (c.addresses ?? []).map((a) => ({ ...a }))
     selectedPhotoBytes = null
     formPhotoMime = c.photo_mime ?? null
@@ -938,6 +952,7 @@
     formBirthday = ''
     formNote = ''
     formWebsites = []
+    formKeys = []
     formAddresses = []
     selectedPhotoBytes = null
     formPhotoMime = null
@@ -1110,6 +1125,13 @@
       urls: formWebsites
         .map((w) => w.value.trim())
         .filter((u) => u.length > 0),
+      // #57 — OpenPGP keys round-trip through the vCard's `KEY:`
+      // property.  Empty rows the user added but never filled in
+      // are dropped here so they don't end up as phantom KEY lines
+      // on the server.
+      keys: formKeys
+        .map((k) => k.value.trim())
+        .filter((v) => v.length > 0),
       // Strip empty rows so the user can't end up with a phantom
       // address from forgetting to fill in the slots they added.
       addresses: formAddresses.filter(
@@ -1270,6 +1292,12 @@
   function removeWebsite(idx: number) {
     formWebsites = formWebsites.filter((_, i) => i !== idx)
   }
+  function addKey() {
+    formKeys = [...formKeys, { value: '' }]
+  }
+  function removeKey(idx: number) {
+    formKeys = formKeys.filter((_, i) => i !== idx)
+  }
 
   // Shared option lists for the modern <Select> popover (#143).
   // Derived getters so paraglide-localised labels track the active
@@ -1387,6 +1415,31 @@
       || c.note?.trim()
     )
   }
+  function hasEncryptionDetails(c: Contact): boolean {
+    return (c.keys?.length ?? 0) > 0
+  }
+
+  /** Best-effort upsert of every newly-pasted public key into the
+   *  pgp_public_keys cache (#57).  We do this *after* a successful
+   *  contact save so Compose can find the key without waiting for
+   *  a CardDAV sync round-trip.  Failures are logged and ignored
+   *  per-key — a malformed paste shouldn't roll back the contact
+   *  edit, since the vCard write already succeeded.  The
+   *  `email_hint` ties the key to the contact's primary email so
+   *  the Compose recipient lookup resolves it. */
+  async function pushKeysToCryptoCache(contact: Contact) {
+    const primaryEmail = contact.email[0]?.value ?? null
+    for (const armored of contact.keys ?? []) {
+      try {
+        await invoke<string>('pgp_import_public_key', {
+          armoredKey: armored,
+          emailHint: primaryEmail,
+        })
+      } catch (e) {
+        console.warn('pgp_import_public_key failed for contact key', e)
+      }
+    }
+  }
 
   async function saveContact() {
     formError = ''
@@ -1414,6 +1467,10 @@
         // the user can immediately see the saved record without
         // a stray editable form sticking around.
         selectContact(created.id)
+        // #57 — best-effort push of any pasted PGP keys into the
+        // recipient-key cache so Compose can encrypt to this
+        // contact without waiting for the next CardDAV sync.
+        void pushKeysToCryptoCache(created)
       } else if (selectedId) {
         const updated = await invoke<Contact>('update_contact', {
           contactId: selectedId,
@@ -1423,6 +1480,7 @@
         // Re-select to refresh the view-mode display from the
         // cached row, then flip out of edit mode.
         selectContact(updated.id)
+        void pushKeysToCryptoCache(updated)
       }
     } catch (e) {
       formError = formatError(e) || 'Failed to save contact'
@@ -2343,6 +2401,22 @@
           </section>
         {/if}
 
+        {#if hasEncryptionDetails(selectedContact)}
+          <section class="contact-view-section">
+            <h4 class="contact-view-section-title">{m.contact_form_section_encryption()}</h4>
+            <div class="contact-view-block">
+              <span class="contact-view-block-label">{m.contact_form_label_pgp_keys()}</span>
+              {#each selectedContact.keys ?? [] as key, i (i)}
+                <div class="contact-view-row">
+                  <span class="contact-view-row-value font-mono text-xs break-all truncate">
+                    {key.length > 80 ? key.slice(0, 80) + '…' : key}
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </section>
+        {/if}
+
         {#if hasOtherDetails(selectedContact)}
           <section class="contact-view-section">
             <h4 class="contact-view-section-title">{m.contact_form_section_other()}</h4>
@@ -2376,6 +2450,7 @@
           && !hasCommunicationDetails(selectedContact)
           && !hasWorkDetails(selectedContact)
           && !hasAddressWebDetails(selectedContact)
+          && !hasEncryptionDetails(selectedContact)
           && !hasOtherDetails(selectedContact)}
           <p class="text-sm text-surface-500 italic">
             {m.contact_view_empty_state()}
@@ -2747,6 +2822,43 @@
                 title={m.contact_form_button_add_website()}
                 onclick={addWebsite}
               >+</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- ── Encryption (#57) ─────────────────────────────── -->
+        <details class="contact-form-section" open>
+          <summary class="contact-form-section-title">{m.contact_form_section_encryption()}</summary>
+          <div class="contact-form-section-body">
+            <div class="space-y-2">
+              <span class="text-sm font-medium block">{m.contact_form_label_pgp_keys()}</span>
+              {#each formKeys as key, i (i)}
+                <div class="flex items-start gap-2">
+                  <textarea
+                    class="input flex-1 rounded-md font-mono text-xs"
+                    rows="4"
+                    bind:value={key.value}
+                    placeholder={m.contact_form_placeholder_pgp_key()}
+                  ></textarea>
+                  <button
+                    type="button"
+                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    aria-label={m.contact_form_button_remove()}
+                    title={m.contact_form_button_remove()}
+                    onclick={() => removeKey(i)}
+                  ><Icon name="trash" size={14} /></button>
+                </div>
+              {/each}
+              <button
+                type="button"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                aria-label={m.contact_form_button_add_pgp_key()}
+                title={m.contact_form_button_add_pgp_key()}
+                onclick={addKey}
+              >+</button>
+              <p class="text-xs text-surface-400 leading-snug">
+                {m.contact_form_hint_pgp_keys()}
+              </p>
             </div>
           </div>
         </details>

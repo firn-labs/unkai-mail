@@ -283,5 +283,11 @@
   "mail_view_chip_decrypted": "Decrypted",
   "mail_view_chip_signed_valid": "Signed by {fp}",
   "mail_view_chip_signed_invalid": "Signature invalid",
-  "mail_view_chip_signed_unknown": "Signed (signer unknown)"
+  "mail_view_chip_signed_unknown": "Signed (signer unknown)",
+
+  "contact_form_section_encryption": "Encryption",
+  "contact_form_label_pgp_keys": "OpenPGP keys",
+  "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+  "contact_form_button_add_pgp_key": "Add a key",
+  "contact_form_hint_pgp_keys": "Paste an ASCII-armored OpenPGP public key. Round-trips through the contact's vCard and is also cached locally so Compose can encrypt to this address."
 }
