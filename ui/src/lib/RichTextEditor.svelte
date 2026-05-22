@@ -1609,18 +1609,35 @@
 
   /* ── Ribbon-style tab strip (#103 follow-up) ─────────────────── */
 
-  /* Horizontally-scrolling tab list (#57 follow-up).  Hides the
-     OS scrollbar because the ribbon already reads as a divided row
-     of clickable chips — a permanent scrollbar across the bottom
-     would compete with the tabs' active-state underline.  Users
-     still scroll via mouse wheel + horizontal touchpad swipe;
-     overflowing tabs also reveal the scrollbar momentarily during
-     interactive drag in browsers that support it. */
+  /* Horizontally-scrolling tab list (#57 follow-up).  Shows a thin
+     themed scrollbar only when the tab list actually overflows the
+     available width — the user needs the visual cue that more tabs
+     exist off to the side and the bar gives a draggable handle.
+     Kept thin (6px) so it doesn't compete with the tabs'
+     active-state underline; tinted to the surface palette so it
+     reads as ribbon chrome rather than browser default. */
   :global(.rt-tab-scroller) {
-    scrollbar-width: none; /* Firefox */
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: var(--color-surface-400) transparent;
+  }
+  :global(.dark .rt-tab-scroller) {
+    scrollbar-color: var(--color-surface-600) transparent;
   }
   :global(.rt-tab-scroller::-webkit-scrollbar) {
-    display: none; /* Chromium + WebKit */
+    height: 6px;
+  }
+  :global(.rt-tab-scroller::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+  :global(.rt-tab-scroller::-webkit-scrollbar-thumb) {
+    background-color: var(--color-surface-400);
+    border-radius: 3px;
+  }
+  :global(.dark .rt-tab-scroller::-webkit-scrollbar-thumb) {
+    background-color: var(--color-surface-600);
+  }
+  :global(.rt-tab-scroller::-webkit-scrollbar-thumb:hover) {
+    background-color: var(--color-surface-500);
   }
 
   /* Tab buttons.  Rounded-top chip with a primary-colour underline
