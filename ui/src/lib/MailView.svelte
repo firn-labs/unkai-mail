@@ -1854,6 +1854,7 @@
         protection={email.protection}
         signatureStatus={email.signature_status}
         signerFingerprint={email.signer_fingerprint}
+        decrypted={!!(email.body_text || email.body_html)}
       />
       {#if (email.protection === 'encrypted' || email.protection === 'signed-and-encrypted')
         && !email.body_text && !email.body_html}

@@ -17,10 +17,19 @@
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
 
-  let { protection, signatureStatus, signerFingerprint } = $props<{
+  let { protection, signatureStatus, signerFingerprint, decrypted } = $props<{
     protection?: string | null
     signatureStatus?: string | null
     signerFingerprint?: string | null
+    /** `true` when we actually have the plaintext body in hand
+     *  (either the message was plain to start with — in which case
+     *  the encrypt-side chips don't render at all — or the
+     *  decrypt-on-demand IPC has run and re-parsed the inner MIME).
+     *  Flips the encrypt chip from a closed-lock "Encrypted" pill
+     *  (still on the wire, awaiting passphrase) to an open-lock
+     *  "Decrypted" pill (unlocked locally).  See MailView, which
+     *  passes `!!(email.body_text || email.body_html)`. */
+    decrypted?: boolean
   }>()
 
   // Group the 4-char hex into pairs for readability ("9F2A AAAA")
@@ -49,19 +58,30 @@
        message was encrypted, signed, or both. -->
   <div class="flex flex-wrap gap-2 mt-1" data-test="crypto-chips">
     {#if protection === 'encrypted' || protection === 'signed-and-encrypted'}
-      <span
-        class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
-      >
-        <!-- Open-padlock variant of the shield: "we received this
-             encrypted and decrypted it locally for you to read".
-             Pairs with the closed-padlock chip MailList shows on
-             rows whose `protection === "encrypted"` — the same
-             shield silhouette, the lock state tells you whether
-             you're looking at the wire (closed) or the
-             decrypted view (open). -->
-        <Icon name="decrypted" size={14} />
-        {m.mail_view_chip_decrypted()}
-      </span>
+      {#if decrypted}
+        <!-- We have the plaintext — show the open-padlock variant
+             of the shield ("decrypted on this device").  Pairs
+             with the closed-padlock chip MailList shows on rows
+             whose body hasn't been unlocked yet: the same shield
+             silhouette, the lock state tells you which side of
+             the decrypt you're on. -->
+        <span
+          class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
+        >
+          <Icon name="decrypted" size={14} />
+          {m.mail_view_chip_decrypted()}
+        </span>
+      {:else}
+        <!-- Encrypted but not yet unlocked — closed padlock,
+             muted tone so it visually pairs with the inline
+             Decrypt prompt rendered below the chip strip. -->
+        <span
+          class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-warning-100 text-warning-800 dark:bg-warning-900/40 dark:text-warning-200"
+        >
+          <Icon name="encrypted" size={14} />
+          {m.mail_view_chip_encrypted()}
+        </span>
+      {/if}
     {/if}
     {#if protection === 'signed' || protection === 'signed-and-encrypted'}
       {#if signatureStatus === 'valid'}

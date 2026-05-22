@@ -281,6 +281,7 @@
 
   "mail_view_cannot_decrypt_banner": "This message is encrypted. The server didn't expose the raw bytes so it can't be decrypted here — open it via IMAP or a desktop PGP client.",
   "mail_view_chip_decrypted": "Decrypted",
+  "mail_view_chip_encrypted": "Encrypted",
   "mail_view_chip_signed_valid": "Signed by {fp}",
   "mail_view_chip_signed_invalid": "Signature invalid",
   "mail_view_chip_signed_unknown": "Signed (signer unknown)",
