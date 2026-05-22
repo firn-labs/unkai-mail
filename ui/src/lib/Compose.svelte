@@ -575,6 +575,16 @@
       iconName: 'meetings',
       content: meetingsTabContent,
     },
+    // #57 — End-to-end encryption tab.  Houses the encrypt toggle,
+    // passphrase prompt, and the per-account key status hint so the
+    // user can manage encryption in a dedicated surface instead of
+    // crowding the Send actions row.
+    {
+      id: 'encryption',
+      label: 'Encryption',
+      iconName: 'encrypted',
+      content: encryptionTabContent,
+    },
   ])
 
   /** Shares minted from this Compose during the current draft.
@@ -2673,17 +2683,52 @@
     <span class="ctb-icon"><Icon name="save-draft" size={20} /></span>
     <span class="ctb-label">Save</span>
   </button>
-  <!-- #57 — end-to-end encryption.  Toggled per message; the inline
-       passphrase input below it appears when on, so the user has a
-       single place to opt into encryption + enter the passphrase
-       without a separate modal. -->
+  <!-- #57 — the encryption controls live on their own ribbon tab
+       (see `encryptionTabContent`); we surface a compact indicator
+       here when encryption is *on* so the user can tell at a
+       glance from any tab whether the next Send will be encrypted.
+       Clicking the indicator jumps to the Encryption tab if the
+       editor wires the ribbon tab API into it; for now it's a
+       read-only chip. -->
+  {#if encryptEnabled}
+    <span
+      class="ctb-indicator inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
+      title="This message will be sent as PGP/MIME"
+    >
+      <Icon name="encrypted" size={14} />
+      <span>Encrypted</span>
+    </span>
+  {/if}
   <button
     type="button"
-    class="ctb"
+    class="ctb-send"
+    disabled={sending || (encryptEnabled && !pgpPassphrase)}
+    title={encryptEnabled && !pgpPassphrase
+      ? 'Open the Encryption tab and enter your PGP passphrase to send'
+      : 'Send the message'}
+    onclick={send}
+  >
+    <span>{sending ? 'Sending…' : 'Send'}</span>
+    <Icon name="sent" size={18} />
+  </button>
+{/snippet}
+
+<!-- Encryption tab panel — toggle + passphrase + account-key status
+     (#57).  Mirrors the visual style of the Attach / Meetings tab
+     panels above so it reads as another peer of the ribbon, not a
+     bolted-on dialog.  Lives on its own tab specifically so the
+     passphrase field isn't crowded into the Send actions row where
+     it doesn't fit. -->
+{#snippet encryptionTabContent()}
+  <!-- Primary toggle: a `rt-btn` so the encrypt toggle is visually
+       a sibling to the Attach / NC Files / Talk / Event buttons
+       in the other panels. -->
+  <button
+    type="button"
+    class="rt-btn"
     class:active={encryptEnabled}
-    disabled={sending}
     title={encryptEnabled
-      ? 'Encryption on — the message will be sent as PGP/MIME'
+      ? 'Encryption on — click to switch back to plaintext'
       : 'Encrypt + sign this message with your account PGP key'}
     aria-pressed={encryptEnabled}
     onclick={() => {
@@ -2693,33 +2738,37 @@
       }
     }}
   >
-    <span class="ctb-icon">
+    <span class="rt-btn-icon">
       <Icon name={encryptEnabled ? 'encrypted' : 'lock'} size={20} />
     </span>
-    <span class="ctb-label">{encryptEnabled ? 'Encrypted' : 'Plain'}</span>
+    <span class="rt-btn-label">{encryptEnabled ? 'Encrypted' : 'Encrypt'}</span>
   </button>
+  <!-- Passphrase entry only when encryption is on.  Same compact
+       input shape as the per-field text inputs the rest of Compose
+       uses, but inside the ribbon — keeps the user's hand close to
+       the Send button without crowding it. -->
   {#if encryptEnabled}
-    <input
-      type="password"
-      class="input text-xs px-2 py-1 rounded-md w-48"
-      placeholder="PGP passphrase"
-      bind:value={pgpPassphrase}
-      disabled={sending}
-      autocomplete="off"
-    />
+    <div class="flex items-center gap-2 px-2">
+      <label for="pgp-passphrase-input" class="text-xs text-surface-500 whitespace-nowrap">
+        PGP passphrase
+      </label>
+      <input
+        id="pgp-passphrase-input"
+        type="password"
+        class="input text-xs px-2 py-1 rounded-md w-56"
+        placeholder="Unlocks your account key"
+        bind:value={pgpPassphrase}
+        disabled={sending}
+        autocomplete="off"
+      />
+    </div>
+    <div class="px-2 text-xs text-surface-400 max-w-md leading-snug">
+      The passphrase unlocks your account's OpenPGP private key for this one
+      send.  It isn't stored and the field clears as soon as the send
+      resolves.  Recipients without a cached public key will trigger a
+      "no key" error — paste theirs into Settings → Encryption first.
+    </div>
   {/if}
-  <button
-    type="button"
-    class="ctb-send"
-    disabled={sending || (encryptEnabled && !pgpPassphrase)}
-    title={encryptEnabled && !pgpPassphrase
-      ? 'Enter your PGP passphrase to send encrypted'
-      : 'Send the message'}
-    onclick={send}
-  >
-    <span>{sending ? 'Sending…' : 'Send'}</span>
-    <Icon name="sent" size={18} />
-  </button>
 {/snippet}
 
 {#if showNcPicker}
