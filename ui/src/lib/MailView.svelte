@@ -1868,7 +1868,11 @@
         <div
           class="mt-2 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
         >
-          <p class="text-sm text-primary-800 dark:text-primary-200">
+          <!-- Explanation copy uses the same muted surface tone as
+               the From-line in the header so the badge reads as
+               *secondary information* rather than competing with
+               the subject for attention. -->
+          <p class="text-sm text-surface-600 dark:text-surface-400">
             This message is encrypted with your OpenPGP key.  Enter your
             passphrase to decrypt and view it.
           </p>
@@ -1886,9 +1890,15 @@
                 }
               }}
             />
+            <!-- Hover uses primary-600 (one shade darker than the
+                 Reply/Forward cluster's primary-500) and twice the
+                 background opacity so it visibly separates from the
+                 surrounding primary-tinted badge — at primary-500/15
+                 the hover was too close to the badge's primary-50
+                 background and read as no change at all. -->
             <button
               type="button"
-              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5 hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 shrink-0"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5 hover:bg-primary-600/25 hover:text-primary-700 hover:border-primary-600 dark:hover:text-primary-200 shrink-0"
               disabled={decrypting || !decryptPassphrase}
               onclick={() => void runDecrypt()}
               title="Decrypt this message"
