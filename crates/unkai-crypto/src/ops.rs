@@ -8,7 +8,10 @@
 //! layer and makes the round-trip tests in this module trivially
 //! human-readable when they fail.
 
-use rpgp::composed::{ArmorOptions, Deserializable, DetachedSignature, Message, MessageBuilder};
+use rpgp::composed::{
+    ArmorOptions, Deserializable, DetachedSignature, Message, MessageBuilder, SignedPublicKey,
+    SignedPublicSubKey,
+};
 use rpgp::crypto::hash::HashAlgorithm;
 use rpgp::crypto::sym::SymmetricKeyAlgorithm;
 use rpgp::types::KeyDetails;
@@ -63,9 +66,22 @@ pub fn encrypt(plaintext: &[u8], recipients: &[&PublicKey]) -> Result<Vec<u8>, U
         .seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
 
     for r in recipients {
-        builder
-            .encrypt_to_key(&mut rng, &r.inner)
-            .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key failed: {e}")))?;
+        // `pick_encryption_subkey` returns Some(subkey) when the
+        // primary is sign-only (Ed25519 / DSA), None when the
+        // primary is itself encryption-capable (RSA + a few older
+        // shapes).  The if-let dance is the cheapest way to feed
+        // two different concrete EncryptionKey types to the same
+        // builder call site without lifting the type into a `dyn
+        // EncryptionKey` (which the trait doesn't allow).
+        if let Some(subkey) = pick_encryption_subkey(&r.inner)? {
+            builder
+                .encrypt_to_key(&mut rng, subkey)
+                .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key (subkey) failed: {e}")))?;
+        } else {
+            builder
+                .encrypt_to_key(&mut rng, &r.inner)
+                .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key failed: {e}")))?;
+        }
     }
 
     let armored = builder
@@ -100,9 +116,22 @@ pub fn sign_and_encrypt(
         .seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
 
     for r in recipients {
-        builder
-            .encrypt_to_key(&mut rng, &r.inner)
-            .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key failed: {e}")))?;
+        // `pick_encryption_subkey` returns Some(subkey) when the
+        // primary is sign-only (Ed25519 / DSA), None when the
+        // primary is itself encryption-capable (RSA + a few older
+        // shapes).  The if-let dance is the cheapest way to feed
+        // two different concrete EncryptionKey types to the same
+        // builder call site without lifting the type into a `dyn
+        // EncryptionKey` (which the trait doesn't allow).
+        if let Some(subkey) = pick_encryption_subkey(&r.inner)? {
+            builder
+                .encrypt_to_key(&mut rng, subkey)
+                .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key (subkey) failed: {e}")))?;
+        } else {
+            builder
+                .encrypt_to_key(&mut rng, &r.inner)
+                .map_err(|e| UnkaiError::Crypto(format!("encrypt_to_key failed: {e}")))?;
+        }
     }
 
     builder.sign(
@@ -225,6 +254,43 @@ pub fn decrypt_and_verify(
         signature_status,
         signer_fingerprint,
     })
+}
+
+/// Look at a recipient certificate and return the subkey we should
+/// encrypt against — or `None` if the primary itself is encryption-
+/// capable, in which case the caller hands the primary cert
+/// directly to `encrypt_to_key`.
+///
+/// Modern OpenPGP certificates carry a *signing-only* primary
+/// (Ed25519 / EdDSA / DSA) plus one or more encryption-capable
+/// subkeys (ECDH on Curve25519, RSA, X25519, …) — the layout rpgp
+/// emits by default and the one Nextcloud's web UI and most
+/// mainstream tools produce.  Passing the whole `SignedPublicKey`
+/// to `encrypt_to_key` makes rpgp use the *primary*, which fails
+/// with `"EdDSALegacy is only used for signing"` for that common
+/// case.  We scan `public_subkeys` for the first encryption-capable
+/// entry instead.  An error means neither the primary nor any
+/// subkey can encrypt — the cert is signing-only and the caller
+/// should surface this as a real "no usable key for recipient"
+/// failure.
+fn pick_encryption_subkey(
+    cert: &SignedPublicKey,
+) -> Result<Option<&SignedPublicSubKey>, UnkaiError> {
+    if cert.algorithm().can_encrypt() {
+        return Ok(None);
+    }
+    cert.public_subkeys
+        .iter()
+        .find(|sk| sk.algorithm().can_encrypt())
+        .map(Some)
+        .ok_or_else(|| {
+            UnkaiError::Crypto(format!(
+                "Public key fp={:X} has no encryption-capable subkey \
+                 (primary algorithm {:?} is sign-only)",
+                cert.fingerprint(),
+                cert.algorithm()
+            ))
+        })
 }
 
 #[cfg(test)]
