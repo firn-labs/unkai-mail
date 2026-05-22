@@ -52,7 +52,14 @@
       <span
         class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
       >
-        <Icon name="encrypted" size={14} />
+        <!-- Open-padlock variant of the shield: "we received this
+             encrypted and decrypted it locally for you to read".
+             Pairs with the closed-padlock chip MailList shows on
+             rows whose `protection === "encrypted"` — the same
+             shield silhouette, the lock state tells you whether
+             you're looking at the wire (closed) or the
+             decrypted view (open). -->
+        <Icon name="decrypted" size={14} />
         {m.mail_view_chip_decrypted()}
       </span>
     {/if}

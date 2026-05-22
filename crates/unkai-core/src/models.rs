@@ -550,6 +550,16 @@ pub struct EmailEnvelope {
     /// `thread_id` (envelope hasn't been assigned a thread yet).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_total_count: Option<u32>,
+    /// Kebab-case `unkai_crypto::Protection` (#57) lifted from the
+    /// `message_bodies` row via a LEFT JOIN when the envelope is
+    /// read out of the cache.  Surfaces the encryption + signature
+    /// state of the message in the mail-list row so it can render
+    /// a shield-with-lock chip alongside the date — same data the
+    /// MailView header chip uses.  `None` for messages whose body
+    /// hasn't been fetched yet (the receive path stamps the
+    /// column on first full open) and for plain-text mail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection: Option<String>,
 }
 
 /// Represents an email message.

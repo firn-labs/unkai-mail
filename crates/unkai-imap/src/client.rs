@@ -888,6 +888,13 @@ impl ImapClient {
                     // envelopes don't know their thread identity yet.
                     thread_id: None,
                     thread_total_count: None,
+                    // Set on full-body fetch — IMAP envelope-only paths
+                    // don't see the message body, so they can't tell
+                    // whether it's PGP/MIME yet.  The cache LEFT-JOIN
+                    // in `get_envelopes` lifts the value out of
+                    // `message_bodies` once the message has been
+                    // opened at least once.
+                    protection: None,
                 })
             })
             .collect();
@@ -2009,6 +2016,13 @@ impl ImapClient {
                     // envelopes don't know their thread identity yet.
                     thread_id: None,
                     thread_total_count: None,
+                    // Set on full-body fetch — IMAP envelope-only paths
+                    // don't see the message body, so they can't tell
+                    // whether it's PGP/MIME yet.  The cache LEFT-JOIN
+                    // in `get_envelopes` lifts the value out of
+                    // `message_bodies` once the message has been
+                    // opened at least once.
+                    protection: None,
                 })
             })
             .collect();
@@ -2137,6 +2151,13 @@ impl ImapClient {
                     // envelopes don't know their thread identity yet.
                     thread_id: None,
                     thread_total_count: None,
+                    // Set on full-body fetch — IMAP envelope-only paths
+                    // don't see the message body, so they can't tell
+                    // whether it's PGP/MIME yet.  The cache LEFT-JOIN
+                    // in `get_envelopes` lifts the value out of
+                    // `message_bodies` once the message has been
+                    // opened at least once.
+                    protection: None,
                 })
             })
             .collect();
@@ -2282,6 +2303,13 @@ impl ImapClient {
                     // envelopes don't know their thread identity yet.
                     thread_id: None,
                     thread_total_count: None,
+                    // Set on full-body fetch — IMAP envelope-only paths
+                    // don't see the message body, so they can't tell
+                    // whether it's PGP/MIME yet.  The cache LEFT-JOIN
+                    // in `get_envelopes` lifts the value out of
+                    // `message_bodies` once the message has been
+                    // opened at least once.
+                    protection: None,
                 })
             })
             .collect();

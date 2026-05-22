@@ -689,8 +689,10 @@ impl Cache {
                      WHERE m2.account_id = ?1
                        AND m2.folder = ?2
                        AND m2.thread_id = m.thread_id
-                       AND m2.pending_action IS NULL) AS thread_total_count
+                       AND m2.pending_action IS NULL) AS thread_total_count,
+                    b.protection
              FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1 AND m.folder = ?2 AND m.pending_action IS NULL
              ORDER BY m.internal_date DESC
              LIMIT ?3",
@@ -705,6 +707,7 @@ impl Cache {
                 .unwrap_or_default();
             let thread_id: Option<String> = r.get(12)?;
             let thread_total_count: Option<i64> = r.get(13)?;
+            let protection: Option<String> = r.get(14)?;
             Ok(EmailEnvelope {
                 uid: r.get::<_, i64>(0)? as u32,
                 folder: r.get(1)?,
@@ -721,6 +724,7 @@ impl Cache {
                 references_ids,
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
+                protection,
             })
         })?;
 
@@ -760,8 +764,10 @@ impl Cache {
                      WHERE m2.account_id = ?1
                        AND m2.folder = ?2
                        AND m2.thread_id = m.thread_id
-                       AND m2.pending_action IS NULL) AS thread_total_count
+                       AND m2.pending_action IS NULL) AS thread_total_count,
+                    b.protection
              FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1
                AND m.folder = ?2
                AND m.thread_id = ?3
@@ -778,6 +784,7 @@ impl Cache {
                 .unwrap_or_default();
             let thread_id: Option<String> = r.get(12)?;
             let thread_total_count: Option<i64> = r.get(13)?;
+            let protection: Option<String> = r.get(14)?;
             Ok(EmailEnvelope {
                 uid: r.get::<_, i64>(0)? as u32,
                 folder: r.get(1)?,
@@ -794,6 +801,7 @@ impl Cache {
                 references_ids,
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
+                protection,
             })
         })?;
         let mut out = Vec::new();
@@ -880,8 +888,10 @@ impl Cache {
                      WHERE m2.account_id = m.account_id
                        AND m2.folder = m.folder
                        AND m2.thread_id = m.thread_id
-                       AND m2.pending_action IS NULL) AS thread_total_count
+                       AND m2.pending_action IS NULL) AS thread_total_count,
+                    b.protection
              FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.folder = ?1 AND m.pending_action IS NULL
              ORDER BY m.internal_date DESC
              LIMIT ?2",
@@ -896,6 +906,7 @@ impl Cache {
                 .unwrap_or_default();
             let thread_id: Option<String> = r.get(13)?;
             let thread_total_count: Option<i64> = r.get(14)?;
+            let protection: Option<String> = r.get(15)?;
             Ok(EmailEnvelope {
                 account_id: r.get(0)?,
                 uid: r.get::<_, i64>(1)? as u32,
@@ -912,6 +923,7 @@ impl Cache {
                 references_ids,
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
+                protection,
             })
         })?;
 
@@ -966,8 +978,10 @@ impl Cache {
                      WHERE m2.account_id = m.account_id
                        AND m2.folder = m.folder
                        AND m2.thread_id = m.thread_id
-                       AND m2.pending_action IS NULL) AS thread_total_count
+                       AND m2.pending_action IS NULL) AS thread_total_count,
+                    b.protection
              FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE ({where_clause}) AND m.pending_action IS NULL
              ORDER BY m.internal_date DESC
              LIMIT ?{limit_param}"
@@ -991,6 +1005,7 @@ impl Cache {
                 .unwrap_or_default();
             let thread_id: Option<String> = r.get(13)?;
             let thread_total_count: Option<i64> = r.get(14)?;
+            let protection: Option<String> = r.get(15)?;
             Ok(EmailEnvelope {
                 account_id: r.get(0)?,
                 uid: r.get::<_, i64>(1)? as u32,
@@ -1007,6 +1022,7 @@ impl Cache {
                 references_ids,
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
+                protection,
             })
         })?;
 
@@ -2219,6 +2235,7 @@ mod tests {
             references_ids: Vec::new(),
             thread_id: None,
             thread_total_count: None,
+            protection: None,
         }
     }
 
