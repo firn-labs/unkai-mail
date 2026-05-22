@@ -282,6 +282,7 @@
 
   "mail_view_cannot_decrypt_banner": "Diese Nachricht ist verschlüsselt. Der Server liefert die Rohbytes nicht aus, daher kann sie hier nicht entschlüsselt werden – öffne sie über IMAP oder einen Desktop-PGP-Client.",
   "mail_view_chip_decrypted": "Entschlüsselt",
+  "mail_view_chip_encrypted": "Verschlüsselt",
   "mail_view_chip_signed_valid": "Signiert von {fp}",
   "mail_view_chip_signed_invalid": "Signatur ungültig",
   "mail_view_chip_signed_unknown": "Signiert (Unterzeichner unbekannt)",
