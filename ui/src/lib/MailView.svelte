@@ -18,6 +18,7 @@
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import Icon from './Icon.svelte'
+  import CryptoChips from './CryptoChips.svelte'
   import AttachmentThumb, { seedThumbFromBase64 } from './AttachmentThumb.svelte'
   import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
@@ -65,6 +66,22 @@
     is_starred: boolean
     has_attachments: boolean
     attachments: EmailAttachment[]
+    /** Kebab-case protection tag from the receive path (#57).
+     *  `"encrypted"` — message was PGP-encrypted; we decrypted it
+     *  locally.  `"signed"` — `multipart/signed` outer (detection
+     *  only for now).  `"signed-and-encrypted"` — both.
+     *  `"encrypted-cannot-decrypt"` — encrypted message that the
+     *  receive path couldn't unwrap (JMAP no-raw-blob fallback);
+     *  the UI renders a banner instead of a chip.
+     *  `null` for plaintext mail. */
+    protection?: string | null
+    /** Kebab-case verification outcome from the receive path
+     *  (`"valid"` | `"invalid"` | `"unknown-signer"`).
+     *  `null` for unsigned mail. */
+    signature_status?: string | null
+    /** Hex fingerprint of the verified signer.  Only present when
+     *  `signature_status === "valid"`. */
+    signer_fingerprint?: string | null
   }
 
   interface Props {
@@ -1783,6 +1800,15 @@
       <div class="flex items-center gap-2 text-sm text-surface-600 dark:text-surface-400">
         <span class="font-medium">{email.from || '(unknown sender)'}</span>
       </div>
+      <!-- #57 — encryption + signature status chips and the
+           "can't decrypt here" banner.  Component renders nothing
+           when both fields are null, which is the common-case
+           plaintext path. -->
+      <CryptoChips
+        protection={email.protection}
+        signatureStatus={email.signature_status}
+        signerFingerprint={email.signer_fingerprint}
+      />
       {#if email.to.length > 0}
         <div class="text-xs text-surface-500 mt-1">
           To: {email.to.join(', ')}

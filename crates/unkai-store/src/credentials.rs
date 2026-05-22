@@ -24,6 +24,19 @@ const IMAP_SERVICE: &str = "unkai-mail-imap";
 /// vice versa.
 const NEXTCLOUD_SERVICE: &str = "unkai-mail-nextcloud";
 
+/// Keychain service name for the armored OpenPGP private key (#57).
+/// Kept on its own service so revoking a PGP key doesn't touch the
+/// IMAP password and vice versa — losing one shouldn't lock the user
+/// out of the other.
+const PGP_KEY_SERVICE: &str = "unkai-mail-pgp-private-key";
+
+/// Keychain service name for the passphrase that unlocks the OpenPGP
+/// private key (#57).  Stored separately from the key itself so the
+/// key can be exported/backed up without leaking the passphrase, and
+/// so a future "remember passphrase for session" flow can flip a
+/// single keychain entry without touching the key blob.
+const PGP_PASSPHRASE_SERVICE: &str = "unkai-mail-pgp-passphrase";
+
 fn entry(account_id: &str) -> Result<Entry, UnkaiError> {
     Entry::new(IMAP_SERVICE, account_id)
         .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))
@@ -107,6 +120,116 @@ pub fn delete_nextcloud_password(nc_id: &str) -> Result<(), UnkaiError> {
         }
         Err(e) => Err(UnkaiError::Storage(format!(
             "failed to delete NC password: {e}"
+        ))),
+    }
+}
+
+// ── OpenPGP private key + passphrase (#57) ─────────────────────
+//
+// Same shape as the IMAP / Nextcloud password APIs above.  Two
+// distinct keychain entries per account: one for the armored
+// `-----BEGIN PGP PRIVATE KEY BLOCK-----` ASCII (often several KiB),
+// one for the passphrase that unlocks it (typically a short string).
+//
+// Keying by `account_id` so a user with two accounts (work / personal)
+// can hold a separate signing key per account — matching how IMAP
+// passwords already work.  The keychain is the only place the
+// cleartext key material ever lives; the SQLCipher cache only carries
+// the *fingerprint* (a public identifier) for UI display.
+
+fn pgp_key_entry(account_id: &str) -> Result<Entry, UnkaiError> {
+    Entry::new(PGP_KEY_SERVICE, account_id)
+        .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))
+}
+
+fn pgp_pw_entry(account_id: &str) -> Result<Entry, UnkaiError> {
+    Entry::new(PGP_PASSPHRASE_SERVICE, account_id)
+        .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))
+}
+
+/// Store (or overwrite) the armored OpenPGP private key for an account.
+///
+/// `armored_key` is the full ASCII armored form starting with
+/// `-----BEGIN PGP PRIVATE KEY BLOCK-----`.  Callers should validate
+/// the key parses (via `unkai_crypto::parse_private_key`) *before*
+/// storing — we don't re-validate here because the keychain backend
+/// treats the value as an opaque string.
+pub fn store_pgp_private_key(account_id: &str, armored_key: &str) -> Result<(), UnkaiError> {
+    pgp_key_entry(account_id)?
+        .set_password(armored_key)
+        .map_err(|e| UnkaiError::Storage(format!("failed to store PGP private key: {e}")))?;
+    info!("Stored PGP private key for account '{account_id}' in OS keychain");
+    Ok(())
+}
+
+/// Retrieve the armored OpenPGP private key for an account.  Returns
+/// `UnkaiError::Auth` when the entry doesn't exist — same shape as
+/// the IMAP password getter so the IPC layer can route the missing
+/// case to a "set up encryption" prompt rather than a generic toast.
+pub fn get_pgp_private_key(account_id: &str) -> Result<String, UnkaiError> {
+    pgp_key_entry(account_id)?.get_password().map_err(|e| {
+        UnkaiError::Auth(format!(
+            "no PGP private key found for account '{account_id}': {e}"
+        ))
+    })
+}
+
+/// Remove the PGP private key for an account; no-op if missing.  Always
+/// called from the account-removal path so revoking the key doesn't
+/// leave orphaned credentials in the OS keychain.
+pub fn delete_pgp_private_key(account_id: &str) -> Result<(), UnkaiError> {
+    match pgp_key_entry(account_id)?.delete_credential() {
+        Ok(()) => {
+            info!("Deleted PGP private key for account '{account_id}'");
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            debug!("No PGP private key to delete for account '{account_id}' (ok)");
+            Ok(())
+        }
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to delete PGP private key: {e}"
+        ))),
+    }
+}
+
+/// Store (or overwrite) the passphrase that unlocks the PGP private
+/// key for an account.  Pass an empty string for an unprotected key.
+///
+/// Per the "re-prompt on every operation" decision in #57, the
+/// passphrase is *not* automatically replayed on every send/decrypt —
+/// the IPC layer reads it at use time so a leak of the cache doesn't
+/// also expose the unlocking secret.
+pub fn store_pgp_passphrase(account_id: &str, passphrase: &str) -> Result<(), UnkaiError> {
+    pgp_pw_entry(account_id)?
+        .set_password(passphrase)
+        .map_err(|e| UnkaiError::Storage(format!("failed to store PGP passphrase: {e}")))?;
+    info!("Stored PGP passphrase for account '{account_id}' in OS keychain");
+    Ok(())
+}
+
+/// Retrieve the PGP passphrase for an account.
+pub fn get_pgp_passphrase(account_id: &str) -> Result<String, UnkaiError> {
+    pgp_pw_entry(account_id)?.get_password().map_err(|e| {
+        UnkaiError::Auth(format!(
+            "no PGP passphrase found for account '{account_id}': {e}"
+        ))
+    })
+}
+
+/// Remove the PGP passphrase for an account; no-op if missing.
+pub fn delete_pgp_passphrase(account_id: &str) -> Result<(), UnkaiError> {
+    match pgp_pw_entry(account_id)?.delete_credential() {
+        Ok(()) => {
+            info!("Deleted PGP passphrase for account '{account_id}'");
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            debug!("No PGP passphrase to delete for account '{account_id}' (ok)");
+            Ok(())
+        }
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to delete PGP passphrase: {e}"
         ))),
     }
 }

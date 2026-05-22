@@ -10,6 +10,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
+use unkai_core::crypto::CryptoBridge;
 use unkai_core::error::UnkaiError;
 use unkai_core::models::{Email, EmailAttachment, EmailEnvelope, Folder, TrustedCert};
 use unkai_core::tls;
@@ -24,7 +25,59 @@ use crate::mutf7;
 /// reuse it for offline `.eml` opens (#254) without an account
 /// context.  Defaults `is_read = true` and `is_starred = false`
 /// because there are no IMAP flags on a file from disk.
+///
+/// Thin wrapper that always parses as plaintext — equivalent to the
+/// `_with_crypto` variant with `bridge = None`.  Existing call sites
+/// keep their historical behaviour unchanged.
 pub fn parse_eml_bytes(
+    raw: &[u8],
+    id: &str,
+    account_id: &str,
+    folder: &str,
+) -> Result<Email, UnkaiError> {
+    parse_eml_bytes_with_crypto(raw, id, account_id, folder, None)
+}
+
+/// Parse a raw RFC 5322 message and, when the caller supplies a
+/// [`CryptoBridge`], transparently unwrap an RFC-3156 PGP/MIME
+/// envelope before parsing the inner content (#57).
+///
+/// Detection is opt-in by way of the `bridge` parameter — pass `None`
+/// to skip every crypto path and behave identically to
+/// [`parse_eml_bytes`].  Pass `Some(&bridge)` to opt into:
+///
+/// - `multipart/encrypted; protocol="application/pgp-encrypted"` →
+///   extract the second (`application/octet-stream`) part, call
+///   `bridge.decrypt`, re-parse the recovered plaintext, stamp
+///   `protection`, `signature_status`, `signer_fingerprint` from the
+///   bridge's outcome.
+///
+/// - `multipart/signed; protocol="application/pgp-signature"` —
+///   currently falls through to plaintext parsing.  Full canonical
+///   verification needs access to the on-the-wire signed-body bytes
+///   (RFC 3156 §5 canonicalisation) which mail-parser doesn't expose
+///   in v0.11; the wrapper-recognising path is in place so adding
+///   verification is a localised follow-up, not another receive-path
+///   refactor.  TODO(#57): wire detached-signature verification.
+pub fn parse_eml_bytes_with_crypto(
+    raw: &[u8],
+    id: &str,
+    account_id: &str,
+    folder: &str,
+    bridge: Option<&dyn CryptoBridge>,
+) -> Result<Email, UnkaiError> {
+    if let Some(b) = bridge
+        && let Some(envelope) = detect_pgp_mime_envelope(raw)?
+    {
+        return apply_pgp_envelope(envelope, b, id, account_id, folder, raw);
+    }
+    parse_plaintext_eml_bytes(raw, id, account_id, folder)
+}
+
+/// Plain-text MIME → `Email`.  The body of [`parse_eml_bytes`] before
+/// the PGP/MIME interceptor lifted it out — extracted so the
+/// decrypted-plaintext path can recurse into it cleanly.
+fn parse_plaintext_eml_bytes(
     raw: &[u8],
     id: &str,
     account_id: &str,
@@ -168,7 +221,146 @@ pub fn parse_eml_bytes(
         message_id,
         in_reply_to,
         references_ids,
+        // Encryption metadata is populated by the receive-path
+        // interceptor in Phase 5 of #57; this parse-only path
+        // leaves them as None so legacy callers keep their
+        // historical "no chip" rendering.
+        protection: None,
+        signature_status: None,
+        signer_fingerprint: None,
     })
+}
+
+/// What we found at the top level of an inbound MIME message when we
+/// went looking for an RFC-3156 PGP/MIME envelope.  Used internally by
+/// [`parse_eml_bytes_with_crypto`] to decide whether to delegate to the
+/// crypto bridge or pass straight through to the plaintext parser.
+enum PgpMimeEnvelope {
+    /// `multipart/encrypted; protocol="application/pgp-encrypted"`.
+    /// The wrapped `Vec<u8>` is the armored ciphertext extracted from
+    /// the `application/octet-stream` part (RFC 3156 §4).
+    Encrypted { ciphertext_armor: Vec<u8> },
+    /// `multipart/signed; protocol="application/pgp-signature"`.
+    /// Detection only — actual signature verification is a follow-up
+    /// (see TODO on [`parse_eml_bytes_with_crypto`]).  We carry no
+    /// payload because nothing downstream looks at it yet; treating
+    /// the variant as a marker lets us extend the receive path
+    /// without yet another enum reshuffle.
+    Signed,
+}
+
+/// Look at the top-level Content-Type of `raw` and tell the caller
+/// whether they're holding a PGP/MIME envelope.  Returns `Ok(None)`
+/// for plain mail (the common case) and `Ok(Some(...))` for the two
+/// flavours we recognise.  An `Err` here means we couldn't even
+/// parse the headers — the same condition the plaintext path treats
+/// as a hard error, so we propagate it unchanged.
+fn detect_pgp_mime_envelope(raw: &[u8]) -> Result<Option<PgpMimeEnvelope>, UnkaiError> {
+    let parsed = MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| UnkaiError::Protocol("Failed to parse message headers".into()))?;
+
+    let top_ct = match parsed.content_type() {
+        Some(ct) => ct,
+        None => return Ok(None),
+    };
+    if !top_ct.ctype().eq_ignore_ascii_case("multipart") {
+        return Ok(None);
+    }
+    let subtype = top_ct.subtype().unwrap_or("");
+
+    // The `protocol` parameter is what distinguishes a PGP/MIME wrapper
+    // from a generic multipart/encrypted (e.g. S/MIME would carry
+    // `protocol="application/pkcs7-mime"` — handled separately in #338).
+    let protocol = top_ct.attribute("protocol").unwrap_or("");
+
+    if subtype.eq_ignore_ascii_case("encrypted")
+        && protocol.eq_ignore_ascii_case("application/pgp-encrypted")
+    {
+        // RFC 3156 §4 fixes the layout: part 1 is `application/pgp-encrypted`
+        // (just the `Version: 1` literal), part 2 is the
+        // `application/octet-stream` carrying the OpenPGP message.  We
+        // scan for the first part whose content-type matches because
+        // `mail-parser` flattens nested multiparts and the indices
+        // aren't always exactly `(1, 2)` — e.g. when an MUA wraps the
+        // envelope inside an extra `multipart/mixed` for an attached
+        // public key, which Autocrypt allows.
+        let ciphertext = (0..).map_while(|i| parsed.part(i)).find_map(|p| {
+            let ct = p.content_type()?;
+            if ct.ctype().eq_ignore_ascii_case("application")
+                && ct
+                    .subtype()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("octet-stream"))
+            {
+                Some(p.contents().to_vec())
+            } else {
+                None
+            }
+        });
+        return match ciphertext {
+            Some(c) => Ok(Some(PgpMimeEnvelope::Encrypted {
+                ciphertext_armor: c,
+            })),
+            None => Err(UnkaiError::Protocol(
+                "multipart/encrypted envelope missing application/octet-stream ciphertext part"
+                    .into(),
+            )),
+        };
+    }
+
+    if subtype.eq_ignore_ascii_case("signed")
+        && protocol.eq_ignore_ascii_case("application/pgp-signature")
+    {
+        return Ok(Some(PgpMimeEnvelope::Signed));
+    }
+
+    Ok(None)
+}
+
+/// Apply a detected PGP envelope by calling into the bridge and
+/// (for the encrypted case) re-parsing the recovered plaintext as
+/// a complete MIME message.  The protection / signature / signer
+/// fields on the resulting `Email` carry the bridge's outcome so
+/// the UI can render the right status chip in MailView.
+fn apply_pgp_envelope(
+    envelope: PgpMimeEnvelope,
+    bridge: &dyn CryptoBridge,
+    id: &str,
+    account_id: &str,
+    folder: &str,
+    raw: &[u8],
+) -> Result<Email, UnkaiError> {
+    match envelope {
+        PgpMimeEnvelope::Encrypted { ciphertext_armor } => {
+            let payload = bridge.decrypt(&ciphertext_armor)?;
+            let mut email = parse_plaintext_eml_bytes(&payload.plaintext, id, account_id, folder)?;
+            // If the inner OpenPGP packets carried a one-pass signature
+            // the bridge will have surfaced that as `signature_status` —
+            // bump the envelope tag accordingly so the UI can render
+            // "signed and decrypted" rather than just "decrypted".
+            email.protection = Some(
+                if payload.signature_status.is_some() {
+                    "signed-and-encrypted"
+                } else {
+                    "encrypted"
+                }
+                .to_string(),
+            );
+            email.signature_status = payload.signature_status;
+            email.signer_fingerprint = payload.signer_fingerprint;
+            Ok(email)
+        }
+        PgpMimeEnvelope::Signed => {
+            // TODO(#57): canonicalise the signed body part and call
+            // `bridge.verify`.  For now we render the message as
+            // plaintext and tag it `protection = "signed"` so the
+            // UI can still show a "signature detected, not verified
+            // yet" chip without crashing on the verify path.
+            let mut email = parse_plaintext_eml_bytes(raw, id, account_id, folder)?;
+            email.protection = Some("signed".to_string());
+            Ok(email)
+        }
+    }
 }
 
 /// `async-imap`'s `Session` is generic over its underlying I/O. We
@@ -933,6 +1125,11 @@ impl ImapClient {
             message_id,
             in_reply_to,
             references_ids,
+            // See note in `parse_eml_bytes`: filled in by the
+            // Phase 5 receive-path interceptor; default-None here.
+            protection: None,
+            signature_status: None,
+            signer_fingerprint: None,
         })
     }
 
@@ -2297,5 +2494,176 @@ mod tests {
             "\"She said \\\"hi\\\"\""
         );
         assert_eq!(quoted_mailbox_arg("path\\to"), "\"path\\\\to\"");
+    }
+
+    // ── PGP/MIME receive interceptor (#57) ─────────────────────
+
+    use super::{parse_eml_bytes, parse_eml_bytes_with_crypto};
+    use unkai_core::UnkaiError;
+    use unkai_core::crypto::{CryptoBridge, DecryptedPayload, EncryptedOutput, VerifyOutcome};
+
+    /// A test-only bridge that hands back a pre-baked plaintext when
+    /// asked to decrypt, and records the ciphertext it saw.  Used by
+    /// the encryption-detection tests below to confirm the receive
+    /// path extracted the right bytes from the PGP/MIME envelope
+    /// without spinning up a real `rpgp` key.
+    struct StubBridge {
+        plaintext: Vec<u8>,
+        signature_status: Option<String>,
+        signer_fingerprint: Option<String>,
+    }
+
+    impl CryptoBridge for StubBridge {
+        fn decrypt(&self, _ciphertext_armor: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
+            Ok(DecryptedPayload {
+                plaintext: self.plaintext.clone(),
+                signature_status: self.signature_status.clone(),
+                signer_fingerprint: self.signer_fingerprint.clone(),
+            })
+        }
+        fn verify(
+            &self,
+            _signed_payload: &[u8],
+            _signature_armor: &[u8],
+        ) -> Result<VerifyOutcome, UnkaiError> {
+            unreachable!("encryption tests never hit the verify path")
+        }
+        fn encrypt(
+            &self,
+            _inner_mime: &[u8],
+            _recipient_emails: &[String],
+            _sign: bool,
+        ) -> Result<EncryptedOutput, UnkaiError> {
+            unreachable!("receive-path tests never hit the encrypt path")
+        }
+    }
+
+    /// Build a PGP/MIME `multipart/encrypted` message with a placeholder
+    /// ciphertext in the second part.  The bridge stub doesn't actually
+    /// decrypt — it just hands back a pre-decided plaintext — so the
+    /// ciphertext bytes only need to be parseable, not valid OpenPGP.
+    fn pgp_mime_encrypted(inner_plaintext: &str) -> Vec<u8> {
+        let body = format!(
+            "From: alice@example.com\r\n\
+             To: bob@example.com\r\n\
+             Subject: secret note\r\n\
+             MIME-Version: 1.0\r\n\
+             Content-Type: multipart/encrypted; \
+                 protocol=\"application/pgp-encrypted\"; \
+                 boundary=\"unkai-test-boundary\"\r\n\
+             \r\n\
+             --unkai-test-boundary\r\n\
+             Content-Type: application/pgp-encrypted\r\n\
+             \r\n\
+             Version: 1\r\n\
+             \r\n\
+             --unkai-test-boundary\r\n\
+             Content-Type: application/octet-stream; name=\"encrypted.asc\"\r\n\
+             \r\n\
+             {inner_plaintext}\r\n\
+             --unkai-test-boundary--\r\n",
+        );
+        body.into_bytes()
+    }
+
+    /// The plaintext recovered by the bridge stub.  Itself a complete
+    /// inner MIME message — RFC 3156 §4 says the decrypted payload is
+    /// the original mail body, headers included.
+    fn pgp_mime_inner_plaintext() -> Vec<u8> {
+        b"From: alice@example.com\r\n\
+          To: bob@example.com\r\n\
+          Subject: secret note\r\n\
+          MIME-Version: 1.0\r\n\
+          Content-Type: text/plain; charset=\"utf-8\"\r\n\
+          \r\n\
+          the eagle has landed\r\n"
+            .to_vec()
+    }
+
+    #[test]
+    fn pgp_mime_encrypted_is_unwrapped_when_bridge_present() {
+        let raw = pgp_mime_encrypted("CIPHERTEXT-PLACEHOLDER");
+        let bridge = StubBridge {
+            plaintext: pgp_mime_inner_plaintext(),
+            signature_status: None,
+            signer_fingerprint: None,
+        };
+
+        let email =
+            parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+
+        assert_eq!(email.subject, "secret note");
+        assert_eq!(
+            email.body_text.as_deref(),
+            Some("the eagle has landed\n"),
+            "decrypted plaintext body must reach the Email struct"
+        );
+        assert_eq!(email.protection.as_deref(), Some("encrypted"));
+        assert_eq!(email.signature_status, None);
+        assert_eq!(email.signer_fingerprint, None);
+    }
+
+    #[test]
+    fn pgp_mime_signed_inside_encrypted_marks_protection_signed_and_encrypted() {
+        let raw = pgp_mime_encrypted("CIPHERTEXT-PLACEHOLDER");
+        let bridge = StubBridge {
+            plaintext: pgp_mime_inner_plaintext(),
+            signature_status: Some("valid".into()),
+            signer_fingerprint: Some("ABCD1234".into()),
+        };
+
+        let email =
+            parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+
+        assert_eq!(email.protection.as_deref(), Some("signed-and-encrypted"));
+        assert_eq!(email.signature_status.as_deref(), Some("valid"));
+        assert_eq!(email.signer_fingerprint.as_deref(), Some("ABCD1234"));
+    }
+
+    #[test]
+    fn pgp_mime_encrypted_without_bridge_falls_back_to_plaintext() {
+        // No bridge → the message is still parseable as plain MIME,
+        // just with empty body and `protection = None`.  This is the
+        // "user hasn't imported a PGP key yet" path: we don't break
+        // the UI, we just can't show the contents.
+        let raw = pgp_mime_encrypted("CIPHERTEXT-PLACEHOLDER");
+
+        let email = parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", None).unwrap();
+
+        assert_eq!(email.subject, "secret note");
+        assert_eq!(email.protection, None);
+        // The `parse_eml_bytes` wrapper must behave identically.
+        let plain = parse_eml_bytes(&raw, "INBOX:1", "acc", "INBOX").unwrap();
+        assert_eq!(plain.subject, email.subject);
+        assert_eq!(plain.protection, email.protection);
+    }
+
+    #[test]
+    fn plain_mail_passes_through_unchanged_regardless_of_bridge() {
+        let raw = b"From: alice@example.com\r\n\
+                    To: bob@example.com\r\n\
+                    Subject: plain mail\r\n\
+                    MIME-Version: 1.0\r\n\
+                    Content-Type: text/plain; charset=\"utf-8\"\r\n\
+                    \r\n\
+                    hello world\r\n";
+        let bridge = StubBridge {
+            plaintext: b"WOULD-NEVER-BE-CALLED".to_vec(),
+            signature_status: None,
+            signer_fingerprint: None,
+        };
+
+        let with_bridge =
+            parse_eml_bytes_with_crypto(raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+        let without_bridge = parse_eml_bytes(raw, "INBOX:1", "acc", "INBOX").unwrap();
+
+        assert_eq!(with_bridge.subject, "plain mail");
+        assert_eq!(with_bridge.body_text.as_deref(), Some("hello world\n"));
+        assert_eq!(with_bridge.protection, None);
+        // Plain mail must round-trip identically in both code paths —
+        // the bridge is only consulted when a PGP envelope is detected.
+        assert_eq!(with_bridge.subject, without_bridge.subject);
+        assert_eq!(with_bridge.body_text, without_bridge.body_text);
+        assert_eq!(with_bridge.protection, without_bridge.protection);
     }
 }

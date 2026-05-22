@@ -7,10 +7,11 @@ use lettre::message::{
 };
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use rustls_pki_types::ServerName;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, info};
+use unkai_core::crypto::CryptoBridge;
 use unkai_core::error::UnkaiError;
 use unkai_core::models::{OutgoingEmail, TrustedCert};
 use unkai_core::tls;
@@ -94,22 +95,98 @@ impl SmtpClient {
     /// - File attachments
     ///
     /// At least one of `body_text` or `body_html` must be set.
+    ///
+    /// Thin wrapper around [`Self::send_with_crypto`] with no bridge —
+    /// equivalent to the historical plaintext path.  Existing call
+    /// sites keep their behaviour unchanged.
     pub async fn send(&self, email: &OutgoingEmail) -> Result<(), UnkaiError> {
+        self.send_with_crypto(email, None).await
+    }
+
+    /// Send an email with optional end-to-end encryption (#57).
+    ///
+    /// When `email.encryption_mode == Some("pgp")` *and* a `bridge` is
+    /// supplied, the built MIME message is wrapped in an RFC-3156
+    /// `multipart/encrypted` envelope before being handed to the SMTP
+    /// transport via [`AsyncTransport::send_raw`].  When either is
+    /// missing, this falls back to the plaintext path so the historical
+    /// behaviour is preserved by default.
+    ///
+    /// **BCC limitation**: PGP encryption with BCC recipients is not
+    /// supported in this slice — sending one ciphertext encrypted to
+    /// both visible and BCC keys would leak the BCC list via the
+    /// recipient ESK packets.  Doing this safely requires sending one
+    /// envelope per BCC recipient (a separate refactor); for now we
+    /// surface a clear `UnkaiError::Protocol` instead of silently
+    /// leaking.  Tracked as a follow-up under #57.
+    pub async fn send_with_crypto(
+        &self,
+        email: &OutgoingEmail,
+        bridge: Option<&dyn CryptoBridge>,
+    ) -> Result<(), UnkaiError> {
         info!(
             from = %email.from,
             to = ?email.to,
             subject = %email.subject,
+            encryption_mode = ?email.encryption_mode,
+            signing_enabled = email.signing_enabled,
             "Sending email"
         );
 
-        let message = build_outgoing_message(email)?;
+        let wants_encryption = email.encryption_mode.as_deref() == Some("pgp");
+        let wants_sign_only = email.signing_enabled && !wants_encryption;
+
+        if wants_sign_only {
+            // PGP/MIME `multipart/signed` requires canonicalising the
+            // signed body bytes (RFC 3156 §5).  We haven't wired that
+            // in yet (TODO inside the IMAP receive path mentions the
+            // same gap on the verify side).  Refusing loudly is much
+            // better than silently sending plaintext under a "Signed"
+            // label the user would trust.
+            return Err(UnkaiError::Protocol(
+                "Sign-only PGP/MIME (`multipart/signed`) not yet supported; \
+                 enable encryption alongside signing for #57"
+                    .into(),
+            ));
+        }
+
+        if !wants_encryption {
+            // Plaintext path — historical behaviour, no MIME wrapping.
+            let message = build_outgoing_message(email)?;
+            self.transport
+                .send(message)
+                .await
+                .map_err(|e| UnkaiError::Protocol(format!("Failed to send email: {e}")))?;
+            info!("Email sent successfully to {:?}", email.to);
+            return Ok(());
+        }
+
+        let bridge = bridge.ok_or_else(|| {
+            UnkaiError::Crypto(
+                "encryption_mode='pgp' requested but no CryptoBridge supplied — \
+                 the Tauri command layer must compose one"
+                    .into(),
+            )
+        })?;
+
+        if !email.bcc.is_empty() {
+            return Err(UnkaiError::Protocol(
+                "PGP encryption with BCC recipients is not yet supported — \
+                 BCC keys would leak via the OpenPGP ESK packets. \
+                 Send to BCC recipients separately."
+                    .into(),
+            ));
+        }
+
+        let outer_bytes = wrap_as_pgp_mime(email, bridge)?;
+        let envelope = envelope_from_email(email)?;
 
         self.transport
-            .send(message)
+            .send_raw(&envelope, &outer_bytes)
             .await
-            .map_err(|e| UnkaiError::Protocol(format!("Failed to send email: {e}")))?;
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to send encrypted email: {e}")))?;
 
-        info!("Email sent successfully to {:?}", email.to);
+        info!("Encrypted email sent successfully to {:?}", email.to);
         Ok(())
     }
 }
@@ -214,6 +291,158 @@ fn sanitise_recipient(addr: &str) -> String {
     } else {
         addr.to_string()
     }
+}
+
+/// Build the lettre `Envelope` (SMTP routing only — MAIL FROM + RCPT TO)
+/// for an outgoing email.  Used together with [`AsyncTransport::send_raw`]
+/// on the PGP/MIME path so we can hand the wire-format bytes we
+/// constructed ourselves to lettre and still let it negotiate the SMTP
+/// transaction.
+///
+/// `from` and every entry in `to + cc` is parsed through `Mailbox::parse`
+/// to inherit the same display-name handling the plaintext path uses;
+/// we then take the `.email` portion since `Envelope` doesn't carry the
+/// display name (it's just the SMTP-level address list).  BCC is
+/// intentionally **not** added to the envelope here — the only PGP/MIME
+/// path that calls this currently rejects non-empty BCC before reaching
+/// us, and adding them later requires per-recipient encryption.
+fn envelope_from_email(email: &OutgoingEmail) -> Result<Envelope, UnkaiError> {
+    let from_mailbox: Mailbox = sanitise_recipient(&email.from)
+        .parse()
+        .map_err(|e| UnkaiError::Protocol(format!("Invalid 'from' address: {e}")))?;
+    let from_addr: Address = from_mailbox.email;
+
+    let mut rcpts: Vec<Address> = Vec::new();
+    for r in email.to.iter().chain(email.cc.iter()) {
+        let mb: Mailbox = sanitise_recipient(r)
+            .parse()
+            .map_err(|e| UnkaiError::Protocol(format!("Invalid recipient '{r}': {e}")))?;
+        rcpts.push(mb.email);
+    }
+    Envelope::new(Some(from_addr), rcpts)
+        .map_err(|e| UnkaiError::Protocol(format!("build SMTP envelope: {e}")))
+}
+
+/// Wrap a plaintext `OutgoingEmail` as an RFC-3156 `multipart/encrypted`
+/// PGP/MIME message and return the raw RFC-822 byte form ready for
+/// `transport.send_raw`.
+///
+/// Flow:
+///   1. Build the plaintext MIME message the way we always have
+///      ([`build_outgoing_message`]).
+///   2. Serialise it to bytes via lettre's `.formatted()`.
+///   3. Hand those bytes to the bridge along with the visible
+///      recipient list.  The bridge returns armored OpenPGP
+///      ciphertext.
+///   4. Emit a hand-built outer RFC-822 message with the routing
+///      headers from the original `OutgoingEmail` (so the recipient
+///      sees a normal `From`/`To`/`Subject` in their inbox) plus
+///      a two-part `multipart/encrypted` body carrying the
+///      ciphertext per RFC 3156 §4.
+///
+/// The inner serialisation already includes `From:`/`To:`/`Subject:`
+/// headers — duplicated in the outer wrapper — which is the
+/// header-protection-by-duplication pattern most existing PGP/MIME
+/// clients produce.  RFC 9533 ("Header Protection") suggests a
+/// stricter form; we'll evaluate adopting it once interop with the
+/// common clients is proven.
+fn wrap_as_pgp_mime(
+    email: &OutgoingEmail,
+    bridge: &dyn CryptoBridge,
+) -> Result<Vec<u8>, UnkaiError> {
+    let inner_message = build_outgoing_message(email)?;
+    let inner_bytes = inner_message.formatted();
+
+    let recipients: Vec<String> = email
+        .to
+        .iter()
+        .chain(email.cc.iter())
+        .map(|a| {
+            // Extract just the address portion when the entry is
+            // `Name <addr@host>` — recipient lookup in the bridge's
+            // public-key cache is keyed on bare email.
+            sanitise_recipient(a)
+                .parse::<Mailbox>()
+                .map(|mb| mb.email.to_string())
+                .unwrap_or_else(|_| a.clone())
+        })
+        .collect();
+
+    let encrypted = bridge.encrypt(&inner_bytes, &recipients, email.signing_enabled)?;
+    Ok(build_outer_pgp_mime_bytes(
+        email,
+        &encrypted.ciphertext_armor,
+    ))
+}
+
+/// Pure-function MIME envelope builder for the PGP/MIME outer.  Lives
+/// outside [`wrap_as_pgp_mime`] so the structure can be unit-tested
+/// against a fixed ciphertext without spinning up a real bridge or
+/// transport.  All header strings are emitted with CRLF endings as
+/// RFC 5322 requires (lettre normally handles this for us; we have
+/// to do it ourselves on the hand-built outer).
+fn build_outer_pgp_mime_bytes(email: &OutgoingEmail, ciphertext_armor: &[u8]) -> Vec<u8> {
+    // Boundary string is just a random ASCII tag that can't appear in
+    // either body part.  We use a UUID prefix so the chance of
+    // collision with the ciphertext armor or the inner MIME is
+    // effectively zero.
+    let boundary = format!("unkai-pgp-mime-{}", uuid::Uuid::new_v4().simple());
+    let message_id = format!("<{}@unkai-mail.local>", uuid::Uuid::new_v4().simple());
+    let date = chrono::Utc::now().to_rfc2822();
+
+    let mut headers = String::new();
+    headers.push_str(&format!("From: {}\r\n", email.from));
+    if !email.to.is_empty() {
+        headers.push_str(&format!("To: {}\r\n", email.to.join(", ")));
+    }
+    if !email.cc.is_empty() {
+        headers.push_str(&format!("Cc: {}\r\n", email.cc.join(", ")));
+    }
+    if let Some(reply_to) = &email.reply_to {
+        headers.push_str(&format!("Reply-To: {reply_to}\r\n"));
+    }
+    headers.push_str(&format!("Subject: {}\r\n", email.subject));
+    headers.push_str(&format!("Date: {date}\r\n"));
+    headers.push_str(&format!("Message-ID: {message_id}\r\n"));
+    if let Some(parent) = &email.in_reply_to {
+        headers.push_str(&format!("In-Reply-To: <{parent}>\r\n"));
+    }
+    if !email.references.is_empty() {
+        let refs = email
+            .references
+            .iter()
+            .map(|r| format!("<{r}>"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        headers.push_str(&format!("References: {refs}\r\n"));
+    }
+    headers.push_str("MIME-Version: 1.0\r\n");
+    headers.push_str(&format!(
+        "Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=\"{boundary}\"\r\n"
+    ));
+
+    let mut body = String::new();
+    body.push_str("\r\n");
+    body.push_str(&format!("--{boundary}\r\n"));
+    body.push_str("Content-Type: application/pgp-encrypted\r\n");
+    body.push_str("Content-Description: PGP/MIME version identification\r\n");
+    body.push_str("\r\n");
+    body.push_str("Version: 1\r\n");
+    body.push_str("\r\n");
+    body.push_str(&format!("--{boundary}\r\n"));
+    body.push_str("Content-Type: application/octet-stream; name=\"encrypted.asc\"\r\n");
+    body.push_str("Content-Description: OpenPGP encrypted message\r\n");
+    body.push_str("Content-Disposition: inline; filename=\"encrypted.asc\"\r\n");
+    body.push_str("\r\n");
+
+    let mut out = headers.into_bytes();
+    out.extend_from_slice(body.as_bytes());
+    out.extend_from_slice(ciphertext_armor);
+    if !ciphertext_armor.ends_with(b"\n") {
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    out
 }
 
 /// Build the lettre `Message` for an outgoing email *without* sending it.
@@ -615,5 +844,136 @@ mod tests {
     #[test]
     fn passes_through_bare_address() {
         assert_eq!(sanitise_recipient("alex@example.com"), "alex@example.com");
+    }
+
+    // ── PGP/MIME outer envelope construction (#57) ─────────────
+
+    use super::{build_outer_pgp_mime_bytes, envelope_from_email};
+    use mail_parser::{MessageParser, MimeHeaders};
+    use unkai_core::models::OutgoingEmail;
+
+    /// Minimal `OutgoingEmail` for the wrapper tests.  Skips
+    /// attachments / calendar parts because the outer wrapper
+    /// only carries routing headers + the ciphertext body —
+    /// the inner body's complexity is the bridge's problem,
+    /// not the wrapper's.
+    fn outgoing(subject: &str, to: &[&str]) -> OutgoingEmail {
+        OutgoingEmail {
+            from: "alice@example.com".into(),
+            to: to.iter().map(|s| s.to_string()).collect(),
+            cc: vec![],
+            bcc: vec![],
+            reply_to: None,
+            subject: subject.into(),
+            body_text: Some("ignored — wrapper test".into()),
+            body_html: None,
+            attachments: vec![],
+            calendar_part: None,
+            skip_sent_copy: false,
+            in_reply_to: None,
+            references: vec![],
+            encryption_mode: Some("pgp".into()),
+            signing_enabled: false,
+        }
+    }
+
+    #[test]
+    fn outer_wrapper_advertises_multipart_encrypted_pgp_protocol() {
+        let email = outgoing("secret memo", &["bob@example.com"]);
+        let ciphertext =
+            b"-----BEGIN PGP MESSAGE-----\nVERSION-PLACEHOLDER\n-----END PGP MESSAGE-----\n";
+        let wire = build_outer_pgp_mime_bytes(&email, ciphertext);
+
+        let parsed = MessageParser::default()
+            .parse(&wire)
+            .expect("outer must round-trip through mail-parser");
+        let ct = parsed.content_type().expect("must carry a Content-Type");
+        assert!(
+            ct.ctype().eq_ignore_ascii_case("multipart"),
+            "ctype = {}",
+            ct.ctype()
+        );
+        assert_eq!(ct.subtype().unwrap_or(""), "encrypted");
+        assert_eq!(
+            ct.attribute("protocol").unwrap_or(""),
+            "application/pgp-encrypted"
+        );
+        assert_eq!(parsed.subject().unwrap_or(""), "secret memo");
+    }
+
+    #[test]
+    fn outer_wrapper_carries_ciphertext_in_octet_stream_part() {
+        let email = outgoing("inbox-routable subject", &["bob@example.com"]);
+        let ciphertext =
+            b"-----BEGIN PGP MESSAGE-----\nWOULD-BE-OPAQUE\n-----END PGP MESSAGE-----\n";
+        let wire = build_outer_pgp_mime_bytes(&email, ciphertext);
+
+        let parsed = MessageParser::default().parse(&wire).expect("parse outer");
+
+        // Find the application/octet-stream part — that's where the
+        // armored ciphertext lives per RFC 3156 §4.  We walk parts
+        // because mail-parser's flat index isn't a constant `(1, 2)`
+        // — same reason the IMAP receive interceptor scans rather
+        // than indexing.
+        let octet = (0..)
+            .map_while(|i| parsed.part(i))
+            .find(|p| {
+                p.content_type().is_some_and(|c| {
+                    c.ctype().eq_ignore_ascii_case("application")
+                        && c.subtype()
+                            .is_some_and(|s| s.eq_ignore_ascii_case("octet-stream"))
+                })
+            })
+            .expect("ciphertext part must exist");
+        let body = std::str::from_utf8(octet.contents()).expect("ciphertext bytes are utf-8");
+        assert!(
+            body.contains("-----BEGIN PGP MESSAGE-----"),
+            "octet-stream body must carry the armor; got: {body}"
+        );
+        assert!(body.contains("WOULD-BE-OPAQUE"));
+    }
+
+    #[test]
+    fn outer_wrapper_carries_version_part_first() {
+        let email = outgoing("hi", &["bob@example.com"]);
+        let wire = build_outer_pgp_mime_bytes(
+            &email,
+            b"-----BEGIN PGP MESSAGE-----\nx\n-----END PGP MESSAGE-----\n",
+        );
+        let parsed = MessageParser::default().parse(&wire).unwrap();
+
+        // First non-root part must be `application/pgp-encrypted`
+        // with the literal `Version: 1`.  RFC 3156 §4 fixes this
+        // order — older PGP-aware clients reject the message if
+        // the version part isn't first.
+        let version_part = (0..)
+            .map_while(|i| parsed.part(i))
+            .find(|p| {
+                p.content_type().is_some_and(|c| {
+                    c.ctype().eq_ignore_ascii_case("application")
+                        && c.subtype()
+                            .is_some_and(|s| s.eq_ignore_ascii_case("pgp-encrypted"))
+                })
+            })
+            .expect("version part must exist");
+        let body = std::str::from_utf8(version_part.contents()).expect("utf-8");
+        assert!(body.contains("Version: 1"));
+    }
+
+    #[test]
+    fn envelope_from_email_includes_cc_but_not_bcc() {
+        let mut email = outgoing("e2e", &["primary@example.com"]);
+        email.cc = vec!["copied@example.com".into()];
+        email.bcc = vec!["hidden@example.com".into()];
+
+        let env = envelope_from_email(&email).expect("envelope must build");
+        let rcpts: Vec<String> = env.to().iter().map(|a| a.to_string()).collect();
+
+        assert!(rcpts.contains(&"primary@example.com".into()));
+        assert!(rcpts.contains(&"copied@example.com".into()));
+        assert!(
+            !rcpts.contains(&"hidden@example.com".into()),
+            "BCC must not appear at the envelope layer — would leak via Received headers"
+        );
     }
 }

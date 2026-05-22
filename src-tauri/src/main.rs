@@ -45,7 +45,7 @@ use unkai_nextcloud::{
 use unkai_smtp::{SmtpClient, build_outgoing_message};
 use unkai_store::cache::{
     CalendarEventRow, CalendarEventServerHandle, CalendarRow, ContactRow, ContactServerHandle,
-    SearchFilters, SearchHit, SearchScope, SyncState,
+    PgpKeySource, PgpPublicKeyRow, SearchFilters, SearchHit, SearchScope, SyncState,
 };
 use unkai_store::{
     Cache, account_store, app_settings, credentials, link_check, nextcloud_store, settings_bundle,
@@ -303,6 +303,17 @@ fn remove_account(
     notify: State<'_, SettingsSyncNotify>,
 ) -> Result<(), UnkaiError> {
     credentials::delete_imap_password(&id)?;
+    // Best-effort: PGP key + passphrase belong to this account too
+    // (#57).  No-op when no key was imported — we still call the
+    // deleter because the keychain getter is what tells us the
+    // entry exists, and "is there a key?" isn't a question we want
+    // to answer just to pick between two cleanup paths.
+    if let Err(e) = credentials::delete_pgp_private_key(&id) {
+        tracing::warn!("failed to delete PGP private key for account '{id}': {e}");
+    }
+    if let Err(e) = credentials::delete_pgp_passphrase(&id) {
+        tracing::warn!("failed to delete PGP passphrase for account '{id}': {e}");
+    }
     // Best-effort: a failure here leaves orphaned cache rows but doesn't
     // block account removal. Log and continue.
     if let Err(e) = cache.wipe_account(&id) {
@@ -1987,12 +1998,118 @@ async fn sync_nextcloud_contacts(
             continue;
         }
 
+        // Auto-import OpenPGP keys carried by `KEY:` properties on the
+        // freshly-synced vCards into the recipient-key cache (#57, #339).
+        // Best-effort — a malformed key on one contact shouldn't fail the
+        // whole sync; we log and continue per-contact.
+        auto_import_pgp_keys(&cache, &delta.upserts);
+
         report.books_synced += 1;
         report.upserted += upserts.len() as u32;
         report.deleted += delta.deleted_hrefs.len() as u32;
     }
 
     Ok(report)
+}
+
+/// Walk freshly-synced vCards, pull out any `KEY:` values, and upsert
+/// them into the recipient-key cache (#57).
+///
+/// Supported source forms:
+///   - `data:application/pgp-keys;base64,…` (Autocrypt + the form
+///     Nextcloud Contacts emits).
+///   - Inline ASCII-armored key (rare but legal; some MUAs emit it).
+///   - Plain `https://…` URL: skipped here — we don't fetch keys
+///     out-of-band; a future PR can add keyserver lookup behind a
+///     user-visible toggle.
+///
+/// Each successfully-parsed key round-trips through
+/// `unkai_crypto::parse_public_key` for self-signature validation
+/// before it lands in the cache.  Bogus blobs are logged and dropped
+/// — better to skip one contact's key than to refuse to sync the
+/// whole addressbook.
+fn auto_import_pgp_keys(cache: &Cache, raw_contacts: &[RawContact]) {
+    use base64::Engine;
+
+    for contact in raw_contacts {
+        if contact.keys.is_empty() {
+            continue;
+        }
+        let primary_email = contact.emails.first().map(|e| e.value.clone());
+        for raw_key in &contact.keys {
+            let armored = match decode_vcard_key_value(raw_key) {
+                Some(bytes) => bytes,
+                None => continue,
+            };
+            let parsed = match unkai_crypto::parse_public_key(&armored) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping unparseable PGP key on vCard {}: {e}",
+                        contact.vcard_uid
+                    );
+                    continue;
+                }
+            };
+            let row = PgpPublicKeyRow {
+                fingerprint: parsed.fingerprint(),
+                email: primary_email.clone(),
+                armored_key: String::from_utf8(armored.clone()).unwrap_or_else(|_| {
+                    // The key parsed but came in as binary — re-armor it
+                    // through the standard form so the cache always
+                    // stores ASCII.  Fall back to base64 of the raw
+                    // bytes if even that fails; the lookup is by
+                    // fingerprint so the armor is purely for export.
+                    base64::engine::general_purpose::STANDARD.encode(&armored)
+                }),
+                source: PgpKeySource::Vcard,
+                added_at: chrono::Utc::now().timestamp(),
+            };
+            if let Err(e) = cache.upsert_pgp_public_key(&row) {
+                tracing::warn!(
+                    "Failed to cache PGP key fp={} for vCard {}: {e}",
+                    row.fingerprint,
+                    contact.vcard_uid
+                );
+            }
+        }
+    }
+}
+
+/// Decode a vCard `KEY:` property value into a byte blob that
+/// `unkai_crypto::parse_public_key` can ingest.  Returns `None` for
+/// forms we don't handle (HTTP/HTTPS URLs that would require a
+/// keyserver fetch, malformed data URIs, etc.) so the caller skips
+/// them cleanly rather than emitting a hard error.
+fn decode_vcard_key_value(value: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+
+    let trimmed = value.trim();
+
+    // Inline armored ASCII — pass through unchanged.
+    if trimmed.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----") {
+        return Some(trimmed.as_bytes().to_vec());
+    }
+
+    // `data:` URI form.  The MIME type may be `application/pgp-keys`
+    // (Autocrypt) or omitted; either way we treat the trailing
+    // base64 payload as a binary OpenPGP packet stream.
+    if let Some(rest) = trimmed.strip_prefix("data:") {
+        let comma = rest.find(',')?;
+        let header = &rest[..comma];
+        let payload = &rest[comma + 1..];
+        if header.contains("base64") {
+            return base64::engine::general_purpose::STANDARD
+                .decode(payload.as_bytes())
+                .ok();
+        }
+        // `data:,...` without base64 — URL-decoded raw bytes.  Rare
+        // for keys; we don't bother decoding %xx escapes.
+        return Some(payload.as_bytes().to_vec());
+    }
+
+    // HTTP/HTTPS reference — out-of-band fetch is a follow-up.
+    None
 }
 
 /// Cache-only list of contacts, optionally scoped to a single NC account.
@@ -7458,9 +7575,20 @@ async fn send_email(
     email: OutgoingEmail,
     replied_to: Option<RepliedToRef>,
     outbox_source: Option<OutboxSourceRef>,
+    pgp_passphrase: Option<String>,
     cache: State<'_, Cache>,
     app: AppHandle,
 ) -> Result<i64, UnkaiError> {
+    // PGP passphrase (#57): the Compose UI prompts the user when
+    // they tick "Encrypt" and submit, then hands the value through
+    // this IPC.  We don't store it anywhere — it's threaded straight
+    // into the first send attempt and dropped when this command
+    // returns.  Background outbox retries that fire later won't have
+    // it, so encrypted rows that fail to drain surface a clear
+    // "needs interactive retry" error and the Compose retry path
+    // can re-prompt.
+    let _ = pgp_passphrase.as_deref(); // referenced lower in the drain branch
+
     // Validate up-front: building the lettre Message rejects bad
     // addresses, missing bodies, etc.  Doing it here means
     // user-facing input errors still surface in Compose's modal
@@ -7511,11 +7639,20 @@ async fn send_email(
     // Kick off the drain attempt immediately on a background
     // task.  The task captures its own AppHandle clone so it
     // outlives this command's return.  Cheap: ~tens of
-    // microseconds per spawn.
+    // microseconds per spawn.  Carries the freshly-prompted PGP
+    // passphrase (#57) inline so the *first* drain attempt can
+    // encrypt without re-prompting; subsequent retries from the
+    // periodic sweep don't get it, by design.
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         let cache = app_clone.state::<Cache>();
-        try_drain_outbox_entry(&app_clone, &cache, entry_id).await;
+        try_drain_outbox_entry_with_passphrase(
+            &app_clone,
+            &cache,
+            entry_id,
+            pgp_passphrase.as_deref(),
+        )
+        .await;
     });
 
     // #276 follow-up: return the new row id so Compose can hand
@@ -7542,6 +7679,21 @@ async fn send_email(
 /// missing local-side bookkeeping will reconcile on the next
 /// envelope fetch).
 async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
+    try_drain_outbox_entry_with_passphrase(app, cache, entry_id, None).await
+}
+
+/// Variant of [`try_drain_outbox_entry`] that carries a freshly-
+/// prompted PGP passphrase forward to the SMTP send (#57).  Used by
+/// the IPC entry point right after `send_email` enqueues; every
+/// other caller (periodic sweep, manual retry) drops back to the
+/// no-passphrase shape above and the encryption path surfaces a
+/// clear "needs interactive retry" error.
+async fn try_drain_outbox_entry_with_passphrase(
+    app: &AppHandle,
+    cache: &Cache,
+    entry_id: i64,
+    pgp_passphrase: Option<&str>,
+) {
     // Claim the row before doing any real work (#292 follow-up).
     // Without this guard, the spawned drain `send_email` kicks off
     // and the periodic `drain_outbox_sweep` can both reach this
@@ -7613,8 +7765,18 @@ async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
         }
     };
 
-    let send_result: Result<(), UnkaiError> =
-        run_send_pipeline(app, cache, &account, &email, replied_to.as_ref()).await;
+    // Outbox sweeps (no passphrase) surface "needs interactive
+    // retry" for encrypted rows; the first-attempt path from
+    // `send_email` carries the freshly-prompted passphrase forward.
+    let send_result: Result<(), UnkaiError> = run_send_pipeline(
+        app,
+        cache,
+        &account,
+        &email,
+        replied_to.as_ref(),
+        pgp_passphrase,
+    )
+    .await;
 
     match send_result {
         Ok(()) => {
@@ -7642,14 +7804,34 @@ async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
 /// pre-#276 `send_email` body verbatim — JMAP path returns after
 /// `client.send_email`, IMAP path runs SMTP + best-effort Sent
 /// APPEND + best-effort answered-flag flip.
+///
+/// `pgp_passphrase` (#57): when the email asks for PGP encryption
+/// and we have one, build a `TauriCryptoBridge` on the spot and
+/// route the send through `SmtpClient::send_with_crypto`.  A
+/// background retry from the outbox sweep won't have a passphrase
+/// available, so encrypted rows surface a clear "passphrase
+/// needed" error rather than silently sending plaintext.
 async fn run_send_pipeline(
     app: &AppHandle,
     cache: &Cache,
     account: &Account,
     email: &OutgoingEmail,
     replied_to: Option<&RepliedToRef>,
+    pgp_passphrase: Option<&str>,
 ) -> Result<(), UnkaiError> {
     if uses_jmap(account) {
+        if email.encryption_mode.as_deref() == Some("pgp") {
+            // We don't yet wrap the JMAP submission path in
+            // `multipart/encrypted` (the SMTP submission method on
+            // JMAP servers tends to want a fully-built MIME and the
+            // server-side relay handles transport).  Surface that
+            // mismatch loudly so the user sends via SMTP instead.
+            return Err(UnkaiError::Protocol(
+                "PGP encryption over the JMAP submission path is not yet wired — \
+                 switch the account to IMAP/SMTP for encrypted sends"
+                    .into(),
+            ));
+        }
         let client = connect_jmap(account).await?;
         client.send_email(email).await?;
         if let Some(rt) = replied_to {
@@ -7675,7 +7857,19 @@ async fn run_send_pipeline(
         &account.trusted_certs,
     )
     .await?;
-    smtp.send(email).await?;
+    if email.encryption_mode.as_deref() == Some("pgp") {
+        let passphrase = pgp_passphrase.ok_or_else(|| {
+            UnkaiError::Auth(
+                "PGP encryption requested but no passphrase supplied — \
+                 retry from Compose so we can prompt"
+                    .into(),
+            )
+        })?;
+        let bridge = TauriCryptoBridge::for_account(&account.id, passphrase, cache.clone())?;
+        smtp.send_with_crypto(email, Some(&bridge)).await?;
+    } else {
+        smtp.send(email).await?;
+    }
 
     // Best-effort APPEND to Sent (same behaviour as before #276):
     // the user's mail is already out, a failure here is logged
@@ -11591,6 +11785,332 @@ fn open_default_apps_settings() -> Result<(), UnkaiError> {
     }
 }
 
+// ── End-to-end encryption (#57) ──────────────────────────────────
+//
+// Tauri commands + the concrete `CryptoBridge` implementation that
+// the IMAP receive and SMTP send paths consume.  All the protocol
+// plumbing is in the `unkai-crypto` + `unkai-imap` + `unkai-smtp`
+// crates; this module just stitches them together with the cache
+// (recipient public-key lookup) and the OS keychain (private-key
+// material + passphrase) when an IPC fires.
+
+/// What the AccountSettings panel displays for an account's PGP
+/// state.  `has_key` is the cheap signal ("show import button vs.
+/// show fingerprint + remove button"); `fingerprint` is the human-
+/// readable identifier when present.
+#[derive(Debug, Clone, serde::Serialize)]
+struct PgpKeyStatus {
+    has_key: bool,
+    fingerprint: Option<String>,
+}
+
+/// Import + persist an OpenPGP private key for an account.
+///
+/// The `passphrase` argument is used to validate the key parses
+/// (proving the user typed the right one before we accept the
+/// import); after that it's dropped.  Per the "re-prompt per
+/// operation" decision in #57 the passphrase is **not** stashed in
+/// the keychain — the UI prompts for it again every time encryption
+/// or decryption fires.
+///
+/// Side effects: armored key written to the OS keychain, the
+/// fingerprint cached on the `accounts` row so the UI can render
+/// "Key 9F2A…AAAA" without unlocking the keychain.
+#[tauri::command]
+async fn pgp_import_private_key(
+    account_id: String,
+    armored_key: String,
+    passphrase: String,
+    cache: State<'_, Cache>,
+    notify: State<'_, SettingsSyncNotify>,
+) -> Result<String, UnkaiError> {
+    let parsed = unkai_crypto::parse_private_key(armored_key.as_bytes(), Some(&passphrase))
+        .map_err(|e| UnkaiError::Crypto(format!("PGP key import failed: {e}")))?;
+    let fingerprint = parsed.fingerprint();
+    // Drop the parsed key + passphrase immediately — we just used
+    // them to verify the import.  The next encrypt / decrypt will
+    // re-parse against a fresh passphrase the user types.
+    drop(parsed);
+
+    credentials::store_pgp_private_key(&account_id, &armored_key)?;
+
+    // Update the account row so the AccountSettings UI sees the
+    // fingerprint on its next reload without having to crack open
+    // the keychain.  Loading + saving preserves every other field —
+    // the IPC contract from #115 already takes a full Account on
+    // update_account, so we follow suit.
+    let accounts = account_store::load_accounts(&cache)?;
+    if let Some(mut acc) = accounts.into_iter().find(|a| a.id == account_id) {
+        acc.pgp_key_fingerprint = Some(fingerprint.clone());
+        account_store::update_account(&cache, acc)?;
+        notify.0.notify_one();
+    }
+
+    Ok(fingerprint)
+}
+
+/// Remove the OpenPGP private key for an account.  Mirrors the IMAP
+/// password removal path: clears the keychain entry(s) and drops the
+/// fingerprint hint from the account row.  Also clears any orphaned
+/// passphrase entry from an older build that pre-dated the
+/// "re-prompt per operation" decision — defensive cleanup.
+#[tauri::command]
+fn pgp_remove_private_key(
+    account_id: String,
+    cache: State<'_, Cache>,
+    notify: State<'_, SettingsSyncNotify>,
+) -> Result<(), UnkaiError> {
+    credentials::delete_pgp_private_key(&account_id)?;
+    credentials::delete_pgp_passphrase(&account_id)?;
+
+    let accounts = account_store::load_accounts(&cache)?;
+    if let Some(mut acc) = accounts.into_iter().find(|a| a.id == account_id) {
+        if acc.pgp_key_fingerprint.is_some() {
+            acc.pgp_key_fingerprint = None;
+            account_store::update_account(&cache, acc)?;
+            notify.0.notify_one();
+        }
+    }
+    Ok(())
+}
+
+/// What does the user's account look like, key-wise?  Cheap read from
+/// the SQLCipher row — doesn't touch the keychain.
+#[tauri::command]
+fn pgp_get_account_key_status(
+    account_id: String,
+    cache: State<'_, Cache>,
+) -> Result<PgpKeyStatus, UnkaiError> {
+    let fingerprint = account_store::load_accounts(&cache)?
+        .into_iter()
+        .find(|a| a.id == account_id)
+        .and_then(|a| a.pgp_key_fingerprint);
+    Ok(PgpKeyStatus {
+        has_key: fingerprint.is_some(),
+        fingerprint,
+    })
+}
+
+/// Import a recipient's PGP public key by paste.  The
+/// `email_hint` is what the user typed in the Compose key picker
+/// (or the contact card they were viewing); we trust it for the
+/// `email` column but the fingerprint comes from the key itself.
+#[tauri::command]
+fn pgp_import_public_key(
+    armored_key: String,
+    email_hint: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<String, UnkaiError> {
+    let parsed = unkai_crypto::parse_public_key(armored_key.as_bytes())
+        .map_err(|e| UnkaiError::Crypto(format!("Public key parse failed: {e}")))?;
+    let fingerprint = parsed.fingerprint();
+    let row = PgpPublicKeyRow {
+        fingerprint: fingerprint.clone(),
+        email: email_hint,
+        armored_key,
+        source: PgpKeySource::Manual,
+        added_at: chrono::Utc::now().timestamp(),
+    };
+    cache.upsert_pgp_public_key(&row)?;
+    Ok(fingerprint)
+}
+
+/// Remove one cached public key by fingerprint.
+#[tauri::command]
+fn pgp_remove_public_key(fingerprint: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
+    cache
+        .delete_pgp_public_key(&fingerprint)
+        .map_err(UnkaiError::from)
+}
+
+/// List every cached public key, newest first, for the
+/// AccountSettings "Known recipient keys" panel.
+#[tauri::command]
+fn pgp_list_public_keys(cache: State<'_, Cache>) -> Result<Vec<PgpPublicKeyDto>, UnkaiError> {
+    let rows = cache.list_pgp_public_keys().map_err(UnkaiError::from)?;
+    Ok(rows.into_iter().map(PgpPublicKeyDto::from).collect())
+}
+
+/// Look up every cached public key claiming a given email address —
+/// powers the per-recipient "🔑 has key" / "⚠ no key" indicator chips
+/// in Compose.
+#[tauri::command]
+fn pgp_get_keys_for_email(
+    email: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<PgpPublicKeyDto>, UnkaiError> {
+    let rows = cache
+        .get_pgp_public_keys_for_email(&email)
+        .map_err(UnkaiError::from)?;
+    Ok(rows.into_iter().map(PgpPublicKeyDto::from).collect())
+}
+
+/// IPC-shaped projection of `PgpPublicKeyRow` — same fields, the
+/// `source` enum flattened to a string, and the armored bytes
+/// omitted (the UI never needs the raw key; it only renders the
+/// fingerprint + email + provenance).  Dropping the armor keeps
+/// the IPC payload small even with hundreds of cached keys.
+#[derive(Debug, Clone, serde::Serialize)]
+struct PgpPublicKeyDto {
+    fingerprint: String,
+    email: Option<String>,
+    source: String,
+    added_at: i64,
+}
+
+impl From<PgpPublicKeyRow> for PgpPublicKeyDto {
+    fn from(r: PgpPublicKeyRow) -> Self {
+        Self {
+            fingerprint: r.fingerprint,
+            email: r.email,
+            source: r.source.as_str().to_string(),
+            added_at: r.added_at,
+        }
+    }
+}
+
+/// Concrete `CryptoBridge` implementation used at the Tauri-command
+/// boundary.  Holds the account's signing key (the user just unlocked
+/// it via the passphrase prompt) plus a `Cache` handle for recipient
+/// public-key lookups.  Short-lived: rebuilt per send / per fetch
+/// because the passphrase shouldn't outlive one operation.
+struct TauriCryptoBridge {
+    /// Pre-parsed and (logically) unlocked private key.  rpgp doesn't
+    /// actually unlock until it needs the secret material, so this
+    /// wrapper carries the passphrase too.
+    private_key: unkai_crypto::PrivateKey,
+    /// Used to look up recipient public keys by email at encrypt
+    /// time and trusted-signer keys at verify time.  Cheap to clone
+    /// because `Cache` is an `Arc` internally.
+    cache: Cache,
+}
+
+impl TauriCryptoBridge {
+    /// Build a bridge from the account's stored armored key plus a
+    /// freshly-prompted passphrase.  The caller is responsible for
+    /// asking the user — we never read the passphrase from the
+    /// keychain (the "re-prompt per operation" decision in #57).
+    /// Returns `UnkaiError::Auth` when the keychain has no key entry
+    /// for this account, so the IPC layer routes the user to the
+    /// "set up encryption" flow rather than surfacing a raw error.
+    fn for_account(account_id: &str, passphrase: &str, cache: Cache) -> Result<Self, UnkaiError> {
+        let armored = credentials::get_pgp_private_key(account_id)?;
+        let private_key = unkai_crypto::parse_private_key(armored.as_bytes(), Some(passphrase))
+            .map_err(|e| UnkaiError::Crypto(format!("Stored PGP key won't parse: {e}")))?;
+        Ok(Self { private_key, cache })
+    }
+
+    /// Resolve `recipient_emails` to the cached public keys we hold for
+    /// each address.  Returns `CryptoKeyNotFound` on the first
+    /// recipient with no cached key so the Compose layer can prompt
+    /// for a paste — same contract as the trait doc on
+    /// `CryptoBridge::encrypt`.
+    fn collect_recipient_keys(
+        &self,
+        recipient_emails: &[String],
+    ) -> Result<Vec<unkai_crypto::PublicKey>, UnkaiError> {
+        let mut out = Vec::with_capacity(recipient_emails.len());
+        for email in recipient_emails {
+            let rows = self
+                .cache
+                .get_pgp_public_keys_for_email(email)
+                .map_err(UnkaiError::from)?;
+            let row = rows
+                .into_iter()
+                .next()
+                .ok_or_else(|| UnkaiError::CryptoKeyNotFound(email.clone()))?;
+            let key = unkai_crypto::parse_public_key(row.armored_key.as_bytes())?;
+            out.push(key);
+        }
+        Ok(out)
+    }
+
+    /// Materialise every cached public key as a trust set for
+    /// `decrypt_and_verify`.  Cheap because the cache returns plain
+    /// armored strings — rpgp does the parse work.  Errors on
+    /// individual rows are logged and skipped rather than failing
+    /// the whole decrypt: a malformed cached key shouldn't block
+    /// the user from reading the message.
+    fn collect_all_trusted_keys(&self) -> Result<Vec<unkai_crypto::PublicKey>, UnkaiError> {
+        let rows = self
+            .cache
+            .list_pgp_public_keys()
+            .map_err(UnkaiError::from)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            match unkai_crypto::parse_public_key(row.armored_key.as_bytes()) {
+                Ok(k) => out.push(k),
+                Err(e) => tracing::warn!(
+                    "Skipping cached public key fp={} (parse failed): {e}",
+                    row.fingerprint
+                ),
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl unkai_core::crypto::CryptoBridge for TauriCryptoBridge {
+    fn decrypt(
+        &self,
+        ciphertext_armor: &[u8],
+    ) -> Result<unkai_core::crypto::DecryptedPayload, UnkaiError> {
+        let trusted = self.collect_all_trusted_keys()?;
+        let trusted_refs: Vec<&unkai_crypto::PublicKey> = trusted.iter().collect();
+        let result =
+            unkai_crypto::decrypt_and_verify(ciphertext_armor, &self.private_key, &trusted_refs)?;
+        Ok(unkai_core::crypto::DecryptedPayload {
+            plaintext: result.plaintext,
+            signature_status: result.signature_status.map(serialize_signature_status),
+            signer_fingerprint: result.signer_fingerprint,
+        })
+    }
+
+    fn verify(
+        &self,
+        signed_payload: &[u8],
+        signature_armor: &[u8],
+    ) -> Result<unkai_core::crypto::VerifyOutcome, UnkaiError> {
+        let trusted = self.collect_all_trusted_keys()?;
+        let trusted_refs: Vec<&unkai_crypto::PublicKey> = trusted.iter().collect();
+        let status = unkai_crypto::verify_detached(signed_payload, signature_armor, &trusted_refs)?;
+        Ok(unkai_core::crypto::VerifyOutcome {
+            status: serialize_signature_status(status),
+            signer_fingerprint: None,
+        })
+    }
+
+    fn encrypt(
+        &self,
+        inner_mime: &[u8],
+        recipient_emails: &[String],
+        sign: bool,
+    ) -> Result<unkai_core::crypto::EncryptedOutput, UnkaiError> {
+        let recipient_keys = self.collect_recipient_keys(recipient_emails)?;
+        let recipient_refs: Vec<&unkai_crypto::PublicKey> = recipient_keys.iter().collect();
+        let armored = if sign {
+            unkai_crypto::sign_and_encrypt(inner_mime, &self.private_key, &recipient_refs)?
+        } else {
+            unkai_crypto::encrypt(inner_mime, &recipient_refs)?
+        };
+        Ok(unkai_core::crypto::EncryptedOutput {
+            ciphertext_armor: armored,
+        })
+    }
+}
+
+/// Convert the typed `unkai_crypto::SignatureStatus` enum to the
+/// kebab-case string the rest of the workspace (cache columns, JSON
+/// IPC payload, Svelte UI) consumes.  Single source of truth so the
+/// strings don't drift between Rust and TypeScript.
+fn serialize_signature_status(status: unkai_crypto::SignatureStatus) -> String {
+    match status {
+        unkai_crypto::SignatureStatus::Valid => "valid".into(),
+        unkai_crypto::SignatureStatus::Invalid => "invalid".into(),
+        unkai_crypto::SignatureStatus::UnknownSigner => "unknown-signer".into(),
+    }
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 fn main() {
@@ -12303,6 +12823,14 @@ fn main() {
             open_default_apps_settings,
             // #294 — OS-level mailto handler cold-start drain
             take_pending_mailto_urls,
+            // #57 — end-to-end mail encryption: key management
+            pgp_import_private_key,
+            pgp_remove_private_key,
+            pgp_get_account_key_status,
+            pgp_import_public_key,
+            pgp_remove_public_key,
+            pgp_list_public_keys,
+            pgp_get_keys_for_email,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Unkai");

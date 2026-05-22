@@ -263,5 +263,25 @@
   "folder_name_drafts": "Drafts",
   "folder_name_junk": "Junk",
   "folder_name_archive": "Archive",
-  "folder_name_trash": "Trash"
+  "folder_name_trash": "Trash",
+
+  "encryption_section_title": "End-to-end encryption",
+  "encryption_status_loading": "Loading…",
+  "encryption_active_key_label": "Active OpenPGP key fingerprint",
+  "encryption_remove_button": "Remove key",
+  "encryption_replace_button": "Replace…",
+  "encryption_no_key_explanation": "Import an OpenPGP private key to sign outgoing mail and decrypt incoming mail on this account. The armored key is stored in the OS keychain; the passphrase is not retained.",
+  "encryption_import_button": "Import private key…",
+  "encryption_paste_label": "Paste armored OpenPGP private key",
+  "encryption_passphrase_label": "Passphrase",
+  "encryption_passphrase_placeholder": "Required to unlock the key",
+  "encryption_passphrase_hint": "The passphrase is used once to verify the key parses, then dropped. Compose will prompt for it again on every encrypted send.",
+  "encryption_import_submit": "Import",
+  "encryption_import_cancel": "Cancel",
+
+  "mail_view_cannot_decrypt_banner": "This message is encrypted. The server didn't expose the raw bytes so it can't be decrypted here — open it via IMAP or a desktop PGP client.",
+  "mail_view_chip_decrypted": "Decrypted",
+  "mail_view_chip_signed_valid": "Signed by {fp}",
+  "mail_view_chip_signed_invalid": "Signature invalid",
+  "mail_view_chip_signed_unknown": "Signed (signer unknown)"
 }
