@@ -1890,15 +1890,16 @@
                 }
               }}
             />
-            <!-- Hover uses primary-600 (one shade darker than the
-                 Reply/Forward cluster's primary-500) and twice the
-                 background opacity so it visibly separates from the
-                 surrounding primary-tinted badge — at primary-500/15
-                 the hover was too close to the badge's primary-50
-                 background and read as no change at all. -->
+            <!-- Hover swaps to the success palette (Skeleton's green
+                 accent) — the badge itself is primary-tinted, so any
+                 shade of primary on hover gets eaten by the
+                 surrounding tone.  Success reads as a fresh hue,
+                 lines up semantically with the "complete the action"
+                 affordance, and keeps the same outlined-surface base
+                 the Reply / Forward cluster uses. -->
             <button
               type="button"
-              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5 hover:bg-primary-600/25 hover:text-primary-700 hover:border-primary-600 dark:hover:text-primary-200 shrink-0"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5 hover:bg-success-500/20 hover:text-success-700 hover:border-success-500 dark:hover:text-success-300 shrink-0"
               disabled={decrypting || !decryptPassphrase}
               onclick={() => void runDecrypt()}
               title="Decrypt this message"
