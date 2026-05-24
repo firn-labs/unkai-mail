@@ -308,9 +308,9 @@
 
   "encryption_unlock_auto_label": "Automatisch entsperren",
   "encryption_unlock_auto_hint_off": "Aus — Compose fragt die PGP-Passphrase bei jeder verschlüsselten Sendung neu ab, und verschlüsselte Nachrichten zeigen eine Entschlüsseln-Schaltfläche, die du klicken musst.",
-  "encryption_unlock_auto_hint_on": "An — deine Passphrase ist im Schlüsselbund des Betriebssystems gespeichert. Verschlüsselte Mails werden ohne Klick beim Öffnen entschlüsselt, und Compose sendet ohne erneute Abfrage.",
+  "encryption_unlock_auto_saved": "Passphrase gespeichert",
   "encryption_unlock_auto_passphrase_label": "Passphrase",
-  "encryption_unlock_auto_save": "Speichern & automatisch entsperren",
+  "encryption_unlock_auto_save": "Passphrase speichern",
   "encryption_unlock_auto_cancel": "Abbrechen",
   "encryption_unlock_auto_storage_hint": "Wird im OS-Schlüsselbund neben dem Mail-Passwort dieses Kontos abgelegt. Entfernen des PGP-Schlüssels hier löscht ihn; Abschalten dieser Option ebenfalls.",
   "compose_pgp_auto_unlock_active": "Automatisch entsperren ist aktiv — deine gespeicherte Passphrase wird verwendet."
