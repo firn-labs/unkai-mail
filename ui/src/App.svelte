@@ -1063,6 +1063,14 @@
       }>('compose-from-mail', (e) => {
         const { kind, mail } = e.payload
         void (async () => {
+          // #341 — same decrypt-before-quoting hook as the
+          // in-window onReply / onReplyAll / onForward path, so a
+          // popped-out reply / forward against an encrypted source
+          // doesn't open a blank quoted block either.  Returns
+          // null if the user cancels the prompt; we abort the
+          // popout open entirely in that case.
+          const ready = await ensureDecryptedForReply(mail, kind)
+          if (!ready) return
           // Forward needs the async builder so the
           // include-attachments popup (#329) and the
           // download_email_attachment fan-out can run before the
@@ -1071,12 +1079,12 @@
           // the original attachments.
           const initial: ComposeInitial =
             kind === 'reply'
-              ? buildReplyInitial(mail)
+              ? buildReplyInitial(ready)
               : kind === 'reply-all'
-                ? buildReplyAllInitial(mail)
-                : await buildForwardInitialForPopout(mail)
+                ? buildReplyAllInitial(ready)
+                : await buildForwardInitialForPopout(ready)
           void openComposeInStandaloneWindow({
-            accountId: mail.account_id,
+            accountId: ready.account_id,
             initial,
           }).catch((err) =>
             console.warn('openComposeInStandaloneWindow from #304 failed', err),
@@ -1911,6 +1919,13 @@
     message_id?: string | null
     in_reply_to?: string | null
     references_ids?: string[]
+    /** Kebab-case protection tag from the receive path (#57).  Used
+     *  by the Reply / Forward path (#341) to detect that the source
+     *  message is encrypted: if so, the quoted-history builder needs
+     *  to decrypt the body first (or the new draft would carry an
+     *  empty "On <date> X wrote:" block), and Reply pre-enables the
+     *  Encryption tab toggle so the thread stays encrypted. */
+    protection?: string | null
   }
 
   /** Reply / reply-all / "respond with meeting" need to know
@@ -1946,11 +1961,42 @@
   // Compose window instead of the in-window modal — without the
   // shared helpers, the popout path would silently drift away
   // from the main-window flow on every future tweak.
+  /** #341 — does this message carry a PGP-encrypted payload?  Both
+   *  the encrypt-only and the signed-and-encrypted variants from
+   *  the receive path qualify.  The third `"encrypted-cannot-decrypt"`
+   *  state from the JMAP-no-raw-blob fallback is intentionally
+   *  excluded — we can't decrypt those locally so the Reply/Forward
+   *  flow can't carry a quoted body anyway. */
+  function wasEncrypted(mail: OpenMail): boolean {
+    const p = mail.protection
+    return p === 'encrypted' || p === 'signed-and-encrypted'
+  }
+
+  /** #341 — does the cached body actually need a decrypt round-trip?
+   *  Only true when the message was encrypted *and* neither plain
+   *  text nor HTML body is sitting in the local cache.  When the
+   *  user has already clicked Decrypt in MailView, the cache row
+   *  carries the plaintext and we can build the quoted-history
+   *  block straight from it without re-prompting. */
+  function needsDecryptForReply(mail: OpenMail): boolean {
+    if (!wasEncrypted(mail)) return false
+    const hasText = (mail.body_text ?? '').trim().length > 0
+    const hasHtml = (mail.body_html ?? '').trim().length > 0
+    return !hasText && !hasHtml
+  }
+
   function buildReplyInitial(mail: ReplyableMail): ComposeInitial {
     return {
       to: mail.from,
       subject: replySubject(mail.subject),
       body: quoteBody(mail.from, mail.date, mail.body_text, mail.body_html),
+      // #341 — Reply to an encrypted thread keeps the thread
+      // encrypted by default.  The Compose layer reads this and
+      // pre-flips the Encryption-tab toggle on; the user can still
+      // click it back off if they want to send plaintext.  Forward
+      // does *not* pre-enable encryption: the user is changing
+      // recipients and the new target may not have a key.
+      encryptByDefault: wasEncrypted(mail),
       repliedTo: {
         accountId: mail.account_id,
         folder: mail.folder,
@@ -1975,6 +2021,8 @@
       cc: others.join(', '),
       subject: replySubject(mail.subject),
       body: quoteBody(mail.from, mail.date, mail.body_text, mail.body_html),
+      // #341 — same rationale as buildReplyInitial.
+      encryptByDefault: wasEncrypted(mail),
       repliedTo: {
         accountId: mail.account_id,
         folder: mail.folder,
@@ -1986,12 +2034,127 @@
     }
   }
 
+  /** #341 — promise-based passphrase prompt for Reply / Forward on
+   *  an encrypted message that hasn't been decrypted yet.  Held as
+   *  `{ kind, fromName, resolve, error?, busy }` so the async
+   *  reply/forward flow below can `await` the user's input via a
+   *  promise; the modal's buttons (and the backdrop dismiss) call
+   *  `resolveDecryptPrompt` and clear this state.  `error` and
+   *  `busy` are flipped by the wrapper that calls `decrypt_message`
+   *  so a wrong passphrase keeps the modal up with a visible
+   *  message instead of forcing the user to re-click Reply. */
+  type DecryptPromptKind = 'reply' | 'reply-all' | 'forward'
+  let pendingDecryptPrompt = $state<{
+    kind: DecryptPromptKind
+    fromName: string
+    resolve: (passphrase: string | null) => void
+    error: string
+    busy: boolean
+    /** Bound to the password input — kept on the prompt object
+     *  rather than as a top-level `$state` so reopening the modal
+     *  for a different message can't carry over a value the user
+     *  typed for the previous one. */
+    value: string
+  } | null>(null)
+
+  function resolveDecryptPrompt(passphrase: string | null) {
+    if (!pendingDecryptPrompt) return
+    if (pendingDecryptPrompt.busy) return
+    // Snapshot the resolver before clearing so the closure isn't
+    // racing the state mutation; the busy guard above means we
+    // never race the in-flight decrypt_message call.
+    const { resolve } = pendingDecryptPrompt
+    pendingDecryptPrompt = null
+    resolve(passphrase)
+  }
+
+  /** #341 — if the source message is encrypted but not yet decrypted,
+   *  prompt the user for their passphrase, run `decrypt_message`,
+   *  and return a copy of the mail with the plaintext body fields
+   *  filled in.  On wrong passphrase the modal stays up with an
+   *  inline error (the user re-tries inside the same prompt).  On
+   *  cancel returns `null` so the caller can abort the Reply /
+   *  Forward open instead of pushing an empty quoted-history into
+   *  Compose.  Pass-through when the mail is plaintext or the
+   *  cached body is already populated. */
+  async function ensureDecryptedForReply<T extends ReplyableMail>(
+    mail: T,
+    kind: DecryptPromptKind,
+  ): Promise<T | null> {
+    if (!needsDecryptForReply(mail)) return mail
+    let lastError = ''
+    while (true) {
+      const passphrase = await new Promise<string | null>((resolve) => {
+        pendingDecryptPrompt = {
+          kind,
+          fromName: mail.from,
+          resolve,
+          error: lastError,
+          busy: false,
+          value: '',
+        }
+      })
+      if (passphrase == null) {
+        // User dismissed — clear the modal (the resolver clears
+        // `pendingDecryptPrompt` itself only when called via
+        // `resolveDecryptPrompt`; resolving directly through the
+        // closure above doesn't touch the state object).
+        pendingDecryptPrompt = null
+        return null
+      }
+      // Flip the same modal into a busy frame so the user sees
+      // immediate feedback while the IMAP fetch + rpgp decrypt run.
+      pendingDecryptPrompt = {
+        kind,
+        fromName: mail.from,
+        resolve: () => {},
+        error: '',
+        busy: true,
+        value: passphrase,
+      }
+      try {
+        const decrypted = await invoke<{
+          body_text: string | null
+          body_html: string | null
+        }>('decrypt_message', {
+          accountId: mail.account_id,
+          folder: mail.folder,
+          uid: mail.uid,
+          pgpPassphrase: passphrase,
+        })
+        pendingDecryptPrompt = null
+        return {
+          ...mail,
+          body_text: decrypted.body_text,
+          body_html: decrypted.body_html,
+        }
+      } catch (e) {
+        // Strip the `Crypto: ` variant prefix from UnkaiError (same
+        // idiom MailView's runDecrypt uses) so the message reads as
+        // a clean sentence rather than a typed-enum dump.  Loop
+        // around — the next iteration re-mounts the prompt with
+        // `error` populated so the user can retry without losing
+        // their place.
+        const raw = formatError(e) || 'Decrypt failed'
+        lastError = raw.replace(/^Crypto:\s*/i, '')
+      }
+    }
+  }
+
   function onReply(mail: ReplyableMail) {
-    openCompose(buildReplyInitial(mail))
+    void (async () => {
+      const ready = await ensureDecryptedForReply(mail, 'reply')
+      if (!ready) return
+      openCompose(buildReplyInitial(ready))
+    })()
   }
 
   function onReplyAll(mail: ReplyableMail) {
-    openCompose(buildReplyAllInitial(mail))
+    void (async () => {
+      const ready = await ensureDecryptedForReply(mail, 'reply-all')
+      if (!ready) return
+      openCompose(buildReplyAllInitial(ready))
+    })()
   }
 
   /** Does the given folder name look like the account's Drafts folder?
@@ -2184,14 +2347,21 @@
    *  closes the Compose before the download finishes, the
    *  injection is dropped silently (lookup misses). */
   async function onForward(mail: ForwardableMail) {
-    const composeId = openCompose(buildForwardInitial(mail))
-    if (mail.attachments.length === 0) return
+    // #341 — decrypt the source body before we build the forward
+    // initial so the quoted block actually carries the original
+    // content.  Without this, forwarding an unopened encrypted
+    // message would put a "Forwarded message" header on top of an
+    // empty body block.
+    const ready = await ensureDecryptedForReply(mail, 'forward')
+    if (!ready) return
+    const composeId = openCompose(buildForwardInitial(ready))
+    if (ready.attachments.length === 0) return
     const include = await promptIncludeForwardAttachments(
-      mail.attachments.length,
+      ready.attachments.length,
     )
     if (!include) return
     try {
-      const downloaded = await downloadForwardAttachments(mail)
+      const downloaded = await downloadForwardAttachments(ready)
       const entry = composes.find((c) => c.id === composeId)
       if (!entry) return
       const addAttachments = await entry.addAttachmentsReady
@@ -3151,6 +3321,102 @@
           {m.compose_forward_attachments_include()}
         </button>
       </div>
+    </div>
+  </div>
+{/if}
+
+<!-- #341 — decrypt-passphrase prompt for Reply / Forward on a still-
+     encrypted message.  Driven entirely by `pendingDecryptPrompt`:
+     setting it opens the modal; submit / cancel / backdrop /
+     Escape call `resolveDecryptPrompt`, which fulfils the awaited
+     promise inside `ensureDecryptedForReply` so the reply / forward
+     pipeline can continue (or abort cleanly on cancel).  The busy
+     flag locks every dismiss path while `decrypt_message` is in
+     flight so a backdrop click can't tear down the modal halfway
+     through the IPC. -->
+{#if pendingDecryptPrompt}
+  <div
+    class="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="decrypt-prompt-title"
+    tabindex="-1"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) resolveDecryptPrompt(null)
+    }}
+    onkeydown={(e) => e.key === 'Escape' && resolveDecryptPrompt(null)}
+  >
+    <div
+      class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl"
+    >
+      <h2 id="decrypt-prompt-title" class="text-base font-semibold mb-2">
+        {pendingDecryptPrompt.kind === 'forward'
+          ? m.mail_decrypt_for_forward_title()
+          : m.mail_decrypt_for_reply_title()}
+      </h2>
+      <p class="text-sm text-surface-600 dark:text-surface-300 mb-3">
+        {pendingDecryptPrompt.kind === 'forward'
+          ? m.mail_decrypt_for_forward_body({
+              sender: pendingDecryptPrompt.fromName,
+            })
+          : m.mail_decrypt_for_reply_body({
+              sender: pendingDecryptPrompt.fromName,
+            })}
+      </p>
+      <form
+        onsubmit={(e) => {
+          e.preventDefault()
+          if (!pendingDecryptPrompt || pendingDecryptPrompt.busy) return
+          resolveDecryptPrompt(pendingDecryptPrompt.value)
+        }}
+      >
+        <label
+          for="decrypt-prompt-passphrase"
+          class="block text-xs text-surface-500 mb-1"
+        >
+          {m.mail_decrypt_passphrase_label()}
+        </label>
+        <input
+          id="decrypt-prompt-passphrase"
+          type="password"
+          class="input w-full px-3 py-2 text-sm rounded-md mb-2"
+          bind:value={pendingDecryptPrompt.value}
+          disabled={pendingDecryptPrompt.busy}
+          autocomplete="off"
+          {@attach (node: HTMLInputElement) => {
+            // Pull focus the moment the modal mounts so the user
+            // can start typing without an extra click.  Skipped
+            // when the input is disabled (busy frame during the
+            // in-flight decrypt) — focusing a disabled input
+            // would be a no-op and trip the a11y linter.
+            if (!pendingDecryptPrompt?.busy) {
+              queueMicrotask(() => node.focus())
+            }
+          }}
+        />
+        {#if pendingDecryptPrompt.error}
+          <p class="text-xs text-red-500 mb-3">{pendingDecryptPrompt.error}</p>
+        {/if}
+        <div class="flex justify-end gap-2 mt-2">
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-surface-500"
+            disabled={pendingDecryptPrompt.busy}
+            onclick={() => resolveDecryptPrompt(null)}
+          >
+            {m.mail_decrypt_cancel_button()}
+          </button>
+          <button
+            type="submit"
+            class="btn btn-sm preset-filled-primary-500"
+            disabled={pendingDecryptPrompt.busy || !pendingDecryptPrompt.value}
+          >
+            {pendingDecryptPrompt.busy
+              ? m.mail_decrypt_busy_button()
+              : m.mail_decrypt_submit_button()}
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 {/if}

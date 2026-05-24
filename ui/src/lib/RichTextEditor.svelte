@@ -142,6 +142,12 @@
      *  tab strip when the tab is active.  Empty / omitted → no
      *  extra tabs. */
     extraTabs?: ExtraTab[]
+    /** Initial active tab — built-in `'format' | 'insert' | 'layout'`
+     *  or one of the `extraTabs[].id` values the embedder contributed.
+     *  Used by Compose's auto-encrypt-on-reply flow (#341) so the
+     *  passphrase input is the first thing the user sees rather than
+     *  hidden behind a tab switch.  Defaults to `'format'`. */
+    defaultActiveTab?: string
   }
 
   /** Embedder-provided tab spec.  Mirrors the ribbon tabs the
@@ -211,6 +217,7 @@
     actionsTrailing,
     actionsTrailingCompact = false,
     extraTabs = [],
+    defaultActiveTab,
   }: Props = $props()
 
   // \u2500\u2500 Inline `@` and `/` picker state \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -1421,7 +1428,8 @@
   // beyond the built-in three come from the embedder's
   // `extraTabs` prop (Compose contributes "attach").
   type BuiltinTab = 'format' | 'insert' | 'layout'
-  let activeTab = $state<BuiltinTab | string>('format')
+  // svelte-ignore state_referenced_locally
+  let activeTab = $state<BuiltinTab | string>(defaultActiveTab ?? 'format')
 
   let showEmojiPicker = $state(false)
 
