@@ -1074,20 +1074,38 @@
           // #341 — the popped-out mail window owns its own decrypt
           // prompt (so the modal appears next to the popout the user
           // was looking at instead of stealing focus to the main
-          // window).  By the time this event arrives, the mail is
-          // either already-decrypted (popout did the work) or never
-          // needed decryption — `ensureDecryptedForReply` is still
-          // called as a safety net for an old / unmodified popout,
-          // but `needsDecryptForReply` will short-circuit for the
-          // happy path so no prompt fires here.
-          const ready = await ensureDecryptedForReply(mail, kind)
-          if (!ready) return
-          // Carry the popout-side passphrase through to the forward
-          // attachment fetch so the bytes come from the *inner*
-          // decrypted MIME tree.  Falls back to whatever
-          // `ensureDecryptedForReply` collected if (somehow) the
-          // popout sent an encrypted mail without a passphrase.
-          const attachmentPassphrase = pgpPassphrase ?? ready.passphrase
+          // window).  When the popout sends a passphrase along, we
+          // *skip* this main-window listener's own prompt entirely —
+          // the popout has already decrypted the mail (body + the
+          // inner-tree attachments are already overlaid on the
+          // payload) and validated the user's key, so a second
+          // prompt here would be a double prompt for the same
+          // operation.  Without this bypass, the forward-needs-
+          // attachment-key check inside `ensureDecryptedForReply`
+          // re-fires on every popout-originated forward of an
+          // encrypted message and confuses the UI: a popout prompt
+          // that does nothing because its resolver isn't the same
+          // one the main window awaits, then a main-window prompt
+          // the user has to fill in again.
+          //
+          // When `pgpPassphrase` is null/undefined either the source
+          // was plaintext (no key needed) or the popout's body cache
+          // was already populated and the kind isn't 'forward' — in
+          // both cases `ensureDecryptedForReply` would short-circuit
+          // to a no-op anyway, but we call it for the safety-net
+          // case of an old popout build that doesn't emit the
+          // `pgpPassphrase` field.
+          let composeReady: ForwardableMail
+          let attachmentPassphrase: string | null
+          if (pgpPassphrase) {
+            composeReady = mail
+            attachmentPassphrase = pgpPassphrase
+          } else {
+            const ready = await ensureDecryptedForReply(mail, kind)
+            if (!ready) return
+            composeReady = ready.mail
+            attachmentPassphrase = ready.passphrase
+          }
           // Forward needs the async builder so the
           // include-attachments popup (#329) and the
           // download_email_attachment fan-out can run before the
@@ -1096,15 +1114,15 @@
           // the original attachments.
           const initial: ComposeInitial =
             kind === 'reply'
-              ? buildReplyInitial(ready.mail)
+              ? buildReplyInitial(composeReady)
               : kind === 'reply-all'
-                ? buildReplyAllInitial(ready.mail)
+                ? buildReplyAllInitial(composeReady)
                 : await buildForwardInitialForPopout(
-                    ready.mail,
+                    composeReady,
                     attachmentPassphrase,
                   )
           void openComposeInStandaloneWindow({
-            accountId: ready.mail.account_id,
+            accountId: composeReady.account_id,
             initial,
           }).catch((err) =>
             console.warn('openComposeInStandaloneWindow from #304 failed', err),
@@ -2187,9 +2205,27 @@
         value: passphrase,
       }
       try {
+        // Pull `attachments` back too — `decrypt_message` returns the
+        // full `Email`, and the attachments list on a freshly-
+        // decrypted message indexes the *inner* MIME tree (the real
+        // files), whereas the cached envelope the user clicked
+        // Forward on still lists the *outer* `multipart/encrypted`
+        // parts (`application/pgp-encrypted` "Version: 1" + the
+        // armored octet-stream).  Without overlaying this, the
+        // forward fan-out would call `download_decrypted_attachment`
+        // with the *outer* part_ids and ship the wrong bytes (or
+        // error out) — exactly the symptom that re-surfaced after
+        // the prior fix.
         const decrypted = await invoke<{
           body_text: string | null
           body_html: string | null
+          attachments: {
+            filename: string
+            content_type: string
+            size: number | null
+            part_id: number
+            content_id?: string | null
+          }[]
         }>('decrypt_message', {
           accountId: mail.account_id,
           folder: mail.folder,
@@ -2202,7 +2238,8 @@
             ...mail,
             body_text: decrypted.body_text,
             body_html: decrypted.body_html,
-          },
+            attachments: decrypted.attachments,
+          } as T,
           passphrase,
         }
       } catch (e) {
