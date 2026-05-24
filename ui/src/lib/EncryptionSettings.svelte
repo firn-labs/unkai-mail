@@ -319,20 +319,23 @@
            MailView, Reply/Forward, and the receive path all
            auto-supply it without re-prompting.
 
-           Layout: label flush-left, toggle flush-right (matches
-           the section title row's "name + actions" shape so the
-           text doesn't read as indented under the toggle). -->
+           Layout: toggle on the left of the label (the project's
+           default toggle-row shape), with the saved badge or
+           off-state hint promoted to its own flush-left line
+           below the row rather than living in the column to the
+           right of the toggle — otherwise the badge / hint reads
+           as visually indented under the toggle. -->
       <div class="mt-3 pt-3 border-t border-surface-200 dark:border-surface-700">
-        <div class="flex items-center justify-between gap-3">
-          <p class="text-sm font-medium leading-tight">
-            {m.encryption_unlock_auto_label()}
-          </p>
+        <div class="flex items-center gap-3">
           <Toggle
             checked={unlockEnabled || unlockEnabling}
             disabled={unlockBusy}
             onchange={onUnlockToggle}
             label={m.encryption_unlock_auto_label()}
           />
+          <p class="text-sm font-medium leading-tight">
+            {m.encryption_unlock_auto_label()}
+          </p>
         </div>
         {#if unlockEnabled}
           <!-- Saved-state badge: explicit visual confirmation
