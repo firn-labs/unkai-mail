@@ -8393,15 +8393,16 @@ async fn run_send_pipeline(
     pgp_passphrase: Option<&str>,
 ) -> Result<(), UnkaiError> {
     if uses_jmap(account) {
-        if email.encryption_mode.as_deref() == Some("pgp") {
+        if email.encryption_mode.as_deref() == Some("pgp") || email.signing_enabled {
             // We don't yet wrap the JMAP submission path in
-            // `multipart/encrypted` (the SMTP submission method on
-            // JMAP servers tends to want a fully-built MIME and the
-            // server-side relay handles transport).  Surface that
-            // mismatch loudly so the user sends via SMTP instead.
+            // `multipart/encrypted` or `multipart/signed` (the SMTP
+            // submission method on JMAP servers tends to want a
+            // fully-built MIME and the server-side relay handles
+            // transport).  Surface that mismatch loudly so the user
+            // sends via SMTP instead.
             return Err(UnkaiError::Protocol(
-                "PGP encryption over the JMAP submission path is not yet wired — \
-                 switch the account to IMAP/SMTP for encrypted sends"
+                "PGP send over the JMAP submission path is not yet wired — \
+                 switch the account to IMAP/SMTP for encrypted or signed sends"
                     .into(),
             ));
         }
@@ -8430,16 +8431,19 @@ async fn run_send_pipeline(
         &account.trusted_certs,
     )
     .await?;
-    if email.encryption_mode.as_deref() == Some("pgp") {
+    let pgp_active = email.encryption_mode.as_deref() == Some("pgp") || email.signing_enabled;
+    if pgp_active {
         // #341 — caller passphrase wins; empty / missing falls back
         // to the keychain entry from the per-account Unlock-
         // automatically opt-in.  Only when both are absent do we
         // surface the historic "retry from Compose" Auth error.
+        // Same precedence whether the user picked encrypt + sign or
+        // sign-only — both unlock the same private key.
         let resolved = match pgp_passphrase {
             Some(p) if !p.is_empty() => p.to_string(),
             _ => credentials::get_pgp_passphrase(&account.id).map_err(|_| {
                 UnkaiError::Auth(
-                    "PGP encryption requested but no passphrase supplied — \
+                    "PGP send requested but no passphrase supplied — \
                      retry from Compose so we can prompt"
                         .into(),
                 )
@@ -12800,6 +12804,10 @@ impl unkai_core::crypto::CryptoBridge for TauriCryptoBridge {
         Ok(unkai_core::crypto::EncryptedOutput {
             ciphertext_armor: armored,
         })
+    }
+
+    fn sign(&self, signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+        unkai_crypto::sign_detached(signed_payload, &self.private_key)
     }
 }
 

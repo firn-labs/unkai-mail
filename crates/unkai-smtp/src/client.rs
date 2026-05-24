@@ -103,22 +103,25 @@ impl SmtpClient {
         self.send_with_crypto(email, None).await
     }
 
-    /// Send an email with optional end-to-end encryption (#57).
+    /// Send an email with optional OpenPGP wrapping.
     ///
-    /// When `email.encryption_mode == Some("pgp")` *and* a `bridge` is
-    /// supplied, the built MIME message is wrapped in an RFC-3156
-    /// `multipart/encrypted` envelope before being handed to the SMTP
-    /// transport via [`AsyncTransport::send_raw`].  When either is
-    /// missing, this falls back to the plaintext path so the historical
-    /// behaviour is preserved by default.
+    /// Mode is picked from `email`:
+    /// - `encryption_mode == Some("pgp")` → RFC 3156 §4
+    ///   `multipart/encrypted` (encrypt + sign-inside-encrypt).
+    ///   Requires `bridge` and at least one cached recipient key per
+    ///   address.  BCC is refused — a single ciphertext encrypted to
+    ///   TO + CC + BCC would leak the BCC list via the OpenPGP ESK
+    ///   packets, and per-recipient encryption isn't wired here.
+    /// - `signing_enabled == true` (and not encrypted) → RFC 3156 §5
+    ///   `multipart/signed` sign-only.  Requires `bridge`.  Body is
+    ///   sent in cleartext + a detached OpenPGP signature; BCC is
+    ///   allowed because the same wire bytes go to every recipient.
+    /// - neither flag → historical plaintext path, no MIME wrapping.
     ///
-    /// **BCC limitation**: PGP encryption with BCC recipients is not
-    /// supported in this slice — sending one ciphertext encrypted to
-    /// both visible and BCC keys would leak the BCC list via the
-    /// recipient ESK packets.  Doing this safely requires sending one
-    /// envelope per BCC recipient (a separate refactor); for now we
-    /// surface a clear `UnkaiError::Protocol` instead of silently
-    /// leaking.  Tracked as a follow-up under #57.
+    /// In both PGP modes the wire bytes are constructed locally and
+    /// handed to the transport via [`AsyncTransport::send_raw`] so
+    /// lettre's outer MIME builder doesn't strip / rewrite headers
+    /// the recipient's PGP/MIME parser is keyed on.
     pub async fn send_with_crypto(
         &self,
         email: &OutgoingEmail,
@@ -136,21 +139,7 @@ impl SmtpClient {
         let wants_encryption = email.encryption_mode.as_deref() == Some("pgp");
         let wants_sign_only = email.signing_enabled && !wants_encryption;
 
-        if wants_sign_only {
-            // PGP/MIME `multipart/signed` requires canonicalising the
-            // signed body bytes (RFC 3156 §5).  We haven't wired that
-            // in yet (TODO inside the IMAP receive path mentions the
-            // same gap on the verify side).  Refusing loudly is much
-            // better than silently sending plaintext under a "Signed"
-            // label the user would trust.
-            return Err(UnkaiError::Protocol(
-                "Sign-only PGP/MIME (`multipart/signed`) not yet supported; \
-                 enable encryption alongside signing for #57"
-                    .into(),
-            ));
-        }
-
-        if !wants_encryption {
+        if !wants_encryption && !wants_sign_only {
             // Plaintext path — historical behaviour, no MIME wrapping.
             let message = build_outgoing_message(email)?;
             self.transport
@@ -163,11 +152,27 @@ impl SmtpClient {
 
         let bridge = bridge.ok_or_else(|| {
             UnkaiError::Crypto(
-                "encryption_mode='pgp' requested but no CryptoBridge supplied — \
-                 the Tauri command layer must compose one"
+                "PGP send requested (encryption_mode='pgp' or signing_enabled=true) \
+                 but no CryptoBridge supplied — the Tauri command layer must compose one"
                     .into(),
             )
         })?;
+
+        if wants_sign_only {
+            // RFC 3156 §5 `multipart/signed`.  The body is sent in
+            // cleartext — the signature only attests origin and
+            // integrity — so BCC is fine here (no per-recipient
+            // envelopes needed, the same wire bytes go to every
+            // recipient like a plaintext send).
+            let outer_bytes = wrap_as_pgp_mime_signed(email, bridge)?;
+            let envelope = envelope_from_email_include_bcc(email)?;
+            self.transport
+                .send_raw(&envelope, &outer_bytes)
+                .await
+                .map_err(|e| UnkaiError::Protocol(format!("Failed to send signed email: {e}")))?;
+            info!("Signed email sent successfully to {:?}", email.to);
+            return Ok(());
+        }
 
         if !email.bcc.is_empty() {
             return Err(UnkaiError::Protocol(
@@ -304,9 +309,30 @@ fn sanitise_recipient(addr: &str) -> String {
 /// we then take the `.email` portion since `Envelope` doesn't carry the
 /// display name (it's just the SMTP-level address list).  BCC is
 /// intentionally **not** added to the envelope here — the only PGP/MIME
-/// path that calls this currently rejects non-empty BCC before reaching
-/// us, and adding them later requires per-recipient encryption.
+/// `multipart/encrypted` path that calls this currently rejects non-empty
+/// BCC before reaching us, and adding them later requires per-recipient
+/// encryption.  For `multipart/signed` use
+/// [`envelope_from_email_include_bcc`] instead.
 fn envelope_from_email(email: &OutgoingEmail) -> Result<Envelope, UnkaiError> {
+    envelope_from_email_inner(email, false)
+}
+
+/// Variant of [`envelope_from_email`] that adds BCC recipients to the
+/// envelope's RCPT TO list.  Safe for the `multipart/signed` send path
+/// because the body is cleartext — the SMTP server fans out one
+/// identical envelope per recipient with the BCC list scrubbed from the
+/// visible headers, just like a plaintext mail.  Not safe for
+/// `multipart/encrypted` because a single ciphertext encrypted to TO + CC
+/// + BCC keys leaks the BCC list via the OpenPGP ESK packets, which is
+/// why the encrypted path keeps the BCC-exclusion version.
+fn envelope_from_email_include_bcc(email: &OutgoingEmail) -> Result<Envelope, UnkaiError> {
+    envelope_from_email_inner(email, true)
+}
+
+fn envelope_from_email_inner(
+    email: &OutgoingEmail,
+    include_bcc: bool,
+) -> Result<Envelope, UnkaiError> {
     let from_mailbox: Mailbox = sanitise_recipient(&email.from)
         .parse()
         .map_err(|e| UnkaiError::Protocol(format!("Invalid 'from' address: {e}")))?;
@@ -318,6 +344,14 @@ fn envelope_from_email(email: &OutgoingEmail) -> Result<Envelope, UnkaiError> {
             .parse()
             .map_err(|e| UnkaiError::Protocol(format!("Invalid recipient '{r}': {e}")))?;
         rcpts.push(mb.email);
+    }
+    if include_bcc {
+        for r in email.bcc.iter() {
+            let mb: Mailbox = sanitise_recipient(r)
+                .parse()
+                .map_err(|e| UnkaiError::Protocol(format!("Invalid BCC recipient '{r}': {e}")))?;
+            rcpts.push(mb.email);
+        }
     }
     Envelope::new(Some(from_addr), rcpts)
         .map_err(|e| UnkaiError::Protocol(format!("build SMTP envelope: {e}")))
@@ -387,6 +421,49 @@ fn build_outer_pgp_mime_bytes(email: &OutgoingEmail, ciphertext_armor: &[u8]) ->
     // collision with the ciphertext armor or the inner MIME is
     // effectively zero.
     let boundary = format!("unkai-pgp-mime-{}", uuid::Uuid::new_v4().simple());
+
+    let mut headers = write_outer_routing_headers(email);
+    headers.push_str(&format!(
+        "Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=\"{boundary}\"\r\n"
+    ));
+
+    let mut body = String::new();
+    body.push_str("\r\n");
+    body.push_str(&format!("--{boundary}\r\n"));
+    body.push_str("Content-Type: application/pgp-encrypted\r\n");
+    body.push_str("Content-Description: PGP/MIME version identification\r\n");
+    body.push_str("\r\n");
+    body.push_str("Version: 1\r\n");
+    body.push_str("\r\n");
+    body.push_str(&format!("--{boundary}\r\n"));
+    body.push_str("Content-Type: application/octet-stream; name=\"encrypted.asc\"\r\n");
+    body.push_str("Content-Description: OpenPGP encrypted message\r\n");
+    body.push_str("Content-Disposition: inline; filename=\"encrypted.asc\"\r\n");
+    body.push_str("\r\n");
+
+    let mut out = headers.into_bytes();
+    out.extend_from_slice(body.as_bytes());
+    out.extend_from_slice(ciphertext_armor);
+    if !ciphertext_armor.ends_with(b"\n") {
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    out
+}
+
+/// Emit the routing + threading headers shared by both PGP/MIME outer
+/// wrappers (`multipart/encrypted` and `multipart/signed`).  Stops
+/// after `MIME-Version: 1.0` so the caller can append the
+/// envelope-specific `Content-Type` header on the next line.
+///
+/// `From`/`To`/`Cc`/`Reply-To` pass through verbatim — the SMTP layer
+/// upstream of us is expected to have already RFC-5322-formatted these
+/// (the lettre `Mailbox::parse` pass on the plaintext send path serves
+/// the same role).  We do not emit `Bcc:` because BCC must never appear
+/// in the wire headers a recipient sees; the SMTP envelope (built via
+/// [`envelope_from_email_include_bcc`] on the sign-only path) carries
+/// BCC routing without leaking the addresses.
+fn write_outer_routing_headers(email: &OutgoingEmail) -> String {
     let message_id = format!("<{}@unkai-mail.local>", uuid::Uuid::new_v4().simple());
     let date = chrono::Utc::now().to_rfc2822();
 
@@ -417,32 +494,243 @@ fn build_outer_pgp_mime_bytes(email: &OutgoingEmail, ciphertext_armor: &[u8]) ->
         headers.push_str(&format!("References: {refs}\r\n"));
     }
     headers.push_str("MIME-Version: 1.0\r\n");
+    headers
+}
+
+/// Wrap a plaintext `OutgoingEmail` as an RFC 3156 §5
+/// `multipart/signed; protocol="application/pgp-signature"; micalg="pgp-sha256"`
+/// PGP/MIME message and return the raw RFC 822 byte form ready for
+/// `transport.send_raw`.
+///
+/// Flow:
+///   1. Build the inner MIME body via the regular [`build_outgoing_message`]
+///      path.
+///   2. Extract just the body MIME entity (Content-* headers + body
+///      bytes), stripping the outer routing headers
+///      (From/To/Subject/Date/...) — those live on the outer wrapper
+///      only.  RFC 3156 §5 signs the body MIME entity, NOT the full
+///      RFC 822 message.
+///   3. Canonicalise the body bytes per RFC 3156 §5: line endings to
+///      CRLF, strip trailing whitespace.  Mandatory before the hash
+///      is computed because a recipient's verify pass will apply the
+///      same canonicalisation before re-hashing — any drift between
+///      the bytes we sign and the bytes a verifier reconstructs from
+///      the wire results in an `unknown-signer`/`invalid` status even
+///      with the right key.
+///   4. Ask the bridge for a detached armored signature over the
+///      canonicalised bytes.  The bridge encapsulates the private-key
+///      + passphrase + subkey-selection dance.
+///   5. Emit a hand-built outer `multipart/signed` envelope: the
+///      first part is the *exact* canonicalised body bytes we signed
+///      (byte-for-byte parity matters here — see step 3 rationale),
+///      the second part is the armored signature blob.
+fn wrap_as_pgp_mime_signed(
+    email: &OutgoingEmail,
+    bridge: &dyn CryptoBridge,
+) -> Result<Vec<u8>, UnkaiError> {
+    let inner_message = build_outgoing_message(email)?;
+    let inner_full = inner_message.formatted();
+    let inner_entity = extract_inner_body_mime_entity(&inner_full)?;
+    let canonical = canonicalize_for_pgp_signing(&inner_entity);
+    let signature_armor = bridge.sign(&canonical)?;
+    Ok(build_outer_pgp_mime_signed_bytes(
+        email,
+        &canonical,
+        &signature_armor,
+    ))
+}
+
+/// Pure-function MIME envelope builder for the `multipart/signed`
+/// outer.  Mirrors [`build_outer_pgp_mime_bytes`] but emits the RFC
+/// 3156 §5 layout: the signed body part first, then the
+/// `application/pgp-signature` part carrying the armored detached
+/// signature.
+///
+/// `inner_canonical` MUST be the same bytes that were passed to
+/// `bridge.sign()` — verifiers re-hash whatever they pull from
+/// between the boundary delimiters, so any divergence here results
+/// in a verify failure even when the right key is present.
+fn build_outer_pgp_mime_signed_bytes(
+    email: &OutgoingEmail,
+    inner_canonical: &[u8],
+    signature_armor: &[u8],
+) -> Vec<u8> {
+    let boundary = format!("unkai-pgp-signed-{}", uuid::Uuid::new_v4().simple());
+
+    let mut headers = write_outer_routing_headers(email);
+    // RFC 3156 §5: `micalg` advertises the hash algorithm so the
+    // recipient can pre-select it before parsing the signature
+    // packet.  We always emit SHA-256 (matches `sign_detached`'s
+    // hash choice in `unkai_crypto::ops`) — pgp-sha256 is the
+    // OpenPGP IANA-registered micalg value for SHA-256.
     headers.push_str(&format!(
-        "Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=\"{boundary}\"\r\n"
+        "Content-Type: multipart/signed; \
+         protocol=\"application/pgp-signature\"; \
+         micalg=\"pgp-sha256\"; \
+         boundary=\"{boundary}\"\r\n"
     ));
 
-    let mut body = String::new();
-    body.push_str("\r\n");
-    body.push_str(&format!("--{boundary}\r\n"));
-    body.push_str("Content-Type: application/pgp-encrypted\r\n");
-    body.push_str("Content-Description: PGP/MIME version identification\r\n");
-    body.push_str("\r\n");
-    body.push_str("Version: 1\r\n");
-    body.push_str("\r\n");
-    body.push_str(&format!("--{boundary}\r\n"));
-    body.push_str("Content-Type: application/octet-stream; name=\"encrypted.asc\"\r\n");
-    body.push_str("Content-Description: OpenPGP encrypted message\r\n");
-    body.push_str("Content-Disposition: inline; filename=\"encrypted.asc\"\r\n");
-    body.push_str("\r\n");
-
     let mut out = headers.into_bytes();
-    out.extend_from_slice(body.as_bytes());
-    out.extend_from_slice(ciphertext_armor);
-    if !ciphertext_armor.ends_with(b"\n") {
+    out.extend_from_slice(b"\r\n");
+
+    // First body part: the signed MIME entity, byte-for-byte as it
+    // was handed to `bridge.sign()`.
+    out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    out.extend_from_slice(inner_canonical);
+    // Ensure exactly one CRLF before the next boundary delimiter —
+    // RFC 2046 attaches that CRLF to the boundary, not to the part
+    // body, but verifiers expect the byte layout to be consistent.
+    if !inner_canonical.ends_with(b"\r\n") {
         out.extend_from_slice(b"\r\n");
     }
+
+    // Second body part: the armored signature.  Content-Disposition
+    // attachment + filename="signature.asc" is the conventional shape
+    // every PGP-aware mail client emits and recognises.
+    out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    out.extend_from_slice(b"Content-Type: application/pgp-signature; name=\"signature.asc\"\r\n");
+    out.extend_from_slice(b"Content-Description: OpenPGP digital signature\r\n");
+    out.extend_from_slice(b"Content-Disposition: attachment; filename=\"signature.asc\"\r\n");
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(signature_armor);
+    if !signature_armor.ends_with(b"\n") {
+        out.extend_from_slice(b"\r\n");
+    }
+
     out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     out
+}
+
+/// Pull out just the body MIME entity (Content-* headers + body bytes)
+/// from a full RFC 822 message produced by [`build_outgoing_message`],
+/// stripping the outer routing headers (From/To/Cc/Subject/Date/
+/// Message-ID/In-Reply-To/References/Reply-To/MIME-Version) that live
+/// on the outer wrapper only.
+///
+/// RFC 3156 §5's signed entity is the body part itself — Content-*
+/// headers + body — not the surrounding RFC 822 message.  Verifiers
+/// re-hash the bytes between the boundary delimiters and would reject
+/// a signature computed over a payload that included `From:` /
+/// `Subject:` (those headers don't reappear on the wire inside the
+/// multipart/signed body part).
+///
+/// Folded continuation lines (lines starting with SP/HTAB) are
+/// preserved with their preceding header.
+fn extract_inner_body_mime_entity(formatted: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+    let sep_pos = formatted
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| {
+            UnkaiError::Protocol("inner MIME message missing CRLF CRLF header separator".into())
+        })?;
+    let headers_blob = std::str::from_utf8(&formatted[..sep_pos])
+        .map_err(|_| UnkaiError::Protocol("inner MIME message headers are not UTF-8".into()))?;
+    let body_bytes = &formatted[sep_pos + 4..];
+
+    let mut kept = String::with_capacity(headers_blob.len());
+    let mut iter = headers_blob.split("\r\n").peekable();
+    while let Some(line) = iter.next() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut full_header = String::from(line);
+        // Pull any folded continuation lines (RFC 5322 §2.2.3 — a
+        // header field that begins with whitespace is a continuation
+        // of the previous field) onto the same logical header so we
+        // either keep or drop them together.
+        while let Some(next) = iter.peek() {
+            if next.starts_with(' ') || next.starts_with('\t') {
+                full_header.push_str("\r\n");
+                full_header.push_str(next);
+                iter.next();
+            } else {
+                break;
+            }
+        }
+        let name = full_header.split(':').next().unwrap_or("").trim();
+        // Keep only the headers that describe the body itself.
+        // Content-Disposition / Content-ID / Content-Description
+        // never appear at the top level of a `build_outgoing_message`
+        // output (they live inside multipart subparts) so this list
+        // covers every real case; the extra names are belt-and-braces
+        // for future builders.
+        let keep = name.eq_ignore_ascii_case("content-type")
+            || name.eq_ignore_ascii_case("content-transfer-encoding")
+            || name.eq_ignore_ascii_case("content-disposition")
+            || name.eq_ignore_ascii_case("content-id")
+            || name.eq_ignore_ascii_case("content-description");
+        if keep {
+            kept.push_str(&full_header);
+            kept.push_str("\r\n");
+        }
+    }
+
+    if kept.is_empty() {
+        return Err(UnkaiError::Protocol(
+            "inner MIME message carried no Content-* headers — nothing to sign".into(),
+        ));
+    }
+
+    let mut out = kept.into_bytes();
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(body_bytes);
+    Ok(out)
+}
+
+/// Canonicalise `input` per RFC 3156 §5 for OpenPGP detached
+/// signing of a `multipart/signed` body part:
+///   1. Normalise every line terminator to CRLF (bare LF or bare CR
+///      becomes CRLF).
+///   2. Strip trailing SP / HTAB on every line *before* the
+///      terminator.
+///
+/// Both transforms run on the same byte slice the SMTP layer will put
+/// on the wire — by signing this canonical form and writing the same
+/// canonical bytes into the outer envelope, we guarantee a verifier
+/// re-hashing the wire bytes will land on the exact same digest.
+fn canonicalize_for_pgp_signing(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut line: Vec<u8> = Vec::with_capacity(80);
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b == b'\r' {
+            // Consume optional LF so bare CR and CRLF both terminate
+            // the current line; bare CR is rare but legal in some MIME
+            // encoders and we don't want to leave it stranded mid-line.
+            if i + 1 < input.len() && input[i + 1] == b'\n' {
+                i += 2;
+            } else {
+                i += 1;
+            }
+            flush_line(&mut out, &line);
+            line.clear();
+        } else if b == b'\n' {
+            i += 1;
+            flush_line(&mut out, &line);
+            line.clear();
+        } else {
+            line.push(b);
+            i += 1;
+        }
+    }
+    // Trailing partial line (no terminator).  Per RFC 3156 §5 the
+    // canonical form ends every line with CRLF, so we emit one even
+    // for the tail.  Verifiers do the same on re-canonicalisation,
+    // keeping the digest stable across the round trip.
+    if !line.is_empty() {
+        flush_line(&mut out, &line);
+    }
+    out
+}
+
+fn flush_line(out: &mut Vec<u8>, line: &[u8]) {
+    let mut end = line.len();
+    while end > 0 && (line[end - 1] == b' ' || line[end - 1] == b'\t') {
+        end -= 1;
+    }
+    out.extend_from_slice(&line[..end]);
+    out.extend_from_slice(b"\r\n");
 }
 
 /// Build the lettre `Message` for an outgoing email *without* sending it.
@@ -975,5 +1263,216 @@ mod tests {
             !rcpts.contains(&"hidden@example.com".into()),
             "BCC must not appear at the envelope layer — would leak via Received headers"
         );
+    }
+
+    // ── multipart/signed sign-only path (#341) ─────────────────
+
+    use super::{
+        canonicalize_for_pgp_signing, envelope_from_email_include_bcc,
+        extract_inner_body_mime_entity, wrap_as_pgp_mime_signed,
+    };
+    use unkai_core::UnkaiError;
+    use unkai_core::crypto::{CryptoBridge, DecryptedPayload, EncryptedOutput, VerifyOutcome};
+
+    /// Test-only bridge whose `sign` returns a fixed armored blob and
+    /// records the bytes it was asked to sign — lets us assert that
+    /// the SMTP layer canonicalised the body the same way before
+    /// signing AND before writing it to the wire.  The actual OpenPGP
+    /// math is covered by `unkai_crypto`'s own round-trip tests; here
+    /// we only care about the envelope construction.
+    struct RecordingSignBridge {
+        last_signed: std::sync::Mutex<Option<Vec<u8>>>,
+        signature: Vec<u8>,
+    }
+    impl RecordingSignBridge {
+        fn new() -> Self {
+            Self {
+                last_signed: std::sync::Mutex::new(None),
+                signature:
+                    b"-----BEGIN PGP SIGNATURE-----\nFAKE-SIG\n-----END PGP SIGNATURE-----\n"
+                        .to_vec(),
+            }
+        }
+        fn take_last(&self) -> Vec<u8> {
+            self.last_signed
+                .lock()
+                .expect("mutex")
+                .clone()
+                .expect("sign was never called")
+        }
+    }
+    impl CryptoBridge for RecordingSignBridge {
+        fn decrypt(&self, _: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
+            unreachable!()
+        }
+        fn verify(&self, _: &[u8], _: &[u8]) -> Result<VerifyOutcome, UnkaiError> {
+            unreachable!()
+        }
+        fn encrypt(&self, _: &[u8], _: &[String], _: bool) -> Result<EncryptedOutput, UnkaiError> {
+            unreachable!()
+        }
+        fn sign(&self, signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+            *self.last_signed.lock().expect("mutex") = Some(signed_payload.to_vec());
+            Ok(self.signature.clone())
+        }
+    }
+
+    #[test]
+    fn canonicalize_normalises_line_endings_and_strips_trailing_whitespace() {
+        // Three line terminator forms (LF, CRLF, bare CR), each line
+        // with assorted trailing whitespace.  Per RFC 3156 §5 all
+        // three terminators must collapse to CRLF and every trailing
+        // SP / HTAB must be removed before the digital signature is
+        // computed.  Body content (the leading spaces on the third
+        // line) is untouched.
+        let input = b"first line  \nsecond\tline \t\r\n  third line\rfourth";
+        let out = canonicalize_for_pgp_signing(input);
+        assert_eq!(
+            std::str::from_utf8(&out).expect("utf-8"),
+            "first line\r\nsecond\tline\r\n  third line\r\nfourth\r\n",
+        );
+    }
+
+    #[test]
+    fn canonicalize_is_idempotent() {
+        // Verifiers will canonicalise the wire bytes a second time
+        // before re-hashing; running our canonicaliser on its own
+        // output must be a no-op or the wire bytes drift away from
+        // what we signed.
+        let input = b"already\r\nclean\r\n";
+        assert_eq!(canonicalize_for_pgp_signing(input), input.to_vec());
+    }
+
+    #[test]
+    fn extract_inner_strips_routing_keeps_content_type() {
+        let full = b"From: alice@example.com\r\n\
+                     To: bob@example.com\r\n\
+                     Subject: hi\r\n\
+                     Date: Sun, 24 May 2026 12:00:00 +0000\r\n\
+                     Message-ID: <abc@unkai>\r\n\
+                     MIME-Version: 1.0\r\n\
+                     Content-Type: text/plain; charset=utf-8\r\n\
+                     Content-Transfer-Encoding: 7bit\r\n\
+                     \r\n\
+                     Hello, signed world!\r\n";
+        let inner = extract_inner_body_mime_entity(full).expect("extract");
+        let s = std::str::from_utf8(&inner).expect("utf-8");
+        assert!(
+            !s.contains("From:")
+                && !s.contains("To:")
+                && !s.contains("Subject:")
+                && !s.contains("Date:")
+                && !s.contains("Message-ID:"),
+            "routing headers must not appear inside the signed body MIME entity: {s}"
+        );
+        assert!(
+            s.starts_with("Content-Type: text/plain"),
+            "first kept header must be Content-Type: {s}"
+        );
+        assert!(s.contains("Hello, signed world!"));
+    }
+
+    #[test]
+    fn extract_inner_preserves_folded_continuation_lines() {
+        // Headers can wrap onto continuation lines that begin with
+        // SP/HTAB (RFC 5322 §2.2.3).  When we keep / drop a header
+        // we must keep / drop its continuation lines as a unit so
+        // the resulting block stays parseable.
+        let full = b"Subject: a long subject\r\n that wraps onto\r\n\ttwo continuation lines\r\n\
+                     Content-Type: multipart/alternative;\r\n boundary=\"abc\"\r\n\
+                     \r\n\
+                     body";
+        let inner = extract_inner_body_mime_entity(full).expect("extract");
+        let s = std::str::from_utf8(&inner).expect("utf-8");
+        // Subject + its two continuation lines dropped together.
+        assert!(!s.contains("Subject"));
+        assert!(!s.contains("continuation"));
+        // Content-Type + its continuation line kept together.
+        assert!(s.contains("multipart/alternative"));
+        assert!(s.contains("boundary=\"abc\""));
+    }
+
+    #[test]
+    fn signed_outer_advertises_pgp_signature_protocol_and_sha256_micalg() {
+        let email = outgoing("audit-able update", &["bob@example.com"]);
+        let bridge = RecordingSignBridge::new();
+        let wire = wrap_as_pgp_mime_signed(&email, &bridge).expect("wrap");
+
+        let parsed = MessageParser::default().parse(&wire).expect("parse outer");
+        let ct = parsed.content_type().expect("Content-Type");
+        assert!(ct.ctype().eq_ignore_ascii_case("multipart"));
+        assert_eq!(ct.subtype().unwrap_or(""), "signed");
+        assert_eq!(
+            ct.attribute("protocol").unwrap_or(""),
+            "application/pgp-signature"
+        );
+        assert_eq!(ct.attribute("micalg").unwrap_or(""), "pgp-sha256");
+        assert_eq!(parsed.subject().unwrap_or(""), "audit-able update");
+    }
+
+    #[test]
+    fn signed_outer_carries_signature_in_pgp_signature_part() {
+        let email = outgoing("notice", &["bob@example.com"]);
+        let bridge = RecordingSignBridge::new();
+        let wire = wrap_as_pgp_mime_signed(&email, &bridge).expect("wrap");
+
+        let parsed = MessageParser::default().parse(&wire).expect("parse outer");
+        let sig_part = (0..)
+            .map_while(|i| parsed.part(i))
+            .find(|p| {
+                p.content_type().is_some_and(|c| {
+                    c.ctype().eq_ignore_ascii_case("application")
+                        && c.subtype()
+                            .is_some_and(|s| s.eq_ignore_ascii_case("pgp-signature"))
+                })
+            })
+            .expect("application/pgp-signature part must exist");
+        let body = std::str::from_utf8(sig_part.contents()).expect("utf-8");
+        assert!(body.contains("-----BEGIN PGP SIGNATURE-----"));
+        assert!(body.contains("FAKE-SIG"));
+    }
+
+    #[test]
+    fn signed_outer_signed_bytes_match_wire_first_part() {
+        // RFC 3156 §5 / RFC 1847 §2.1: a verifier re-hashes the bytes
+        // it pulls out from between the boundary delimiters.  The
+        // bytes we signed and the bytes we wrote into the body part
+        // MUST be byte-identical or the signature won't verify even
+        // with the right key.  This test is the contract.
+        //
+        // We assert the contract on raw bytes (not via mail-parser)
+        // because mail-parser decodes transfer encodings (e.g.
+        // quoted-printable) before returning `contents()`, which
+        // would mask any drift between the signed bytes and the wire
+        // bytes — the very thing this test is here to catch.
+        let email = outgoing("byte parity", &["bob@example.com"]);
+        let bridge = RecordingSignBridge::new();
+        let wire = wrap_as_pgp_mime_signed(&email, &bridge).expect("wrap");
+        let signed = bridge.take_last();
+
+        // The signed bytes (Content-Type + headers + body of the
+        // inner MIME entity) must appear verbatim somewhere in the
+        // outer wire output, sandwiched between the two boundary
+        // delimiters.  `windows().position()` finds the exact byte
+        // run; any divergence (extra CRLF, header reshuffle,
+        // re-encoding) breaks the search and fails the test.
+        let signed_in_wire = wire.windows(signed.len()).any(|w| w == signed.as_slice());
+        assert!(
+            signed_in_wire,
+            "signed payload must appear byte-for-byte in the outer envelope wire bytes"
+        );
+    }
+
+    #[test]
+    fn signed_path_envelope_includes_bcc() {
+        // Sign-only does NOT leak BCC the way `multipart/encrypted`
+        // would (per-recipient ESK packets), so BCC recipients ride
+        // the same envelope as TO + CC.
+        let mut email = outgoing("memo", &["a@example.com"]);
+        email.bcc = vec!["secret@example.com".into()];
+        let env = envelope_from_email_include_bcc(&email).expect("envelope");
+        let rcpts: Vec<String> = env.to().iter().map(|a| a.to_string()).collect();
+        assert!(rcpts.contains(&"a@example.com".into()));
+        assert!(rcpts.contains(&"secret@example.com".into()));
     }
 }
