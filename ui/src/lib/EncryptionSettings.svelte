@@ -353,17 +353,16 @@
 
         {#if unlockEnabling}
           <div class="mt-3 space-y-2">
-            <label
-              class="block text-xs text-surface-500"
-              for="pgp-unlock-pw-{account.id}"
-            >
-              {m.encryption_unlock_auto_passphrase_label()}
-            </label>
+            <!-- No standalone "Passphrase" label: the placeholder
+                 ("Passphrase for your PGP key") doubles as the
+                 prompt while keeping the form compact.  Visible
+                 input border carries the "type here" signal. -->
             <input
               id="pgp-unlock-pw-{account.id}"
               type="password"
               class="input text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
-              placeholder={m.encryption_passphrase_placeholder()}
+              placeholder={m.encryption_unlock_auto_passphrase_placeholder()}
+              aria-label={m.encryption_unlock_auto_passphrase_label()}
               bind:value={unlockPassphrase}
               disabled={unlockBusy}
               autocomplete="off"

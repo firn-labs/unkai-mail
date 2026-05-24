@@ -309,6 +309,7 @@
   "encryption_unlock_auto_hint_off": "Off — Compose asks for your PGP passphrase on every encrypted send, and encrypted mail shows a Decrypt button you have to click.",
   "encryption_unlock_auto_saved": "Passphrase saved",
   "encryption_unlock_auto_passphrase_label": "Passphrase",
+  "encryption_unlock_auto_passphrase_placeholder": "Passphrase for your PGP key",
   "encryption_unlock_auto_save": "Save passphrase",
   "encryption_unlock_auto_cancel": "Cancel",
   "encryption_unlock_auto_storage_hint": "Stored in the OS keychain alongside this account's mail password. Removing the PGP key here clears it; toggling this off also clears it.",
