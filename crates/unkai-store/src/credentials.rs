@@ -217,6 +217,24 @@ pub fn get_pgp_passphrase(account_id: &str) -> Result<String, UnkaiError> {
     })
 }
 
+/// Non-erroring sibling of [`get_pgp_passphrase`] — `Ok(true)` when a
+/// passphrase is stored for the account, `Ok(false)` when it isn't,
+/// and `Err` only when the keychain itself is misbehaving (the OS
+/// service is down, the credential entry is malformed, …).  Used by
+/// the per-account "Unlock automatically" toggle in Encryption
+/// Settings so the renderer can render the on/off state without
+/// having to treat a missing-entry error as the no-op it really is
+/// (#341).
+pub fn has_pgp_passphrase(account_id: &str) -> Result<bool, UnkaiError> {
+    match pgp_pw_entry(account_id)?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to query PGP passphrase: {e}"
+        ))),
+    }
+}
+
 /// Remove the PGP passphrase for an account; no-op if missing.
 pub fn delete_pgp_passphrase(account_id: &str) -> Result<(), UnkaiError> {
     match pgp_pw_entry(account_id)?.delete_credential() {

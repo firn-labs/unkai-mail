@@ -203,7 +203,46 @@
     // subset we actually read.
     const narrow = mail as DecryptableMail
     if (!needsPromptForKind(narrow, kind)) return { mail, passphrase: null }
+    // #341 — same auto-decrypt-first pattern as App.svelte's
+    // `ensureDecryptedForReply`.  Backend returns `Ok(None)` without
+    // any IMAP work when the account hasn't opted in, so opt-out
+    // users fall through to the manual prompt below with no
+    // visible delay.  Returning `passphrase: ''` rather than the
+    // typed value tells the main-window listener (and
+    // `downloadForwardAttachments`) to route attachment fetches
+    // through the keychain via `resolve_pgp_passphrase`.
     let lastError = ''
+    try {
+      const auto = await invoke<{
+        body_text: string | null
+        body_html: string | null
+        attachments: {
+          filename: string
+          content_type: string
+          size: number | null
+          part_id: number
+          content_id?: string | null
+        }[]
+      } | null>('try_auto_decrypt_message', {
+        accountId: narrow.account_id,
+        folder: narrow.folder,
+        uid: narrow.uid,
+      })
+      if (auto) {
+        return {
+          mail: {
+            ...(mail as object),
+            body_text: auto.body_text,
+            body_html: auto.body_html,
+            attachments: auto.attachments,
+          } as EmailPayload,
+          passphrase: '',
+        }
+      }
+    } catch (e) {
+      const raw = formatError(e) || 'Decrypt failed'
+      lastError = raw.replace(/^Crypto:\s*/i, '')
+    }
     while (true) {
       const passphrase = await new Promise<string | null>((resolve) => {
         pendingDecryptPrompt = {

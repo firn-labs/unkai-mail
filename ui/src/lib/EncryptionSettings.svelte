@@ -25,6 +25,8 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
   import { m } from '../paraglide/messages'
+  import Toggle from './Toggle.svelte'
+  import { formatError } from './errors'
 
   /** Status payload returned by `pgp_get_account_key_status`. */
   interface PgpKeyStatus {
@@ -67,6 +69,106 @@
    *  button so a double-click can't enqueue two imports. */
   let busy = $state(false)
 
+  // ── #341 — "Unlock automatically" (per-account passphrase opt-in)
+  /** Mirrors the keychain entry for `unkai-mail-pgp-passphrase`:
+   *  `true` once the user has opted in, `false` otherwise.  Loaded
+   *  via `pgp_has_unlock_automatically` on mount and re-fetched
+   *  after every enable / disable so the toggle visual reflects
+   *  the actual keychain state (not just the user's intent). */
+  let unlockEnabled = $state(false)
+  /** UI state for the "user flipped the toggle ON, now type a
+   *  passphrase to save" inline form.  Distinct from
+   *  `unlockEnabled` because we don't flip that to true until the
+   *  IPC succeeds — wrong-passphrase saves shouldn't visually
+   *  enable a feature that isn't really on. */
+  let unlockEnabling = $state(false)
+  let unlockPassphrase = $state('')
+  let unlockError = $state<string | null>(null)
+  let unlockBusy = $state(false)
+
+  async function refreshUnlockStatus(accountId: string) {
+    try {
+      unlockEnabled = await invoke<boolean>('pgp_has_unlock_automatically', {
+        accountId,
+      })
+    } catch (e) {
+      // Treat a keychain query error as "off" so a momentary OS
+      // hiccup doesn't surface as a misleadingly-on toggle.  The
+      // user's next enable attempt will surface the real error.
+      console.warn('pgp_has_unlock_automatically failed', e)
+      unlockEnabled = false
+    }
+  }
+
+  function startEnablingUnlock() {
+    unlockPassphrase = ''
+    unlockError = null
+    unlockEnabling = true
+  }
+
+  function cancelEnablingUnlock() {
+    unlockPassphrase = ''
+    unlockError = null
+    unlockEnabling = false
+  }
+
+  async function submitEnableUnlock() {
+    if (!unlockPassphrase || unlockBusy) return
+    unlockBusy = true
+    unlockError = null
+    try {
+      await invoke('pgp_enable_unlock_automatically', {
+        accountId: account.id,
+        passphrase: unlockPassphrase,
+      })
+      unlockPassphrase = ''
+      unlockEnabling = false
+      await refreshUnlockStatus(account.id)
+    } catch (e) {
+      const raw = formatError(e) || 'Failed to enable Unlock automatically'
+      // Strip the typed-enum prefix so wrong-passphrase reads as a
+      // clean sentence — same idiom MailView uses for `runDecrypt`.
+      unlockError = raw.replace(/^Crypto:\s*/i, '')
+    } finally {
+      unlockBusy = false
+    }
+  }
+
+  async function disableUnlock() {
+    if (unlockBusy) return
+    unlockBusy = true
+    unlockError = null
+    try {
+      await invoke('pgp_disable_unlock_automatically', {
+        accountId: account.id,
+      })
+      await refreshUnlockStatus(account.id)
+    } catch (e) {
+      unlockError = formatError(e) || 'Failed to disable Unlock automatically'
+    } finally {
+      unlockBusy = false
+    }
+  }
+
+  /** Toggle handler — flips ON opens the inline passphrase entry;
+   *  flips OFF immediately drops the keychain entry.  No confirm
+   *  dialog on disable because re-enabling is cheap (one typed
+   *  passphrase) and a confirm here would add friction to a setting
+   *  whose default is OFF anyway. */
+  function onUnlockToggle(next: boolean) {
+    if (next) {
+      startEnablingUnlock()
+    } else {
+      // Cancel any half-finished enable flow if the user toggles
+      // off mid-typing — the inline entry should disappear
+      // immediately rather than wait for an unrelated IPC.
+      unlockEnabling = false
+      unlockPassphrase = ''
+      unlockError = null
+      void disableUnlock()
+    }
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────
   $effect(() => {
     // Re-fetch status whenever the active account changes.  The
@@ -74,6 +176,7 @@
     // expanded row, but this is defensive in case it ever moves
     // to a stable mount.
     void refreshStatus(account.id)
+    void refreshUnlockStatus(account.id)
   })
 
   async function refreshStatus(accountId: string) {
@@ -136,7 +239,12 @@
     errorMessage = null
     try {
       await invoke<void>('pgp_remove_private_key', { accountId: account.id })
+      // #341 — `pgp_remove_private_key` already drops the passphrase
+      // keychain entry defensively (it has since #57), but the UI's
+      // mirror of that state needs a refresh so the toggle visual
+      // catches up to the keychain reality.
       await refreshStatus(account.id)
+      await refreshUnlockStatus(account.id)
       oncrypto_changed?.()
     } catch (e) {
       errorMessage = String(e)
@@ -189,6 +297,86 @@
         >
           {m.encryption_replace_button()}
         </button>
+      </div>
+
+      <!-- #341 — Per-account "Unlock automatically" opt-in.  Sits
+           below the key fingerprint because it's only meaningful
+           when a key is imported.  Off by default; flipping it on
+           drops a passphrase into the OS keychain so Compose,
+           MailView, Reply/Forward, and the receive path all
+           auto-supply it without re-prompting. -->
+      <div class="mt-3 pt-3 border-t border-surface-200 dark:border-surface-700">
+        <div class="flex items-start gap-3">
+          <Toggle
+            checked={unlockEnabled || unlockEnabling}
+            disabled={unlockBusy}
+            onchange={onUnlockToggle}
+            label={m.encryption_unlock_auto_label()}
+            class="mt-0.5"
+          />
+          <div class="flex-1">
+            <p class="text-sm font-medium leading-tight">
+              {m.encryption_unlock_auto_label()}
+            </p>
+            <p class="text-xs text-surface-500 mt-1 leading-snug">
+              {#if unlockEnabled}
+                {m.encryption_unlock_auto_hint_on()}
+              {:else}
+                {m.encryption_unlock_auto_hint_off()}
+              {/if}
+            </p>
+          </div>
+        </div>
+
+        {#if unlockEnabling}
+          <div class="mt-3 space-y-2">
+            <label
+              class="block text-xs text-surface-500"
+              for="pgp-unlock-pw-{account.id}"
+            >
+              {m.encryption_unlock_auto_passphrase_label()}
+            </label>
+            <input
+              id="pgp-unlock-pw-{account.id}"
+              type="password"
+              class="input text-xs"
+              placeholder={m.encryption_passphrase_placeholder()}
+              bind:value={unlockPassphrase}
+              disabled={unlockBusy}
+              autocomplete="off"
+              onkeydown={(e) => {
+                if (e.key === 'Enter' && unlockPassphrase) {
+                  e.preventDefault()
+                  void submitEnableUnlock()
+                }
+              }}
+            />
+            {#if unlockError}
+              <div class="text-xs text-error-500">{unlockError}</div>
+            {/if}
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="btn btn-sm preset-filled-primary"
+                onclick={submitEnableUnlock}
+                disabled={unlockBusy || !unlockPassphrase}
+              >
+                {m.encryption_unlock_auto_save()}
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm preset-tonal-surface"
+                onclick={cancelEnablingUnlock}
+                disabled={unlockBusy}
+              >
+                {m.encryption_unlock_auto_cancel()}
+              </button>
+            </div>
+            <p class="text-xs text-surface-400">
+              {m.encryption_unlock_auto_storage_hint()}
+            </p>
+          </div>
+        {/if}
       </div>
     </div>
   {:else if importing}

@@ -6819,6 +6819,33 @@ async fn fetch_message_inner(
     Ok(email)
 }
 
+/// Pick the passphrase that should unlock this account's PGP key
+/// for one operation (#341).
+///
+/// The rule:
+///   - Non-empty caller-supplied value wins.  This is the case
+///     where the user typed a passphrase into the MailView Decrypt
+///     input or Compose's encryption ribbon — they explicitly
+///     overrode whatever the keychain holds, so we trust the
+///     freshly-typed value.
+///   - Empty / missing caller value falls back to the keychain
+///     entry written when the user enabled "Unlock automatically"
+///     in Encryption Settings.  No keychain entry means no opt-in
+///     for this account, which surfaces as a clean `Auth` error
+///     the IPC layer can map to the right re-prompt UI.
+///
+/// Centralising the rule here (rather than copy-pasting the
+/// `if empty { keychain } else { typed }` pattern across every
+/// passphrase-consuming command) keeps the precedence consistent —
+/// any future operation that takes a passphrase should call this
+/// helper instead of inventing its own resolution.
+fn resolve_pgp_passphrase(account_id: &str, supplied: &str) -> Result<String, UnkaiError> {
+    if !supplied.is_empty() {
+        return Ok(supplied.to_string());
+    }
+    credentials::get_pgp_passphrase(account_id)
+}
+
 /// Decrypt an encrypted message on demand (#57).
 ///
 /// Called by MailView when the user clicks "Decrypt" on a message
@@ -6852,7 +6879,13 @@ async fn decrypt_message(
         ));
     }
 
-    let bridge = TauriCryptoBridge::for_account(&account_id, &pgp_passphrase, (*cache).clone())?;
+    // #341 — empty passphrase means "use the keychain entry stored
+    // by the per-account Unlock-automatically opt-in."  When neither
+    // a typed value nor a stored one exists we surface a clear Auth
+    // error so the UI can route the user back to the Decrypt input
+    // or to the Encryption Settings opt-in.
+    let resolved = resolve_pgp_passphrase(&account_id, &pgp_passphrase)?;
+    let bridge = TauriCryptoBridge::for_account(&account_id, &resolved, (*cache).clone())?;
 
     let mut client = connect_imap(&account).await?;
     // Get IMAP flags + envelope from one fetch, then the raw bytes
@@ -6876,6 +6909,49 @@ async fn decrypt_message(
         tracing::warn!("cache.upsert_message after decrypt failed: {e}");
     }
     Ok(decrypted)
+}
+
+/// Silent variant of [`decrypt_message`] for the auto-decrypt path
+/// (#341).
+///
+/// `MailView.load()` calls this the moment an encrypted message
+/// becomes visible — instead of waiting for the user to click
+/// **Decrypt** and type a passphrase.  Returns:
+///   - `Ok(None)` when the account hasn't opted into
+///     "Unlock automatically" (no keychain entry).  Renderer falls
+///     back to showing the manual Decrypt button as before.
+///   - `Ok(Some(email))` when the keychain held a passphrase AND
+///     it unlocked the message.  Body is overlaid with plaintext
+///     and the cache row is updated transactionally.
+///   - `Err` when the keychain entry exists but failed to decrypt
+///     (passphrase no longer matches, key was rotated, ciphertext
+///     corrupt, …).  Renderer surfaces the error and offers the
+///     manual prompt so the user can recover.
+///
+/// Separating success-without-attempt from outright failure keeps
+/// the renderer's UX honest: a no-opt-in account never sees an
+/// error message about a feature it didn't enable.
+#[tauri::command]
+async fn try_auto_decrypt_message(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<Option<Email>, UnkaiError> {
+    if !credentials::has_pgp_passphrase(&account_id)? {
+        return Ok(None);
+    }
+    let email = decrypt_message(
+        account_id,
+        folder,
+        uid,
+        // Empty passphrase routes through `resolve_pgp_passphrase`
+        // → keychain — exactly the path the user opted into.
+        String::new(),
+        cache,
+    )
+    .await?;
+    Ok(Some(email))
 }
 
 /// Download the decoded bytes of a single attachment on a message.
@@ -6941,7 +7017,11 @@ async fn download_decrypted_attachment(
                 .into(),
         ));
     }
-    let bridge = TauriCryptoBridge::for_account(&account_id, &pgp_passphrase, (*cache).clone())?;
+    // #341 — empty passphrase falls back to the keychain entry from
+    // the per-account Unlock-automatically opt-in (see
+    // `resolve_pgp_passphrase`).
+    let resolved = resolve_pgp_passphrase(&account_id, &pgp_passphrase)?;
+    let bridge = TauriCryptoBridge::for_account(&account_id, &resolved, (*cache).clone())?;
     let mut client = connect_imap(&account).await?;
     let raw = client.fetch_raw_message(&folder, uid).await?;
     let _ = client.logout().await;
@@ -8081,14 +8161,21 @@ async fn run_send_pipeline(
     )
     .await?;
     if email.encryption_mode.as_deref() == Some("pgp") {
-        let passphrase = pgp_passphrase.ok_or_else(|| {
-            UnkaiError::Auth(
-                "PGP encryption requested but no passphrase supplied — \
-                 retry from Compose so we can prompt"
-                    .into(),
-            )
-        })?;
-        let bridge = TauriCryptoBridge::for_account(&account.id, passphrase, cache.clone())?;
+        // #341 — caller passphrase wins; empty / missing falls back
+        // to the keychain entry from the per-account Unlock-
+        // automatically opt-in.  Only when both are absent do we
+        // surface the historic "retry from Compose" Auth error.
+        let resolved = match pgp_passphrase {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => credentials::get_pgp_passphrase(&account.id).map_err(|_| {
+                UnkaiError::Auth(
+                    "PGP encryption requested but no passphrase supplied — \
+                     retry from Compose so we can prompt"
+                        .into(),
+                )
+            })?,
+        };
+        let bridge = TauriCryptoBridge::for_account(&account.id, &resolved, cache.clone())?;
         smtp.send_with_crypto(email, Some(&bridge)).await?;
     } else {
         smtp.send(email).await?;
@@ -12097,6 +12184,56 @@ fn pgp_remove_private_key(
     Ok(())
 }
 
+/// Enable "Unlock automatically" for an account (#341).
+///
+/// Validates that the supplied passphrase actually unlocks the
+/// account's stored PGP private key, then writes the passphrase to
+/// the OS keychain under the `unkai-mail-pgp-passphrase` service
+/// slot already provisioned at #57.  From the moment this returns
+/// `Ok(())` the rest of the encrypt / decrypt machinery picks up
+/// the stored passphrase whenever the frontend hands over `null`
+/// (or an empty string) for `pgp_passphrase`, and the IMAP receive
+/// path background-decrypts new mail without the user having to
+/// click anything.
+///
+/// We validate by re-parsing the armored key against the supplied
+/// passphrase — same idiom as `pgp_import_private_key` — so a typo
+/// fails fast with a typed `Crypto` error instead of being saved
+/// and silently breaking every subsequent operation on the account.
+#[tauri::command]
+fn pgp_enable_unlock_automatically(
+    account_id: String,
+    passphrase: String,
+) -> Result<(), UnkaiError> {
+    let armored = credentials::get_pgp_private_key(&account_id)?;
+    // Round-trip the unlock to prove the passphrase actually opens
+    // the key.  Drop the parsed key immediately afterwards — we
+    // only needed it to validate, not to keep around.
+    let _ = unkai_crypto::parse_private_key(armored.as_bytes(), Some(&passphrase))
+        .map_err(|e| UnkaiError::Crypto(format!("Wrong encryption passphrase: {e}")))?;
+    credentials::store_pgp_passphrase(&account_id, &passphrase)?;
+    Ok(())
+}
+
+/// Disable "Unlock automatically" — drops the keychain entry so
+/// future encrypt / decrypt operations on this account re-prompt
+/// the user the way they did before opt-in.  Idempotent: missing
+/// entry is treated as already-disabled (the underlying helper
+/// swallows `NoEntry`).
+#[tauri::command]
+fn pgp_disable_unlock_automatically(account_id: String) -> Result<(), UnkaiError> {
+    credentials::delete_pgp_passphrase(&account_id)
+}
+
+/// `true` when the account has a stored passphrase (opt-in is on),
+/// `false` otherwise.  Drives the toggle state in EncryptionSettings
+/// without forcing the renderer to interpret a missing-entry
+/// `Auth` error from `get_pgp_passphrase` as a falsy outcome.
+#[tauri::command]
+fn pgp_has_unlock_automatically(account_id: String) -> Result<bool, UnkaiError> {
+    credentials::has_pgp_passphrase(&account_id)
+}
+
 /// What does the user's account look like, key-wise?  Cheap read from
 /// the SQLCipher row — doesn't touch the keychain.
 #[tauri::command]
@@ -13121,8 +13258,13 @@ fn main() {
             pgp_remove_public_key,
             pgp_list_public_keys,
             pgp_get_keys_for_email,
+            // #341 — per-account "Unlock automatically" opt-in
+            pgp_enable_unlock_automatically,
+            pgp_disable_unlock_automatically,
+            pgp_has_unlock_automatically,
             // #57 — on-demand decrypt for inbound PGP/MIME messages
             decrypt_message,
+            try_auto_decrypt_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Unkai");

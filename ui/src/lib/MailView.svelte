@@ -266,6 +266,28 @@
     return p === 'encrypted' || p === 'signed-and-encrypted'
   }
 
+  /** #341 — does the open email's cached body look like it still
+   *  needs decrypting?  Auto-decrypt-on-load reuses this to skip
+   *  the keychain round-trip when the cache already holds the
+   *  plaintext from a previous successful Decrypt. */
+  function emailBodyLooksEncrypted(em: Email | null): boolean {
+    if (!emailNeedsDecryptedAttachmentFetch(em)) return false
+    const text = (em?.body_text ?? '').trim()
+    const html = (em?.body_html ?? '').trim()
+    return text.length === 0 && html.length === 0
+  }
+
+  /** #341 — mirrors `pgp_has_unlock_automatically` for the currently
+   *  open account.  Refreshed alongside the message load below.
+   *  Drives two things:
+   *    - the attachment-fetch gate (`fetchAttachmentBytes` can let
+   *      a fetch through with an empty session passphrase because
+   *      the backend will resolve it via the keychain),
+   *    - the auto-decrypt-on-load attempt (we only call
+   *      `try_auto_decrypt_message` when the toggle is on, so
+   *      opt-out accounts don't pay a wasted IPC). */
+  let autoUnlockForAccount = $state(false)
+
   /** Sentinel error string — thrown by `fetchAttachmentBytes` when
    *  the message is encrypted but we don't have a session passphrase
    *  in hand.  Caught by the per-action wrappers below so the
@@ -288,7 +310,15 @@
       throw new Error('No message open')
     }
     if (emailNeedsDecryptedAttachmentFetch(email)) {
-      if (!sessionPassphrase) {
+      // #341 — let the IPC through with an empty pgpPassphrase
+      // when this account opted into "Unlock automatically"; the
+      // backend resolves the passphrase via the OS keychain in
+      // that case.  Only when *neither* a manually-typed session
+      // passphrase nor an auto-unlock entry is in scope do we
+      // surface the DECRYPT_REQUIRED_MARKER short-circuit, which
+      // the wrapping handlers translate to a friendly "please
+      // re-decrypt first" message.
+      if (!sessionPassphrase && !autoUnlockForAccount) {
         throw new Error(DECRYPT_REQUIRED_MARKER)
       }
       return await invoke<number[]>('download_decrypted_attachment', {
@@ -479,6 +509,21 @@
     // without re-prompting; opening a different message starts a
     // fresh session.
     sessionPassphrase = ''
+    // #341 — refresh the "Unlock automatically" mirror for the
+    // account this message belongs to.  Done in parallel with the
+    // cache + IMAP fetches below so the auto-decrypt attempt that
+    // depends on it doesn't have to wait on an extra round-trip.
+    void invoke<boolean>('pgp_has_unlock_automatically', { accountId: id })
+      .then((on) => {
+        if (id === accountId && f === folder && u === uid) {
+          autoUnlockForAccount = on
+        }
+      })
+      .catch(() => {
+        // Best-effort — a keychain hiccup just means the toggle
+        // visual lags by one message-open.  The IPC fallback in
+        // the backend stays correct either way.
+      })
 
     // Cache first — lets the reading pane paint instantly when the user
     // re-opens a previously read message (the common case).
@@ -550,6 +595,47 @@
     } finally {
       loading = false
       refreshing = false
+    }
+
+    // #341 — auto-decrypt on open.  Calls `try_auto_decrypt_message`
+    // unconditionally: the backend cheaply returns `Ok(None)` when
+    // the account hasn't opted in (a single keychain query, no IMAP
+    // round-trip), so opt-out users pay essentially nothing here.
+    // Skip when the cached body already holds plaintext from an
+    // earlier successful Decrypt — re-running the IPC would
+    // re-fetch the raw bytes from IMAP for no gain.
+    if (
+      email &&
+      id === accountId &&
+      f === folder &&
+      u === uid &&
+      emailBodyLooksEncrypted(email)
+    ) {
+      try {
+        const auto = await invoke<Email | null>('try_auto_decrypt_message', {
+          accountId: id,
+          folder: f,
+          uid: u,
+        })
+        if (auto && id === accountId && f === folder && u === uid) {
+          email = auto
+          // No `sessionPassphrase` write here on purpose — the
+          // backend resolved the passphrase via the keychain and
+          // never handed it back to us.  Attachment fetches for
+          // this same message will route through the keychain too
+          // (the `autoUnlockForAccount` gate above lets them
+          // bypass the empty-sessionPassphrase short-circuit).
+        }
+      } catch (e: any) {
+        // Auto-decrypt failed (passphrase no longer unlocks, key
+        // rotated, ciphertext corrupt, …).  Leave the manual
+        // Decrypt button visible so the user can recover by
+        // typing a fresh passphrase, and log so we can spot
+        // pattern issues — but don't surface a banner here: the
+        // existing protection chip + Decrypt UI already
+        // communicates "this needs decrypting" clearly enough.
+        console.warn('try_auto_decrypt_message failed:', e)
+      }
     }
 
     // Mark as read — fire-and-forget. The MailList picked up an optimistic
