@@ -2005,6 +2005,23 @@
     return !hasText && !hasHtml
   }
 
+  /** #341 — does the Forward path need to *collect* a passphrase
+   *  regardless of whether the body is already in the cache?  Yes
+   *  when the source was encrypted and carries at least one
+   *  attachment — `download_decrypted_attachment` is the only path
+   *  that walks the *inner* MIME tree to extract real bytes; the
+   *  plain `download_email_attachment` returns the outer envelope's
+   *  `application/pgp-encrypted` "Version: 1" header for the same
+   *  inner part_id.  Decoupled from `needsDecryptForReply` because
+   *  this can be true when the cached body short-circuits the
+   *  body-decrypt prompt (user opened the message before clicking
+   *  Forward) but attachments still need the key. */
+  function needsPassphraseForForwardAttachments(
+    mail: ForwardableMail,
+  ): boolean {
+    return wasEncrypted(mail) && mail.attachments.length > 0
+  }
+
   function buildReplyInitial(mail: ReplyableMail): ComposeInitial {
     return {
       to: mail.from,
@@ -2103,23 +2120,42 @@
     passphrase: string | null
   }
 
-  /** #341 — if the source message is encrypted but not yet decrypted,
-   *  prompt the user for their passphrase, run `decrypt_message`,
-   *  and return a copy of the mail with the plaintext body fields
-   *  filled in *plus* the passphrase the user supplied (so the
-   *  forward path can use it to decrypt each attachment's bytes
-   *  through `download_decrypted_attachment`).  On wrong passphrase
-   *  the modal stays up with an inline error (the user re-tries
-   *  inside the same prompt).  On cancel returns `null` so the
-   *  caller can abort the Reply / Forward open instead of pushing
-   *  an empty quoted-history into Compose.  Pass-through (no
-   *  prompt, `passphrase: null`) when the mail is plaintext or the
-   *  cached body is already populated. */
+  /** #341 — collect (and validate) the passphrase needed for a
+   *  Reply / Forward of an encrypted source.  Two trigger conditions:
+   *  the cached body is empty (so we must decrypt to populate the
+   *  quoted-history block), or the Forward path needs the key to
+   *  decrypt attachment bytes through `download_decrypted_attachment`.
+   *
+   *  On wrong passphrase the modal stays up with an inline error
+   *  (the user re-tries inside the same prompt).  On cancel returns
+   *  `null` so the caller can abort the Reply / Forward open instead
+   *  of pushing an empty quoted-history into Compose.  Pass-through
+   *  (no prompt, `passphrase: null`) when neither trigger fires.
+   *
+   *  We always validate the passphrase by actually running
+   *  `decrypt_message` even when the body is already cached: this
+   *  is the only way to know the typed passphrase is correct before
+   *  the user wades into Compose and fails at attachment-fetch
+   *  time.  The re-decrypt is cheap and the body it produces is
+   *  identical to what's already cached, so the second `.body_text`
+   *  / `.body_html` overlay is a no-op for the caller. */
   async function ensureDecryptedForReply<T extends ReplyableMail>(
     mail: T,
     kind: DecryptPromptKind,
   ): Promise<DecryptedForReply<T> | null> {
-    if (!needsDecryptForReply(mail)) return { mail, passphrase: null }
+    const bodyNeedsDecrypt = needsDecryptForReply(mail)
+    // The forward-attachment check is gated on `kind === 'forward'`
+    // because Reply / Reply All never carry the source attachments
+    // through to the outgoing draft; the passphrase would just sit
+    // unused.  Cast is safe because only the `onForward` callers
+    // ever pass a `ForwardableMail` in, and `attachments` is the
+    // only field this check inspects.
+    const forwardNeedsAttachmentKey =
+      kind === 'forward' &&
+      needsPassphraseForForwardAttachments(mail as unknown as ForwardableMail)
+    if (!bodyNeedsDecrypt && !forwardNeedsAttachmentKey) {
+      return { mail, passphrase: null }
+    }
     let lastError = ''
     while (true) {
       const passphrase = await new Promise<string | null>((resolve) => {
@@ -2357,25 +2393,37 @@
    *  cid: links into the body after the bytes arrive — same
    *  shape `onEditDraft` builds for the draft-edit flow.
    *
-   *  #341 — when `passphrase` is supplied (forward-from-encrypted
-   *  flow) the bytes come from `download_decrypted_attachment`
-   *  instead.  That command decrypts the raw IMAP bytes server-side
-   *  and walks the *inner* MIME tree, so `att.part_id` (which on a
-   *  decrypted message indexes the inner tree, not the outer
-   *  `multipart/encrypted` envelope) resolves to the actual file
-   *  bytes rather than the `application/pgp-encrypted` "Version: 1"
-   *  header part the plain command would return. */
+   *  #341 — for a forward of an encrypted source, route through
+   *  `download_decrypted_attachment` so the bytes come from the
+   *  *inner* MIME tree (the real Excel / PDF / image).  The
+   *  plain `download_email_attachment` would walk the outer
+   *  `multipart/encrypted` envelope with the inner part_id and
+   *  return the `application/pgp-encrypted` "Version: 1" header
+   *  for part_id 0 — that's the bug behind the user reports of
+   *  "forwarded a 4 MB attachment, recipient got 9 bytes."  The
+   *  dispatch is keyed on `mail.protection` rather than just
+   *  "did the caller supply a passphrase?" so a missing-passphrase
+   *  case throws a typed error here (caught by `onForward`)
+   *  instead of silently regressing to the buggy path. */
   function downloadForwardAttachments(
     mail: ForwardableMail,
     passphrase: string | null,
   ): Promise<ComposeAttachment[]> {
+    const useDecrypted = wasEncrypted(mail)
+    if (useDecrypted && !passphrase) {
+      return Promise.reject(
+        new Error(
+          'Cannot forward encrypted attachments without the user passphrase',
+        ),
+      )
+    }
     return Promise.all(
       mail.attachments.map(async (att) => ({
         filename: att.filename,
         content_type: att.content_type,
         data: await invoke<number[]>(
-          passphrase ? 'download_decrypted_attachment' : 'download_email_attachment',
-          passphrase
+          useDecrypted ? 'download_decrypted_attachment' : 'download_email_attachment',
+          useDecrypted
             ? {
                 accountId: mail.account_id,
                 folder: mail.folder,
