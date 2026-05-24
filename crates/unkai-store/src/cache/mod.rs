@@ -603,9 +603,9 @@ impl Cache {
                 "INSERT INTO messages
                    (account_id, folder, uid, from_addr, subject, internal_date,
                     is_read, is_starred, is_answered, cached_at,
-                    message_id, in_reply_to, references_ids, thread_id)
+                    message_id, in_reply_to, references_ids, thread_id, protection)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                         ?11, ?12, ?13, ?14)
+                         ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
@@ -624,7 +624,12 @@ impl Cache {
                    -- so a re-fetch that brought new threading info updates
                    -- the row; otherwise we preserve whatever the previous
                    -- write (or the warm-up pass) assigned.
-                   thread_id     = COALESCE(excluded.thread_id, messages.thread_id)",
+                   thread_id     = COALESCE(excluded.thread_id, messages.thread_id),
+                   -- #341 background-decrypt: COALESCE preserves a
+                   -- post-decrypt label (\"signed-and-encrypted\") that a
+                   -- later envelope re-fetch — which can only see the
+                   -- top-level Content-Type — couldn't reproduce.
+                   protection    = COALESCE(excluded.protection, messages.protection)",
             )?;
             for env in envelopes {
                 let refs_json: Option<String> = if env.references_ids.is_empty() {
@@ -648,6 +653,7 @@ impl Cache {
                     env.in_reply_to,
                     refs_json,
                     thread_id,
+                    env.protection,
                 ])?;
             }
         }
@@ -680,6 +686,13 @@ impl Cache {
         // *whole folder*, not just the returned window — a thread
         // whose root is in the newest 50 may have replies older than
         // the window, and the badge needs to report the true total.
+        // #341 background-decrypt: COALESCE so the envelope-level
+        // protection (stamped at IMAP envelope-fetch time from the
+        // Content-Type header) shows up immediately on new mail, while
+        // the body-level protection — authoritative once we've decrypted,
+        // since it can carry "signed-and-encrypted" which the envelope
+        // path can't tell from headers alone — wins whenever the body
+        // row exists.
         let mut stmt = conn.prepare(
             "SELECT m.uid, m.folder, m.from_addr, m.subject, m.internal_date,
                     m.is_read, m.is_starred, m.is_answered, m.replied_kind,
@@ -690,7 +703,7 @@ impl Cache {
                        AND m2.folder = ?2
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    b.protection
+                    COALESCE(b.protection, m.protection)
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1 AND m.folder = ?2 AND m.pending_action IS NULL
@@ -765,7 +778,7 @@ impl Cache {
                        AND m2.folder = ?2
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    b.protection
+                    COALESCE(b.protection, m.protection)
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1
@@ -889,7 +902,7 @@ impl Cache {
                        AND m2.folder = m.folder
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    b.protection
+                    COALESCE(b.protection, m.protection)
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.folder = ?1 AND m.pending_action IS NULL
@@ -979,7 +992,7 @@ impl Cache {
                        AND m2.folder = m.folder
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    b.protection
+                    COALESCE(b.protection, m.protection)
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE ({where_clause}) AND m.pending_action IS NULL
