@@ -1,0 +1,142 @@
+name: Bug report
+description: Report something that isn't working in Unkai Mail.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. The more detail you give, the faster we can reproduce and fix the problem.
+
+        **Before submitting:** please search the [existing issues](https://github.com/firn-labs/unkai-mail/issues?q=is%3Aissue) to make sure this hasn't already been reported.
+
+        If you believe this is a **security vulnerability**, please do not file a public issue — use the [private security advisory form](https://github.com/firn-labs/unkai-mail/security/advisories/new) instead.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I have searched the existing issues and this bug has not already been reported.
+          required: true
+        - label: I am running the latest available version of Unkai Mail (or have noted the version below).
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: When I do X, Y happens instead of Z.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps the team can follow to reproduce the bug on a fresh install.
+      placeholder: |
+        1. Open Unkai Mail
+        2. Go to '...'
+        3. Click on '...'
+        4. See the error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What actually happened? Include exact error messages if any.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      description: e.g. Windows 11 23H2, macOS 14.4, Ubuntu 24.04
+    validations:
+      required: false
+
+  - type: input
+    id: app-version
+    attributes:
+      label: Unkai Mail version
+      description: Shown in the app's About panel, or in the installer filename (e.g. unkai-mail_0.3.1_x64-setup.exe).
+      placeholder: e.g. 0.3.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of the app does this bug affect?
+      options:
+        - Mail (IMAP / SMTP / JMAP)
+        - Encryption / PGP
+        - Nextcloud integration (Talk / Files / OCS)
+        - Contacts (CardDAV)
+        - Calendar (CalDAV)
+        - Account setup / authentication
+        - UI / rendering
+        - Settings
+        - Installer / startup / crash
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: account-setup
+    attributes:
+      label: Account / server setup (if relevant)
+      description: |
+        If the bug involves a specific provider or server, describe the setup at a high level.
+        **Do not paste passwords, app tokens, or full email addresses.** Provider name and protocol are enough.
+      placeholder: |
+        - Provider: Nextcloud (self-hosted, version 28.0.4)
+        - Protocols in use: IMAP + SMTP via STARTTLS
+        - Account type: standard password / OAuth / app password
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or screen recording
+      description: |
+        Attach any relevant logs, screenshots, or short screen recordings. Drag-and-drop files into this field to upload them.
+        **Please redact email addresses, message contents, and any other personal data before uploading.**
+      placeholder: Paste log output here, or drop files into this field.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help — when the bug started, workarounds you tried, related issues, etc.
+    validations:
+      required: false
