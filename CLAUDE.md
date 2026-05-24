@@ -72,6 +72,17 @@ These are project-wide affordances we expect Claude to apply automatically when 
 - **Inline edits over modals where possible.** "Rename" should swap the row's label for an `<input>` (Enter commits, Escape cancels, blur commits) — not a modal. Modals are reserved for create flows and destructive confirms.
 - **Shared `EmojiPicker` for any emoji input.** Never build a one-off grid. Use `ui/src/lib/EmojiPicker.svelte` (categories + search + clear). Set `allowClear={false}` only when "no emoji" is meaningless (e.g. inserting into a text editor).
 - **Outside-click dismissal idiom.** When you open a popover, register `document.addEventListener('mousedown', close)` *inside an `$effect` that depends on the open state*, with a one-tick delay (`setTimeout(..., 0)`) so the click that opened it doesn't immediately close it. Tear down on close.
+- **Small action buttons are icon-only with `preset-outlined-surface-500` as the base.** For per-row / per-setting actions (save, edit, replace, remove, configure) reach for the project's standing icon-button vocabulary rather than tonal/filled buttons with text labels. Two shapes:
+  - **Neutral action** (save, edit, replace, more, settings): `class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"` with `<Icon name="..." size={14} />` inside, plus `title=` and `aria-label=` carrying the action label. Canonical refs: the attachment more-actions toggle in `MailView.svelte`, the Save/Replace buttons in `EncryptionSettings.svelte`.
+  - **Destructive action** (remove, delete, drop): same base + `hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40`, paired with the `trash` icon. Stays neutral at rest, turns red only on hover — so the destructive action doesn't visually shout from the page. Canonical refs: the Trusted Senders remove row in `AccountSettings.svelte`, the Remove key button in `EncryptionSettings.svelte`.
+- **Standard icon idioms** — reach for the registered `IconName` in [`ui/src/lib/Icon.svelte`](ui/src/lib/Icon.svelte) before introducing a new SVG:
+  - `compose` → **edit / rename / replace** (project-wide "edit" glyph, including outside Compose — e.g. SecuritySettings' "Change passphrase" affordance, EncryptionSettings' "Replace key")
+  - `save-draft` → **save**
+  - `trash` → **remove / delete** (destructive, pair with the red-on-hover shape above)
+  - `more` → **more actions / overflow / settings on a row**
+  - `success` → **saved / ok / verified** (pair with a short label for status badges; see below)
+  - `lock` / `encrypted` → **encryption is on**
+- **Status badges pair `success` with a short label, not descriptive prose.** When a toggle or setting has a saved/active confirmation, render an inline badge: `<div class="inline-flex items-center gap-1 mt-1 text-xs text-success-500" aria-live="polite"><Icon name="success" size={14} /><span>{label}</span></div>`. The badge replaces the on-state hint copy — don't render both, the badge IS the confirmation. Off-state hint copy is still useful (it explains what the toggle *would* do). Canonical ref: Encryption Settings "Passphrase saved" badge.
 
 When in doubt, look at how `ContactsView` (mailing-list rows) and `Sidebar` (mail-folder rows) implement these — they're the canonical reference.
 
