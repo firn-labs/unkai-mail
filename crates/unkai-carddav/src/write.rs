@@ -5,11 +5,11 @@
 //! We use HTTP preconditions (`If-Match`, `If-None-Match: *`) as the
 //! spec intends:
 //!
-//! - **Create**: `If-None-Match: *` makes the PUT atomic â€” the server
+//! - **Create**: `If-None-Match: *` makes the PUT atomic — the server
 //!   refuses to overwrite an existing UID with that name. Pairs with
 //!   our generated href so two clients picking the same UID can't
 //!   silently clobber each other.
-//! - **Update**: `If-Match: <etag>` makes the PUT optimistic â€” the
+//! - **Update**: `If-Match: <etag>` makes the PUT optimistic — the
 //!   server returns 412 if the resource changed since our last sync.
 //!   We surface that as a structured error so the caller can re-fetch
 //!   and merge.
@@ -29,7 +29,7 @@ use unkai_core::models::TrustedCert;
 
 use crate::client::{build, delete_resource, normalize_server_url, put_vcard};
 
-/// Result of a successful create / update â€” the canonical href and
+/// Result of a successful create / update — the canonical href and
 /// the new etag, both ready to drop into the local cache row.
 #[derive(Debug, Clone)]
 pub struct WriteOutcome {
@@ -77,7 +77,7 @@ pub async fn create_contact(
 ///
 /// `href` should be the absolute href we cached when the contact was
 /// first synced. Returns the new etag the server assigned after our
-/// PUT â€” the caller persists it so the next update keeps the
+/// PUT — the caller persists it so the next update keeps the
 /// optimistic-concurrency chain unbroken.
 pub async fn update_contact(
     href: &str,
@@ -101,7 +101,7 @@ pub async fn update_contact(
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
         return Err(UnkaiError::Nextcloud(
-            "contact was modified on the server since last sync â€” refresh and try again"
+            "contact was modified on the server since last sync — refresh and try again"
                 .to_string(),
         ));
     }
@@ -130,11 +130,11 @@ pub async fn delete_contact(
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
         return Err(UnkaiError::Nextcloud(
-            "contact was modified on the server since last sync â€” refresh and try again"
+            "contact was modified on the server since last sync — refresh and try again"
                 .to_string(),
         ));
     }
-    // 404 is fine â€” already gone is the state we wanted.
+    // 404 is fine — already gone is the state we wanted.
     if !status.is_success() && status != StatusCode::NOT_FOUND {
         return Err(UnkaiError::Nextcloud(format!(
             "DELETE contact returned HTTP {status}"
@@ -144,7 +144,7 @@ pub async fn delete_contact(
 }
 
 fn build_href(addressbook_url: &str, uid: &str) -> String {
-    // Slash-trimming both sides so we don't end up with `â€¦/contacts//uid.vcf`.
+    // Slash-trimming both sides so we don't end up with `…/contacts//uid.vcf`.
     let base = addressbook_url.trim_end_matches('/');
     let safe_uid = uid_to_filename(uid);
     format!("{base}/{safe_uid}.vcf")
@@ -170,7 +170,7 @@ fn read_etag(resp: &reqwest::Response) -> Option<String> {
 }
 
 /// If `href` is already absolute, return it. Otherwise prepend the
-/// server origin â€” same semantics as `client::absolute_url`.
+/// server origin — same semantics as `client::absolute_url`.
 fn absolute_or_passthrough(server_url: &str, href: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
         href.to_string()

@@ -8,7 +8,7 @@
 //!   overwrite an existing UID at our chosen href. Pairs with our
 //!   `{calendar_url}/{uid}.ics` href so two clients picking the same
 //!   UID get a clean 412 instead of silently clobbering each other.
-//! - **Update**: PUT with `If-Match: <etag>` â€” the server returns 412
+//! - **Update**: PUT with `If-Match: <etag>` — the server returns 412
 //!   if the resource changed since our last sync. We surface that as a
 //!   structured error so the caller can re-fetch and merge.
 //! - **Delete**: same `If-Match` story.
@@ -16,7 +16,7 @@
 //! # Choosing the resource path
 //!
 //! For a fresh create, we pick `{calendar_url}/{uid}.ics`. Nextcloud
-//! accepts that and returns the new etag in the response headers â€” no
+//! accepts that and returns the new etag in the response headers — no
 //! follow-up PROPFIND required.
 
 use reqwest::StatusCode;
@@ -26,7 +26,7 @@ use unkai_core::models::TrustedCert;
 
 use crate::client::{build, delete_resource, normalize_server_url, put_ics};
 
-/// Result of a successful create / update â€” the canonical href and
+/// Result of a successful create / update — the canonical href and
 /// the new etag, both ready to drop into the local cache row.
 #[derive(Debug, Clone)]
 pub struct WriteOutcome {
@@ -83,7 +83,7 @@ pub async fn create_event(
 ///
 /// `href` should be the absolute href we cached when the event was
 /// first synced. Returns the new etag the server assigned after our
-/// PUT â€” the caller persists it so the next update keeps the
+/// PUT — the caller persists it so the next update keeps the
 /// optimistic-concurrency chain unbroken.
 pub async fn update_event(
     href: &str,
@@ -106,7 +106,7 @@ pub async fn update_event(
     .await?;
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
-        // Programmatically-detectable variant â€” callers (the
+        // Programmatically-detectable variant — callers (the
         // calendar-write Tauri commands, the RSVP path) catch
         // `EtagMismatch`, run a single-calendar sync to pull
         // the latest etag, and retry transparently.  The user
@@ -161,7 +161,7 @@ pub async fn delete_event(
 /// `delete_event` variant that suppresses Sabre/DAV's
 /// auto-iTIP via `Schedule-Reply: F`.  Used by the
 /// "Remove from my calendar" flow for a meeting the
-/// organiser already cancelled â€” without this header Sabre
+/// organiser already cancelled — without this header Sabre
 /// would emit a spurious `METHOD:REPLY;PARTSTAT=DECLINED`
 /// iMIP at the organiser when the attendee removes their
 /// local copy.
@@ -215,7 +215,7 @@ async fn delete_event_inner(
             "If-Match failed for DELETE {href} (server etag != cached)"
         )));
     }
-    // 404 is fine â€” already gone is the state we wanted.
+    // 404 is fine — already gone is the state we wanted.
     if status == StatusCode::NOT_FOUND {
         return Ok(());
     }
@@ -262,7 +262,7 @@ fn read_etag(resp: &reqwest::Response) -> Option<String> {
 }
 
 /// If `href` is already absolute, return it. Otherwise prepend the
-/// server origin â€” same semantics as `client::absolute_url`.
+/// server origin — same semantics as `client::absolute_url`.
 fn absolute_or_passthrough(server_url: &str, href: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
         href.to_string()

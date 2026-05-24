@@ -1,18 +1,18 @@
 //! Calendar-collection operations: create, rename + recolor, delete.
 //!
-//! Event-level CRUD lives in `write.rs` â€” this module handles the
+//! Event-level CRUD lives in `write.rs` — this module handles the
 //! *container* it all lives in. All three ops are plain DAV requests
 //! against Nextcloud's CalDAV endpoint:
 //!
-//! - **Create** uses the `MKCALENDAR` method (RFC 4791 Â§5.3.1).
+//! - **Create** uses the `MKCALENDAR` method (RFC 4791 §5.3.1).
 //!   The response is an empty 201; the server picks the etag + ctag
 //!   for the new collection, which the caller picks up on the next
 //!   calendar-home PROPFIND sync.
-//! - **Rename / recolor** use `PROPPATCH` (RFC 4918 Â§9.2) with the
+//! - **Rename / recolor** use `PROPPATCH` (RFC 4918 §9.2) with the
 //!   DAV `displayname` and/or Apple `calendar-color` properties.
 //!   Both can ride in one request so "edit calendar" in the UI is
 //!   a single round-trip.
-//! - **Delete** reuses the existing `delete_resource` helper â€” same
+//! - **Delete** reuses the existing `delete_resource` helper — same
 //!   shape as `write::delete_event`, just pointed at the collection
 //!   href instead of an event href. No `If-Match` gate: collections
 //!   don't carry an etag the way individual events do.
@@ -29,7 +29,7 @@ use crate::client::{build, delete_resource};
 ///
 /// `calendar_home_url` is the absolute URL returned by the CalDAV
 /// discovery step (e.g. `https://nc.example.com/remote.php/dav/calendars/alice/`).
-/// `path_segment` is the URL-safe slug for the new collection â€”
+/// `path_segment` is the URL-safe slug for the new collection —
 /// callers typically generate a UUID so two concurrent creates
 /// can't collide on the wire, and so renames don't rewrite URLs
 /// downstream. The absolute URL we MKCALENDAR against is
@@ -38,7 +38,7 @@ use crate::client::{build, delete_resource};
 /// `color` is optional; when set, it's written as the Apple-namespace
 /// `calendar-color` property so Nextcloud and other mainstream
 /// CalDAV clients render the same swatch we show in our sidebar.
-/// Format is `#RRGGBB` or `#RRGGBBAA` â€” the caller enforces that
+/// Format is `#RRGGBB` or `#RRGGBBAA` — the caller enforces that
 /// shape; we pass it through.
 ///
 /// Returns the full URL of the new collection so the caller can
@@ -71,7 +71,7 @@ pub async fn create_calendar(
 
     let status = resp.status();
     if !status.is_success() {
-        // 405 = "already exists on this path" â€” surface the error
+        // 405 = "already exists on this path" — surface the error
         // directly rather than swallow it, so the UI can tell the
         // user to pick a different name.
         let msg = resp.text().await.unwrap_or_default();
@@ -114,7 +114,7 @@ pub async fn update_calendar(
 
     let status = resp.status();
     // 207 Multi-Status is the normal success reply. A malformed body
-    // or unknown property surfaces as a per-property `<D:status>` â€”
+    // or unknown property surfaces as a per-property `<D:status>` —
     // we'd need to parse the multistatus for that granularity, but
     // for the two properties we set (both well-known) Nextcloud
     // returns 207 + all-200 or a hard 4xx/5xx. The overall HTTP
@@ -130,7 +130,7 @@ pub async fn update_calendar(
 }
 
 /// Delete a calendar collection at `calendar_url`. 404 is treated
-/// as success (already gone) â€” same forgiving policy `delete_event`
+/// as success (already gone) — same forgiving policy `delete_event`
 /// uses.
 pub async fn delete_calendar(
     calendar_url: &str,
@@ -151,7 +151,7 @@ pub async fn delete_calendar(
 }
 
 /// Join `calendar_home/{slug}/` with the usual trailing-slash
-/// normalization. Nextcloud is picky about the trailing `/` â€” a
+/// normalization. Nextcloud is picky about the trailing `/` — a
 /// collection URL without it 301-redirects, and a PROPPATCH that
 /// follows the redirect gets dropped on the floor in some proxy
 /// setups.

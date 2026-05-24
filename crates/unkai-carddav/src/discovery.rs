@@ -8,7 +8,7 @@
 //!
 //! A PROPFIND with Depth: 1 returns the home plus one `<response>` per
 //! child collection. We filter to those whose `<resourcetype>` contains
-//! a CardDAV `<addressbook/>` marker â€” Nextcloud also exposes a
+//! a CardDAV `<addressbook/>` marker — Nextcloud also exposes a
 //! "system" pseudo-collection at the same depth that we want to skip.
 
 use quick_xml::Reader;
@@ -25,7 +25,7 @@ use crate::xml_util::{local_name, read_text_until, skip_subtree};
 ///
 /// `path` is the absolute URL we'll use for sync REPORTs (already
 /// resolved against the server base). `name` is the slug at the end
-/// of `path` â€” useful as a stable identifier in the local cache,
+/// of `path` — useful as a stable identifier in the local cache,
 /// since `display_name` can change on the server side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Addressbook {
@@ -36,7 +36,7 @@ pub struct Addressbook {
     pub sync_token: Option<String>,
 }
 
-/// PROPFIND body. Only requests the props we actually consume â€”
+/// PROPFIND body. Only requests the props we actually consume —
 /// avoids dragging back the full deep tree some servers return when
 /// you ask for `<allprop/>`.
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
@@ -51,7 +51,7 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
 
 /// List all addressbooks owned by `username` on `server_url`.
 ///
-/// Returns `Ok(vec)` even if the user has zero addressbooks â€” that's
+/// Returns `Ok(vec)` even if the user has zero addressbooks — that's
 /// a valid state on a fresh Nextcloud install. Network / auth /
 /// parse failures all surface as `Err`.
 pub async fn list_addressbooks(
@@ -106,7 +106,7 @@ fn parse_addressbook_list(xml: &str, server_url: &str) -> Result<Vec<Addressbook
 
     // Drop Nextcloud's app-generated pseudo-addressbooks. These show up
     // in the home collection alongside real ones but aren't designed to
-    // be synced by external clients â€” `contactsinteraction--recent` in
+    // be synced by external clients — `contactsinteraction--recent` in
     // particular returns HTTP 415 to sync-collection REPORTs. The
     // official NC clients filter them the same way.
     books.retain(|b| !is_pseudo_addressbook(&b.name));
@@ -137,13 +137,13 @@ fn parse_response(
     loop {
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
-                // Transparent wrappers â€” descend without taking action.
+                // Transparent wrappers — descend without taking action.
                 "propstat" | "prop" | "status" => {}
                 "href" => href = Some(read_text_until(reader, "href")?),
                 "resourcetype" => {
                     // Walk the resourcetype subtree looking for an
                     // <addressbook/> child (any namespace prefix).
-                    // We only need to flip a flag â€” anything else
+                    // We only need to flip a flag — anything else
                     // inside resourcetype is fine to ignore; the loop
                     // exits cleanly at </resourcetype>.
                     loop {
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn filters_app_generated_pseudo_addressbooks() {
-        // Same shape as SAMPLE plus a `z-app-generated--â€¦--recent` book.
+        // Same shape as SAMPLE plus a `z-app-generated--…--recent` book.
         // Real on Nextcloud; rejects sync-collection with HTTP 415.
         let xml = r#"<?xml version="1.0"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:card="urn:ietf:params:xml:ns:carddav">

@@ -3,7 +3,7 @@
 //!
 //! # Protocol shape
 //!
-//! Round 1: ask "what changed since `prev_token`" â€” pass an empty
+//! Round 1: ask "what changed since `prev_token`" — pass an empty
 //! token on first sync to mean "give me everything".
 //!
 //! ```xml
@@ -23,14 +23,14 @@
 //!
 //! Round 2: for the added/changed hrefs, fetch the actual vCard
 //! bodies in one shot via `addressbook-multiget`. The two-phase
-//! approach (sync-collection â†’ multiget) is the spec-pure way and
+//! approach (sync-collection → multiget) is the spec-pure way and
 //! works on every server, including ones that don't inline
 //! `address-data` in the sync-collection response.
 //!
 //! # Why two phases instead of inline `address-data`
 //!
-//! RFC 6352 Â§8.6.4 lets servers include `address-data` directly in
-//! the sync-collection response, and Nextcloud does â€” but other
+//! RFC 6352 §8.6.4 lets servers include `address-data` directly in
+//! the sync-collection response, and Nextcloud does — but other
 //! CardDAV servers (Radicale, Baikal historically) don't always.
 //! Splitting it makes the crate work against any compliant server
 //! without per-server special-casing.
@@ -55,9 +55,9 @@ pub struct RawContact {
     pub etag: String,
     pub vcard_uid: String,
     pub display_name: String,
-    /// Email addresses paired with the vCard `EMAIL;TYPE=â€¦` kind.
+    /// Email addresses paired with the vCard `EMAIL;TYPE=…` kind.
     pub emails: Vec<VcardEmail>,
-    /// Phone numbers paired with the vCard `TEL;TYPE=â€¦` kind hint.
+    /// Phone numbers paired with the vCard `TEL;TYPE=…` kind hint.
     pub phones: Vec<VcardPhone>,
     pub organization: Option<String>,
     pub photo_mime: Option<String>,
@@ -78,10 +78,10 @@ pub struct RawContact {
     /// Personal/work URLs (vCard `URL`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub urls: Vec<String>,
-    /// Raw vCard text â€” kept so we can re-parse without re-syncing
+    /// Raw vCard text — kept so we can re-parse without re-syncing
     /// if the model evolves later.
     pub vcard_raw: String,
-    /// vCard `KIND` (RFC 6350 Â§6.1.4) â€” `"group"` for a contact
+    /// vCard `KIND` (RFC 6350 §6.1.4) — `"group"` for a contact
     /// group / mailing list, empty for individuals.  Forwarded
     /// to the cache so the IPC layer can split groups out from
     /// regular contacts (#133, #113).
@@ -92,7 +92,7 @@ pub struct RawContact {
     /// against other vCards.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub member_uids: Vec<String>,
-    /// `CATEGORIES` tag list (RFC 6350 Â§6.7.1).
+    /// `CATEGORIES` tag list (RFC 6350 §6.7.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
     /// `KEY:` values from the vCard, exactly as parsed.  Each entry
@@ -146,7 +146,7 @@ pub async fn sync_addressbook(
     // log so we can spot any new pseudo-books to filter at discovery.
     if status.as_u16() == 415 {
         tracing::warn!(
-            "sync-collection on {addressbook_url} returned 415 â€” skipping (likely a \
+            "sync-collection on {addressbook_url} returned 415 — skipping (likely a \
              pseudo-addressbook that doesn't support sync-collection)"
         );
         return Ok(SyncDelta {
@@ -265,7 +265,7 @@ fn parse_sync_response(
     loop {
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
-                // Transparent wrappers â€” descend, no state change.
+                // Transparent wrappers — descend, no state change.
                 "propstat" | "prop" => {}
                 "href" => href = Some(read_text_until(reader, "href")?),
                 "status" => status = Some(read_text_until(reader, "status")?),
@@ -280,7 +280,7 @@ fn parse_sync_response(
 
     let Some(href) = href else { return Ok(None) };
     let status = status.unwrap_or_default();
-    // Strip etag quotes if present â€” servers often wrap them.
+    // Strip etag quotes if present — servers often wrap them.
     let etag = etag.map(|e| e.trim_matches('"').to_string());
     Ok(Some((href, status, etag)))
 }
@@ -306,7 +306,7 @@ async fn fetch_vcards(
 ) -> Result<Vec<RawContact>, UnkaiError> {
     let mut hrefs_xml = String::new();
     for c in changed {
-        // Convert back to a server-relative path â€” multiget requires
+        // Convert back to a server-relative path — multiget requires
         // the same form the server originally returned. Stripping the
         // server prefix is safe because we built the absolute form
         // from that prefix in the first place.
@@ -387,7 +387,7 @@ fn parse_multiget_response(
     };
     let etag = etag.trim_matches('"').to_string();
 
-    // Skip if the vCard fails to parse â€” log and move on rather than
+    // Skip if the vCard fails to parse — log and move on rather than
     // failing the entire sync because of one weird record.
     let parsed: ParsedVcard = match parse_vcard(&vcard_raw) {
         Ok(p) => p,
