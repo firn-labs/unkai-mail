@@ -26,6 +26,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { m } from '../paraglide/messages'
   import Toggle from './Toggle.svelte'
+  import Icon from './Icon.svelte'
   import { formatError } from './errors'
 
   /** Status payload returned by `pgp_get_account_key_status`. */
@@ -280,22 +281,32 @@
       <div class="font-mono text-xs break-all p-2 rounded bg-surface-100 dark:bg-surface-800">
         {status.fingerprint ? formatFingerprint(status.fingerprint) : '—'}
       </div>
+      <!-- Icon-only action row: replace mirrors the project's
+           "mail settings"/more-actions affordance (outlined-surface
+           with a compose icon), remove mirrors the trusted-senders
+           remove (outlined-surface that turns red on hover).  Same
+           visual vocabulary as elsewhere in Settings — the user
+           shouldn't have to learn a new shape per panel. -->
       <div class="flex gap-2">
         <button
           type="button"
-          class="btn btn-sm preset-tonal-error"
-          onclick={removeKey}
+          class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
+          onclick={startImport}
           disabled={busy}
+          title={m.encryption_replace_button()}
+          aria-label={m.encryption_replace_button()}
         >
-          {m.encryption_remove_button()}
+          <Icon name="compose" size={14} />
         </button>
         <button
           type="button"
-          class="btn btn-sm preset-tonal-surface"
-          onclick={startImport}
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+          onclick={removeKey}
           disabled={busy}
+          title={m.encryption_remove_button()}
+          aria-label={m.encryption_remove_button()}
         >
-          {m.encryption_replace_button()}
+          <Icon name="trash" size={14} />
         </button>
       </div>
 
@@ -318,13 +329,23 @@
             <p class="text-sm font-medium leading-tight">
               {m.encryption_unlock_auto_label()}
             </p>
-            <p class="text-xs text-surface-500 mt-1 leading-snug">
-              {#if unlockEnabled}
-                {m.encryption_unlock_auto_hint_on()}
-              {:else}
+            {#if unlockEnabled}
+              <!-- Saved-state badge: explicit visual confirmation
+                   that the passphrase is on file in the keychain,
+                   so the user doesn't have to infer it from the
+                   toggle position alone. -->
+              <div
+                class="inline-flex items-center gap-1 mt-1 text-xs text-success-500"
+                aria-live="polite"
+              >
+                <Icon name="success" size={14} />
+                <span>{m.encryption_unlock_auto_saved()}</span>
+              </div>
+            {:else}
+              <p class="text-xs text-surface-500 mt-1 leading-snug">
                 {m.encryption_unlock_auto_hint_off()}
-              {/if}
-            </p>
+              </p>
+            {/if}
           </div>
         </div>
 
@@ -357,11 +378,13 @@
             <div class="flex gap-2">
               <button
                 type="button"
-                class="btn btn-sm preset-filled-primary"
+                class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
                 onclick={submitEnableUnlock}
                 disabled={unlockBusy || !unlockPassphrase}
+                title={m.encryption_unlock_auto_save()}
+                aria-label={m.encryption_unlock_auto_save()}
               >
-                {m.encryption_unlock_auto_save()}
+                <Icon name="save-draft" size={14} />
               </button>
               <button
                 type="button"

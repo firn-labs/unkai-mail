@@ -12206,10 +12206,18 @@ fn pgp_enable_unlock_automatically(
     passphrase: String,
 ) -> Result<(), UnkaiError> {
     let armored = credentials::get_pgp_private_key(&account_id)?;
-    // Round-trip the unlock to prove the passphrase actually opens
-    // the key.  Drop the parsed key immediately afterwards — we
-    // only needed it to validate, not to keep around.
-    let _ = unkai_crypto::parse_private_key(armored.as_bytes(), Some(&passphrase))
+    let parsed = unkai_crypto::parse_private_key(armored.as_bytes(), Some(&passphrase))
+        .map_err(|e| UnkaiError::Crypto(format!("PGP key parse failed: {e}")))?;
+    // `parse_private_key` deliberately does NOT check the
+    // passphrase — rpgp defers secret-packet decryption until the
+    // key material is actually needed, so a wrong passphrase
+    // sails through the parse step with no error.  Actually
+    // exercise the passphrase by signing a tiny well-known payload
+    // (one BLAKE3/SHA-256 hash + an rpgp signing call) — wrong
+    // passphrase fails fast with a Crypto error, right passphrase
+    // succeeds in single-digit milliseconds.  The signature bytes
+    // are thrown away; we only care about the unlock side effect.
+    unkai_crypto::sign_detached(b"unkai-passphrase-validation", &parsed)
         .map_err(|e| UnkaiError::Crypto(format!("Wrong encryption passphrase: {e}")))?;
     credentials::store_pgp_passphrase(&account_id, &passphrase)?;
     Ok(())
