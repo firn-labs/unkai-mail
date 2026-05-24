@@ -1,0 +1,78 @@
+name: Feature request
+description: Suggest a new feature or improvement for Unkai Mail.
+title: "[Feature]: "
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. The more concrete the use case, the easier it is to scope and prioritise.
+
+        **Before submitting:** please search the [existing issues](https://github.com/firn-labs/unkai-mail/issues?q=is%3Aissue) to check whether this idea has already been raised.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I have searched the existing issues and this feature has not already been requested.
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A one- or two-sentence description of the feature.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? What are you trying to do today, and why is the current behaviour insufficient?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How do you imagine this working? UI sketches, sample workflows, or rough API ideas are all welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you considered, and why you'd rather see the proposed solution.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of the app does this feature touch?
+      options:
+        - Mail (IMAP / SMTP / JMAP)
+        - Encryption / PGP
+        - Nextcloud integration (Talk / Files / OCS)
+        - Contacts (CardDAV)
+        - Calendar (CalDAV)
+        - Account setup / authentication
+        - UI / UX
+        - Settings
+        - Build / CI / packaging
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mock-ups, links to similar features elsewhere, related issues, RFC references, etc.
+    validations:
+      required: false

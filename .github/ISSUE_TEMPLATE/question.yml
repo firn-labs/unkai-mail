@@ -1,0 +1,58 @@
+name: Question / Support
+description: Ask a question about using Unkai Mail or get help with setup.
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for usage questions, configuration help, or "is this supposed to work this way?" enquiries.
+
+        **Before submitting:** please check the [README](https://github.com/firn-labs/unkai-mail/blob/main/README.md) and search [existing issues](https://github.com/firn-labs/unkai-mail/issues?q=is%3Aissue) — your question may already have been answered.
+
+        If you're hitting an error or something that looks broken, please use the **Bug report** template instead.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I have checked the README and searched existing issues for an answer.
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What would you like to know?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What are you trying to do?
+      description: Describe the goal you're working toward — that often lets us suggest a better path than the one you're asking about.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Not applicable / general question
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: Unkai Mail version
+      description: If relevant. Shown in the app's About panel, or in the installer filename.
+      placeholder: e.g. 0.3.1
+    validations:
+      required: false
