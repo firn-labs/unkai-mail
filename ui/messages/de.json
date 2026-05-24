@@ -292,6 +292,7 @@
   "encryption_import_submit": "Importieren",
   "encryption_import_cancel": "Abbrechen",
 
+  "mail_view_attachment_decrypt_required": "Bitte geben Sie Ihre Passphrase erneut über die Schaltfläche Entschlüsseln unten ein, um diesen Anhang zu öffnen.",
   "mail_view_cannot_decrypt_banner": "Diese Nachricht ist verschlüsselt. Der Server liefert die Rohbytes nicht aus, daher kann sie hier nicht entschlüsselt werden – öffne sie über IMAP oder einen Desktop-PGP-Client.",
   "mail_view_chip_decrypted": "Entschlüsselt",
   "mail_view_chip_encrypted": "Verschlüsselt",

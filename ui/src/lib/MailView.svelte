@@ -202,6 +202,18 @@
   let decrypting = $state(false)
   let decryptError = $state('')
 
+  /** #341 — passphrase held for the duration of the current
+   *  message view, so attachment opens / downloads / prints /
+   *  save-to-Nextcloud can re-decrypt the encrypted inner MIME
+   *  tree without prompting per click.  Set on successful body
+   *  decrypt (carried over from `decryptPassphrase` before the
+   *  input is wiped); cleared whenever the open message changes
+   *  via `load()` so the passphrase never outlives the mail it
+   *  unlocked.  Separate from `decryptPassphrase` so the DOM
+   *  input still gets wiped (no plaintext-in-input footprint)
+   *  while attachments stay usable for the same message session. */
+  let sessionPassphrase = $state('')
+
   async function runDecrypt() {
     if (!email || !decryptPassphrase || decrypting) {
       return
@@ -221,6 +233,11 @@
         pgpPassphrase: decryptPassphrase,
       })
       email = decrypted
+      // #341 — stash the passphrase so attachment fetches for this
+      // same message session can use `download_decrypted_attachment`
+      // without re-prompting.  Done BEFORE wiping the input so the
+      // session value carries through.
+      sessionPassphrase = decryptPassphrase
       // Clear the passphrase the moment the IPC resolves so it
       // never lingers on the heap or in a DOM input that the
       // user could leave open.
@@ -236,6 +253,68 @@
     } finally {
       decrypting = false
     }
+  }
+
+  /** #341 — does the open message need the decrypt-aware attachment
+   *  fetch path?  True when the receive layer tagged it as PGP-
+   *  encrypted (either flavour); false for plaintext and
+   *  signed-only mail.  `encrypted-cannot-decrypt` (JMAP fallback)
+   *  also returns false because we can't decrypt locally anyway —
+   *  the UI surfaces a different banner for that case. */
+  function emailNeedsDecryptedAttachmentFetch(em: Email | null): boolean {
+    const p = em?.protection
+    return p === 'encrypted' || p === 'signed-and-encrypted'
+  }
+
+  /** Sentinel error string — thrown by `fetchAttachmentBytes` when
+   *  the message is encrypted but we don't have a session passphrase
+   *  in hand.  Caught by the per-action wrappers below so the
+   *  surfaced error reads as a clear UX hint ("re-enter passphrase")
+   *  rather than a raw IPC error. */
+  const DECRYPT_REQUIRED_MARKER = '__unkai_decrypt_required__'
+
+  /** #341 — encryption-aware single source of truth for "give me the
+   *  decoded bytes of attachment X on the open message".  Routes to
+   *  `download_decrypted_attachment` (with the session passphrase)
+   *  when the message is encrypted, and to the plain
+   *  `download_email_attachment` otherwise.  Throws the
+   *  `DECRYPT_REQUIRED_MARKER` sentinel when an encrypted message
+   *  has no session passphrase available (e.g. the user opened it
+   *  from cache without re-running the Decrypt flow) so each call
+   *  site can surface a consistent "please re-decrypt first" hint
+   *  without each one having to reproduce the conditional. */
+  async function fetchAttachmentBytes(att: EmailAttachment): Promise<number[]> {
+    if (!email || uid == null) {
+      throw new Error('No message open')
+    }
+    if (emailNeedsDecryptedAttachmentFetch(email)) {
+      if (!sessionPassphrase) {
+        throw new Error(DECRYPT_REQUIRED_MARKER)
+      }
+      return await invoke<number[]>('download_decrypted_attachment', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid,
+        partId: att.part_id,
+        pgpPassphrase: sessionPassphrase,
+      })
+    }
+    return await invoke<number[]>('download_email_attachment', {
+      accountId: email.account_id,
+      folder: email.folder,
+      uid,
+      partId: att.part_id,
+    })
+  }
+
+  /** Convert the sentinel from `fetchAttachmentBytes` into the UI's
+   *  inline-error string.  Other errors fall through with the normal
+   *  `formatError` treatment. */
+  function formatAttachmentFetchError(e: unknown, fallback: string): string {
+    if (e instanceof Error && e.message === DECRYPT_REQUIRED_MARKER) {
+      return m.mail_view_attachment_decrypt_required()
+    }
+    return formatError(e) || fallback
   }
 
   /** Pre-fetch persisted thumbnails for one message and seed
@@ -395,6 +474,11 @@
     decryptPassphrase = ''
     decryptError = ''
     decrypting = false
+    // #341 — drop the session passphrase too.  Held only for the
+    // currently-open message so attachment fetches can decrypt
+    // without re-prompting; opening a different message starts a
+    // fresh session.
+    sessionPassphrase = ''
 
     // Cache first — lets the reading pane paint instantly when the user
     // re-opens a previously read message (the common case).
@@ -1510,21 +1594,15 @@
    *  Download — Save-to-disk stays available in the dropdown. */
   async function attachmentClicked(att: EmailAttachment) {
     if (!email || uid == null) return
-    const acc = email.account_id
-    const fld = email.folder
-    const u = uid
     setBusy(att.part_id, true)
     try {
-      await openAttachment(att, () =>
-        invoke<number[]>('download_email_attachment', {
-          accountId: acc,
-          folder: fld,
-          uid: u,
-          partId: att.part_id,
-        }),
-      )
+      // #341 — route through `fetchAttachmentBytes` so encrypted
+      // messages pull bytes from the decrypted inner MIME tree
+      // rather than the outer envelope's `application/pgp-encrypted`
+      // "Version: 1" header part.
+      await openAttachment(att, () => fetchAttachmentBytes(att))
     } catch (e) {
-      error = formatError(e) || 'Failed to open attachment'
+      error = formatAttachmentFetchError(e, 'Failed to open attachment')
     } finally {
       setBusy(att.part_id, false)
     }
@@ -1610,15 +1688,10 @@
 
     setBusy(att.part_id, true)
     try {
-      const bytes = await invoke<number[]>('download_email_attachment', {
-        accountId: email.account_id,
-        folder: email.folder,
-        uid,
-        partId: att.part_id,
-      })
+      const bytes = await fetchAttachmentBytes(att)
       await invoke('save_bytes_to_path', { path: chosenPath, data: bytes })
     } catch (e) {
-      error = formatError(e) || 'Failed to download attachment'
+      error = formatAttachmentFetchError(e, 'Failed to download attachment')
     } finally {
       setBusy(att.part_id, false)
     }
@@ -1643,18 +1716,13 @@
     if (!email || uid == null) return
     setBusy(att.part_id, true)
     try {
-      const bytes = await invoke<number[]>('download_email_attachment', {
-        accountId: email.account_id,
-        folder: email.folder,
-        uid,
-        partId: att.part_id,
-      })
+      const bytes = await fetchAttachmentBytes(att)
       await invoke('print_attachment', {
         fileName: att.filename,
         bytes,
       })
     } catch (e) {
-      error = formatError(e) || 'Failed to print attachment'
+      error = formatAttachmentFetchError(e, 'Failed to print attachment')
     } finally {
       setBusy(att.part_id, false)
     }
@@ -1704,12 +1772,7 @@
       // like `{account}-{folder}-{uid}` and parseInt'ing it gives NaN,
       // which serializes to null and fails Tauri's u32 validation.
       if (uid == null) return
-      const bytes = await invoke<number[]>('download_email_attachment', {
-        accountId: email.account_id,
-        folder: email.folder,
-        uid,
-        partId: att.part_id,
-      })
+      const bytes = await fetchAttachmentBytes(att)
       // Join the folder path with the filename, avoiding double slashes
       // when folderPath is just '/'.
       const base = folderPath.endsWith('/') ? folderPath : `${folderPath}/`
@@ -1721,7 +1784,7 @@
         contentType: att.content_type || null,
       })
     } catch (e) {
-      error = formatError(e) || 'Failed to save to Nextcloud'
+      error = formatAttachmentFetchError(e, 'Failed to save to Nextcloud')
     } finally {
       setBusy(att.part_id, false)
     }
@@ -2101,13 +2164,7 @@
                   }}
                   bytesProvider={tooLarge
                     ? undefined
-                    : () =>
-                        invoke<number[]>('download_email_attachment', {
-                          accountId: email!.account_id,
-                          folder: email!.folder,
-                          uid: uid!,
-                          partId: att.part_id,
-                        })}
+                    : () => fetchAttachmentBytes(att)}
                   class="w-9 h-9"
                 />
               {/if}
