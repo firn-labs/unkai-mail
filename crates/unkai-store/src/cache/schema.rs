@@ -1139,6 +1139,23 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX pgp_public_keys_by_email
         ON pgp_public_keys (email);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // Background-decrypt during sync (#341 follow-up to PR #355).
+    //
+    // `messages.protection` lets the envelope-fetch path stamp the
+    // encryption / signature status of a message *without* waiting
+    // for the body to be fetched and parsed — so the mail-list lock
+    // chip appears the moment new mail arrives, not only after the
+    // user opens the message once.  The body-side
+    // `message_bodies.protection` stays authoritative once we've
+    // decrypted (it carries the post-decrypt label
+    // `"signed-and-encrypted"`); envelope reads `COALESCE` to the
+    // body's value when both are present.  Legacy rows stay `NULL`
+    // and continue to behave exactly as before the migration.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE messages ADD COLUMN protection TEXT;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

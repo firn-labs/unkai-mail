@@ -6655,6 +6655,43 @@ async fn poll_folder(
         }
     };
 
+    // #341 background-decrypt: for accounts that opted into
+    // "Unlock automatically" (keychain holds a passphrase),
+    // proactively decrypt any newly-arrived PGP/MIME messages
+    // *during sync* so the plaintext lands in `message_bodies`
+    // before the user clicks the row.  This is what powers
+    // body previews / snippets and search hits on encrypted
+    // threads — without it the user has to open every encrypted
+    // message manually for the cache to pick up the plaintext
+    // (the auto-decrypt-on-open path shipped in PR #355 only
+    // fires from MailView's mount).
+    //
+    // Scope: new mail only.  `prior_highest` filters to UIDs
+    // strictly newer than the last sync bookmark — exactly the
+    // same definition `new_envelopes` uses for the new-mail
+    // badge.  A UIDVALIDITY rotation collapses `prior_highest`
+    // semantics (every UID is "new" under the rotated space),
+    // so we skip background decrypt in that branch.  Backfill
+    // of existing encrypted messages on first opt-in is a
+    // follow-up — the existing on-open auto-decrypt path
+    // covers it per message.
+    let background_decrypted: Vec<Email> =
+        if uidvalidity_rotated || !credentials::has_pgp_passphrase(account_id).unwrap_or(false) {
+            Vec::new()
+        } else {
+            let new_encrypted: Vec<&EmailEnvelope> = batch
+                .envelopes
+                .iter()
+                .filter(|e| prior_highest.is_some_and(|p| e.uid > p))
+                .filter(|e| e.protection.as_deref() == Some("encrypted"))
+                .collect();
+            if new_encrypted.is_empty() {
+                Vec::new()
+            } else {
+                background_decrypt_new(&mut client, account_id, folder, &new_encrypted, cache).await
+            }
+        };
+
     let _ = client.logout().await;
 
     if !server_uids.is_empty() || uidvalidity_rotated {
@@ -6685,6 +6722,27 @@ async fn poll_folder(
 
     if let Err(e) = cache.upsert_envelopes_for_account(account_id, &batch.envelopes) {
         tracing::warn!("cache.upsert_envelopes failed: {e}");
+    }
+
+    // #341 background-decrypt: write the just-decrypted bodies
+    // through *after* the envelope upsert so the body row's
+    // ON-CONFLICT-DO-UPDATE doesn't fight whatever the envelope
+    // upsert just wrote.  Per-row failure is logged but doesn't
+    // unwind the poll — the user can still open the message
+    // manually and the existing on-open path will fill the cache.
+    if !background_decrypted.is_empty() {
+        tracing::info!(
+            "background-decrypted {} encrypted message(s) for '{account_id}'/'{folder}'",
+            background_decrypted.len()
+        );
+        for email in &background_decrypted {
+            if let Err(e) = cache.upsert_message(email) {
+                tracing::warn!(
+                    "background-decrypt cache.upsert_message ({}) failed: {e}",
+                    email.id
+                );
+            }
+        }
     }
 
     let new_envelopes: Vec<EmailEnvelope> = if uidvalidity_rotated {
@@ -6817,6 +6875,93 @@ async fn fetch_message_inner(
     }
 
     Ok(email)
+}
+
+/// #341 background-decrypt: walk the just-detected new
+/// PGP/MIME-encrypted envelopes and produce one decrypted [`Email`]
+/// per UID we could successfully unlock.
+///
+/// Shares the live IMAP `client` with the surrounding `poll_folder`
+/// (folder already SELECTed, body fetches go down the same TCP
+/// session) so the only extra IMAP cost is `n` × `UID FETCH
+/// BODY.PEEK[]` for the encrypted UIDs.  Build the
+/// [`TauriCryptoBridge`] once per call: rpgp's `SignedSecretKey`
+/// owns the unlocked private material and we don't want to pay the
+/// keychain + parse cost per message.
+///
+/// Failure surfaces are deliberately split:
+///   - Passphrase resolution or bridge construction failure (the
+///     keychain entry is corrupt, or the stored private key won't
+///     parse with that passphrase) — one warning, skip every UID.
+///     Re-trying per message would just repeat the same failure.
+///   - Per-UID fetch or decrypt failure — one warning per UID, keep
+///     going.  A single recipient-mismatched or corrupted ciphertext
+///     shouldn't block the rest of the batch.
+///
+/// The returned [`Email`]s carry the `is_read` / `is_starred` flags
+/// from their matching envelope row so the subsequent
+/// `cache.upsert_message` write doesn't reset them — same overlay
+/// `decrypt_message` does on its on-demand path.
+async fn background_decrypt_new(
+    client: &mut ImapClient,
+    account_id: &str,
+    folder: &str,
+    new_encrypted: &[&EmailEnvelope],
+    cache: &Cache,
+) -> Vec<Email> {
+    let passphrase = match resolve_pgp_passphrase(account_id, "") {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                "background-decrypt: keychain passphrase resolve for '{account_id}' failed: {e}"
+            );
+            return Vec::new();
+        }
+    };
+    let bridge = match TauriCryptoBridge::for_account(account_id, &passphrase, (*cache).clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                "background-decrypt: bridge build for '{account_id}' failed (keychain \
+                 passphrase + stored key mismatch?): {e}"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut out = Vec::with_capacity(new_encrypted.len());
+    for env in new_encrypted {
+        let uid = env.uid;
+        let raw = match client.fetch_raw_message(folder, uid).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    "background-decrypt: fetch_raw_message UID {uid} in \
+                     '{account_id}'/'{folder}' failed: {e}"
+                );
+                continue;
+            }
+        };
+        let id = format!("{folder}:{uid}");
+        match unkai_imap::parse_eml_bytes_with_crypto(&raw, &id, account_id, folder, Some(&bridge))
+        {
+            Ok(mut email) => {
+                // Overlay IMAP flags from the matching envelope so the
+                // cache write below doesn't reset them — same overlay
+                // `decrypt_message` does on the user-clicked path.
+                email.is_read = env.is_read;
+                email.is_starred = env.is_starred;
+                out.push(email);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "background-decrypt: parse-with-crypto UID {uid} in \
+                     '{account_id}'/'{folder}' failed: {e}"
+                );
+            }
+        }
+    }
+    out
 }
 
 /// Pick the passphrase that should unlock this account's PGP key

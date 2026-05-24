@@ -859,7 +859,7 @@ impl ImapClient {
                     .uid_fetch(
                         range,
                         "(UID FLAGS INTERNALDATE ENVELOPE \
-                         BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
                     )
                     .await
                     .map_err(|e| UnkaiError::Protocol(format!("UID FETCH failed: {e}")))?
@@ -876,7 +876,7 @@ impl ImapClient {
                     .fetch(
                         &range,
                         "(UID FLAGS INTERNALDATE ENVELOPE \
-                         BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
                     )
                     .await
                     .map_err(|e| UnkaiError::Protocol(format!("FETCH failed: {e}")))?
@@ -940,6 +940,12 @@ impl ImapClient {
                 }
 
                 let (message_id, in_reply_to, references_ids) = extract_threading_headers(fetch);
+                // #341 background-decrypt: detect a PGP/MIME envelope
+                // from the Content-Type header we pulled in the same
+                // FETCH — lets the mail-list lock chip appear the
+                // moment new mail arrives, instead of waiting for the
+                // user to open the message once.
+                let protection = extract_envelope_protection(fetch);
 
                 Some(EmailEnvelope {
                     uid,
@@ -968,13 +974,7 @@ impl ImapClient {
                     // envelopes don't know their thread identity yet.
                     thread_id: None,
                     thread_total_count: None,
-                    // Set on full-body fetch — IMAP envelope-only paths
-                    // don't see the message body, so they can't tell
-                    // whether it's PGP/MIME yet.  The cache LEFT-JOIN
-                    // in `get_envelopes` lifts the value out of
-                    // `message_bodies` once the message has been
-                    // opened at least once.
-                    protection: None,
+                    protection,
                 })
             })
             .collect();
@@ -2030,7 +2030,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH after SEARCH failed: {e}")))?
@@ -2077,6 +2077,7 @@ impl ImapClient {
 
                 let (thread_msg_id, thread_in_reply_to, thread_refs) =
                     extract_threading_headers(fetch);
+                let protection = extract_envelope_protection(fetch);
 
                 Some(EmailEnvelope {
                     uid,
@@ -2096,13 +2097,7 @@ impl ImapClient {
                     // envelopes don't know their thread identity yet.
                     thread_id: None,
                     thread_total_count: None,
-                    // Set on full-body fetch — IMAP envelope-only paths
-                    // don't see the message body, so they can't tell
-                    // whether it's PGP/MIME yet.  The cache LEFT-JOIN
-                    // in `get_envelopes` lifts the value out of
-                    // `message_bodies` once the message has been
-                    // opened at least once.
-                    protection: None,
+                    protection,
                 })
             })
             .collect();
@@ -2166,7 +2161,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH (older search) failed: {e}")))?
@@ -2210,6 +2205,7 @@ impl ImapClient {
                 }
                 let (thread_msg_id, thread_in_reply_to, thread_refs) =
                     extract_threading_headers(fetch);
+                let protection = extract_envelope_protection(fetch);
                 Some(EmailEnvelope {
                     uid,
                     folder: folder.to_string(),
@@ -2228,13 +2224,7 @@ impl ImapClient {
                     // envelopes don't know their thread identity yet.
                     thread_id: None,
                     thread_total_count: None,
-                    // Set on full-body fetch — IMAP envelope-only paths
-                    // don't see the message body, so they can't tell
-                    // whether it's PGP/MIME yet.  The cache LEFT-JOIN
-                    // in `get_envelopes` lifts the value out of
-                    // `message_bodies` once the message has been
-                    // opened at least once.
-                    protection: None,
+                    protection,
                 })
             })
             .collect();
@@ -2314,7 +2304,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH (older) failed: {e}")))?
@@ -2361,6 +2351,7 @@ impl ImapClient {
 
                 let (thread_msg_id, thread_in_reply_to, thread_refs) =
                     extract_threading_headers(fetch);
+                let protection = extract_envelope_protection(fetch);
 
                 Some(EmailEnvelope {
                     uid,
@@ -2380,13 +2371,7 @@ impl ImapClient {
                     // envelopes don't know their thread identity yet.
                     thread_id: None,
                     thread_total_count: None,
-                    // Set on full-body fetch — IMAP envelope-only paths
-                    // don't see the message body, so they can't tell
-                    // whether it's PGP/MIME yet.  The cache LEFT-JOIN
-                    // in `get_envelopes` lifts the value out of
-                    // `message_bodies` once the message has been
-                    // opened at least once.
-                    protection: None,
+                    protection,
                 })
             })
             .collect();
@@ -2513,6 +2498,57 @@ fn extract_threading_headers(
         .map(parse_references_header)
         .unwrap_or_default();
     (message_id, in_reply_to, references)
+}
+
+/// #341 background-decrypt: peek at the BODY.PEEK[HEADER.FIELDS ...]
+/// payload to classify a message's PGP/MIME envelope (encrypted /
+/// signed / plaintext) without having to fetch the body.
+///
+/// Returns `Some("encrypted")` for `multipart/encrypted; protocol="application/pgp-encrypted"`,
+/// `Some("signed")` for `multipart/signed; protocol="application/pgp-signature"`,
+/// and `None` for anything else — including plain mail and messages
+/// whose top-level Content-Type isn't a PGP/MIME wrapper.
+///
+/// The mail-list lock chip is keyed off this value via the cache's
+/// `messages.protection` column, so the moment a new encrypted
+/// message lands the UI can render the chip without first opening
+/// the message.  The body-side `message_bodies.protection` stays
+/// authoritative once we've decrypted (it can carry the post-decrypt
+/// `"signed-and-encrypted"` label this header-only check can't), and
+/// envelope reads `COALESCE(b.protection, m.protection)` to prefer
+/// it.
+///
+/// Relies on the FETCH call site requesting `CONTENT-TYPE` in the
+/// header-fields list — callers that don't pass it will only see
+/// `None` here regardless of the message shape.  The PGP/MIME
+/// detection rules mirror [`detect_pgp_mime_envelope`] so a message
+/// classified as encrypted at envelope-fetch time stays classified
+/// the same way once its full body lands and the body parser runs.
+fn extract_envelope_protection(fetch: &async_imap::types::Fetch) -> Option<String> {
+    let raw = fetch.header()?;
+    // mail-parser handles RFC 5322 continuation lines + RFC 2045
+    // Content-Type parameter parsing for us — including quoted /
+    // unquoted protocol values, mixed-case header names, and
+    // RFC 2231-encoded attributes — without re-implementing the
+    // unfolding rules here.
+    let parsed = MessageParser::default().parse(raw)?;
+    let ct = parsed.content_type()?;
+    if !ct.ctype().eq_ignore_ascii_case("multipart") {
+        return None;
+    }
+    let subtype = ct.subtype()?;
+    let protocol = ct.attribute("protocol").unwrap_or("");
+    if subtype.eq_ignore_ascii_case("encrypted")
+        && protocol.eq_ignore_ascii_case("application/pgp-encrypted")
+    {
+        Some("encrypted".to_string())
+    } else if subtype.eq_ignore_ascii_case("signed")
+        && protocol.eq_ignore_ascii_case("application/pgp-signature")
+    {
+        Some("signed".to_string())
+    } else {
+        None
+    }
 }
 
 /// `<abc@host>` → `Some("abc@host")`.  Tolerates surrounding
