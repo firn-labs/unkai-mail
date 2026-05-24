@@ -363,6 +363,86 @@ fn apply_pgp_envelope(
     }
 }
 
+/// #341 follow-up to #57 — pull the bytes of a single attachment out
+/// of a PGP/MIME encrypted message, decrypting through the supplied
+/// bridge so the part_id indexes into the *decrypted inner MIME tree*
+/// rather than the encrypted outer envelope.
+///
+/// Counterpart to `IMAPClient::fetch_attachment` for the encrypted
+/// case.  The receive path parses the decrypted plaintext and stamps
+/// `EmailAttachment.part_id` as a sequential index into the *inner*
+/// tree (the real user attachments), but `fetch_attachment` re-parses
+/// the raw IMAP bytes — which are still the `multipart/encrypted`
+/// outer envelope — and walks those with the inner index.  For a
+/// real attachment at inner `part_id = 0` that lookup returns the
+/// outer envelope's `application/pgp-encrypted` "Version: 1" header
+/// instead of the actual file bytes.  This function bridges the gap
+/// by decrypting first and walking the inner tree with the same
+/// `attachments()` / `parts` fallback `fetch_attachment` uses.
+///
+/// Returns `Ok(None)` if `raw` isn't a PGP/MIME envelope at all so
+/// the caller can fall back to the plaintext path.  Returns
+/// `Err(Protocol)` when the inner tree doesn't carry the requested
+/// `part_id` — typically a sign the caller is mixing inner / outer
+/// indices and should be routed through `fetch_attachment` instead.
+pub fn extract_decrypted_attachment(
+    raw: &[u8],
+    bridge: &dyn CryptoBridge,
+    part_id: u32,
+) -> Result<Option<(EmailAttachment, Vec<u8>)>, UnkaiError> {
+    let envelope = match detect_pgp_mime_envelope(raw)? {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    let ciphertext_armor = match envelope {
+        PgpMimeEnvelope::Encrypted { ciphertext_armor } => ciphertext_armor,
+        // `multipart/signed` carries its parts in cleartext already,
+        // so an attachment fetch against a signed-only envelope is
+        // the regular IMAP path — tell the caller to fall back.
+        PgpMimeEnvelope::Signed => return Ok(None),
+    };
+    let payload = bridge.decrypt(&ciphertext_armor)?;
+    let parsed = MessageParser::default()
+        .parse(payload.plaintext.as_slice())
+        .ok_or_else(|| UnkaiError::Protocol("Failed to parse decrypted message".into()))?;
+
+    // Same primary-then-fallback lookup `fetch_attachment` uses so
+    // a part_id assigned during the listing parse always resolves
+    // to the same byte slice during fetch — wherever the index was
+    // first stamped from.
+    let part = parsed
+        .attachment(part_id)
+        .or_else(|| parsed.parts.get(part_id as usize))
+        .ok_or_else(|| {
+            UnkaiError::Protocol(format!("Decrypted inner MIME tree has no part #{part_id}"))
+        })?;
+
+    let filename = decode_attachment_filename(&parsed, part);
+    let content_type = part
+        .content_type()
+        .map(|ct| {
+            let ctype = ct.ctype();
+            match ct.subtype() {
+                Some(sub) => format!("{ctype}/{sub}"),
+                None => ctype.to_string(),
+            }
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let data = part.contents().to_vec();
+    let size = Some(data.len() as u64);
+    let content_id = part.content_id().map(|s| s.to_string());
+    Ok(Some((
+        EmailAttachment {
+            filename,
+            content_type,
+            size,
+            part_id,
+            content_id,
+        },
+        data,
+    )))
+}
+
 /// `async-imap`'s `Session` is generic over its underlying I/O. We
 /// pin the alias to the concrete `Compat<TlsStream<TcpStream>>` so
 /// downstream callers don't have to think about the four layers of

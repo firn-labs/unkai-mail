@@ -6911,6 +6911,52 @@ async fn download_email_attachment(
     Ok(data)
 }
 
+/// Counterpart to `download_email_attachment` for PGP/MIME messages
+/// (#341 follow-up to #57).  The plain command walks the *outer*
+/// `multipart/encrypted` envelope with whatever `part_id` it gets,
+/// which for a decrypted message would return the `Version: 1`
+/// header part instead of the real attachment bytes — `EmailAttachment.part_id`
+/// on a decrypted message indexes the *inner* tree.  This command
+/// pulls the raw IMAP bytes, decrypts through the bridge built from
+/// the account's stored key + the freshly-prompted passphrase, walks
+/// the inner tree with the same primary-then-fallback `attachments()`
+/// / `parts` lookup the plaintext path uses, and returns those bytes.
+///
+/// IMAP only — JMAP encrypted attachment download needs the same
+/// `Blob/get` plumbing as the JMAP body-decrypt fallback (#341).
+#[tauri::command]
+async fn download_decrypted_attachment(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    part_id: u32,
+    pgp_passphrase: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<u8>, UnkaiError> {
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Err(UnkaiError::Protocol(
+            "JMAP encrypted attachment download needs Blob/get plumbing — \
+             switch the account to IMAP to download decrypted attachments"
+                .into(),
+        ));
+    }
+    let bridge = TauriCryptoBridge::for_account(&account_id, &pgp_passphrase, (*cache).clone())?;
+    let mut client = connect_imap(&account).await?;
+    let raw = client.fetch_raw_message(&folder, uid).await?;
+    let _ = client.logout().await;
+    match unkai_imap::extract_decrypted_attachment(&raw, &bridge, part_id)? {
+        Some((_meta, data)) => Ok(data),
+        // Not a PGP/MIME envelope — the caller should be on
+        // `download_email_attachment` for this message.  Surfacing
+        // as a typed error rather than silently falling through
+        // keeps the UI's encryption-aware routing honest.
+        None => Err(UnkaiError::Protocol(
+            "Message is not PGP-encrypted; use download_email_attachment".into(),
+        )),
+    }
+}
+
 // ── Attachment preview cache (#157) ──────────────────────────
 //
 // Persists frontend-generated thumbnails alongside the cached
@@ -12892,6 +12938,7 @@ fn main() {
             fetch_older_unified_envelopes,
             fetch_message,
             download_email_attachment,
+            download_decrypted_attachment,
             put_attachment_preview,
             get_attachment_previews,
             download_calendar_from_message,

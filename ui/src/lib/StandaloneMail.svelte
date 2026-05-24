@@ -22,13 +22,31 @@
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import MailView from './MailView.svelte'
   import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
+  import { formatError } from './errors'
+  import { m } from '../paraglide/messages'
 
   // We never inspect the email shape inside the standalone window —
   // it's just a payload we forward to the main window via Tauri
   // events.  The main window's listener treats it as the existing
   // `Email` type (defined inside MailView).  Using `unknown` here
-  // avoids a cross-component type-export dance.
+  // avoids a cross-component type-export dance; the decrypt path
+  // below narrows the few fields it needs via an internal alias.
   type EmailPayload = unknown
+
+  /** #341 — subset of MailView's `Email` we actually inspect inside
+   *  `emitCompose` to decide whether the popout needs to prompt for
+   *  a passphrase before forwarding the payload on.  Narrowed via
+   *  an `as` cast at the boundary so the rest of this file stays
+   *  on the opaque `EmailPayload` type. */
+  type DecryptableMail = {
+    account_id: string
+    folder: string
+    uid: number
+    from: string
+    body_text: string | null
+    body_html?: string | null
+    protection?: string | null
+  }
 
   let {
     accountId,
@@ -70,16 +88,132 @@
     }
   })
 
+  // #341 — Reply / Forward on an encrypted-but-not-yet-decrypted
+  // message needs the user's PGP passphrase so we can decrypt the
+  // body (for the quoted-history block) and any attachments (for
+  // the forward fan-out).  Owning the prompt locally — rather than
+  // letting the main-window listener prompt — keeps the modal next
+  // to the popped-out mail the user just clicked Reply on, instead
+  // of stealing focus over to a main window the user may have
+  // pushed to a different monitor.  After collecting the passphrase
+  // we decrypt locally via `decrypt_message` and emit
+  // `compose-from-mail` with the already-decrypted payload + the
+  // passphrase, so the main window can hand it through to the
+  // forward-attachment fetch without re-prompting.
+  type ComposeKind = 'reply' | 'reply-all' | 'forward'
+  type PendingPrompt = {
+    kind: ComposeKind
+    fromName: string
+    resolve: (passphrase: string | null) => void
+    error: string
+    busy: boolean
+    value: string
+  }
+  let pendingDecryptPrompt = $state<PendingPrompt | null>(null)
+
+  function resolveDecryptPrompt(passphrase: string | null) {
+    if (!pendingDecryptPrompt) return
+    if (pendingDecryptPrompt.busy) return
+    const { resolve } = pendingDecryptPrompt
+    pendingDecryptPrompt = null
+    resolve(passphrase)
+  }
+
+  /** Does this mail need the popout-side decrypt step?  Same logic
+   *  as App.svelte's `needsDecryptForReply` — encrypted protection
+   *  tag *and* an empty cached body.  When the user clicked Decrypt
+   *  inside the popout's reading pane already, the cache row
+   *  carries the plaintext and this short-circuits to false. */
+  function needsDecrypt(mail: DecryptableMail): boolean {
+    const p = mail.protection
+    if (p !== 'encrypted' && p !== 'signed-and-encrypted') return false
+    const text = (mail.body_text ?? '').trim()
+    const html = (mail.body_html ?? '').trim()
+    return text.length === 0 && html.length === 0
+  }
+
+  /** Prompt for the passphrase (looping on wrong input), call
+   *  `decrypt_message`, return `{ mail, passphrase }` with the
+   *  plaintext bodies overlaid.  Returns `null` if the user
+   *  cancels — caller aborts the emit so no compose-from-mail
+   *  event reaches the main window.  Pass-through (no prompt,
+   *  passphrase null) when the mail doesn't need decryption. */
+  async function ensureDecryptedLocal(
+    mail: EmailPayload,
+    kind: ComposeKind,
+  ): Promise<{ mail: EmailPayload; passphrase: string | null } | null> {
+    // Narrow once at the boundary so the rest of this function can
+    // touch decrypt-relevant fields directly without further casts.
+    // The cast is safe in practice because every caller path threads
+    // a MailView `Email & { uid }` here; the narrower type lists the
+    // subset we actually read.
+    const narrow = mail as DecryptableMail
+    if (!needsDecrypt(narrow)) return { mail, passphrase: null }
+    let lastError = ''
+    while (true) {
+      const passphrase = await new Promise<string | null>((resolve) => {
+        pendingDecryptPrompt = {
+          kind,
+          fromName: narrow.from,
+          resolve,
+          error: lastError,
+          busy: false,
+          value: '',
+        }
+      })
+      if (passphrase == null) {
+        pendingDecryptPrompt = null
+        return null
+      }
+      pendingDecryptPrompt = {
+        kind,
+        fromName: narrow.from,
+        resolve: () => {},
+        error: '',
+        busy: true,
+        value: passphrase,
+      }
+      try {
+        const decrypted = await invoke<{
+          body_text: string | null
+          body_html: string | null
+        }>('decrypt_message', {
+          accountId: narrow.account_id,
+          folder: narrow.folder,
+          uid: narrow.uid,
+          pgpPassphrase: passphrase,
+        })
+        pendingDecryptPrompt = null
+        return {
+          mail: {
+            ...(mail as object),
+            body_text: decrypted.body_text,
+            body_html: decrypted.body_html,
+          } as EmailPayload,
+          passphrase,
+        }
+      } catch (e) {
+        const raw = formatError(e) || 'Decrypt failed'
+        lastError = raw.replace(/^Crypto:\s*/i, '')
+      }
+    }
+  }
+
   // Compose actions: emit a Tauri event the main window listens for.
   // The event payload mirrors the `Email` shape Compose's reply /
   // forward init expects, so the main window can splat it straight
   // into `openCompose`.  We don't focus the main window here — the
   // user just clicked a button in *this* window, so they know it
   // popped a Compose somewhere; jumping focus would be jarring.
-  type ComposeKind = 'reply' | 'reply-all' | 'forward'
   async function emitCompose(kind: ComposeKind, mail: EmailPayload) {
     try {
-      await emit('compose-from-mail', { kind, mail })
+      const ready = await ensureDecryptedLocal(mail, kind)
+      if (!ready) return
+      await emit('compose-from-mail', {
+        kind,
+        mail: ready.mail,
+        pgpPassphrase: ready.passphrase,
+      })
     } catch (e) {
       console.warn(`compose-from-mail (${kind}) emit failed`, e)
     }
@@ -136,3 +270,89 @@
     onmailto={onMailto}
   />
 </div>
+
+<!-- #341 — popout-local decrypt prompt.  Same shape App.svelte
+     mounts at the main-window level, just instantiated here so it
+     appears on the same screen as the popped-out mail the user
+     just clicked Reply / Forward on. -->
+{#if pendingDecryptPrompt}
+  <div
+    class="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="decrypt-prompt-title"
+    tabindex="-1"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) resolveDecryptPrompt(null)
+    }}
+    onkeydown={(e) => e.key === 'Escape' && resolveDecryptPrompt(null)}
+  >
+    <div
+      class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl"
+    >
+      <h2 id="decrypt-prompt-title" class="text-base font-semibold mb-2">
+        {pendingDecryptPrompt.kind === 'forward'
+          ? m.mail_decrypt_for_forward_title()
+          : m.mail_decrypt_for_reply_title()}
+      </h2>
+      <p class="text-sm text-surface-600 dark:text-surface-300 mb-3">
+        {pendingDecryptPrompt.kind === 'forward'
+          ? m.mail_decrypt_for_forward_body({
+              sender: pendingDecryptPrompt.fromName,
+            })
+          : m.mail_decrypt_for_reply_body({
+              sender: pendingDecryptPrompt.fromName,
+            })}
+      </p>
+      <form
+        onsubmit={(e) => {
+          e.preventDefault()
+          if (!pendingDecryptPrompt || pendingDecryptPrompt.busy) return
+          resolveDecryptPrompt(pendingDecryptPrompt.value)
+        }}
+      >
+        <label
+          for="decrypt-prompt-passphrase-popout"
+          class="block text-xs text-surface-500 mb-1"
+        >
+          {m.mail_decrypt_passphrase_label()}
+        </label>
+        <input
+          id="decrypt-prompt-passphrase-popout"
+          type="password"
+          class="input w-full px-3 py-2 text-sm rounded-md mb-2"
+          bind:value={pendingDecryptPrompt.value}
+          disabled={pendingDecryptPrompt.busy}
+          autocomplete="off"
+          {@attach (node: HTMLInputElement) => {
+            if (!pendingDecryptPrompt?.busy) {
+              queueMicrotask(() => node.focus())
+            }
+          }}
+        />
+        {#if pendingDecryptPrompt.error}
+          <p class="text-xs text-red-500 mb-3">{pendingDecryptPrompt.error}</p>
+        {/if}
+        <div class="flex justify-end gap-2 mt-2">
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-surface-500"
+            disabled={pendingDecryptPrompt.busy}
+            onclick={() => resolveDecryptPrompt(null)}
+          >
+            {m.mail_decrypt_cancel_button()}
+          </button>
+          <button
+            type="submit"
+            class="btn btn-sm preset-filled-primary-500"
+            disabled={pendingDecryptPrompt.busy || !pendingDecryptPrompt.value}
+          >
+            {pendingDecryptPrompt.busy
+              ? m.mail_decrypt_busy_button()
+              : m.mail_decrypt_submit_button()}
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+{/if}

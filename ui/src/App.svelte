@@ -1060,17 +1060,34 @@
       unlistenComposeFromMail = await listen<{
         kind: 'reply' | 'reply-all' | 'forward'
         mail: ForwardableMail
+        /** #341 — passphrase the popout collected when its local
+         *  decrypt prompt ran.  Carries through so this main-window
+         *  listener can decrypt forward attachments without
+         *  re-prompting the user (the prompt already happened
+         *  inside the popout where the user clicked Reply / Forward).
+         *  Absent when the source was plaintext or the popout's
+         *  cache already had a decrypted body. */
+        pgpPassphrase?: string | null
       }>('compose-from-mail', (e) => {
-        const { kind, mail } = e.payload
+        const { kind, mail, pgpPassphrase } = e.payload
         void (async () => {
-          // #341 — same decrypt-before-quoting hook as the
-          // in-window onReply / onReplyAll / onForward path, so a
-          // popped-out reply / forward against an encrypted source
-          // doesn't open a blank quoted block either.  Returns
-          // null if the user cancels the prompt; we abort the
-          // popout open entirely in that case.
+          // #341 — the popped-out mail window owns its own decrypt
+          // prompt (so the modal appears next to the popout the user
+          // was looking at instead of stealing focus to the main
+          // window).  By the time this event arrives, the mail is
+          // either already-decrypted (popout did the work) or never
+          // needed decryption — `ensureDecryptedForReply` is still
+          // called as a safety net for an old / unmodified popout,
+          // but `needsDecryptForReply` will short-circuit for the
+          // happy path so no prompt fires here.
           const ready = await ensureDecryptedForReply(mail, kind)
           if (!ready) return
+          // Carry the popout-side passphrase through to the forward
+          // attachment fetch so the bytes come from the *inner*
+          // decrypted MIME tree.  Falls back to whatever
+          // `ensureDecryptedForReply` collected if (somehow) the
+          // popout sent an encrypted mail without a passphrase.
+          const attachmentPassphrase = pgpPassphrase ?? ready.passphrase
           // Forward needs the async builder so the
           // include-attachments popup (#329) and the
           // download_email_attachment fan-out can run before the
@@ -1079,12 +1096,15 @@
           // the original attachments.
           const initial: ComposeInitial =
             kind === 'reply'
-              ? buildReplyInitial(ready)
+              ? buildReplyInitial(ready.mail)
               : kind === 'reply-all'
-                ? buildReplyAllInitial(ready)
-                : await buildForwardInitialForPopout(ready)
+                ? buildReplyAllInitial(ready.mail)
+                : await buildForwardInitialForPopout(
+                    ready.mail,
+                    attachmentPassphrase,
+                  )
           void openComposeInStandaloneWindow({
-            accountId: ready.account_id,
+            accountId: ready.mail.account_id,
             initial,
           }).catch((err) =>
             console.warn('openComposeInStandaloneWindow from #304 failed', err),
@@ -2068,20 +2088,38 @@
     resolve(passphrase)
   }
 
+  /** Result of `ensureDecryptedForReply`.  `mail` carries the
+   *  (possibly newly-decrypted) source; `passphrase` carries the
+   *  passphrase the user supplied at the prompt — held just long
+   *  enough for the caller to run a follow-up decrypt operation
+   *  (e.g. forward-with-attachments needs to decrypt each
+   *  attachment with the same key, #341).  `null` when no decrypt
+   *  was needed (plaintext source / already-decrypted cache hit).
+   *  The caller MUST NOT persist the passphrase anywhere — its
+   *  lifetime is bounded by the current Reply / Forward operation
+   *  per #57's "never persist passphrases" posture. */
+  type DecryptedForReply<T> = {
+    mail: T
+    passphrase: string | null
+  }
+
   /** #341 — if the source message is encrypted but not yet decrypted,
    *  prompt the user for their passphrase, run `decrypt_message`,
    *  and return a copy of the mail with the plaintext body fields
-   *  filled in.  On wrong passphrase the modal stays up with an
-   *  inline error (the user re-tries inside the same prompt).  On
-   *  cancel returns `null` so the caller can abort the Reply /
-   *  Forward open instead of pushing an empty quoted-history into
-   *  Compose.  Pass-through when the mail is plaintext or the
+   *  filled in *plus* the passphrase the user supplied (so the
+   *  forward path can use it to decrypt each attachment's bytes
+   *  through `download_decrypted_attachment`).  On wrong passphrase
+   *  the modal stays up with an inline error (the user re-tries
+   *  inside the same prompt).  On cancel returns `null` so the
+   *  caller can abort the Reply / Forward open instead of pushing
+   *  an empty quoted-history into Compose.  Pass-through (no
+   *  prompt, `passphrase: null`) when the mail is plaintext or the
    *  cached body is already populated. */
   async function ensureDecryptedForReply<T extends ReplyableMail>(
     mail: T,
     kind: DecryptPromptKind,
-  ): Promise<T | null> {
-    if (!needsDecryptForReply(mail)) return mail
+  ): Promise<DecryptedForReply<T> | null> {
+    if (!needsDecryptForReply(mail)) return { mail, passphrase: null }
     let lastError = ''
     while (true) {
       const passphrase = await new Promise<string | null>((resolve) => {
@@ -2124,9 +2162,12 @@
         })
         pendingDecryptPrompt = null
         return {
-          ...mail,
-          body_text: decrypted.body_text,
-          body_html: decrypted.body_html,
+          mail: {
+            ...mail,
+            body_text: decrypted.body_text,
+            body_html: decrypted.body_html,
+          },
+          passphrase,
         }
       } catch (e) {
         // Strip the `Crypto: ` variant prefix from UnkaiError (same
@@ -2145,7 +2186,7 @@
     void (async () => {
       const ready = await ensureDecryptedForReply(mail, 'reply')
       if (!ready) return
-      openCompose(buildReplyInitial(ready))
+      openCompose(buildReplyInitial(ready.mail))
     })()
   }
 
@@ -2153,7 +2194,7 @@
     void (async () => {
       const ready = await ensureDecryptedForReply(mail, 'reply-all')
       if (!ready) return
-      openCompose(buildReplyAllInitial(ready))
+      openCompose(buildReplyAllInitial(ready.mail))
     })()
   }
 
@@ -2314,20 +2355,41 @@
    *  reshape into Compose's `Attachment` form.  Each gets a fresh
    *  `content_id` so the `/` editor shortcut can still anchor
    *  cid: links into the body after the bytes arrive — same
-   *  shape `onEditDraft` builds for the draft-edit flow. */
+   *  shape `onEditDraft` builds for the draft-edit flow.
+   *
+   *  #341 — when `passphrase` is supplied (forward-from-encrypted
+   *  flow) the bytes come from `download_decrypted_attachment`
+   *  instead.  That command decrypts the raw IMAP bytes server-side
+   *  and walks the *inner* MIME tree, so `att.part_id` (which on a
+   *  decrypted message indexes the inner tree, not the outer
+   *  `multipart/encrypted` envelope) resolves to the actual file
+   *  bytes rather than the `application/pgp-encrypted` "Version: 1"
+   *  header part the plain command would return. */
   function downloadForwardAttachments(
     mail: ForwardableMail,
+    passphrase: string | null,
   ): Promise<ComposeAttachment[]> {
     return Promise.all(
       mail.attachments.map(async (att) => ({
         filename: att.filename,
         content_type: att.content_type,
-        data: await invoke<number[]>('download_email_attachment', {
-          accountId: mail.account_id,
-          folder: mail.folder,
-          uid: mail.uid,
-          partId: att.part_id,
-        }),
+        data: await invoke<number[]>(
+          passphrase ? 'download_decrypted_attachment' : 'download_email_attachment',
+          passphrase
+            ? {
+                accountId: mail.account_id,
+                folder: mail.folder,
+                uid: mail.uid,
+                partId: att.part_id,
+                pgpPassphrase: passphrase,
+              }
+            : {
+                accountId: mail.account_id,
+                folder: mail.folder,
+                uid: mail.uid,
+                partId: att.part_id,
+              },
+        ),
         content_id: crypto.randomUUID().replaceAll('-', ''),
       })),
     )
@@ -2351,17 +2413,24 @@
     // initial so the quoted block actually carries the original
     // content.  Without this, forwarding an unopened encrypted
     // message would put a "Forwarded message" header on top of an
-    // empty body block.
+    // empty body block.  The passphrase the user supplied at the
+    // prompt rides through to `downloadForwardAttachments` so each
+    // attachment's bytes also come from the decrypted inner tree —
+    // otherwise we'd ship the outer envelope's `application/pgp-encrypted`
+    // "Version: 1" header instead of the file.
     const ready = await ensureDecryptedForReply(mail, 'forward')
     if (!ready) return
-    const composeId = openCompose(buildForwardInitial(ready))
-    if (ready.attachments.length === 0) return
+    const composeId = openCompose(buildForwardInitial(ready.mail))
+    if (ready.mail.attachments.length === 0) return
     const include = await promptIncludeForwardAttachments(
-      ready.attachments.length,
+      ready.mail.attachments.length,
     )
     if (!include) return
     try {
-      const downloaded = await downloadForwardAttachments(ready)
+      const downloaded = await downloadForwardAttachments(
+        ready.mail,
+        ready.passphrase,
+      )
       const entry = composes.find((c) => c.id === composeId)
       if (!entry) return
       const addAttachments = await entry.addAttachmentsReady
@@ -2388,6 +2457,7 @@
    *  popout's Compose with attachments baked into the initial. */
   async function buildForwardInitialForPopout(
     mail: ForwardableMail,
+    passphrase: string | null,
   ): Promise<ComposeInitial> {
     const base = buildForwardInitial(mail)
     if (mail.attachments.length === 0) return base
@@ -2396,7 +2466,7 @@
     )
     if (!include) return base
     try {
-      const attachments = await downloadForwardAttachments(mail)
+      const attachments = await downloadForwardAttachments(mail, passphrase)
       return { ...base, attachments }
     } catch (e) {
       alert(
