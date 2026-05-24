@@ -102,6 +102,18 @@
   "compose_forward_attachments_skip": "Ohne Anhänge weiterleiten",
   "compose_forward_attachments_download_failed": "Einige Anhänge konnten nicht geladen werden: {reason}",
 
+  "compose_pgp_recipient_no_key_title": "Kein PGP-Schlüssel für einige Empfänger",
+  "compose_pgp_recipient_no_key_body": "Für folgende Adressen liegt kein öffentlicher Schlüssel vor: {addresses}. Der verschlüsselte Versand schlägt fehl, bis ein Schlüssel importiert oder die Adresse entfernt wird.",
+
+  "mail_decrypt_for_reply_title": "Zum Antworten entschlüsseln",
+  "mail_decrypt_for_reply_body": "Geben Sie Ihre PGP-Passphrase ein, um die Nachricht von {sender} zu entschlüsseln, damit Ihre Antwort den Originaltext zitieren kann.",
+  "mail_decrypt_for_forward_title": "Zum Weiterleiten entschlüsseln",
+  "mail_decrypt_for_forward_body": "Geben Sie Ihre PGP-Passphrase ein, um die Nachricht von {sender} zu entschlüsseln, damit die Weiterleitung den Originaltext enthält.",
+  "mail_decrypt_passphrase_label": "PGP-Passphrase",
+  "mail_decrypt_cancel_button": "Abbrechen",
+  "mail_decrypt_submit_button": "Entschlüsseln",
+  "mail_decrypt_busy_button": "Entschlüsseln …",
+
   "nc_share_set_expiration_label": "Ablaufdatum festlegen",
   "nc_share_expiration_aria": "Ablaufdatum für den Freigabelink auswählen",
   "nc_share_expiration_hint": "Empfänger können den Link nach diesem Datum nicht mehr öffnen.",

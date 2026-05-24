@@ -179,6 +179,17 @@
      *  the signature from the original send; without this we'd
      *  stack a second one and the user would see two. */
     skipSignatureInsert?: boolean
+    /** Pre-enable the PGP encrypt + sign toggle on mount (#341).
+     *  Set by App.svelte's Reply path when the user is responding
+     *  to an encrypted message — the assumption is the thread
+     *  stays encrypted, so saving the manual toggle click is a
+     *  meaningful ergonomic win.  Forward is *not* auto-encrypted
+     *  because the user is changing recipients and the new target
+     *  may not have a key — they should opt in instead.  When
+     *  true Compose also opens with the Encryption ribbon tab
+     *  active so the passphrase input is the first thing the
+     *  user sees. */
+    encryptByDefault?: boolean
   }
 
   /** Payload handed back to the parent when a background send
@@ -993,10 +1004,14 @@
   // End-to-end encryption toggle (#57).  When true, the send IPC
   // sets `encryption_mode = "pgp"` and `signing_enabled = true` on
   // the OutgoingEmail payload and prompts the user for their PGP
-  // passphrase — pre-send modal below.  The toggle defaults off so
-  // the historical plaintext send path is untouched for accounts
-  // that haven't imported a key.
-  let encryptEnabled = $state(false)
+  // passphrase — pre-send modal below.  Defaults off so plaintext
+  // sends from accounts without a key are untouched; the
+  // `encryptByDefault` flag on `initial` (#341 — Reply to an
+  // encrypted message) pre-flips it so the user doesn't have to
+  // click the Encryption tab toggle on every reply in a secured
+  // thread.
+  // svelte-ignore state_referenced_locally
+  let encryptEnabled = $state(initial?.encryptByDefault === true)
   // Inline passphrase entry shown when the user clicks Send with
   // encryption on.  Cleared on submit and on cancel so a freshly-
   // opened Compose never inherits a stale passphrase.
@@ -1006,6 +1021,116 @@
    *  passphrase prompt block (rendered just above the Send
    *  button). */
   let awaitingPassphrase = $state(false)
+
+  // #341 — when the parent pre-enabled encryption (reply to an
+  // encrypted message), pull the passphrase input into focus once
+  // the ribbon's Encryption tab has mounted it.  `untrack` on the
+  // prop read so the effect runs once on first paint rather than
+  // re-triggering whenever the parent's `initial` object identity
+  // changes (e.g. recovery from a background-send failure that
+  // reopens Compose pre-filled).  The DOM lookup is by id rather
+  // than `bind:this` because the input lives inside a snippet that
+  // mounts behind the editor's tab strip — the binding wouldn't
+  // resolve until the snippet body actually rendered, which is
+  // exactly what `requestAnimationFrame` waits out.
+  $effect(() => {
+    if (!untrack(() => initial?.encryptByDefault)) return
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById('pgp-passphrase-input')
+      if (el instanceof HTMLInputElement) {
+        el.focus()
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+  })
+
+  // ── Per-recipient key status (#341) ─────────────────────────────
+  // When encryption is on, look up each To/Cc/Bcc address against
+  // the cached `pgp_public_keys` table so a missing key surfaces
+  // *before* the user finishes writing the body — saves them from
+  // typing a long reply only to hit "no key for X" at Send.  The
+  // map keys are the bare lower-cased addresses; values are
+  // 'has-key' / 'no-key' / 'checking'.  Cleared the moment the
+  // user disables encryption again so a stale "no key" warning
+  // doesn't linger on a plaintext draft.
+  type RecipientKeyState = 'checking' | 'has-key' | 'no-key'
+  let recipientKeyStatus = $state<Map<string, RecipientKeyState>>(new Map())
+
+  /** Deduped lower-cased bare addresses currently in any of the
+   *  recipient fields.  Recomputes on every keystroke; the lookup
+   *  effect below debounces the actual IPC calls so the user
+   *  doesn't pay a roundtrip per character. */
+  const encryptionRecipients = $derived.by<string[]>(() => {
+    if (!encryptEnabled) return []
+    const seen = new Set<string>()
+    for (const piece of [...splitAddrs(to), ...splitAddrs(cc), ...splitAddrs(bcc)]) {
+      const bare = bareAddr(piece).toLowerCase()
+      if (bare && bare.includes('@')) seen.add(bare)
+    }
+    return [...seen]
+  })
+
+  $effect(() => {
+    if (!encryptEnabled) {
+      recipientKeyStatus = new Map()
+      return
+    }
+    const targets = encryptionRecipients
+    if (targets.length === 0) {
+      recipientKeyStatus = new Map()
+      return
+    }
+    // Debounce — 400ms after the last typed character feels like
+    // "user has paused typing" without the warning chip lagging
+    // far behind the To line.  `aborted` guards the post-await
+    // writes so a torn-down effect (recipient field edited mid-
+    // lookup) doesn't paint stale results.
+    let aborted = false
+    const handle = setTimeout(() => {
+      void (async () => {
+        const seeded = new Map<string, RecipientKeyState>()
+        for (const addr of targets) {
+          const prior = recipientKeyStatus.get(addr)
+          if (prior === 'has-key' || prior === 'no-key') {
+            seeded.set(addr, prior)
+          } else {
+            seeded.set(addr, 'checking')
+          }
+        }
+        if (aborted) return
+        recipientKeyStatus = seeded
+        for (const addr of targets) {
+          if (aborted) return
+          if (seeded.get(addr) !== 'checking') continue
+          try {
+            const rows = await invoke<unknown[]>('pgp_get_keys_for_email', {
+              email: addr,
+            })
+            if (aborted) return
+            const hit = Array.isArray(rows) && rows.length > 0
+            recipientKeyStatus = new Map(recipientKeyStatus).set(
+              addr,
+              hit ? 'has-key' : 'no-key',
+            )
+          } catch (e) {
+            if (aborted) return
+            console.warn('pgp_get_keys_for_email failed for', addr, e)
+            recipientKeyStatus = new Map(recipientKeyStatus).set(addr, 'no-key')
+          }
+        }
+      })()
+    }, 400)
+    return () => {
+      aborted = true
+      clearTimeout(handle)
+    }
+  })
+
+  /** Addresses currently flagged as having no cached PGP key.
+   *  Drives the warning banner rendered above the Send button. */
+  const recipientsWithoutKey = $derived<string[]>(
+    encryptionRecipients.filter((a) => recipientKeyStatus.get(a) === 'no-key'),
+  )
   // `initialError` seeds the banner when Compose is re-opened
   // after a background send failure (#156).  Cleared by the next
   // `send()` validation pass — the user retrying is the implicit
@@ -2544,8 +2669,33 @@
             }))}
           actionsTrailing={sendActions}
           extraTabs={composeExtraTabs}
+          defaultActiveTab={initial?.encryptByDefault ? 'encryption' : undefined}
         />
       </div>
+
+      <!-- #341 — no-cached-PGP-key warning.  Surfaces *before* the
+           user finishes the body so they don't type a long reply
+           only to hit "no key for X" at Send.  Listing each
+           affected address by name (rather than a generic count)
+           keeps the chip diagnostic when a multi-recipient reply
+           has only one missing key.  Hidden whenever every
+           recipient has a key, or encryption is off. -->
+      {#if encryptEnabled && recipientsWithoutKey.length > 0}
+        <div
+          class="flex items-start gap-3 px-3 py-2 rounded-md border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
+          role="alert"
+        >
+          <span class="shrink-0 mt-0.5"><Icon name="warning" size={16} /></span>
+          <div class="flex-1 min-w-0">
+            <p class="font-medium">{m.compose_pgp_recipient_no_key_title()}</p>
+            <p class="text-xs mt-0.5">
+              {m.compose_pgp_recipient_no_key_body({
+                addresses: recipientsWithoutKey.join(', '),
+              })}
+            </p>
+          </div>
+        </div>
+      {/if}
 
       <!-- #250 — gentle "you mentioned an attachment but didn't
            attach a file" warning.  Hides itself the moment any

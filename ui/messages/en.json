@@ -101,6 +101,18 @@
   "compose_forward_attachments_skip": "Forward without",
   "compose_forward_attachments_download_failed": "Could not load some attachments: {reason}",
 
+  "compose_pgp_recipient_no_key_title": "No PGP key for some recipients",
+  "compose_pgp_recipient_no_key_body": "We don't have a public key on file for: {addresses}. The encrypted send will fail until you import a key or remove these recipients.",
+
+  "mail_decrypt_for_reply_title": "Decrypt to reply",
+  "mail_decrypt_for_reply_body": "Enter your PGP passphrase to decrypt the message from {sender} so your reply can quote the original content.",
+  "mail_decrypt_for_forward_title": "Decrypt to forward",
+  "mail_decrypt_for_forward_body": "Enter your PGP passphrase to decrypt the message from {sender} so the forward carries the original content.",
+  "mail_decrypt_passphrase_label": "PGP passphrase",
+  "mail_decrypt_cancel_button": "Cancel",
+  "mail_decrypt_submit_button": "Decrypt",
+  "mail_decrypt_busy_button": "Decrypting…",
+
   "nc_share_set_expiration_label": "Set expiration date",
   "nc_share_expiration_aria": "Pick expiration date for the share link",
   "nc_share_expiration_hint": "Recipients can't open the link after this date.",
