@@ -266,26 +266,38 @@
   class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700"
   data-test="encryption-settings"
 >
-  <!-- Title row doubles as the "Replace key" action surface: the
-       edit button lives inline with the section header on the
-       right (mirrors the project's "edit lives next to what it
-       edits" pattern).  Gated on `has_key && !importing` so the
-       affordance only appears when there's actually a key to
-       replace; the no-key + importing states render their own
-       primary CTAs lower in the block. -->
+  <!-- Title row doubles as the per-key action surface: Replace
+       (compose / edit) and Remove (trash, red on hover) sit
+       inline with the section header on the right.  Gated on
+       `has_key && !importing` so the affordances only appear
+       when there's actually a key to act on; the no-key +
+       importing states render their own primary CTAs lower in
+       the block. -->
   <div class="flex items-center justify-between mb-2">
     <span class="text-sm font-medium">{m.encryption_section_title()}</span>
     {#if status?.has_key && !importing}
-      <button
-        type="button"
-        class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
-        onclick={startImport}
-        disabled={busy}
-        title={m.encryption_replace_button()}
-        aria-label={m.encryption_replace_button()}
-      >
-        <Icon name="compose" size={14} />
-      </button>
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
+          onclick={startImport}
+          disabled={busy}
+          title={m.encryption_replace_button()}
+          aria-label={m.encryption_replace_button()}
+        >
+          <Icon name="compose" size={14} />
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+          onclick={removeKey}
+          disabled={busy}
+          title={m.encryption_remove_button()}
+          aria-label={m.encryption_remove_button()}
+        >
+          <Icon name="trash" size={14} />
+        </button>
+      </div>
     {/if}
   </div>
 
@@ -300,23 +312,6 @@
       <div class="font-mono text-xs break-all p-2 rounded bg-surface-100 dark:bg-surface-800">
         {status.fingerprint ? formatFingerprint(status.fingerprint) : '—'}
       </div>
-      <!-- Remove key — the destructive sibling lives down here
-           (away from the title-row edit affordance) so a user
-           reaching for "Replace" doesn't graze "Remove".  Red on
-           hover only; neutral at rest. -->
-      <div class="flex gap-2">
-        <button
-          type="button"
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
-          onclick={removeKey}
-          disabled={busy}
-          title={m.encryption_remove_button()}
-          aria-label={m.encryption_remove_button()}
-        >
-          <Icon name="trash" size={14} />
-        </button>
-      </div>
-
       <!-- #341 — Per-account "Unlock automatically" opt-in.  Sits
            below the key fingerprint because it's only meaningful
            when a key is imported.  Off by default; flipping it on
