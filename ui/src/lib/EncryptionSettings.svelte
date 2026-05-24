@@ -266,8 +266,27 @@
   class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700"
   data-test="encryption-settings"
 >
+  <!-- Title row doubles as the "Replace key" action surface: the
+       edit button lives inline with the section header on the
+       right (mirrors the project's "edit lives next to what it
+       edits" pattern).  Gated on `has_key && !importing` so the
+       affordance only appears when there's actually a key to
+       replace; the no-key + importing states render their own
+       primary CTAs lower in the block. -->
   <div class="flex items-center justify-between mb-2">
     <span class="text-sm font-medium">{m.encryption_section_title()}</span>
+    {#if status?.has_key && !importing}
+      <button
+        type="button"
+        class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
+        onclick={startImport}
+        disabled={busy}
+        title={m.encryption_replace_button()}
+        aria-label={m.encryption_replace_button()}
+      >
+        <Icon name="compose" size={14} />
+      </button>
+    {/if}
   </div>
 
   {#if status === null}
@@ -281,23 +300,11 @@
       <div class="font-mono text-xs break-all p-2 rounded bg-surface-100 dark:bg-surface-800">
         {status.fingerprint ? formatFingerprint(status.fingerprint) : '—'}
       </div>
-      <!-- Icon-only action row: replace mirrors the project's
-           "mail settings"/more-actions affordance (outlined-surface
-           with a compose icon), remove mirrors the trusted-senders
-           remove (outlined-surface that turns red on hover).  Same
-           visual vocabulary as elsewhere in Settings — the user
-           shouldn't have to learn a new shape per panel. -->
+      <!-- Remove key — the destructive sibling lives down here
+           (away from the title-row edit affordance) so a user
+           reaching for "Replace" doesn't graze "Remove".  Red on
+           hover only; neutral at rest. -->
       <div class="flex gap-2">
-        <button
-          type="button"
-          class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
-          onclick={startImport}
-          disabled={busy}
-          title={m.encryption_replace_button()}
-          aria-label={m.encryption_replace_button()}
-        >
-          <Icon name="compose" size={14} />
-        </button>
         <button
           type="button"
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
@@ -388,11 +395,13 @@
               </button>
               <button
                 type="button"
-                class="btn btn-sm preset-tonal-surface"
+                class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
                 onclick={cancelEnablingUnlock}
                 disabled={unlockBusy}
+                title={m.encryption_unlock_auto_cancel()}
+                aria-label={m.encryption_unlock_auto_cancel()}
               >
-                {m.encryption_unlock_auto_cancel()}
+                <Icon name="close" size={14} />
               </button>
             </div>
             <p class="text-xs text-surface-400">
