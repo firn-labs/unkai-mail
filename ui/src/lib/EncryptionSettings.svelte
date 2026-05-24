@@ -366,7 +366,7 @@
                 <input
                   id="pgp-unlock-pw-{account.id}"
                   type="password"
-                  class="input text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
+                  class="input flex-1 text-sm px-2 py-1 rounded-md"
                   placeholder={m.encryption_unlock_auto_passphrase_placeholder()}
                   aria-label={m.encryption_unlock_auto_passphrase_label()}
                   bind:value={unlockPassphrase}
