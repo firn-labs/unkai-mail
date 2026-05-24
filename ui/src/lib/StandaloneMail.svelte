@@ -37,7 +37,11 @@
    *  `emitCompose` to decide whether the popout needs to prompt for
    *  a passphrase before forwarding the payload on.  Narrowed via
    *  an `as` cast at the boundary so the rest of this file stays
-   *  on the opaque `EmailPayload` type. */
+   *  on the opaque `EmailPayload` type.  `attachments` is included
+   *  because Forward of an encrypted message with attachments needs
+   *  the passphrase even if the body is already in the cache —
+   *  attachment bytes only come out of the inner MIME tree via
+   *  `download_decrypted_attachment`. */
   type DecryptableMail = {
     account_id: string
     folder: string
@@ -46,6 +50,7 @@
     body_text: string | null
     body_html?: string | null
     protection?: string | null
+    attachments?: { part_id: number }[]
   }
 
   let {
@@ -119,17 +124,40 @@
     resolve(passphrase)
   }
 
+  /** Was the source PGP-encrypted by the receive path?  Both
+   *  encrypt-only and the signed-and-encrypted variants qualify. */
+  function wasEncrypted(mail: DecryptableMail): boolean {
+    const p = mail.protection
+    return p === 'encrypted' || p === 'signed-and-encrypted'
+  }
+
   /** Does this mail need the popout-side decrypt step?  Same logic
    *  as App.svelte's `needsDecryptForReply` — encrypted protection
    *  tag *and* an empty cached body.  When the user clicked Decrypt
    *  inside the popout's reading pane already, the cache row
    *  carries the plaintext and this short-circuits to false. */
-  function needsDecrypt(mail: DecryptableMail): boolean {
-    const p = mail.protection
-    if (p !== 'encrypted' && p !== 'signed-and-encrypted') return false
+  function needsBodyDecrypt(mail: DecryptableMail): boolean {
+    if (!wasEncrypted(mail)) return false
     const text = (mail.body_text ?? '').trim()
     const html = (mail.body_html ?? '').trim()
     return text.length === 0 && html.length === 0
+  }
+
+  /** Does the popout-local prompt need to fire for this Reply /
+   *  Forward?  Two triggers, matched to App.svelte:
+   *    - Body needs decrypting (cached body is empty).
+   *    - Forward of an encrypted message with attachments — the
+   *      passphrase rides through to `downloadForwardAttachments`
+   *      so the bytes come from the inner MIME tree instead of the
+   *      outer `multipart/encrypted` envelope.  Without this, a
+   *      forward triggered after the user clicked Decrypt in the
+   *      popout would still ship "Version: 1" header bytes. */
+  function needsPromptForKind(mail: DecryptableMail, kind: ComposeKind): boolean {
+    if (needsBodyDecrypt(mail)) return true
+    if (kind === 'forward' && wasEncrypted(mail)) {
+      return (mail.attachments?.length ?? 0) > 0
+    }
+    return false
   }
 
   /** Prompt for the passphrase (looping on wrong input), call
@@ -148,7 +176,7 @@
     // a MailView `Email & { uid }` here; the narrower type lists the
     // subset we actually read.
     const narrow = mail as DecryptableMail
-    if (!needsDecrypt(narrow)) return { mail, passphrase: null }
+    if (!needsPromptForKind(narrow, kind)) return { mail, passphrase: null }
     let lastError = ''
     while (true) {
       const passphrase = await new Promise<string | null>((resolve) => {
