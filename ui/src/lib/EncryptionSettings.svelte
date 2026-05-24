@@ -362,7 +362,7 @@
             <input
               id="pgp-unlock-pw-{account.id}"
               type="password"
-              class="input text-xs"
+              class="input text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
               placeholder={m.encryption_passphrase_placeholder()}
               bind:value={unlockPassphrase}
               disabled={unlockBusy}
@@ -426,7 +426,7 @@
       <input
         id="pgp-pw-{account.id}"
         type="password"
-        class="input text-xs"
+        class="input text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
         placeholder={m.encryption_passphrase_placeholder()}
         bind:value={passphraseInput}
         disabled={busy}
