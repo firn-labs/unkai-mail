@@ -490,23 +490,28 @@ impl JmapClient {
         let is_starred = email.keywords.contains_key("$flagged");
         let has_attachments = email.has_attachment;
 
-        // PGP/MIME detection on JMAP (#57): the server has already
-        // parsed the message into `bodyValues`, so we can't get at
-        // the raw `multipart/encrypted` MIME structure cheaply.
-        // Instead we sniff for the OpenPGP armor headers in the
-        // body text — if the server returned the application/
+        // PGP/MIME detection on JMAP (#57, #341): the server has
+        // already parsed the message into `bodyValues`, so we can't
+        // get at the raw `multipart/encrypted` MIME structure
+        // cheaply.  Instead we sniff for the OpenPGP armor headers
+        // in the body text — if the server returned the application/
         // octet-stream content as a body part (which Fastmail and
         // others do), the value starts with `-----BEGIN PGP MESSAGE-----`.
         //
-        // When we recognise that signature, we mark the message as
-        // encrypted-cannot-decrypt: the MailView banner kicks in
-        // and tells the user to open the message via the IMAP path
-        // (or a desktop client) for decryption.  Properly decrypting
-        // server-side requires an extra `Blob/get` round-trip and
-        // running the recovered raw bytes through
-        // `unkai_imap::parse_eml_bytes_with_crypto`; that's a real
-        // follow-up tracked under #57 once we've validated the
-        // banner UX with real users.
+        // When we recognise the signature, stamp `protection =
+        // "encrypted"` to mirror the IMAP receive path.  MailView's
+        // Decrypt button will fire `decrypt_message`, which now
+        // pulls the raw RFC 5322 bytes via `fetch_raw_message`
+        // (JMAP `Blob/get` via the session's download URL) and
+        // runs them through `unkai_imap::parse_eml_bytes_with_crypto`
+        // — the actual MIME envelope re-stamps `protection` to
+        // `encrypted` / `signed-and-encrypted` at decrypt time, so
+        // the coarse sniff here is just the "show a Decrypt
+        // affordance" trigger.  The deprecated
+        // `encrypted-cannot-decrypt` marker is no longer produced
+        // by the receive path; CryptoChips.svelte still handles
+        // it defensively for any external entry point that might
+        // legitimately emit it.
         let looks_pgp_encrypted = body_text
             .as_deref()
             .map(|s| s.trim_start().starts_with("-----BEGIN PGP MESSAGE-----"))
@@ -518,20 +523,16 @@ impl JmapClient {
 
         let (protection, body_text, body_html) = if looks_pgp_encrypted {
             tracing::info!(
-                "JMAP: message '{}' appears to be PGP-encrypted; flagging for banner",
+                "JMAP: message '{}' appears to be PGP-encrypted; \
+                 stamping `encrypted` so MailView shows the Decrypt button",
                 email.id
             );
-            // Replace the body with a deterministic marker the UI
-            // can match on — keeps the cache row meaningful even
-            // for users who never enable encryption.
-            (
-                Some("encrypted-cannot-decrypt".to_string()),
-                Some(
-                    "(encrypted message — open via IMAP or a PGP-capable client to decrypt)"
-                        .to_string(),
-                ),
-                None,
-            )
+            // Null the body so the user sees the Decrypt affordance
+            // instead of the armored ciphertext.  Same shape as the
+            // IMAP receive path, which leaves `body_text` /
+            // `body_html` as `None` for `multipart/encrypted` until
+            // `decrypt_message` unlocks the inner MIME tree.
+            (Some("encrypted".to_string()), None, None)
         } else {
             (None, body_text, body_html)
         };
@@ -570,6 +571,123 @@ impl JmapClient {
             signature_status: None,
             signer_fingerprint: None,
         })
+    }
+
+    /// Fetch the raw RFC 5322 bytes for a single message (#341).
+    ///
+    /// JMAP equivalent of `ImapClient::fetch_raw_message` — used by
+    /// the encrypted-message decrypt flow at the Tauri layer: it
+    /// builds a `CryptoBridge` from the user's freshly-prompted (or
+    /// keychain-resolved) passphrase and feeds the bytes here to
+    /// `unkai_imap::parse_eml_bytes_with_crypto` so the decryption +
+    /// re-parse happens in one place.
+    ///
+    /// Two HTTP round-trips:
+    ///   1. `Email/get` with `properties: ["id", "blobId"]` to find
+    ///      the blob ID for this synthetic UID.  JMAP keeps the
+    ///      RFC 5322 source addressable separately from the parsed
+    ///      `Email` object — the `blobId` is the handle.
+    ///   2. `GET` against the session's `downloadUrl` template, with
+    ///      `{accountId}` / `{blobId}` substituted, to pull the
+    ///      armored MIME envelope.
+    ///
+    /// The download returns the same wire-format bytes a SMTP
+    /// deposit produced — so the decrypt-aware parser sees the
+    /// real `multipart/encrypted; protocol="application/pgp-encrypted"`
+    /// envelope rather than the JMAP-server's already-flattened
+    /// `bodyValues` view, which is the whole point of going through
+    /// `Blob/get`.
+    pub async fn fetch_raw_message(&self, folder: &str, uid: u32) -> Result<Vec<u8>, UnkaiError> {
+        let jmap_id = self.resolve_jmap_id(folder, uid).await?;
+
+        let resp = self
+            .call(vec![MethodCall {
+                name: "Email/get".into(),
+                args: json!({
+                    "accountId": self.account_id,
+                    "ids": [jmap_id.clone()],
+                    "properties": ["id", "blobId"],
+                }),
+                call_id: "blob0".into(),
+            }])
+            .await?;
+
+        let args = Self::find_response(&resp.method_responses, "blob0")?;
+        let result: GetResult<JmapEmail> = serde_json::from_value(args.clone())
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to parse Email/get: {e}")))?;
+
+        // Same `MessageGone` semantics as `fetch_message`: a missing
+        // row means the message was expunged between the synthetic-
+        // UID resolve and this call.
+        let email = result
+            .list
+            .into_iter()
+            .next()
+            .ok_or(UnkaiError::MessageGone)?;
+        let blob_id = email.blob_id.ok_or_else(|| {
+            UnkaiError::Protocol(format!(
+                "JMAP email '{jmap_id}' has no blobId — server didn't expose raw download"
+            ))
+        })?;
+
+        self.download_blob(&blob_id, "message.eml", "message/rfc822")
+            .await
+    }
+
+    /// Download a blob by ID via the session's `downloadUrl` template
+    /// (RFC 8620 §6.2).  Substitutes `{accountId}`, `{blobId}`,
+    /// `{name}`, `{type}` per the spec and pulls the bytes with the
+    /// same Basic Auth the API calls use.
+    ///
+    /// `name` and `content_type` are advisory — most servers ignore
+    /// them on the download side and serve the stored blob verbatim.
+    /// They're included so the request matches the spec exactly and
+    /// servers that log them get useful context.
+    async fn download_blob(
+        &self,
+        blob_id: &str,
+        name: &str,
+        content_type: &str,
+    ) -> Result<Vec<u8>, UnkaiError> {
+        let url = self
+            .session
+            .download_url
+            .replace("{accountId}", &self.account_id)
+            .replace("{blobId}", blob_id)
+            .replace("{name}", name)
+            .replace("{type}", content_type);
+        let url = self.resolve_url(&url)?;
+        ensure_https(&url)?;
+
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| UnkaiError::Network(format!("JMAP blob download failed: {e}")))?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            // The server's view of the message no longer contains
+            // this blob — treat as `MessageGone` so the Tauri layer
+            // can evict the dead row, same as the API path.
+            return Err(UnkaiError::MessageGone);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(UnkaiError::Protocol(format!(
+                "JMAP blob download returned HTTP {status}: {body}"
+            )));
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to read JMAP blob bytes: {e}")))?;
+        info!("JMAP: downloaded blob '{blob_id}' ({} bytes)", bytes.len());
+        Ok(bytes.to_vec())
     }
 
     /// Clear the `$seen` keyword on a message — i.e. mark it unread.
