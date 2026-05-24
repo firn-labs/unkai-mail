@@ -1012,6 +1012,17 @@
   // thread.
   // svelte-ignore state_referenced_locally
   let encryptEnabled = $state(initial?.encryptByDefault === true)
+  // Sign-only toggle (#341 — `multipart/signed` outbound).  Mutually
+  // exclusive with `encryptEnabled` because "encrypt" already implies
+  // a signature inside the encryption envelope — picking both would
+  // be redundant and would force the UI to clarify which mode wins.
+  // The two toggles share the passphrase prompt and the keychain
+  // auto-unlock path: both unlock the same account private key.
+  let signOnlyEnabled = $state(false)
+  /** Either toggle being on means the SMTP layer routes through the
+   *  PGP/MIME path (encrypt → `multipart/encrypted`; sign-only →
+   *  `multipart/signed`) and a passphrase has to be available. */
+  const pgpActive = $derived(encryptEnabled || signOnlyEnabled)
   // Inline passphrase entry shown when the user clicks Send with
   // encryption on.  Cleared on submit and on cancel so a freshly-
   // opened Compose never inherits a stale passphrase.
@@ -2158,11 +2169,15 @@
           attachments: snap.attachments,
           in_reply_to: parentMessageId,
           references: newReferences,
-          // #57: when the encryption toggle is on, ask the SMTP
-          // layer to wrap as RFC-3156 PGP/MIME + inner-sign with
-          // the account's key.  Off → historical plaintext send.
+          // #57 / #341: encryption_mode='pgp' triggers the SMTP
+          // layer's `multipart/encrypted` path (always
+          // sign-inside-encrypt).  signing_enabled alone triggers
+          // the RFC 3156 §5 `multipart/signed` sign-only path —
+          // body in cleartext, integrity + origin attested via a
+          // detached OpenPGP signature.  Both off → historical
+          // plaintext send.
           encryption_mode: encryptEnabled ? 'pgp' : null,
-          signing_enabled: encryptEnabled,
+          signing_enabled: encryptEnabled || signOnlyEnabled,
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list
@@ -2178,10 +2193,11 @@
         outboxSource: snap.initialAtSend?.outboxSource ?? null,
         // #57: passphrase that unlocks the account's PGP private
         // key — captured from the inline prompt below.  Only
-        // meaningful when `encryption_mode == 'pgp'`; the backend
-        // ignores it for plaintext sends.  Cleared the moment the
-        // IPC resolves so it doesn't linger across re-renders.
-        pgpPassphrase: encryptEnabled ? pgpPassphrase : null,
+        // meaningful when the SMTP path is PGP/MIME (encrypt or
+        // sign-only); the backend ignores it for plaintext sends.
+        // Cleared the moment the IPC resolves so it doesn't linger
+        // across re-renders.
+        pgpPassphrase: pgpActive ? pgpPassphrase : null,
       })
       // Wipe the in-memory passphrase before yielding back to the
       // outer flow so a successful send doesn't leave it sitting
@@ -2568,16 +2584,27 @@
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-2">
       <div class="flex items-center gap-2 min-w-0">
         <h2 class="text-base font-semibold whitespace-nowrap">New message</h2>
-        <!-- #57 — Encrypted indicator promoted out of the ribbon
-             so the user sees the state from anywhere in the
-             window, not just from the send-actions row. -->
+        <!-- #57 / #341 — PGP-mode indicator promoted out of the
+             ribbon so the user sees the state from anywhere in the
+             window, not just from the send-actions row.  Encrypt
+             takes precedence over sign-only because picking both
+             toggles is mutually exclusive (encrypt already implies
+             a signature inside the envelope). -->
         {#if encryptEnabled}
           <span
             class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
-            title="This message will be sent as PGP/MIME"
+            title="This message will be sent as PGP/MIME (encrypt + sign)"
           >
             <Icon name="encrypted" size={14} />
             <span>Encrypted</span>
+          </span>
+        {:else if signOnlyEnabled}
+          <span
+            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200"
+            title="This message will be sent as PGP/MIME multipart/signed (body in cleartext, digital signature attached)"
+          >
+            <Icon name="lock" size={14} />
+            <span>Signed</span>
           </span>
         {/if}
       </div>
@@ -2881,8 +2908,8 @@
   <button
     type="button"
     class="ctb-send"
-    disabled={sending || (encryptEnabled && !pgpPassphrase && !autoUnlockForCompose)}
-    title={encryptEnabled && !pgpPassphrase && !autoUnlockForCompose
+    disabled={sending || (pgpActive && !pgpPassphrase && !autoUnlockForCompose)}
+    title={pgpActive && !pgpPassphrase && !autoUnlockForCompose
       ? 'Open the Encryption tab and enter your PGP passphrase to send'
       : 'Send the message'}
     onclick={send}
@@ -2912,7 +2939,14 @@
     aria-pressed={encryptEnabled}
     onclick={() => {
       encryptEnabled = !encryptEnabled
-      if (!encryptEnabled) {
+      // Encrypt and Sign-only are mutually exclusive — encrypt
+      // already implies a signature inside the envelope, so
+      // leaving both on would be redundant and would force the
+      // UI to clarify which mode wins.  Flipping encrypt on
+      // therefore clears sign-only.
+      if (encryptEnabled) {
+        signOnlyEnabled = false
+      } else if (!signOnlyEnabled) {
         pgpPassphrase = ''
       }
     }}
@@ -2922,13 +2956,40 @@
     </span>
     <span class="rt-btn-label">{encryptEnabled ? 'Encrypted' : 'Encrypt'}</span>
   </button>
-  <!-- Passphrase entry only when encryption is on AND the account
+  <!-- #341 — sign-only sibling toggle.  Same `rt-btn` shape so it
+       reads as a peer of the Encrypt toggle; mutually exclusive
+       with Encrypt (see the onclick comment above for why).  The
+       body stays in cleartext; the recipient verifies origin via
+       the detached OpenPGP signature in the second body part. -->
+  <button
+    type="button"
+    class="rt-btn"
+    class:active={signOnlyEnabled}
+    title={signOnlyEnabled
+      ? 'Sign-only on — click to switch back to plaintext'
+      : 'Sign this message with your account PGP key (body stays in cleartext)'}
+    aria-pressed={signOnlyEnabled}
+    onclick={() => {
+      signOnlyEnabled = !signOnlyEnabled
+      if (signOnlyEnabled) {
+        encryptEnabled = false
+      } else if (!encryptEnabled) {
+        pgpPassphrase = ''
+      }
+    }}
+  >
+    <span class="rt-btn-icon">
+      <Icon name="lock" size={20} />
+    </span>
+    <span class="rt-btn-label">{signOnlyEnabled ? 'Signed' : 'Sign'}</span>
+  </button>
+  <!-- Passphrase entry only when a PGP mode is on AND the account
        hasn't opted into "Unlock automatically" (#341).  When the
        opt-in is on the passphrase ships from the OS keychain at
        send time, so we render a small "auto-unlock" affordance
        in place of the input — the user gets visible confirmation
-       without having to retype on every encrypted send. -->
-  {#if encryptEnabled}
+       without having to retype on every signed / encrypted send. -->
+  {#if pgpActive}
     {#if autoUnlockForCompose}
       <div class="flex items-center gap-2 px-2 text-xs text-surface-500">
         <Icon name="lock" size={16} />

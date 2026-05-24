@@ -124,4 +124,17 @@ pub trait CryptoBridge: Send + Sync {
         recipient_emails: &[String],
         sign: bool,
     ) -> Result<EncryptedOutput, crate::UnkaiError>;
+
+    /// Produce a detached OpenPGP signature for an RFC 3156 §5
+    /// `multipart/signed` outbound envelope.  `signed_payload` is the
+    /// already-canonicalised body MIME entity (CRLF line endings,
+    /// trailing whitespace stripped) — the SMTP layer is responsible
+    /// for canonicalisation because RFC 3156 mandates it run before the
+    /// hash is computed, and only the SMTP layer knows the exact bytes
+    /// that will sit between the multipart boundaries on the wire.
+    ///
+    /// Returns the armored `-----BEGIN PGP SIGNATURE-----` blob that
+    /// the SMTP layer drops into the `application/pgp-signature` body
+    /// part of the outer `multipart/signed` wrapper.
+    fn sign(&self, signed_payload: &[u8]) -> Result<Vec<u8>, crate::UnkaiError>;
 }

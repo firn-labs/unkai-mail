@@ -2729,6 +2729,9 @@ mod tests {
         ) -> Result<EncryptedOutput, UnkaiError> {
             unreachable!("receive-path tests never hit the encrypt path")
         }
+        fn sign(&self, _signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!("receive-path tests never hit the sign path")
+        }
     }
 
     /// Build a PGP/MIME `multipart/encrypted` message with a placeholder
