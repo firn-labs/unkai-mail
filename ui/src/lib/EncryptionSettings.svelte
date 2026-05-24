@@ -317,39 +317,40 @@
            when a key is imported.  Off by default; flipping it on
            drops a passphrase into the OS keychain so Compose,
            MailView, Reply/Forward, and the receive path all
-           auto-supply it without re-prompting. -->
+           auto-supply it without re-prompting.
+
+           Layout: label flush-left, toggle flush-right (matches
+           the section title row's "name + actions" shape so the
+           text doesn't read as indented under the toggle). -->
       <div class="mt-3 pt-3 border-t border-surface-200 dark:border-surface-700">
-        <div class="flex items-start gap-3">
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-sm font-medium leading-tight">
+            {m.encryption_unlock_auto_label()}
+          </p>
           <Toggle
             checked={unlockEnabled || unlockEnabling}
             disabled={unlockBusy}
             onchange={onUnlockToggle}
             label={m.encryption_unlock_auto_label()}
-            class="mt-0.5"
           />
-          <div class="flex-1">
-            <p class="text-sm font-medium leading-tight">
-              {m.encryption_unlock_auto_label()}
-            </p>
-            {#if unlockEnabled}
-              <!-- Saved-state badge: explicit visual confirmation
-                   that the passphrase is on file in the keychain,
-                   so the user doesn't have to infer it from the
-                   toggle position alone. -->
-              <div
-                class="inline-flex items-center gap-1 mt-1 text-xs text-success-500"
-                aria-live="polite"
-              >
-                <Icon name="success" size={14} />
-                <span>{m.encryption_unlock_auto_saved()}</span>
-              </div>
-            {:else}
-              <p class="text-xs text-surface-500 mt-1 leading-snug">
-                {m.encryption_unlock_auto_hint_off()}
-              </p>
-            {/if}
-          </div>
         </div>
+        {#if unlockEnabled}
+          <!-- Saved-state badge: explicit visual confirmation
+               that the passphrase is on file in the keychain,
+               so the user doesn't have to infer it from the
+               toggle position alone. -->
+          <div
+            class="inline-flex items-center gap-1 mt-1 text-xs text-success-500"
+            aria-live="polite"
+          >
+            <Icon name="success" size={14} />
+            <span>{m.encryption_unlock_auto_saved()}</span>
+          </div>
+        {:else}
+          <p class="text-xs text-surface-500 mt-1 leading-snug">
+            {m.encryption_unlock_auto_hint_off()}
+          </p>
+        {/if}
 
         {#if unlockEnabling}
           <div class="mt-3 space-y-2">
