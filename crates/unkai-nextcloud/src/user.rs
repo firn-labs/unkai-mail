@@ -1,10 +1,10 @@
-//! OCS user-info â€” the authenticated user's profile email.
+//! OCS user-info — the authenticated user's profile email.
 //!
 //! Used by the calendar create/update path to put the right
 //! address on `ORGANIZER:mailto:`.  Nextcloud 30+ Mail Provider
 //! matches `ORGANIZER` against the user's Mail-app accounts
-//! character-for-character â€” get this wrong and iMIP silently
-//! falls back to the system mailer with `From: invitations-noreply@â€¦`.
+//! character-for-character — get this wrong and iMIP silently
+//! falls back to the system mailer with `From: invitations-noreply@…`.
 
 use serde::Deserialize;
 
@@ -25,12 +25,12 @@ struct OcsBody<T> {
 
 #[derive(Debug, Deserialize)]
 struct UserData {
-    /// Primary email from Personal settings â†’ Personal info â†’ Email.
+    /// Primary email from Personal settings → Personal info → Email.
     /// Often null on freshly-created accounts; callers must handle
     /// the empty case explicitly.
     #[serde(default)]
     email: Option<String>,
-    /// Display name â€” used for `ORGANIZER;CN=` so the iMIP shows a
+    /// Display name — used for `ORGANIZER;CN=` so the iMIP shows a
     /// human label alongside the address.
     #[serde(default)]
     displayname: Option<String>,
@@ -87,13 +87,13 @@ pub async fn fetch_current_user(
     })
 }
 
-// â”€â”€â”€ Sharees lookup: "is this email a Nextcloud user?" â”€â”€â”€â”€â”€â”€
+// ─── Sharees lookup: "is this email a Nextcloud user?" ──────
 
 #[derive(Debug, Deserialize)]
 struct ShareesResponse {
     /// The `users` bucket carries matches that are local NC
     /// principals.  Other buckets (`groups`, `remotes`,
-    /// `emails`) we don't care about â€” we want the
+    /// `emails`) we don't care about — we want the
     /// authoritative-user list.
     #[serde(default)]
     exact: ShareesBuckets,
@@ -111,7 +111,7 @@ struct ShareesBuckets {
 
 #[derive(Debug, Deserialize)]
 struct ShareeMatch {
-    /// Display name on the row â€” what NC's admin set as the
+    /// Display name on the row — what NC's admin set as the
     /// user's full name.
     label: String,
     value: ShareeMatchValue,
@@ -124,7 +124,7 @@ struct ShareeMatchValue {
     share_with: String,
 }
 
-/// Match returned by [`find_user_by_email`] â€” the user-side
+/// Match returned by [`find_user_by_email`] — the user-side
 /// fields we care about for "is this attendee internal?".
 #[derive(Debug, Clone)]
 pub struct NextcloudUserMatch {
@@ -133,7 +133,7 @@ pub struct NextcloudUserMatch {
 }
 
 /// Look up a Nextcloud user by email via the sharees endpoint.
-/// Returns `Ok(None)` when no NC principal owns that address â€”
+/// Returns `Ok(None)` when no NC principal owns that address —
 /// the caller treats that as "external attendee, route through
 /// guest URL / email participant".  Returns `Ok(Some(...))`
 /// when an exact match is found (the user *and* the email are
@@ -184,7 +184,7 @@ pub async fn find_user_by_email(
         .await
         .map_err(|e| UnkaiError::Protocol(format!("sharees bad JSON: {e}")))?;
 
-    // Prefer the `exact` bucket â€” it's what Nextcloud uses to
+    // Prefer the `exact` bucket — it's what Nextcloud uses to
     // signal "this is the same address you typed".  Fall back
     // to the partial-match `users` list and pick a row whose
     // userId equals the email's local part as a last resort
@@ -202,17 +202,17 @@ pub async fn find_user_by_email(
     }))
 }
 
-// â”€â”€â”€ User groups + Teams (#133) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── User groups + Teams (#133) ──────────────────────────────
 //
 // Nextcloud surfaces three kinds of "group of people" the
 // contacts UI cares about:
 //   - vCard `KIND:group` records (handled in unkai-carddav)
-//   - OCS user groups â€” the access-control groups under
-//     Settings â†’ Users â†’ Groups; members are NC user IDs.
-//   - Circles / Teams â€” the spreed-style team feature backed by
+//   - OCS user groups — the access-control groups under
+//     Settings → Users → Groups; members are NC user IDs.
+//   - Circles / Teams — the spreed-style team feature backed by
 //     the Circles app; members can be NC users, emails, or
 //     other circles.
-// Both OCS and Circles are read-only from Unkai's perspective â€”
+// Both OCS and Circles are read-only from Unkai's perspective —
 // management lives in the Nextcloud admin UI / Files sidebar.
 
 #[derive(Debug, Deserialize)]
@@ -228,7 +228,7 @@ struct GroupMembersData {
 /// Identity / access groups the authenticated user belongs to,
 /// fetched from `/ocs/v2.php/cloud/users/<user>/groups`.  This
 /// endpoint is permitted for the user themselves on every NC
-/// instance â€” no admin needed.
+/// instance — no admin needed.
 pub async fn fetch_my_groups(
     server_url: &str,
     username: &str,
@@ -289,7 +289,7 @@ pub async fn fetch_group_member_ids(
         .map_err(|e| UnkaiError::Network(format!("group-members request failed: {e}")))?;
     let status = resp.status();
     if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
-        // Permission-restricted or missing group â€” surface as an
+        // Permission-restricted or missing group — surface as an
         // empty list, not an error, so the caller can move on.
         return Ok(Vec::new());
     }
@@ -393,7 +393,7 @@ pub struct NextcloudCircle {
 
 /// Circles / Teams the authenticated user belongs to, via the
 /// Circles app's OCS API.  Returns an empty list (Ok) when the
-/// app isn't installed â€” the endpoint 404s, and the contacts
+/// app isn't installed — the endpoint 404s, and the contacts
 /// UI just doesn't render a Teams section.
 pub async fn fetch_my_circles(
     server_url: &str,
@@ -509,7 +509,7 @@ pub async fn fetch_circle_member_ids(
 
 /// Minimal percent-encoding for the `search=` query parameter.
 /// We deliberately don't pull in `urlencoding` as a workspace
-/// dep just for one path â€” emails contain only a small set of
+/// dep just for one path — emails contain only a small set of
 /// chars that need escaping (`@`, `+`, `.`, `-`).
 fn urlencoding(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

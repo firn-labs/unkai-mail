@@ -1,4 +1,4 @@
-//! Nextcloud Talk (spreed) integration â€” list and create Talk rooms,
+//! Nextcloud Talk (spreed) integration — list and create Talk rooms,
 //! and add participants to existing rooms.
 //!
 //! # Endpoint shape
@@ -14,7 +14,7 @@
 //!
 //! On success `data` is the payload object (or array, for `list_rooms`).
 //! On failure `data` is typically `[]` and the failure code lives in
-//! `meta.statuscode` *even though HTTP itself returned 200* â€” same
+//! `meta.statuscode` *even though HTTP itself returned 200* — same
 //! pattern shares.rs has to handle.
 //!
 //! # MVP scope (issue #13)
@@ -22,18 +22,18 @@
 //! Three operations, enough to power "create a Talk room from an email
 //! thread", "list rooms in the sidebar", and "share the room link":
 //!
-//! - [`list_rooms`] â€” every room the user is a participant of.
-//! - [`create_room`] â€” create a group room with an arbitrary set of
+//! - [`list_rooms`] — every room the user is a participant of.
+//! - [`create_room`] — create a group room with an arbitrary set of
 //!   participants (Nextcloud users *and* email-only invitees).
-//! - [`add_participant`] â€” used internally by `create_room`, but
+//! - [`add_participant`] — used internally by `create_room`, but
 //!   exposed so callers can also extend an existing room.
-//! - [`rename_room`] â€” used by the Compose "Add Event" flow so the
+//! - [`rename_room`] — used by the Compose "Add Event" flow so the
 //!   Talk room created up-front (with the email subject as a
 //!   placeholder name) can be renamed to match the final event title
 //!   the user typed in the editor.
 //!
 //! Editing the rest of room settings (set password / promote
-//! moderator) is left to a future issue â€” the Talk web UI handles
+//! moderator) is left to a future issue — the Talk web UI handles
 //! those and Unkai opens rooms in the browser anyway.
 
 use serde::{Deserialize, Serialize};
@@ -43,15 +43,15 @@ use unkai_core::models::TrustedCert;
 
 use crate::client;
 
-// â”€â”€ Talk's wire-level room-type enum â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Talk's wire-level room-type enum ───────────────────────────
 //
 // Spreed encodes room type as a small integer. We keep the numbers
 // for the POST payload but expose a readable enum to the rest of the
-// app â€” the UI shouldn't have to remember that "2 = group".
+// app — the UI shouldn't have to remember that "2 = group".
 const ROOM_TYPE_GROUP: u8 = 2;
 
 /// Kind of Talk room. We only ever *create* groups, but we list and
-/// display all four standard types â€” `Other` is a forwards-compat
+/// display all four standard types — `Other` is a forwards-compat
 /// catch-all for any future spreed addition (e.g. notes-to-self rooms).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,7 +95,7 @@ pub struct TalkRoom {
     /// Unix timestamp (seconds) of the last activity in the room.
     /// Sortable so the sidebar lists the most recent first.
     pub last_activity: i64,
-    /// Browser URL â€” `{server}/call/{token}`. Cached here so the UI
+    /// Browser URL — `{server}/call/{token}`. Cached here so the UI
     /// doesn't have to reconstruct it on every render and so the
     /// "Share link in email" action has a single value to drop.
     pub web_url: String,
@@ -110,17 +110,17 @@ pub struct TalkRoom {
 
 /// Source of a new participant. Talk distinguishes between adding a
 /// known Nextcloud user (by user id) and inviting a guest by email
-/// address â€” the API uses different `source` values for each.
+/// address — the API uses different `source` values for each.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum ParticipantSource {
     /// Nextcloud user id on this server (e.g. `"alice"`).
     User(String),
-    /// Email address â€” Talk emails the recipient an invite link.
+    /// Email address — Talk emails the recipient an invite link.
     Email(String),
 }
 
-// â”€â”€ Wire format â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Wire format ────────────────────────────────────────────────
 //
 // Same two-phase pattern as `shares.rs`: meta first (always an object),
 // then `data` parsed into the concrete shape only after we've confirmed
@@ -146,9 +146,9 @@ struct OcsMeta {
     message: Option<String>,
 }
 
-/// Spreed's room object as it appears on the wire â€” only the fields
+/// Spreed's room object as it appears on the wire — only the fields
 /// we surface to the UI. The real object has 30+ fields (callFlags,
-/// guestList, lobbyState, â€¦); the rest are dropped via the implicit
+/// guestList, lobbyState, …); the rest are dropped via the implicit
 /// serde tolerance for unknown fields.
 #[derive(Debug, Deserialize)]
 struct WireRoom {
@@ -186,12 +186,12 @@ impl WireRoom {
     }
 }
 
-// â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public API ─────────────────────────────────────────────────
 
 /// List every Talk room the current user is a participant of.
 ///
 /// Returns an empty list (not an error) on a freshly installed Talk
-/// where the user hasn't joined any rooms yet â€” the UI renders the
+/// where the user hasn't joined any rooms yet — the UI renders the
 /// "Create your first room" empty state in that case.
 pub async fn list_rooms(
     server_url: &str,
@@ -222,29 +222,29 @@ pub async fn list_rooms(
 ///
 /// Talk's create endpoint can take a single `invite` value to seed one
 /// participant in one round-trip, but we always create empty and add
-/// participants via [`add_participant`] afterwards â€” that lets us
+/// participants via [`add_participant`] afterwards — that lets us
 /// support email-source participants uniformly, which is the
 /// "create from email thread" path's main use case.
 ///
 /// On a partial failure (room created, but adding the *n*th participant
 /// failed) we surface the participant error and rely on the user to
 /// finish the join in the browser. The room itself is preserved on the
-/// server â€” leaving an empty room dangling is better than rolling back
+/// server — leaving an empty room dangling is better than rolling back
 /// and silently dropping a working room the user can still use.
 /// Optional knobs to `create_room` that group together cleanly
-/// â€” bundling them keeps the call signature within clippy's
+/// — bundling them keeps the call signature within clippy's
 /// `too_many_arguments` ceiling and clarifies that they're all
 /// "tweaks for event-bound rooms" rather than required params.
 ///
 /// `room_type`: `2` = group/private (only invited NC users can
 /// join), `3` = public (anyone with the URL joins as guest).
-/// `None` falls back to group/private â€” the Compose-side
+/// `None` falls back to group/private — the Compose-side
 /// "create Talk room" flow's behaviour.  Event-bound rooms pass
 /// `Some(3)` so externals invited to the event can click
 /// through the calendar link without an NC login.
 ///
 /// `object_type` + `object_id` mirror Nextcloud Calendar's
-/// "Make it a Talk conversation" tagging â€” pass
+/// "Make it a Talk conversation" tagging — pass
 /// `Some("event")` and a unique id (typically `crypto.randomUUID()`)
 /// to have Talk's UI categorise the room as a meeting room.
 #[derive(Debug, Default)]
@@ -293,7 +293,7 @@ pub async fn create_room(
 
     // Add participants serially. Talk rooms are typically small (single
     // digits of participants) so wall-clock cost is negligible, and a
-    // serial loop keeps the error path simple â€” first failure wins,
+    // serial loop keeps the error path simple — first failure wins,
     // already-added participants stay added.
     for p in participants {
         add_participant(
@@ -344,7 +344,7 @@ pub async fn add_participant(
         .map_err(|e| UnkaiError::Network(format!("talk add-participant request failed: {e}")))?;
 
     let body = ocs_text(resp, "talk add participant").await?;
-    // Discard the participant payload â€” we just need the meta-level
+    // Discard the participant payload — we just need the meta-level
     // success signal to know the add stuck.
     let _: serde_json::Value = parse_ocs_data(&body, "talk add participant")?;
     Ok(())
@@ -380,7 +380,7 @@ pub async fn rename_room(
         .map_err(|e| UnkaiError::Network(format!("talk rename request failed: {e}")))?;
 
     let body = ocs_text(resp, "talk rename room").await?;
-    // Discard the updated-room payload â€” we already track the room
+    // Discard the updated-room payload — we already track the room
     // locally and a rename doesn't change anything else we care about.
     let _: serde_json::Value = parse_ocs_data(&body, "talk rename room")?;
     Ok(())
@@ -395,7 +395,7 @@ pub async fn rename_room(
 /// turns out to be an internal NC user.
 ///
 /// Talk exposes this as two separate verbs on
-/// `/room/{token}/public` â€” POST to enable, DELETE to disable.
+/// `/room/{token}/public` — POST to enable, DELETE to disable.
 /// We pick based on the boolean and emit the matching request.
 pub async fn set_room_public(
     server_url: &str,
@@ -464,7 +464,7 @@ pub async fn delete_room(
     Ok(())
 }
 
-// â”€â”€ HTTP / parsing helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── HTTP / parsing helpers ─────────────────────────────────────
 
 /// Centralise the auth-failure / non-2xx handling so the three call
 /// sites above stay focused on their request shape.
@@ -486,7 +486,7 @@ async fn ocs_text(resp: reqwest::Response, ctx: &str) -> Result<String, UnkaiErr
 }
 
 /// Parse the OCS envelope and surface either the typed payload or a
-/// meaningful error. Mirrors `shares::parse_share_response` â€” meta is
+/// meaningful error. Mirrors `shares::parse_share_response` — meta is
 /// inspected first because on OCS-level failures `data` may be `[]`,
 /// which would never deserialize into a payload struct.
 fn parse_ocs_data<T: serde::de::DeserializeOwned>(body: &str, ctx: &str) -> Result<T, UnkaiError> {
@@ -509,7 +509,7 @@ fn parse_ocs_data<T: serde::de::DeserializeOwned>(body: &str, ctx: &str) -> Resu
         .map_err(|e| UnkaiError::Protocol(format!("{ctx} data bad shape: {e}")))
 }
 
-// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Tests ──────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -625,7 +625,7 @@ mod tests {
     }
 
     // Helper because WireRoom doesn't derive Clone in the production
-    // code â€” we don't need it outside tests.
+    // code — we don't need it outside tests.
     impl WireRoom {
         fn clone_for_test(&self) -> WireRoom {
             WireRoom {

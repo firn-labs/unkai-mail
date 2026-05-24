@@ -8,7 +8,7 @@
 //!
 //! A PROPFIND with `Depth: 1` returns the home plus one `<response>`
 //! per child collection. We keep only the ones whose `<resourcetype>`
-//! contains a CalDAV `<calendar/>` marker â€” Nextcloud also exposes
+//! contains a CalDAV `<calendar/>` marker — Nextcloud also exposes
 //! pseudo-collections (trash, birthday feeds, subscriptions) at the
 //! same depth, and some of those refuse `sync-collection` REPORTs,
 //! so filtering them here prevents broken syncs later.
@@ -17,7 +17,7 @@
 //!
 //! Nextcloud advertises a per-calendar hex colour via the
 //! `<apple:calendar-color>` extension (`xmlns:apple="http://apple.com/ns/ical/"`).
-//! We capture it when present â€” the UI can use it for chips and event
+//! We capture it when present — the UI can use it for chips and event
 //! dots. Missing is fine; not every server implements it.
 
 use quick_xml::Reader;
@@ -33,7 +33,7 @@ use crate::xml_util::{local_name, local_name_end, read_text_until, skip_subtree}
 /// One calendar on the server.
 ///
 /// `path` is the absolute URL used for sync REPORTs (already resolved).
-/// `name` is the slug at the end of `path` â€” stable identifier for the
+/// `name` is the slug at the end of `path` — stable identifier for the
 /// local cache even if `display_name` changes server-side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Calendar {
@@ -119,9 +119,9 @@ fn parse_calendar_list(xml: &str, server_url: &str) -> Result<Vec<Calendar>, Unk
     }
 
     // Drop pseudo-calendars Nextcloud exposes at the same depth:
-    //   - `inbox` / `outbox` â€” CalDAV scheduling endpoints, not event stores
-    //   - `trashbin` â€” Nextcloud's server-side trash (415s on sync-collection)
-    //   - `z-app-generated--â€¦` â€” birthday feeds etc.
+    //   - `inbox` / `outbox` — CalDAV scheduling endpoints, not event stores
+    //   - `trashbin` — Nextcloud's server-side trash (415s on sync-collection)
+    //   - `z-app-generated--…` — birthday feeds etc.
     cals.retain(|c| !is_pseudo_calendar(&c.name));
 
     tracing::info!("CalDAV: discovered {} calendar(s)", cals.len());
@@ -159,7 +159,7 @@ fn parse_response(
                     // Walk the resourcetype subtree looking for a
                     // <calendar/> child. quick-xml surfaces both the
                     // `<calendar/>` self-closing form (Event::Empty)
-                    // and the paired-open-close form (Event::Start) â€”
+                    // and the paired-open-close form (Event::Start) —
                     // match either.
                     loop {
                         match reader.read_event()? {
