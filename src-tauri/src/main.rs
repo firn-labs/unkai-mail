@@ -6951,6 +6951,26 @@ async fn background_decrypt_new(
                 // `decrypt_message` does on the user-clicked path.
                 email.is_read = env.is_read;
                 email.is_starred = env.is_starred;
+                // #341 ciphertext cache — stash the raw bytes so a
+                // later user-driven Decrypt click / encrypted
+                // attachment download for this UID skips the IMAP
+                // round-trip.  Best-effort: a failed put just
+                // leaves the on-demand path to fetch fresh on its
+                // first run.  Guarded on the post-decrypt
+                // `protection` label so we don't store bytes for
+                // anything the parser didn't actually treat as a
+                // PGP/MIME envelope.
+                if matches!(
+                    email.protection.as_deref(),
+                    Some("encrypted" | "signed-and-encrypted")
+                ) {
+                    if let Err(e) = cache.put_encrypted_raw_eml(account_id, folder, uid, &raw) {
+                        tracing::debug!(
+                            "background-decrypt: put_encrypted_raw_eml UID {uid} \
+                             in '{account_id}'/'{folder}' failed: {e}"
+                        );
+                    }
+                }
                 out.push(email);
             }
             Err(e) => {
@@ -6994,19 +7014,27 @@ fn resolve_pgp_passphrase(account_id: &str, supplied: &str) -> Result<String, Un
 /// Decrypt an encrypted message on demand (#57).
 ///
 /// Called by MailView when the user clicks "Decrypt" on a message
-/// the receive path marked `protection = "encrypted"`.  Re-fetches
-/// the raw bytes from IMAP (no cache shortcut yet — we never
-/// persisted the armored ciphertext), composes a
-/// `TauriCryptoBridge` from the freshly-prompted passphrase, and
-/// runs the bytes through `parse_eml_bytes_with_crypto` so
-/// decryption + re-parse happen in one place.
+/// the receive path marked `protection = "encrypted"`.  Composes a
+/// `TauriCryptoBridge` from the freshly-prompted (or keychain-
+/// resolved) passphrase and runs the raw `.eml` bytes through
+/// `parse_eml_bytes_with_crypto` so decryption + re-parse happen
+/// in one place.
 ///
-/// IMAP flags (Seen / Flagged) ride along by re-fetching the
-/// envelope via `fetch_message` first and overlaying them onto the
-/// decrypted body — keeps the read state honest for the cache
-/// write that follows.  JMAP isn't wired into this path yet; that's
-/// the same banner-fallback case the JMAP receive path already
-/// surfaces.
+/// **Bytes source order (#341 ciphertext cache):**
+///   1. `Cache::get_encrypted_raw_eml` — populated by any previous
+///      decrypt / attachment fetch / background-decrypt for this
+///      UID.  Hit = full decrypt without an IMAP round-trip
+///      (works offline).
+///   2. Cache miss → IMAP `UID FETCH BODY.PEEK[]`, and on success
+///      stash the bytes for next time.
+///
+/// IMAP flags (Seen / Flagged) come from a parallel envelope fetch
+/// on the IMAP path; on the cache-hit path we pull them from the
+/// envelope row already in the cache (which the user just saw in
+/// MailView, so it's at least as fresh as the displayed list).
+///
+/// JMAP isn't wired into this path yet; that's the same banner-
+/// fallback case the JMAP receive path already surfaces.
 #[tauri::command]
 async fn decrypt_message(
     account_id: String,
@@ -7032,6 +7060,50 @@ async fn decrypt_message(
     let resolved = resolve_pgp_passphrase(&account_id, &pgp_passphrase)?;
     let bridge = TauriCryptoBridge::for_account(&account_id, &resolved, (*cache).clone())?;
 
+    let id = format!("{folder}:{uid}");
+
+    // #341 ciphertext cache — try the local copy first.  A
+    // successful path returns without ever opening an IMAP
+    // connection, so this is also the path the offline UX walks.
+    // Any failure (corrupt cache row, key rotated, etc.) falls
+    // through to the IMAP refetch below rather than surfacing as a
+    // permanent decrypt error — a stale cache entry mustn't brick
+    // the user's ability to read their mail.
+    if let Ok(Some(raw)) = cache.get_encrypted_raw_eml(&account_id, &folder, uid) {
+        match unkai_imap::parse_eml_bytes_with_crypto(
+            &raw,
+            &id,
+            &account_id,
+            &folder,
+            Some(&bridge),
+        ) {
+            Ok(mut decrypted) => {
+                // Pull is_read / is_starred from the cached
+                // envelope so we don't reset them via
+                // `parse_eml_bytes_with_crypto`'s defaults.  The
+                // envelope cache is refreshed by the next poll
+                // tick — for the user clicking Decrypt right now
+                // it's as fresh as the MailList row they just
+                // clicked from.
+                if let Ok(Some(env)) = cache.get_message(&account_id, &folder, uid) {
+                    decrypted.is_read = env.is_read;
+                    decrypted.is_starred = env.is_starred;
+                }
+                if let Err(e) = cache.upsert_message(&decrypted) {
+                    tracing::warn!("cache.upsert_message after offline decrypt failed: {e}");
+                }
+                return Ok(decrypted);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "decrypt_message: cached ciphertext for \
+                     {account_id}/{folder}/{uid} failed to decrypt ({e}); \
+                     refetching from IMAP"
+                );
+            }
+        }
+    }
+
     let mut client = connect_imap(&account).await?;
     // Get IMAP flags + envelope from one fetch, then the raw bytes
     // from a second on the same session so we can hand the bytes to
@@ -7041,7 +7113,6 @@ async fn decrypt_message(
     let raw = client.fetch_raw_message(&folder, uid).await?;
     let _ = client.logout().await;
 
-    let id = format!("{folder}:{uid}");
     let mut decrypted =
         unkai_imap::parse_eml_bytes_with_crypto(&raw, &id, &account_id, &folder, Some(&bridge))?;
     // Overlay IMAP flags so the cache write below doesn't reset
@@ -7052,6 +7123,21 @@ async fn decrypt_message(
 
     if let Err(e) = cache.upsert_message(&decrypted) {
         tracing::warn!("cache.upsert_message after decrypt failed: {e}");
+    }
+    // Only cache the raw bytes when the parser actually unlocked a
+    // PGP/MIME envelope — caching plaintext bytes would just bloat
+    // the DB without ever paying off, since the cache-hit path is
+    // only exercised by `decrypt_message` / encrypted-attachment
+    // downloads.  The parser stamps `protection` to one of the
+    // encryption labels exactly when a PGP/MIME envelope was
+    // detected and processed.
+    if matches!(
+        decrypted.protection.as_deref(),
+        Some("encrypted" | "signed-and-encrypted")
+    ) {
+        if let Err(e) = cache.put_encrypted_raw_eml(&account_id, &folder, uid, &raw) {
+            tracing::warn!("cache.put_encrypted_raw_eml after decrypt failed: {e}");
+        }
     }
     Ok(decrypted)
 }
@@ -7167,11 +7253,46 @@ async fn download_decrypted_attachment(
     // `resolve_pgp_passphrase`).
     let resolved = resolve_pgp_passphrase(&account_id, &pgp_passphrase)?;
     let bridge = TauriCryptoBridge::for_account(&account_id, &resolved, (*cache).clone())?;
+
+    // #341 ciphertext cache — try the local copy first so a second
+    // attachment open / Forward of the same encrypted message
+    // doesn't pay the IMAP cost again.  On cache miss (or a
+    // decrypt-from-cache failure) fall through to IMAP and
+    // populate the cache from the fresh bytes.
+    if let Ok(Some(raw)) = cache.get_encrypted_raw_eml(&account_id, &folder, uid) {
+        match unkai_imap::extract_decrypted_attachment(&raw, &bridge, part_id) {
+            Ok(Some((_meta, data))) => return Ok(data),
+            // Cached bytes aren't a PGP/MIME envelope after all —
+            // same typed error as the IMAP path so the UI's
+            // encryption-aware routing stays consistent.
+            Ok(None) => {
+                return Err(UnkaiError::Protocol(
+                    "Message is not PGP-encrypted; use download_email_attachment".into(),
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "download_decrypted_attachment: cached ciphertext for \
+                     {account_id}/{folder}/{uid} failed ({e}); refetching from IMAP"
+                );
+            }
+        }
+    }
+
     let mut client = connect_imap(&account).await?;
     let raw = client.fetch_raw_message(&folder, uid).await?;
     let _ = client.logout().await;
     match unkai_imap::extract_decrypted_attachment(&raw, &bridge, part_id)? {
-        Some((_meta, data)) => Ok(data),
+        Some((_meta, data)) => {
+            // Best-effort cache write — a failure here just means
+            // the next attachment download pays the IMAP cost
+            // again.  Logged at debug because the user's request
+            // succeeded.
+            if let Err(e) = cache.put_encrypted_raw_eml(&account_id, &folder, uid, &raw) {
+                tracing::debug!("put_encrypted_raw_eml after attachment fetch failed: {e}");
+            }
+            Ok(data)
+        }
         // Not a PGP/MIME envelope — the caller should be on
         // `download_email_attachment` for this message.  Surfacing
         // as a typed error rather than silently falling through

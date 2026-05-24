@@ -1731,6 +1731,73 @@ impl Cache {
         Ok(row)
     }
 
+    // ── Encrypted ciphertext cache (#341) ───────────────────────
+    //
+    // Before this cache, every Decrypt click and every encrypted
+    // attachment download issued a fresh `UID FETCH BODY.PEEK[]`
+    // round-trip to IMAP — measurable latency on slow networks and
+    // a hard fail offline.  Storing the raw `.eml` bytes alongside
+    // the (decrypted) body lets the next decrypt for the same UID
+    // run entirely from local storage.
+
+    /// Cache the raw RFC 5322 bytes of an encrypted message so
+    /// later decrypts / attachment downloads for the same UID can
+    /// skip IMAP.
+    ///
+    /// UPSERT — creates a `message_bodies` row stamped with just
+    /// this column when one doesn't already exist (background-
+    /// decrypt during sync runs *before* the user has ever opened
+    /// the message, so the row may not be there yet), or patches
+    /// the column in place when it does.  The envelope row in
+    /// `messages` must already exist — the FK keeps us honest, and
+    /// every caller has already gone through envelope-fetch first.
+    pub fn put_encrypted_raw_eml(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        raw: &[u8],
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO message_bodies
+                 (account_id, folder, uid, cached_at, encrypted_raw_eml)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (account_id, folder, uid) DO UPDATE SET
+                 encrypted_raw_eml = excluded.encrypted_raw_eml",
+            params![account_id, folder, uid as i64, now, raw],
+        )?;
+        Ok(())
+    }
+
+    /// Load the cached raw `.eml` bytes for an encrypted message,
+    /// if any.  See [`Cache::put_encrypted_raw_eml`] for the write
+    /// side.
+    ///
+    /// `Ok(None)` covers: never-cached UIDs, plaintext messages
+    /// (we don't cache those), and pre-#341 rows.  Callers treat
+    /// any of those as a cache miss and fall through to IMAP.
+    pub fn get_encrypted_raw_eml(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<Vec<u8>>, CacheError> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT encrypted_raw_eml
+                   FROM message_bodies
+                  WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![account_id, folder, uid as i64],
+                |r| r.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(row)
+    }
+
     // ── Sync state ──────────────────────────────────────────────
 
     pub fn get_sync_state(

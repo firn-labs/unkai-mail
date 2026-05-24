@@ -1156,6 +1156,30 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE messages ADD COLUMN protection TEXT;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v34 → v35: cache armored ciphertext locally (#341).
+    //
+    // `encrypted_raw_eml` stores the raw RFC 5322 bytes of an
+    // encrypted message so subsequent decrypts (manual Decrypt
+    // click, attachment download, auto-decrypt on re-open) can
+    // run without going back to IMAP for `BODY.PEEK[]`.  Before
+    // this column every decrypt was a fresh fetch — measurable
+    // latency on slow networks and a hard fail when offline.
+    //
+    // `BLOB` not `TEXT` because the wire format is binary: even
+    // when the inner OpenPGP packet is ASCII-armoured the
+    // surrounding MIME envelope can carry non-UTF-8 bytes from
+    // older transfer encodings, and SQLite TEXT enforces UTF-8.
+    //
+    // `NULL` means "not cached" — covers plaintext messages
+    // (column irrelevant), envelope-only rows the user hasn't
+    // opened yet, and rows that pre-date this migration.  All
+    // three roll forward unchanged: the decrypt path falls back
+    // to the IMAP fetch the same way it did before.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE message_bodies ADD COLUMN encrypted_raw_eml BLOB;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
