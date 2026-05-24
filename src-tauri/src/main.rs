@@ -7023,18 +7023,17 @@ fn resolve_pgp_passphrase(account_id: &str, supplied: &str) -> Result<String, Un
 /// **Bytes source order (#341 ciphertext cache):**
 ///   1. `Cache::get_encrypted_raw_eml` — populated by any previous
 ///      decrypt / attachment fetch / background-decrypt for this
-///      UID.  Hit = full decrypt without an IMAP round-trip
+///      UID.  Hit = full decrypt without an IMAP / JMAP round-trip
 ///      (works offline).
-///   2. Cache miss → IMAP `UID FETCH BODY.PEEK[]`, and on success
-///      stash the bytes for next time.
+///   2. Cache miss → fetch from the server: IMAP `UID FETCH
+///      BODY.PEEK[]` on IMAP accounts, JMAP `Blob/get` via the
+///      session's download URL (#341) on JMAP accounts.  On
+///      success stash the bytes for next time.
 ///
-/// IMAP flags (Seen / Flagged) come from a parallel envelope fetch
-/// on the IMAP path; on the cache-hit path we pull them from the
+/// Flags (Seen / Flagged) come from a parallel envelope fetch on
+/// the server path; on the cache-hit path we pull them from the
 /// envelope row already in the cache (which the user just saw in
 /// MailView, so it's at least as fresh as the displayed list).
-///
-/// JMAP isn't wired into this path yet; that's the same banner-
-/// fallback case the JMAP receive path already surfaces.
 #[tauri::command]
 async fn decrypt_message(
     account_id: String,
@@ -7044,13 +7043,6 @@ async fn decrypt_message(
     cache: State<'_, Cache>,
 ) -> Result<Email, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
-    if uses_jmap(&account) {
-        return Err(UnkaiError::Protocol(
-            "JMAP encrypted-message decryption needs Blob/get plumbing — \
-             switch the account to IMAP to decrypt locally"
-                .into(),
-        ));
-    }
 
     // #341 — empty passphrase means "use the keychain entry stored
     // by the per-account Unlock-automatically opt-in."  When neither
@@ -7104,20 +7096,30 @@ async fn decrypt_message(
         }
     }
 
-    let mut client = connect_imap(&account).await?;
-    // Get IMAP flags + envelope from one fetch, then the raw bytes
-    // from a second on the same session so we can hand the bytes to
-    // the bridge-aware parser without losing the IMAP-level read /
-    // flagged state.
-    let envelope_email = client.fetch_message(&folder, uid, &account_id).await?;
-    let raw = client.fetch_raw_message(&folder, uid).await?;
-    let _ = client.logout().await;
+    // Get envelope (Seen / Flagged) + raw bytes from the server.
+    // IMAP reuses one session for both calls; JMAP issues two HTTP
+    // round-trips (Email/get for blobId + the download URL) but is
+    // stateless so no logout is needed.  We need the envelope flags
+    // so the post-decrypt cache write below doesn't reset
+    // is_read / is_starred via the bridge-aware parser's defaults.
+    let (envelope_email, raw) = if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        let env = client.fetch_message(&folder, uid, &account_id).await?;
+        let raw = client.fetch_raw_message(&folder, uid).await?;
+        (env, raw)
+    } else {
+        let mut client = connect_imap(&account).await?;
+        let env = client.fetch_message(&folder, uid, &account_id).await?;
+        let raw = client.fetch_raw_message(&folder, uid).await?;
+        let _ = client.logout().await;
+        (env, raw)
+    };
 
     let mut decrypted =
         unkai_imap::parse_eml_bytes_with_crypto(&raw, &id, &account_id, &folder, Some(&bridge))?;
-    // Overlay IMAP flags so the cache write below doesn't reset
-    // them — `parse_eml_bytes_with_crypto` defaults to is_read=true
-    // when it has no IMAP context.
+    // Overlay server-side flags so the cache write below doesn't
+    // reset them — `parse_eml_bytes_with_crypto` defaults to
+    // is_read=true when it has no IMAP / JMAP context.
     decrypted.is_read = envelope_email.is_read;
     decrypted.is_starred = envelope_email.is_starred;
 
@@ -7224,13 +7226,16 @@ async fn download_email_attachment(
 /// which for a decrypted message would return the `Version: 1`
 /// header part instead of the real attachment bytes — `EmailAttachment.part_id`
 /// on a decrypted message indexes the *inner* tree.  This command
-/// pulls the raw IMAP bytes, decrypts through the bridge built from
-/// the account's stored key + the freshly-prompted passphrase, walks
-/// the inner tree with the same primary-then-fallback `attachments()`
-/// / `parts` lookup the plaintext path uses, and returns those bytes.
+/// pulls the raw IMAP / JMAP bytes, decrypts through the bridge
+/// built from the account's stored key + the freshly-prompted
+/// passphrase, walks the inner tree with the same primary-then-
+/// fallback `attachments()` / `parts` lookup the plaintext path
+/// uses, and returns those bytes.
 ///
-/// IMAP only — JMAP encrypted attachment download needs the same
-/// `Blob/get` plumbing as the JMAP body-decrypt fallback (#341).
+/// IMAP and JMAP both go through the same
+/// `extract_decrypted_attachment` helper; the only difference is
+/// where the raw `.eml` comes from — IMAP `UID FETCH BODY.PEEK[]`
+/// vs. JMAP `Blob/get` via the session's download URL (#341).
 #[tauri::command]
 async fn download_decrypted_attachment(
     account_id: String,
@@ -7241,13 +7246,6 @@ async fn download_decrypted_attachment(
     cache: State<'_, Cache>,
 ) -> Result<Vec<u8>, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
-    if uses_jmap(&account) {
-        return Err(UnkaiError::Protocol(
-            "JMAP encrypted attachment download needs Blob/get plumbing — \
-             switch the account to IMAP to download decrypted attachments"
-                .into(),
-        ));
-    }
     // #341 — empty passphrase falls back to the keychain entry from
     // the per-account Unlock-automatically opt-in (see
     // `resolve_pgp_passphrase`).
@@ -7256,14 +7254,14 @@ async fn download_decrypted_attachment(
 
     // #341 ciphertext cache — try the local copy first so a second
     // attachment open / Forward of the same encrypted message
-    // doesn't pay the IMAP cost again.  On cache miss (or a
-    // decrypt-from-cache failure) fall through to IMAP and
+    // doesn't pay the server cost again.  On cache miss (or a
+    // decrypt-from-cache failure) fall through to the network and
     // populate the cache from the fresh bytes.
     if let Ok(Some(raw)) = cache.get_encrypted_raw_eml(&account_id, &folder, uid) {
         match unkai_imap::extract_decrypted_attachment(&raw, &bridge, part_id) {
             Ok(Some((_meta, data))) => return Ok(data),
             // Cached bytes aren't a PGP/MIME envelope after all —
-            // same typed error as the IMAP path so the UI's
+            // same typed error as the live-fetch path so the UI's
             // encryption-aware routing stays consistent.
             Ok(None) => {
                 return Err(UnkaiError::Protocol(
@@ -7273,19 +7271,25 @@ async fn download_decrypted_attachment(
             Err(e) => {
                 tracing::warn!(
                     "download_decrypted_attachment: cached ciphertext for \
-                     {account_id}/{folder}/{uid} failed ({e}); refetching from IMAP"
+                     {account_id}/{folder}/{uid} failed ({e}); refetching from server"
                 );
             }
         }
     }
 
-    let mut client = connect_imap(&account).await?;
-    let raw = client.fetch_raw_message(&folder, uid).await?;
-    let _ = client.logout().await;
+    let raw = if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        client.fetch_raw_message(&folder, uid).await?
+    } else {
+        let mut client = connect_imap(&account).await?;
+        let raw = client.fetch_raw_message(&folder, uid).await?;
+        let _ = client.logout().await;
+        raw
+    };
     match unkai_imap::extract_decrypted_attachment(&raw, &bridge, part_id)? {
         Some((_meta, data)) => {
             // Best-effort cache write — a failure here just means
-            // the next attachment download pays the IMAP cost
+            // the next attachment download pays the network cost
             // again.  Logged at debug because the user's request
             // succeeded.
             if let Err(e) = cache.put_encrypted_raw_eml(&account_id, &folder, uid, &raw) {

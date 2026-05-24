@@ -6,7 +6,7 @@
 
 use axum::{
     Json, Router,
-    extract::State as AxState,
+    extract::{Path, State as AxState},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
@@ -122,8 +122,8 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
                 "Email/query",
                 {
                     "accountId": "acc1",
-                    "ids": ["email-001", "email-002"],
-                    "total": 2,
+                    "ids": ["email-001", "email-002", "email-pgp"],
+                    "total": 3,
                     "position": 0,
                 },
                 call_id
@@ -139,34 +139,118 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
                 let has_body =
                     properties.contains(&"bodyValues") || _args.get("fetchAllBodyValues").is_some();
 
-                if has_body {
-                    // Full message fetch.
+                // `fetch_raw_message` only asks for ["id", "blobId"]
+                // — that's the JMAP shape for "give me the handle to
+                // the raw RFC 5322 bytes so I can `Blob/get` them".
+                // Return the blobId for whichever specific id was
+                // requested, so the test can drive the encrypted vs
+                // plaintext distinction by id.
+                let only_blob = properties.contains(&"id")
+                    && properties.contains(&"blobId")
+                    && properties.len() == 2;
+
+                let requested_ids = _args
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                if only_blob {
+                    let id = requested_ids
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "email-001".to_string());
+                    let blob_id = match id.as_str() {
+                        "email-002" => "blob-charlie",
+                        "email-pgp" => "blob-pgp",
+                        _ => "blob-alice",
+                    };
                     json!([
                         "Email/get",
                         {
                             "accountId": "acc1",
                             "state": "state1",
                             "list": [{
-                                "id": "email-001",
-                                "from": [{ "name": "Alice", "email": "alice@example.com" }],
-                                "to": [{ "email": "bob@example.com" }],
-                                "cc": [],
-                                "subject": "Hello from JMAP!",
-                                "receivedAt": "2025-01-15T10:30:00Z",
-                                "keywords": { "$seen": true },
-                                "hasAttachment": false,
-                                "mailboxIds": { "mbox-inbox": true },
-                                "bodyValues": {
-                                    "1": { "value": "Hi Bob,\n\nThis is a JMAP test message.\n\nBest,\nAlice", "isEncodingProblem": false, "isTruncated": false },
-                                },
-                                "textBody": [{ "partId": "1", "type": "text/plain" }],
-                                "htmlBody": [],
-                                "attachments": [],
+                                "id": id,
+                                "blobId": blob_id,
                             }],
                             "notFound": [],
                         },
                         call_id
                     ])
+                } else if has_body {
+                    // Full message fetch.  The encrypted test seeds
+                    // a separate id ("email-pgp") with armored
+                    // ciphertext as the text-body part — mirrors
+                    // what Fastmail returns for `multipart/encrypted`
+                    // under `fetchAllBodyValues=true`.
+                    let id = requested_ids
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "email-001".to_string());
+                    if id == "email-pgp" {
+                        json!([
+                            "Email/get",
+                            {
+                                "accountId": "acc1",
+                                "state": "state1",
+                                "list": [{
+                                    "id": "email-pgp",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "to": [{ "email": "bob@example.com" }],
+                                    "cc": [],
+                                    "subject": "Encrypted JMAP message",
+                                    "receivedAt": "2025-01-15T10:30:00Z",
+                                    "keywords": {},
+                                    "hasAttachment": false,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                    "bodyValues": {
+                                        "1": {
+                                            "value": "-----BEGIN PGP MESSAGE-----\n\nwV4D...\n-----END PGP MESSAGE-----\n",
+                                            "isEncodingProblem": false,
+                                            "isTruncated": false,
+                                        },
+                                    },
+                                    "textBody": [{ "partId": "1", "type": "text/plain" }],
+                                    "htmlBody": [],
+                                    "attachments": [],
+                                }],
+                                "notFound": [],
+                            },
+                            call_id
+                        ])
+                    } else {
+                        json!([
+                            "Email/get",
+                            {
+                                "accountId": "acc1",
+                                "state": "state1",
+                                "list": [{
+                                    "id": "email-001",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "to": [{ "email": "bob@example.com" }],
+                                    "cc": [],
+                                    "subject": "Hello from JMAP!",
+                                    "receivedAt": "2025-01-15T10:30:00Z",
+                                    "keywords": { "$seen": true },
+                                    "hasAttachment": false,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                    "bodyValues": {
+                                        "1": { "value": "Hi Bob,\n\nThis is a JMAP test message.\n\nBest,\nAlice", "isEncodingProblem": false, "isTruncated": false },
+                                    },
+                                    "textBody": [{ "partId": "1", "type": "text/plain" }],
+                                    "htmlBody": [],
+                                    "attachments": [],
+                                }],
+                                "notFound": [],
+                            },
+                            call_id
+                        ])
+                    }
                 } else {
                     // Envelope fetch.
                     json!([
@@ -191,6 +275,15 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
                                     "receivedAt": "2025-01-14T09:00:00Z",
                                     "keywords": {},
                                     "hasAttachment": true,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                },
+                                {
+                                    "id": "email-pgp",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "subject": "Encrypted JMAP message",
+                                    "receivedAt": "2025-01-13T08:00:00Z",
+                                    "keywords": {},
+                                    "hasAttachment": false,
                                     "mailboxIds": { "mbox-inbox": true },
                                 },
                             ],
@@ -255,6 +348,38 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
     }))
 }
 
+/// `GET /download/{blobId}` — serve a stored RFC 5322 envelope per
+/// blob id.  The encrypted-message test relies on `blob-pgp`
+/// returning a well-formed PGP/MIME envelope (so the bridge-aware
+/// parser detects it correctly when the test wires this up
+/// end-to-end via the Tauri layer); the plaintext blobs are also
+/// served so a future round-trip test can verify them.
+async fn download_handler(
+    Path(blob_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Vec<u8>, StatusCode> {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !auth.starts_with("Basic ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let bytes: &[u8] = match blob_id.as_str() {
+        "blob-alice" => b"From: alice@example.com\r\nTo: bob@example.com\r\nSubject: Hello from JMAP!\r\n\r\nHi Bob,\r\n\r\nThis is a JMAP test message.\r\n",
+        "blob-charlie" => b"From: charlie@example.com\r\nTo: bob@example.com\r\nSubject: JMAP rocks\r\n\r\nHey.\r\n",
+        // `multipart/encrypted` envelope shape per RFC 3156 §4 —
+        // matches what `detect_pgp_mime_envelope` looks for.  The
+        // ciphertext is a placeholder (real OpenPGP decryption is
+        // covered in unit tests in the unkai-imap crate).
+        "blob-pgp" => b"MIME-Version: 1.0\r\nFrom: alice@example.com\r\nTo: bob@example.com\r\nSubject: Encrypted JMAP message\r\nContent-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=\"PGP\"\r\n\r\n--PGP\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n\r\n--PGP\r\nContent-Type: application/octet-stream\r\n\r\n-----BEGIN PGP MESSAGE-----\r\n\r\nwV4D...\r\n-----END PGP MESSAGE-----\r\n--PGP--\r\n",
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+
+    Ok(bytes.to_vec())
+}
+
 // ── Test helpers ────��──────────────────────────────────────────
 
 /// Start the mock JMAP server and return (base_url, port).
@@ -268,6 +393,7 @@ async fn start_mock() -> (String, u16) {
     let app = Router::new()
         .route("/.well-known/jmap", get(well_known))
         .route("/api", post(api_handler))
+        .route("/download/{blob_id}", get(download_handler))
         .with_state(state);
 
     tokio::spawn(async move {
@@ -339,7 +465,7 @@ async fn test_fetch_envelopes() {
         .await
         .expect("fetch_envelopes should succeed");
 
-    assert_eq!(envelopes.len(), 2);
+    assert_eq!(envelopes.len(), 3);
 
     // First email (Alice)
     assert_eq!(envelopes[0].subject, "Hello from JMAP!");
@@ -349,6 +475,14 @@ async fn test_fetch_envelopes() {
     // Second email (Charlie)
     assert_eq!(envelopes[1].subject, "JMAP rocks");
     assert!(!envelopes[1].is_read); // no $seen keyword
+
+    // Third — the encrypted-message fixture; the envelope itself
+    // doesn't carry encryption metadata (JMAP needs a body fetch
+    // to sniff for the armor headers), so the chip only lights up
+    // after `fetch_message` runs.  Verified separately in
+    // `test_fetch_message_pgp_stamps_encrypted`.
+    assert_eq!(envelopes[2].subject, "Encrypted JMAP message");
+    assert!(envelopes[2].protection.is_none());
 }
 
 #[tokio::test]
@@ -437,4 +571,59 @@ async fn test_connection_test() {
         .expect("test should succeed");
     assert!(result.contains("JMAP login succeeded"));
     assert!(result.contains("Test User"));
+}
+
+// ── #341 — JMAP Blob/get + decrypt plumbing ────────────────────
+
+/// `fetch_message` on a PGP/MIME-encrypted JMAP message stamps
+/// `protection = "encrypted"` (mirrors the IMAP receive path) and
+/// nulls the body so MailView shows the Decrypt button instead of
+/// the armored ciphertext.  Pre-#341 the same fixture stamped
+/// `encrypted-cannot-decrypt`, which the UI rendered as a "switch
+/// to IMAP" banner — now JMAP can unlock locally so the banner
+/// path is no longer exercised here.
+#[tokio::test]
+async fn test_fetch_message_pgp_stamps_encrypted() {
+    let client = connect_mock().await;
+
+    let envelopes = client.fetch_envelopes("Inbox", 50, None).await.unwrap();
+    let pgp_env = envelopes
+        .iter()
+        .find(|e| e.subject == "Encrypted JMAP message")
+        .expect("seeded encrypted envelope missing");
+
+    let email = client
+        .fetch_message("Inbox", pgp_env.uid, "test-account")
+        .await
+        .expect("fetch_message should succeed for the encrypted fixture");
+
+    assert_eq!(email.protection.as_deref(), Some("encrypted"));
+    assert_eq!(email.body_text, None);
+    assert_eq!(email.body_html, None);
+}
+
+/// `fetch_raw_message` round-trips through `Email/get` (for the
+/// blob id) and the session `downloadUrl` template, returning the
+/// stored RFC 5322 envelope verbatim.  This is the bytes source
+/// `decrypt_message` hands to `parse_eml_bytes_with_crypto` on
+/// JMAP accounts.
+#[tokio::test]
+async fn test_fetch_raw_message_returns_blob_bytes() {
+    let client = connect_mock().await;
+
+    let envelopes = client.fetch_envelopes("Inbox", 50, None).await.unwrap();
+    let pgp_env = envelopes
+        .iter()
+        .find(|e| e.subject == "Encrypted JMAP message")
+        .expect("seeded encrypted envelope missing");
+
+    let raw = client
+        .fetch_raw_message("Inbox", pgp_env.uid)
+        .await
+        .expect("fetch_raw_message should succeed");
+
+    let text = std::str::from_utf8(&raw).expect("blob is utf-8 in this fixture");
+    assert!(text.contains("multipart/encrypted"));
+    assert!(text.contains("application/pgp-encrypted"));
+    assert!(text.contains("-----BEGIN PGP MESSAGE-----"));
 }
