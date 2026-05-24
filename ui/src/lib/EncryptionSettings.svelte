@@ -279,7 +279,7 @@
       <div class="flex gap-2">
         <button
           type="button"
-          class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           onclick={startImport}
           disabled={busy}
           title={m.encryption_replace_button()}
@@ -380,7 +380,7 @@
             <div class="flex gap-2">
               <button
                 type="button"
-                class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={submitEnableUnlock}
                 disabled={unlockBusy || !unlockPassphrase}
                 title={m.encryption_unlock_auto_save()}
@@ -390,7 +390,7 @@
               </button>
               <button
                 type="button"
-                class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={cancelEnablingUnlock}
                 disabled={unlockBusy}
                 title={m.encryption_unlock_auto_cancel()}
