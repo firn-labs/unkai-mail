@@ -1016,6 +1016,33 @@
   // encryption on.  Cleared on submit and on cancel so a freshly-
   // opened Compose never inherits a stale passphrase.
   let pgpPassphrase = $state('')
+
+  // #341 — when the sending account has opted into "Unlock
+  // automatically" we hide the inline passphrase input entirely
+  // and let the backend resolve the passphrase from the OS
+  // keychain at send time.  Refreshed reactively whenever
+  // `fromAccountId` changes (the From dropdown) so switching
+  // between an opt-in and opt-out account immediately surfaces
+  // the right UI.  Defaults to `false` so the historic "type your
+  // passphrase" path stays visible until we know otherwise.
+  let autoUnlockForCompose = $state(false)
+  $effect(() => {
+    const id = fromAccountId
+    if (!id) {
+      autoUnlockForCompose = false
+      return
+    }
+    void invoke<boolean>('pgp_has_unlock_automatically', { accountId: id })
+      .then((on) => {
+        // Guard the assignment behind the same id check so a
+        // late-arriving response from the previous account can't
+        // overwrite the freshly-fetched state of the new one.
+        if (fromAccountId === id) autoUnlockForCompose = on
+      })
+      .catch(() => {
+        if (fromAccountId === id) autoUnlockForCompose = false
+      })
+  })
   /** `true` once the user has clicked Send with encryption on but
    *  before they've supplied the passphrase.  Drives the inline
    *  passphrase prompt block (rendered just above the Send
@@ -2854,8 +2881,8 @@
   <button
     type="button"
     class="ctb-send"
-    disabled={sending || (encryptEnabled && !pgpPassphrase)}
-    title={encryptEnabled && !pgpPassphrase
+    disabled={sending || (encryptEnabled && !pgpPassphrase && !autoUnlockForCompose)}
+    title={encryptEnabled && !pgpPassphrase && !autoUnlockForCompose
       ? 'Open the Encryption tab and enter your PGP passphrase to send'
       : 'Send the message'}
     onclick={send}
@@ -2895,25 +2922,34 @@
     </span>
     <span class="rt-btn-label">{encryptEnabled ? 'Encrypted' : 'Encrypt'}</span>
   </button>
-  <!-- Passphrase entry only when encryption is on.  Same compact
-       input shape as the per-field text inputs the rest of Compose
-       uses, but inside the ribbon — keeps the user's hand close to
-       the Send button without crowding it. -->
+  <!-- Passphrase entry only when encryption is on AND the account
+       hasn't opted into "Unlock automatically" (#341).  When the
+       opt-in is on the passphrase ships from the OS keychain at
+       send time, so we render a small "auto-unlock" affordance
+       in place of the input — the user gets visible confirmation
+       without having to retype on every encrypted send. -->
   {#if encryptEnabled}
-    <div class="flex items-center gap-2 px-2">
-      <label for="pgp-passphrase-input" class="text-xs text-surface-500 whitespace-nowrap">
-        PGP passphrase
-      </label>
-      <input
-        id="pgp-passphrase-input"
-        type="password"
-        class="input text-xs px-2 py-1 rounded-md w-56"
-        placeholder="Unlocks your account key"
-        bind:value={pgpPassphrase}
-        disabled={sending}
-        autocomplete="off"
-      />
-    </div>
+    {#if autoUnlockForCompose}
+      <div class="flex items-center gap-2 px-2 text-xs text-surface-500">
+        <Icon name="lock" size={16} />
+        <span>{m.compose_pgp_auto_unlock_active()}</span>
+      </div>
+    {:else}
+      <div class="flex items-center gap-2 px-2">
+        <label for="pgp-passphrase-input" class="text-xs text-surface-500 whitespace-nowrap">
+          PGP passphrase
+        </label>
+        <input
+          id="pgp-passphrase-input"
+          type="password"
+          class="input text-xs px-2 py-1 rounded-md w-56"
+          placeholder="Unlocks your account key"
+          bind:value={pgpPassphrase}
+          disabled={sending}
+          autocomplete="off"
+        />
+      </div>
+    {/if}
   {/if}
 {/snippet}
 

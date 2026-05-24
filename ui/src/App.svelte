@@ -1105,7 +1105,13 @@
           // `pgpPassphrase` field.
           let composeReady: ForwardableMail
           let attachmentPassphrase: string | null
-          if (pgpPassphrase) {
+          // #341 — `pgpPassphrase != null` rather than truthy so
+          // an empty-string passphrase (from the popout's
+          // auto-unlock path) is treated as "popout has already
+          // decrypted; the keychain will supply the value at
+          // attachment-fetch time" rather than being mistaken
+          // for the absent-field safety-net case.
+          if (pgpPassphrase != null) {
             composeReady = mail
             attachmentPassphrase = pgpPassphrase
           } else {
@@ -2183,7 +2189,56 @@
     if (!bodyNeedsDecrypt && !forwardNeedsAttachmentKey) {
       return { mail, passphrase: null }
     }
+    // #341 — try the keychain-resolved auto-decrypt first.  Returns
+    // `null` immediately (one cheap keychain query, no IMAP round-
+    // trip) when the account hasn't opted into "Unlock
+    // automatically", so opt-out users pay nothing here and fall
+    // through to the manual prompt below.  On success the Reply /
+    // Forward flow continues straight into Compose with no
+    // passphrase modal — exactly the "set it and forget it"
+    // promise of the per-account opt-in.
     let lastError = ''
+    try {
+      const auto = await invoke<{
+        body_text: string | null
+        body_html: string | null
+        attachments: {
+          filename: string
+          content_type: string
+          size: number | null
+          part_id: number
+          content_id?: string | null
+        }[]
+      } | null>('try_auto_decrypt_message', {
+        accountId: mail.account_id,
+        folder: mail.folder,
+        uid: mail.uid,
+      })
+      if (auto) {
+        return {
+          mail: {
+            ...mail,
+            body_text: auto.body_text,
+            body_html: auto.body_html,
+            attachments: auto.attachments,
+          } as T,
+          // Empty-string passphrase — downstream attachment fetches
+          // inside the forward fan-out route through the keychain
+          // via the backend's `resolve_pgp_passphrase` fallback,
+          // rather than carrying a plaintext passphrase through
+          // the JS layer.
+          passphrase: '',
+        }
+      }
+    } catch (e) {
+      // Opt-in is on but decrypt failed (passphrase no longer
+      // unlocks, key rotated, ciphertext corrupt, …).  Fall
+      // through to the manual prompt with the error pinned above
+      // the input so the user can recover by typing a fresh
+      // value.
+      const raw = formatError(e) || 'Decrypt failed'
+      lastError = raw.replace(/^Crypto:\s*/i, '')
+    }
     while (true) {
       const passphrase = await new Promise<string | null>((resolve) => {
         pendingDecryptPrompt = {
@@ -2456,7 +2511,12 @@
     passphrase: string | null,
   ): Promise<ComposeAttachment[]> {
     const useDecrypted = wasEncrypted(mail)
-    if (useDecrypted && !passphrase) {
+    // `passphrase == null` (not `!passphrase`) so an empty string
+    // is allowed through — #341's auto-unlock path returns ''
+    // instead of the typed value when the backend used the OS
+    // keychain entry to decrypt, and `download_decrypted_attachment`
+    // resolves the same keychain entry via `resolve_pgp_passphrase`.
+    if (useDecrypted && passphrase == null) {
       return Promise.reject(
         new Error(
           'Cannot forward encrypted attachments without the user passphrase',

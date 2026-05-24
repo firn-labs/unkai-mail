@@ -304,5 +304,14 @@
   "contact_form_label_pgp_keys": "OpenPGP-Schlüssel",
   "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
   "contact_form_button_add_pgp_key": "Schlüssel hinzufügen",
-  "contact_form_hint_pgp_keys": "Füge einen ASCII-armierten öffentlichen OpenPGP-Schlüssel ein. Wird über die vCard des Kontakts synchronisiert und lokal zwischengespeichert, damit Compose verschlüsselt an diese Adresse senden kann."
+  "contact_form_hint_pgp_keys": "Füge einen ASCII-armierten öffentlichen OpenPGP-Schlüssel ein. Wird über die vCard des Kontakts synchronisiert und lokal zwischengespeichert, damit Compose verschlüsselt an diese Adresse senden kann.",
+
+  "encryption_unlock_auto_label": "Automatisch entsperren",
+  "encryption_unlock_auto_hint_off": "Aus — Compose fragt die PGP-Passphrase bei jeder verschlüsselten Sendung neu ab, und verschlüsselte Nachrichten zeigen eine Entschlüsseln-Schaltfläche, die du klicken musst.",
+  "encryption_unlock_auto_hint_on": "An — deine Passphrase ist im Schlüsselbund des Betriebssystems gespeichert. Verschlüsselte Mails werden ohne Klick beim Öffnen entschlüsselt, und Compose sendet ohne erneute Abfrage.",
+  "encryption_unlock_auto_passphrase_label": "Passphrase",
+  "encryption_unlock_auto_save": "Speichern & automatisch entsperren",
+  "encryption_unlock_auto_cancel": "Abbrechen",
+  "encryption_unlock_auto_storage_hint": "Wird im OS-Schlüsselbund neben dem Mail-Passwort dieses Kontos abgelegt. Entfernen des PGP-Schlüssels hier löscht ihn; Abschalten dieser Option ebenfalls.",
+  "compose_pgp_auto_unlock_active": "Automatisch entsperren ist aktiv — deine gespeicherte Passphrase wird verwendet."
 }
