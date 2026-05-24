@@ -34,6 +34,11 @@
     isSenderTrusted,
   } from './trustedSenders'
   import { parseMailtoUrl } from './mailtoUrl'
+  import {
+    cachePassphrase,
+    forgetPassphrase,
+    readCachedPassphrase,
+  } from './sessionPassphraseStore.svelte'
 
   interface EmailAttachment {
     filename: string
@@ -238,6 +243,13 @@
       // without re-prompting.  Done BEFORE wiping the input so the
       // session value carries through.
       sessionPassphrase = decryptPassphrase
+      // #341 — also feed the cross-message session cache so the
+      // next encrypted mail the user opens (and any encrypted
+      // send from Compose) can skip the prompt.  A no-op when
+      // the user hasn't opted into Security → "Remember
+      // passphrase for this session", so the strict-prompt
+      // default is preserved for everyone else.
+      cachePassphrase(email.account_id, decryptPassphrase)
       // Clear the passphrase the moment the IPC resolves so it
       // never lingers on the heap or in a DOM input that the
       // user could leave open.
@@ -250,6 +262,12 @@
       // the IPC channel, so debugging info isn't lost.
       const raw = formatError(e) || 'Decrypt failed'
       decryptError = raw.replace(/^Crypto:\s*/i, '')
+      // #341 — evict the session cache the moment a decrypt fails:
+      // if the cached value was the one that just got rejected,
+      // leaving it in place would silently break the user's next
+      // attachment open / Compose send.  Cheap to re-cache on the
+      // next successful decrypt.
+      if (email) forgetPassphrase(email.account_id)
     } finally {
       decrypting = false
     }
@@ -470,15 +488,20 @@
     whiteBackgroundOverride = null
     // #57 — clear any in-flight decrypt state from the previous
     // message; a passphrase the user typed for `mail A` must not
-    // ride along to `mail B`.
-    decryptPassphrase = ''
+    // ride along to `mail B`.  #341 — *unless* the user opted
+    // into "Remember passphrase for this session" in Security,
+    // in which case `readCachedPassphrase` returns the cached
+    // value for this account and we pre-populate both the
+    // visible Decrypt input (so the click submits without
+    // re-typing) and the session passphrase (so attachment
+    // fetches work even before the user clicks Decrypt).  When
+    // the user hasn't opted in the helper returns null and the
+    // behaviour collapses back to the strict per-message reset.
+    const cached = readCachedPassphrase(id) ?? ''
+    decryptPassphrase = cached
     decryptError = ''
     decrypting = false
-    // #341 — drop the session passphrase too.  Held only for the
-    // currently-open message so attachment fetches can decrypt
-    // without re-prompting; opening a different message starts a
-    // fresh session.
-    sessionPassphrase = ''
+    sessionPassphrase = cached
 
     // Cache first — lets the reading pane paint instantly when the user
     // re-opens a previously read message (the common case).

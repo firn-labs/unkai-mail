@@ -55,6 +55,11 @@
     type MeetingInvite,
   } from './lib/inviteHtml'
   import { parseMailtoUrl } from './lib/mailtoUrl'
+  import {
+    cachePassphrase,
+    forgetPassphrase,
+    readCachedPassphrase,
+  } from './lib/sessionPassphraseStore.svelte'
   import SearchBar, {
     type SearchScope,
     type SearchFilters,
@@ -2183,7 +2188,52 @@
     if (!bodyNeedsDecrypt && !forwardNeedsAttachmentKey) {
       return { mail, passphrase: null }
     }
+    // #341 — when the user has opted into "Remember passphrase
+    // for this session" *and* a previous decrypt/send on this
+    // account already populated the cache, skip the modal
+    // entirely on the first attempt and try the cached value
+    // against `decrypt_message`.  If it succeeds the Reply /
+    // Forward continues straight into Compose with no extra
+    // click; if it fails we evict the now-stale entry and fall
+    // through to the manual prompt loop below (with the error
+    // shown above the input so the user knows why).  Cache
+    // returns null for opt-out users, so this whole block is a
+    // no-op for them.
     let lastError = ''
+    const cachedPassphrase = readCachedPassphrase(mail.account_id)
+    if (cachedPassphrase) {
+      try {
+        const decrypted = await invoke<{
+          body_text: string | null
+          body_html: string | null
+          attachments: {
+            filename: string
+            content_type: string
+            size: number | null
+            part_id: number
+            content_id?: string | null
+          }[]
+        }>('decrypt_message', {
+          accountId: mail.account_id,
+          folder: mail.folder,
+          uid: mail.uid,
+          pgpPassphrase: cachedPassphrase,
+        })
+        return {
+          mail: {
+            ...mail,
+            body_text: decrypted.body_text,
+            body_html: decrypted.body_html,
+            attachments: decrypted.attachments,
+          } as T,
+          passphrase: cachedPassphrase,
+        }
+      } catch (e) {
+        forgetPassphrase(mail.account_id)
+        const raw = formatError(e) || 'Decrypt failed'
+        lastError = raw.replace(/^Crypto:\s*/i, '')
+      }
+    }
     while (true) {
       const passphrase = await new Promise<string | null>((resolve) => {
         pendingDecryptPrompt = {
@@ -2242,6 +2292,11 @@
           pgpPassphrase: passphrase,
         })
         pendingDecryptPrompt = null
+        // #341 — passphrase just verifiably unlocked the key,
+        // so feed the session cache before handing it back to
+        // the Reply / Forward caller.  No-op for users who
+        // haven't opted in via Security.
+        cachePassphrase(mail.account_id, passphrase)
         return {
           mail: {
             ...mail,

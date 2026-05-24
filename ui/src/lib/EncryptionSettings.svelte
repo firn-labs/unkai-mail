@@ -25,6 +25,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
   import { m } from '../paraglide/messages'
+  import { forgetPassphrase } from './sessionPassphraseStore.svelte'
 
   /** Status payload returned by `pgp_get_account_key_status`. */
   interface PgpKeyStatus {
@@ -136,6 +137,12 @@
     errorMessage = null
     try {
       await invoke<void>('pgp_remove_private_key', { accountId: account.id })
+      // #341 — without a key there's nothing to unlock, so any
+      // cached session passphrase for this account is now
+      // meaningless.  Drop it so a fresh import (possibly with
+      // a different passphrase) doesn't silently inherit the
+      // wrong cached value.
+      forgetPassphrase(account.id)
       await refreshStatus(account.id)
       oncrypto_changed?.()
     } catch (e) {

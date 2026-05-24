@@ -288,7 +288,7 @@
   "encryption_paste_label": "Armierten privaten OpenPGP-Schlüssel einfügen",
   "encryption_passphrase_label": "Passphrase",
   "encryption_passphrase_placeholder": "Wird benötigt, um den Schlüssel zu entsperren",
-  "encryption_passphrase_hint": "Die Passphrase wird einmal zur Validierung verwendet und dann verworfen. Compose fragt sie bei jeder verschlüsselten Sendung erneut ab.",
+  "encryption_passphrase_hint": "Die Passphrase wird einmal zur Validierung verwendet und dann verworfen. Compose fragt sie beim Senden verschlüsselter Nachrichten ab — es sei denn, die Option „Passphrase für diese Sitzung merken“ unter Sicherheit ist aktiv.",
   "encryption_import_submit": "Importieren",
   "encryption_import_cancel": "Abbrechen",
 
@@ -304,5 +304,13 @@
   "contact_form_label_pgp_keys": "OpenPGP-Schlüssel",
   "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
   "contact_form_button_add_pgp_key": "Schlüssel hinzufügen",
-  "contact_form_hint_pgp_keys": "Füge einen ASCII-armierten öffentlichen OpenPGP-Schlüssel ein. Wird über die vCard des Kontakts synchronisiert und lokal zwischengespeichert, damit Compose verschlüsselt an diese Adresse senden kann."
+  "contact_form_hint_pgp_keys": "Füge einen ASCII-armierten öffentlichen OpenPGP-Schlüssel ein. Wird über die vCard des Kontakts synchronisiert und lokal zwischengespeichert, damit Compose verschlüsselt an diese Adresse senden kann.",
+
+  "security_pgp_section_title": "PGP-Passphrase",
+  "security_pgp_remember_toggle_label": "Passphrase für diese Sitzung merken",
+  "security_pgp_remember_toggle_hint_off": "Aus — Compose und Entschlüsseln fragen Ihre PGP-Passphrase jedes Mal neu ab.",
+  "security_pgp_remember_toggle_hint_on_empty": "An — sobald Sie eine verschlüsselte Nachricht entschlüsseln oder senden, bleibt Ihre Passphrase im Speicher, bis Sie Unkai Mail schließen.",
+  "security_pgp_remember_toggle_hint_on_cached_one": "Für ein Konto in dieser Sitzung zwischengespeichert. Nur im Speicher — nicht auf der Festplatte, nicht in herausgelösten Fenstern.",
+  "security_pgp_remember_toggle_hint_on_cached_many": "Für {count} Konten in dieser Sitzung zwischengespeichert. Nur im Speicher — nicht auf der Festplatte, nicht in herausgelösten Fenstern.",
+  "security_pgp_forget_button": "Gespeicherte Passphrasen verwerfen"
 }

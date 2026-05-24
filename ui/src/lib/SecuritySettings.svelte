@@ -26,6 +26,13 @@
     isWebAuthnAvailable,
   } from './webauthnPrf'
   import Toggle from './Toggle.svelte'
+  import { m } from '../paraglide/messages'
+  import {
+    cachedPassphraseCount,
+    forgetAllPassphrases,
+    isSessionPassphraseEnabled,
+    setSessionPassphraseEnabled,
+  } from './sessionPassphraseStore.svelte'
 
   interface FidoCredential {
     kind: 'fido_prf' | 'passphrase'
@@ -605,4 +612,52 @@
       {/if}
     </div>
   {/if}
+
+  <!-- PGP passphrase session cache (#341).  Independent of the
+       FIDO unlock block above — this controls whether your
+       OpenPGP key passphrase is re-prompted on every encrypted
+       send/decrypt or remembered for the rest of the running
+       app session.  Off by default; the toggle persists in
+       localStorage but the cached passphrases themselves live
+       only in JS memory and die with the window. -->
+  <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-3">
+    <div class="flex items-start gap-3">
+      <Toggle
+        checked={isSessionPassphraseEnabled()}
+        onchange={(v) => setSessionPassphraseEnabled(v)}
+        label={m.security_pgp_remember_toggle_label()}
+        class="mt-0.5"
+      />
+      <div class="flex-1">
+        <h3 class="font-medium leading-tight">
+          {m.security_pgp_section_title()}
+        </h3>
+        <p class="text-xs text-surface-500 mt-1 max-w-xl leading-snug">
+          {#if !isSessionPassphraseEnabled()}
+            {m.security_pgp_remember_toggle_hint_off()}
+          {:else if cachedPassphraseCount() === 0}
+            {m.security_pgp_remember_toggle_hint_on_empty()}
+          {:else if cachedPassphraseCount() === 1}
+            {m.security_pgp_remember_toggle_hint_on_cached_one()}
+          {:else}
+            {m.security_pgp_remember_toggle_hint_on_cached_many({
+              count: cachedPassphraseCount(),
+            })}
+          {/if}
+        </p>
+      </div>
+    </div>
+    {#if isSessionPassphraseEnabled()}
+      <div class="ml-12">
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500"
+          disabled={cachedPassphraseCount() === 0}
+          onclick={forgetAllPassphrases}
+        >
+          {m.security_pgp_forget_button()}
+        </button>
+      </div>
+    {/if}
+  </div>
 </section>

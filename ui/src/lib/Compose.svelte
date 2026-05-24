@@ -42,6 +42,11 @@
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
+  import {
+    cachePassphrase,
+    forgetPassphrase,
+    readCachedPassphrase,
+  } from './sessionPassphraseStore.svelte'
 
   /** Slim Nextcloud account row — same shape `TalkView` / `Sidebar` use.
       We only need the id to pass to the Talk + Calendar commands. */
@@ -1014,13 +1019,39 @@
   let encryptEnabled = $state(initial?.encryptByDefault === true)
   // Inline passphrase entry shown when the user clicks Send with
   // encryption on.  Cleared on submit and on cancel so a freshly-
-  // opened Compose never inherits a stale passphrase.
-  let pgpPassphrase = $state('')
+  // opened Compose never inherits a stale passphrase — *unless*
+  // the user has opted into Security → "Remember passphrase for
+  // this session" (#341), in which case `readCachedPassphrase`
+  // returns the cached value for the active sending account and
+  // we skip the re-prompt entirely.
+  // svelte-ignore state_referenced_locally
+  let pgpPassphrase = $state(readCachedPassphrase(accountId) ?? '')
   /** `true` once the user has clicked Send with encryption on but
    *  before they've supplied the passphrase.  Drives the inline
    *  passphrase prompt block (rendered just above the Send
    *  button). */
   let awaitingPassphrase = $state(false)
+
+  // #341 — when encryption is on and the user hasn't typed
+  // anything yet, pull the cached session passphrase for the
+  // current sending account (returns null when the user hasn't
+  // opted in, or hasn't decrypted/sent yet this session).  Re-
+  // runs when the user flips the encryption toggle on or
+  // switches the From dropdown — both legitimately changing
+  // which cache slot we should consult.  `pgpPassphrase` is
+  // read under `untrack` so deliberately clearing the input
+  // doesn't trip the effect into immediately re-populating
+  // from cache; only the explicit triggers above kick a re-
+  // fill, and the truthy short-circuit prevents clobbering a
+  // value the user has actually typed.
+  $effect(() => {
+    if (!encryptEnabled) return
+    if (untrack(() => pgpPassphrase)) return
+    const cached = readCachedPassphrase(fromAccountId)
+    if (cached) {
+      pgpPassphrase = cached
+    }
+  })
 
   // #341 — when the parent pre-enabled encryption (reply to an
   // encrypted message), pull the passphrase input into focus once
@@ -2156,6 +2187,14 @@
         // IPC resolves so it doesn't linger across re-renders.
         pgpPassphrase: encryptEnabled ? pgpPassphrase : null,
       })
+      // #341 — feed the cross-Compose session cache from the
+      // passphrase that just verifiably unlocked the active key.
+      // Done before the local wipe so the value is still in
+      // scope; the cache helper short-circuits when the user
+      // hasn't opted in.
+      if (encryptEnabled && pgpPassphrase) {
+        cachePassphrase(snap.fromAccountId, pgpPassphrase)
+      }
       // Wipe the in-memory passphrase before yielding back to the
       // outer flow so a successful send doesn't leave it sitting
       // on the heap for the rest of Compose's lifetime.
@@ -2169,6 +2208,18 @@
     } catch (e: any) {
       const msg = formatError(e) || 'Failed to send'
       console.warn('send_email failed', e)
+      // #341 — a `Crypto:`-prefixed UnkaiError means the
+      // passphrase didn't unlock the active key.  If we'd
+      // sourced it from the session cache the cached value is
+      // now stale, so evict it before the user retries — they
+      // need to type the right one anyway, and leaving the
+      // wrong one cached would have every subsequent encrypt
+      // fail with the same error.  Non-crypto errors (SMTP
+      // down, network glitch, etc.) are unrelated to the
+      // passphrase, so the cache is left alone there.
+      if (encryptEnabled && /^Crypto:/i.test(msg)) {
+        forgetPassphrase(snap.fromAccountId)
+      }
       // #304: in a popped-out Compose the modal is still on screen
       // (we await this pipeline inline before closing).  Rethrow
       // so `send()` can surface the error inline and keep the

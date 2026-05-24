@@ -24,6 +24,11 @@
   import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
+  import {
+    cachePassphrase,
+    forgetPassphrase,
+    readCachedPassphrase,
+  } from './sessionPassphraseStore.svelte'
 
   // We never inspect the email shape inside the standalone window —
   // it's just a payload we forward to the main window via Tauri
@@ -203,7 +208,49 @@
     // subset we actually read.
     const narrow = mail as DecryptableMail
     if (!needsPromptForKind(narrow, kind)) return { mail, passphrase: null }
+    // #341 — popout windows have their own JS context, so the
+    // module-level session cache here is independent of the main
+    // window's.  The opt-in flag lives in localStorage and *is*
+    // shared, so as soon as the user has decrypted or sent
+    // anything inside this popout the cache picks up for the
+    // rest of its lifetime.  Try a cache hit before mounting the
+    // prompt; on failure evict and fall through to the manual
+    // entry loop with the error already pinned above the input.
     let lastError = ''
+    const cachedPassphrase = readCachedPassphrase(narrow.account_id)
+    if (cachedPassphrase) {
+      try {
+        const decrypted = await invoke<{
+          body_text: string | null
+          body_html: string | null
+          attachments: {
+            filename: string
+            content_type: string
+            size: number | null
+            part_id: number
+            content_id?: string | null
+          }[]
+        }>('decrypt_message', {
+          accountId: narrow.account_id,
+          folder: narrow.folder,
+          uid: narrow.uid,
+          pgpPassphrase: cachedPassphrase,
+        })
+        return {
+          mail: {
+            ...(mail as object),
+            body_text: decrypted.body_text,
+            body_html: decrypted.body_html,
+            attachments: decrypted.attachments,
+          } as EmailPayload,
+          passphrase: cachedPassphrase,
+        }
+      } catch (e) {
+        forgetPassphrase(narrow.account_id)
+        const raw = formatError(e) || 'Decrypt failed'
+        lastError = raw.replace(/^Crypto:\s*/i, '')
+      }
+    }
     while (true) {
       const passphrase = await new Promise<string | null>((resolve) => {
         pendingDecryptPrompt = {
@@ -255,6 +302,10 @@
           pgpPassphrase: passphrase,
         })
         pendingDecryptPrompt = null
+        // #341 — passphrase just unlocked the active key in
+        // this popout; seed the popout's own session cache so
+        // a follow-up Forward / Reply skips the prompt.
+        cachePassphrase(narrow.account_id, passphrase)
         return {
           mail: {
             ...(mail as object),
