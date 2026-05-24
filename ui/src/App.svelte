@@ -1068,8 +1068,16 @@
          *  Absent when the source was plaintext or the popout's
          *  cache already had a decrypted body. */
         pgpPassphrase?: string | null
+        /** #341 — answer to the popout-local "include original
+         *  attachments?" prompt.  `true` / `false` when the popout
+         *  asked (forward with attachments); `null` when no question
+         *  was needed (reply / no attachments) or the popout is an
+         *  old build without the field.  Lets this listener skip
+         *  re-prompting in the main window for popout-driven
+         *  forwards. */
+        includeAttachments?: boolean | null
       }>('compose-from-mail', (e) => {
-        const { kind, mail, pgpPassphrase } = e.payload
+        const { kind, mail, pgpPassphrase, includeAttachments } = e.payload
         void (async () => {
           // #341 — the popped-out mail window owns its own decrypt
           // prompt (so the modal appears next to the popout the user
@@ -1120,6 +1128,7 @@
                 : await buildForwardInitialForPopout(
                     composeReady,
                     attachmentPassphrase,
+                    includeAttachments ?? null,
                   )
           void openComposeInStandaloneWindow({
             accountId: composeReady.account_id,
@@ -2543,12 +2552,19 @@
   async function buildForwardInitialForPopout(
     mail: ForwardableMail,
     passphrase: string | null,
+    includeAttachmentsDecision: boolean | null,
   ): Promise<ComposeInitial> {
     const base = buildForwardInitial(mail)
     if (mail.attachments.length === 0) return base
-    const include = await promptIncludeForwardAttachments(
-      mail.attachments.length,
-    )
+    // #341 — when the popout already asked the include / skip
+    // question locally (so the modal stayed next to the popped-out
+    // mail), trust that answer instead of mounting a second prompt
+    // in the main window.  `null` means the popout couldn't decide
+    // (old build that doesn't emit the field) — fall back to the
+    // main-window prompt as a safety net.
+    const include =
+      includeAttachmentsDecision ??
+      (await promptIncludeForwardAttachments(mail.attachments.length))
     if (!include) return base
     try {
       const attachments = await downloadForwardAttachments(mail, passphrase)

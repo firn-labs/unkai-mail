@@ -116,6 +116,32 @@
   }
   let pendingDecryptPrompt = $state<PendingPrompt | null>(null)
 
+  // #341 — same window-locality rule for the "include original
+  // attachments?" prompt (#329).  Previously this fired from the
+  // main window's `buildForwardInitialForPopout`, so the user
+  // clicked Forward in the popout, answered a passphrase prompt
+  // here, then had to switch monitors to find the include-or-not
+  // modal in the main window.  Owning it locally too means a
+  // popped-out forward never bounces focus until the resulting
+  // Compose actually opens.
+  let pendingIncludeAttachmentsPrompt = $state<{
+    count: number
+    resolve: (include: boolean) => void
+  } | null>(null)
+
+  function resolveIncludeAttachmentsPrompt(include: boolean) {
+    if (!pendingIncludeAttachmentsPrompt) return
+    const { resolve } = pendingIncludeAttachmentsPrompt
+    pendingIncludeAttachmentsPrompt = null
+    resolve(include)
+  }
+
+  function promptIncludeAttachments(count: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      pendingIncludeAttachmentsPrompt = { count, resolve }
+    })
+  }
+
   function resolveDecryptPrompt(passphrase: string | null) {
     if (!pendingDecryptPrompt) return
     if (pendingDecryptPrompt.busy) return
@@ -255,10 +281,28 @@
     try {
       const ready = await ensureDecryptedLocal(mail, kind)
       if (!ready) return
+      // #341 — for a forward that carries attachments, ask the
+      // include/skip question *here* so the modal sits next to the
+      // popout the user just clicked Forward on.  Default
+      // ("Forward without" on backdrop / Escape dismiss) matches
+      // the in-window flow.  Reply / Reply All never propagate the
+      // source attachments, so we skip the prompt for those kinds.
+      // `null` for `includeAttachments` is the "no question
+      // needed" signal so the main window can route accordingly
+      // without re-prompting.
+      let includeAttachments: boolean | null = null
+      if (kind === 'forward') {
+        const narrow = ready.mail as DecryptableMail
+        const count = narrow.attachments?.length ?? 0
+        if (count > 0) {
+          includeAttachments = await promptIncludeAttachments(count)
+        }
+      }
       await emit('compose-from-mail', {
         kind,
         mail: ready.mail,
         pgpPassphrase: ready.passphrase,
+        includeAttachments,
       })
     } catch (e) {
       console.warn(`compose-from-mail (${kind}) emit failed`, e)
@@ -316,6 +360,55 @@
     onmailto={onMailto}
   />
 </div>
+
+<!-- #341 — popout-local "include original attachments?" prompt.
+     Same shape App.svelte's `pendingForwardPrompt` modal uses, just
+     instantiated here so a popout-originated Forward keeps the
+     follow-up question in the popout window too. -->
+{#if pendingIncludeAttachmentsPrompt}
+  <div
+    class="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="forward-attachments-title-popout"
+    tabindex="-1"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) resolveIncludeAttachmentsPrompt(false)
+    }}
+    onkeydown={(e) => e.key === 'Escape' && resolveIncludeAttachmentsPrompt(false)}
+  >
+    <div
+      class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl"
+    >
+      <h2 id="forward-attachments-title-popout" class="text-base font-semibold mb-2">
+        {m.compose_forward_attachments_title()}
+      </h2>
+      <p class="text-sm text-surface-600 dark:text-surface-300 mb-4">
+        {pendingIncludeAttachmentsPrompt.count === 1
+          ? m.compose_forward_attachments_body_one()
+          : m.compose_forward_attachments_body_many({
+              n: pendingIncludeAttachmentsPrompt.count,
+            })}
+      </p>
+      <div class="flex justify-end gap-2">
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500"
+          onclick={() => resolveIncludeAttachmentsPrompt(false)}
+        >
+          {m.compose_forward_attachments_skip()}
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-filled-primary-500"
+          onclick={() => resolveIncludeAttachmentsPrompt(true)}
+        >
+          {m.compose_forward_attachments_include()}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- #341 — popout-local decrypt prompt.  Same shape App.svelte
      mounts at the main-window level, just instantiated here so it
