@@ -202,9 +202,26 @@
         value: passphrase,
       }
       try {
+        // Pull `attachments` back too — `decrypt_message` returns
+        // the full `Email`, and the freshly-decrypted attachments
+        // list indexes the *inner* MIME tree (real files), while
+        // the cached envelope the user clicked Forward on still
+        // lists the *outer* `multipart/encrypted` parts (a
+        // `Version: 1` header part + the armored octet-stream).
+        // Overlaying both bodies AND the attachments here means
+        // the main-window listener can route the forward fan-out
+        // through `download_decrypted_attachment` with valid
+        // inner-tree part_ids.
         const decrypted = await invoke<{
           body_text: string | null
           body_html: string | null
+          attachments: {
+            filename: string
+            content_type: string
+            size: number | null
+            part_id: number
+            content_id?: string | null
+          }[]
         }>('decrypt_message', {
           accountId: narrow.account_id,
           folder: narrow.folder,
@@ -217,6 +234,7 @@
             ...(mail as object),
             body_text: decrypted.body_text,
             body_html: decrypted.body_html,
+            attachments: decrypted.attachments,
           } as EmailPayload,
           passphrase,
         }
