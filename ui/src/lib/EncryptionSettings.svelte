@@ -319,94 +319,98 @@
            MailView, Reply/Forward, and the receive path all
            auto-supply it without re-prompting.
 
-           Layout: toggle on the left of the label (the project's
-           default toggle-row shape), with the saved badge or
-           off-state hint promoted to its own flush-left line
-           below the row rather than living in the column to the
-           right of the toggle — otherwise the badge / hint reads
-           as visually indented under the toggle. -->
+           Layout matches SecuritySettings' toggle-row shape: the
+           toggle sits left, then a flex-1 column holds the label,
+           the saved badge / off-state hint, AND the enable form.
+           Putting the form inside the same column keeps the
+           input + Save/Cancel aligned with the label text rather
+           than the toggle-button itself — the form reads as
+           sub-settings of the toggle they belong to. -->
       <div class="mt-3 pt-3 border-t border-surface-200 dark:border-surface-700">
-        <div class="flex items-center gap-3">
+        <div class="flex items-start gap-3">
           <Toggle
             checked={unlockEnabled || unlockEnabling}
             disabled={unlockBusy}
             onchange={onUnlockToggle}
             label={m.encryption_unlock_auto_label()}
+            class="mt-0.5"
           />
-          <p class="text-sm font-medium leading-tight">
-            {m.encryption_unlock_auto_label()}
-          </p>
-        </div>
-        {#if unlockEnabled}
-          <!-- Saved-state badge: explicit visual confirmation
-               that the passphrase is on file in the keychain,
-               so the user doesn't have to infer it from the
-               toggle position alone. -->
-          <div
-            class="inline-flex items-center gap-1 mt-1 text-xs text-success-500"
-            aria-live="polite"
-          >
-            <Icon name="success" size={14} />
-            <span>{m.encryption_unlock_auto_saved()}</span>
-          </div>
-        {:else}
-          <p class="text-xs text-surface-500 mt-1 leading-snug">
-            {m.encryption_unlock_auto_hint_off()}
-          </p>
-        {/if}
-
-        {#if unlockEnabling}
-          <div class="mt-3 space-y-2">
-            <!-- No standalone "Passphrase" label: the placeholder
-                 ("Passphrase for your PGP key") doubles as the
-                 prompt while keeping the form compact.  Visible
-                 input border carries the "type here" signal. -->
-            <input
-              id="pgp-unlock-pw-{account.id}"
-              type="password"
-              class="input text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
-              placeholder={m.encryption_unlock_auto_passphrase_placeholder()}
-              aria-label={m.encryption_unlock_auto_passphrase_label()}
-              bind:value={unlockPassphrase}
-              disabled={unlockBusy}
-              autocomplete="off"
-              onkeydown={(e) => {
-                if (e.key === 'Enter' && unlockPassphrase) {
-                  e.preventDefault()
-                  void submitEnableUnlock()
-                }
-              }}
-            />
-            {#if unlockError}
-              <div class="text-xs text-error-500">{unlockError}</div>
-            {/if}
-            <div class="flex gap-2">
-              <button
-                type="button"
-                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
-                onclick={submitEnableUnlock}
-                disabled={unlockBusy || !unlockPassphrase}
-                title={m.encryption_unlock_auto_save()}
-                aria-label={m.encryption_unlock_auto_save()}
-              >
-                <Icon name="save-draft" size={14} />
-              </button>
-              <button
-                type="button"
-                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
-                onclick={cancelEnablingUnlock}
-                disabled={unlockBusy}
-                title={m.encryption_unlock_auto_cancel()}
-                aria-label={m.encryption_unlock_auto_cancel()}
-              >
-                <Icon name="close" size={14} />
-              </button>
-            </div>
-            <p class="text-xs text-surface-400">
-              {m.encryption_unlock_auto_storage_hint()}
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-medium leading-tight">
+              {m.encryption_unlock_auto_label()}
             </p>
+            {#if unlockEnabled}
+              <!-- Saved-state badge: explicit visual confirmation
+                   that the passphrase is on file in the keychain,
+                   so the user doesn't have to infer it from the
+                   toggle position alone. -->
+              <div
+                class="inline-flex items-center gap-1 mt-1 text-xs text-success-500"
+                aria-live="polite"
+              >
+                <Icon name="success" size={14} />
+                <span>{m.encryption_unlock_auto_saved()}</span>
+              </div>
+            {:else}
+              <p class="text-xs text-surface-500 mt-1 leading-snug">
+                {m.encryption_unlock_auto_hint_off()}
+              </p>
+            {/if}
+
+            {#if unlockEnabling}
+              <div class="mt-3 space-y-2">
+                <!-- No standalone "Passphrase" label: the placeholder
+                     ("Passphrase for your PGP key") doubles as the
+                     prompt while keeping the form compact.  Visible
+                     input border carries the "type here" signal. -->
+                <input
+                  id="pgp-unlock-pw-{account.id}"
+                  type="password"
+                  class="input text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
+                  placeholder={m.encryption_unlock_auto_passphrase_placeholder()}
+                  aria-label={m.encryption_unlock_auto_passphrase_label()}
+                  bind:value={unlockPassphrase}
+                  disabled={unlockBusy}
+                  autocomplete="off"
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' && unlockPassphrase) {
+                      e.preventDefault()
+                      void submitEnableUnlock()
+                    }
+                  }}
+                />
+                {#if unlockError}
+                  <div class="text-xs text-error-500">{unlockError}</div>
+                {/if}
+                <div class="flex gap-2">
+                  <button
+                    type="button"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+                    onclick={submitEnableUnlock}
+                    disabled={unlockBusy || !unlockPassphrase}
+                    title={m.encryption_unlock_auto_save()}
+                    aria-label={m.encryption_unlock_auto_save()}
+                  >
+                    <Icon name="save-draft" size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+                    onclick={cancelEnablingUnlock}
+                    disabled={unlockBusy}
+                    title={m.encryption_unlock_auto_cancel()}
+                    aria-label={m.encryption_unlock_auto_cancel()}
+                  >
+                    <Icon name="close" size={14} />
+                  </button>
+                </div>
+                <p class="text-xs text-surface-400">
+                  {m.encryption_unlock_auto_storage_hint()}
+                </p>
+              </div>
+            {/if}
           </div>
-        {/if}
+        </div>
       </div>
     </div>
   {:else if importing}
