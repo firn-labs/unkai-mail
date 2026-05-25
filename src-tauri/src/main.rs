@@ -8224,6 +8224,7 @@ async fn send_email(
             &cache,
             entry_id,
             pgp_passphrase.as_deref(),
+            false,
         )
         .await;
     });
@@ -8252,7 +8253,7 @@ async fn send_email(
 /// missing local-side bookkeeping will reconcile on the next
 /// envelope fetch).
 async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
-    let _ = try_drain_outbox_entry_with_passphrase(app, cache, entry_id, None).await;
+    let _ = try_drain_outbox_entry_with_passphrase(app, cache, entry_id, None, false).await;
 }
 
 /// Variant of [`try_drain_outbox_entry`] that carries a freshly-
@@ -8271,11 +8272,26 @@ async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
 /// Returns `Ok(())` for the "row vanished mid-drain" and "claim held
 /// by another drain" no-op branches; those aren't errors the user
 /// needs to see.
+///
+/// `force_claim` (#341 follow-up): the CAS-style claim in
+/// `claim_outbox_for_drain` refuses a re-claim inside a 30 s window
+/// to keep the post-enqueue spawn and the periodic sweep from
+/// racing.  That guard is wrong for the user-driven retry path: a
+/// freshly-failed row has `last_attempt_at = now`, so a user click
+/// inside the next 30 s would be refused and this function would
+/// return `Ok` without actually running — closing the passphrase
+/// panel deceptively.  `force_claim = true` switches to the
+/// unconditional `force_claim_outbox_for_drain` for the manual-
+/// retry case (no concurrent drain exists — the previous attempt
+/// already failed, otherwise the row would be gone).  All
+/// automatic callers pass `false` so the existing race protection
+/// stays in force for them.
 async fn try_drain_outbox_entry_with_passphrase(
     app: &AppHandle,
     cache: &Cache,
     entry_id: i64,
     pgp_passphrase: Option<&str>,
+    force_claim: bool,
 ) -> Result<(), UnkaiError> {
     // Claim the row before doing any real work (#292 follow-up).
     // Without this guard, the spawned drain `send_email` kicks off
@@ -8285,11 +8301,21 @@ async fn try_drain_outbox_entry_with_passphrase(
     // receives the same mail twice.  A 30 s TTL is comfortable for
     // any healthy SMTP roundtrip and short enough that a crashed
     // drain stops blocking retries quickly.
-    match cache.claim_outbox_for_drain(entry_id, 30) {
+    let claim_outcome = if force_claim {
+        cache.force_claim_outbox_for_drain(entry_id)
+    } else {
+        cache.claim_outbox_for_drain(entry_id, 30)
+    };
+    match claim_outcome {
         Ok(true) => {}
         Ok(false) => {
+            // Force-claim returns `false` only when the row has
+            // vanished — same shape as the TTL claim's "row gone"
+            // outcome.  TTL claim also returns `false` when another
+            // drain holds the row inside the 30 s window; that
+            // branch is unreachable in `force_claim = true` calls.
             tracing::debug!(
-                "try_drain_outbox_entry: skipping entry {entry_id}, claim held by another drain"
+                "try_drain_outbox_entry: skipping entry {entry_id}, claim held by another drain or row gone"
             );
             return Ok(());
         }
@@ -8641,7 +8667,13 @@ async fn retry_outbox_entry_with_passphrase(
     app: AppHandle,
 ) -> Result<(), UnkaiError> {
     let cache = app.state::<Cache>();
-    try_drain_outbox_entry_with_passphrase(&app, &cache, id, Some(pgp_passphrase.as_str())).await
+    // `force_claim = true`: the previous attempt already failed
+    // (otherwise the row would be gone), so the 30 s TTL guard would
+    // refuse the re-claim and silently no-op back to the panel —
+    // closing it without actually retrying.  No concurrent drain
+    // exists in the manual-retry case, so force is safe.
+    try_drain_outbox_entry_with_passphrase(&app, &cache, id, Some(pgp_passphrase.as_str()), true)
+        .await
 }
 
 /// Drop a queued row without sending (#276).  Used by the
