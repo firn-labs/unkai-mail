@@ -109,9 +109,11 @@ impl SmtpClient {
     /// - `encryption_mode == Some("pgp")` → RFC 3156 §4
     ///   `multipart/encrypted` (encrypt + sign-inside-encrypt).
     ///   Requires `bridge` and at least one cached recipient key per
-    ///   address.  BCC is refused — a single ciphertext encrypted to
-    ///   TO + CC + BCC would leak the BCC list via the OpenPGP ESK
-    ///   packets, and per-recipient encryption isn't wired here.
+    ///   address.  BCC is handled by splitting the send: a single
+    ///   ciphertext to TO + CC keys, plus one separate ciphertext per
+    ///   BCC recipient encrypted to that recipient's key alone, so
+    ///   the OpenPGP ESK packets in one recipient's copy never name
+    ///   another.  See [`plan_pgp_encrypted_envelopes`] for the plan.
     /// - `signing_enabled == true` (and not encrypted) → RFC 3156 §5
     ///   `multipart/signed` sign-only.  Requires `bridge`.  Body is
     ///   sent in cleartext + a detached OpenPGP signature; BCC is
@@ -174,24 +176,46 @@ impl SmtpClient {
             return Ok(());
         }
 
-        if !email.bcc.is_empty() {
+        // Per-recipient envelope planning (RFC 4880 §5.1 — each
+        // ciphertext carries one ESK packet per recipient public
+        // key, so co-locating BCC keys with TO + CC keys would
+        // leak the BCC list). One envelope for the visible TO + CC
+        // copy, plus one envelope per BCC recipient — each BCC
+        // copy is encrypted only to that BCC's key so no other
+        // recipient ever appears in their ESK packets.
+        let planned = plan_pgp_encrypted_envelopes(email, bridge)?;
+        if planned.is_empty() {
             return Err(UnkaiError::Protocol(
-                "PGP encryption with BCC recipients is not yet supported — \
-                 BCC keys would leak via the OpenPGP ESK packets. \
-                 Send to BCC recipients separately."
+                "PGP encrypted send has no recipients — \
+                 To, Cc, and Bcc are all empty"
                     .into(),
             ));
         }
+        let envelope_count = planned.len();
+        for (
+            idx,
+            PlannedEnvelope {
+                envelope,
+                wire_bytes,
+            },
+        ) in planned.iter().enumerate()
+        {
+            self.transport
+                .send_raw(envelope, wire_bytes)
+                .await
+                .map_err(|e| {
+                    UnkaiError::Protocol(format!(
+                        "Failed to send encrypted envelope {}/{}: {e}",
+                        idx + 1,
+                        envelope_count
+                    ))
+                })?;
+        }
 
-        let outer_bytes = wrap_as_pgp_mime(email, bridge)?;
-        let envelope = envelope_from_email(email)?;
-
-        self.transport
-            .send_raw(&envelope, &outer_bytes)
-            .await
-            .map_err(|e| UnkaiError::Protocol(format!("Failed to send encrypted email: {e}")))?;
-
-        info!("Encrypted email sent successfully to {:?}", email.to);
+        info!(
+            envelope_count,
+            "Encrypted email sent successfully (To/Cc copy plus one envelope per BCC)"
+        );
         Ok(())
     }
 }
@@ -308,13 +332,49 @@ fn sanitise_recipient(addr: &str) -> String {
 /// to inherit the same display-name handling the plaintext path uses;
 /// we then take the `.email` portion since `Envelope` doesn't carry the
 /// display name (it's just the SMTP-level address list).  BCC is
-/// intentionally **not** added to the envelope here — the only PGP/MIME
-/// `multipart/encrypted` path that calls this currently rejects non-empty
-/// BCC before reaching us, and adding them later requires per-recipient
-/// encryption.  For `multipart/signed` use
-/// [`envelope_from_email_include_bcc`] instead.
+/// intentionally **not** added to the envelope here — the
+/// `multipart/encrypted` send path routes BCC recipients through
+/// separate per-recipient envelopes built via
+/// [`envelope_for_single_recipient`] so the OpenPGP ESK packets in one
+/// recipient's ciphertext never name another.  For `multipart/signed`
+/// use [`envelope_from_email_include_bcc`] instead.
 fn envelope_from_email(email: &OutgoingEmail) -> Result<Envelope, UnkaiError> {
     envelope_from_email_inner(email, false)
+}
+
+/// Build a one-recipient envelope (single RCPT TO) for the encrypted
+/// BCC fan-out.  Each per-BCC `multipart/encrypted` copy ships its
+/// own ciphertext encrypted to one key only, and the SMTP envelope
+/// has to match — otherwise the receiving relay would either reject
+/// the extra recipients or, worse, route a copy to addresses whose
+/// key never appears in the ESK packets.
+fn envelope_for_single_recipient(
+    email: &OutgoingEmail,
+    recipient: &str,
+) -> Result<Envelope, UnkaiError> {
+    let from_mailbox: Mailbox = sanitise_recipient(&email.from)
+        .parse()
+        .map_err(|e| UnkaiError::Protocol(format!("Invalid 'from' address: {e}")))?;
+    let from_addr: Address = from_mailbox.email;
+
+    let rcpt_mailbox: Mailbox = sanitise_recipient(recipient)
+        .parse()
+        .map_err(|e| UnkaiError::Protocol(format!("Invalid recipient '{recipient}': {e}")))?;
+
+    Envelope::new(Some(from_addr), vec![rcpt_mailbox.email])
+        .map_err(|e| UnkaiError::Protocol(format!("build SMTP envelope: {e}")))
+}
+
+/// Strip the display name from a `Name <addr@host>` entry and return
+/// just the bare `addr@host` form.  Used when feeding recipient lists
+/// to [`CryptoBridge::encrypt`], whose public-key cache is keyed on
+/// the bare email — handing it the full quoted form would miss the
+/// cached key and surface as `CryptoKeyNotFound`.
+fn address_only(addr: &str) -> String {
+    sanitise_recipient(addr)
+        .parse::<Mailbox>()
+        .map(|mb| mb.email.to_string())
+        .unwrap_or_else(|_| addr.to_string())
 }
 
 /// Variant of [`envelope_from_email`] that adds BCC recipients to the
@@ -380,41 +440,128 @@ fn envelope_from_email_inner(
 /// clients produce.  RFC 9533 ("Header Protection") suggests a
 /// stricter form; we'll evaluate adopting it once interop with the
 /// common clients is proven.
-fn wrap_as_pgp_mime(
+/// Build the `multipart/encrypted` wire bytes for one envelope's
+/// worth of recipients.
+///
+/// `encrypt_to` is the explicit recipient list passed to the bridge,
+/// decoupled from `email.to / email.cc`.  Used by the BCC fan-out
+/// in [`plan_pgp_encrypted_envelopes`]: each per-BCC copy is
+/// encrypted to just that one BCC recipient's key even though the
+/// inner MIME's visible `To` / `Cc` headers still list the original
+/// (non-BCC) recipients — the BCC recipient sees who else was on
+/// the mail, just not the other BCCs (matching the plaintext BCC
+/// fan-out).
+///
+/// `email.bcc` should be empty on calls from the encrypted-send
+/// path: the outer header writer ignores BCC by design, but the
+/// inner [`build_outgoing_message`] would still emit the address
+/// via lettre's `Bcc:` header if it were populated — exactly the
+/// leak we're avoiding.  Callers strip BCC on the email clone they
+/// hand in.
+fn wrap_as_pgp_mime_for_recipients(
     email: &OutgoingEmail,
     bridge: &dyn CryptoBridge,
+    encrypt_to: &[String],
 ) -> Result<Vec<u8>, UnkaiError> {
     let inner_message = build_outgoing_message(email)?;
     let inner_bytes = inner_message.formatted();
 
-    let recipients: Vec<String> = email
-        .to
-        .iter()
-        .chain(email.cc.iter())
-        .map(|a| {
-            // Extract just the address portion when the entry is
-            // `Name <addr@host>` — recipient lookup in the bridge's
-            // public-key cache is keyed on bare email.
-            sanitise_recipient(a)
-                .parse::<Mailbox>()
-                .map(|mb| mb.email.to_string())
-                .unwrap_or_else(|_| a.clone())
-        })
-        .collect();
-
-    let encrypted = bridge.encrypt(&inner_bytes, &recipients, email.signing_enabled)?;
+    let encrypted = bridge.encrypt(&inner_bytes, encrypt_to, email.signing_enabled)?;
     Ok(build_outer_pgp_mime_bytes(
         email,
         &encrypted.ciphertext_armor,
     ))
 }
 
+/// One planned PGP/MIME envelope ready to hand to `transport.send_raw`.
+struct PlannedEnvelope {
+    /// SMTP routing — MAIL FROM + RCPT TO list.  For the visible
+    /// TO + CC copy this carries every TO + CC address; for a
+    /// per-BCC copy it carries that single BCC address.
+    envelope: Envelope,
+    /// Wire-format `multipart/encrypted` bytes including outer
+    /// routing headers + ciphertext body.
+    wire_bytes: Vec<u8>,
+}
+
+/// Plan one or more `multipart/encrypted` envelopes for `email`.
+///
+/// When `email.bcc` is empty, returns a single envelope addressed
+/// to TO + CC.  When BCC is non-empty, returns one envelope for
+/// the TO + CC visible recipients (skipped if both are empty —
+/// e.g. a BCC-only send), plus one envelope per BCC recipient.
+///
+/// Each per-BCC envelope's ciphertext is encrypted **only** to
+/// that BCC recipient's key, so the OpenPGP ESK packets in one
+/// recipient's copy never name another.  Mirrors how the
+/// plaintext BCC fan-out works at the SMTP level (separate RCPT
+/// TO transactions, no BCC headers on the wire), but with the
+/// additional cryptographic property that no two ciphertexts
+/// ever share a session-key recipient set.
+///
+/// All copies use the same inner MIME body (built from `email`
+/// with `bcc` stripped), so what each recipient *reads* is
+/// identical — the differences are confined to the OpenPGP
+/// session-key wrappers and the SMTP envelope routing.
+fn plan_pgp_encrypted_envelopes(
+    email: &OutgoingEmail,
+    bridge: &dyn CryptoBridge,
+) -> Result<Vec<PlannedEnvelope>, UnkaiError> {
+    // BCC is cleared from the clone we hand to the body / outer
+    // builders so the BCC list cannot land in either copy's
+    // headers via lettre's `Bcc:` header on the inner MIME.  The
+    // outer wrapper already omits BCC; this belt-and-braces step
+    // keeps the inner clean too.
+    let mut header_email = email.clone();
+    header_email.bcc.clear();
+
+    let mut planned = Vec::with_capacity(1 + email.bcc.len());
+
+    // ── (1) Visible TO + CC copy ───────────────────────────────
+    // One ciphertext encrypted to every visible recipient's key.
+    // Skipped if both TO and CC are empty (a BCC-only send) so
+    // we don't waste a transaction on an empty RCPT TO list.
+    let to_cc_recipients: Vec<String> = email
+        .to
+        .iter()
+        .chain(email.cc.iter())
+        .map(|a| address_only(a))
+        .collect();
+    if !to_cc_recipients.is_empty() {
+        let wire = wrap_as_pgp_mime_for_recipients(&header_email, bridge, &to_cc_recipients)?;
+        let envelope = envelope_from_email(&header_email)?;
+        planned.push(PlannedEnvelope {
+            envelope,
+            wire_bytes: wire,
+        });
+    }
+
+    // ── (2) Per-BCC fan-out ────────────────────────────────────
+    // One envelope per BCC address, each with its own ciphertext
+    // encrypted only to that recipient's key.  Visible headers
+    // still show the original TO / CC — same disclosure model as
+    // the plaintext BCC fan-out — but the BCC recipient never
+    // sees any other BCC address and the TO / CC recipients
+    // never see any sign that BCC was used.
+    for bcc_addr in &email.bcc {
+        let bcc_key = address_only(bcc_addr);
+        let wire = wrap_as_pgp_mime_for_recipients(&header_email, bridge, &[bcc_key])?;
+        let envelope = envelope_for_single_recipient(&header_email, bcc_addr)?;
+        planned.push(PlannedEnvelope {
+            envelope,
+            wire_bytes: wire,
+        });
+    }
+
+    Ok(planned)
+}
+
 /// Pure-function MIME envelope builder for the PGP/MIME outer.  Lives
-/// outside [`wrap_as_pgp_mime`] so the structure can be unit-tested
-/// against a fixed ciphertext without spinning up a real bridge or
-/// transport.  All header strings are emitted with CRLF endings as
-/// RFC 5322 requires (lettre normally handles this for us; we have
-/// to do it ourselves on the hand-built outer).
+/// outside [`wrap_as_pgp_mime_for_recipients`] so the structure can
+/// be unit-tested against a fixed ciphertext without spinning up a
+/// real bridge or transport.  All header strings are emitted with
+/// CRLF endings as RFC 5322 requires (lettre normally handles this
+/// for us; we have to do it ourselves on the hand-built outer).
 fn build_outer_pgp_mime_bytes(email: &OutgoingEmail, ciphertext_armor: &[u8]) -> Vec<u8> {
     // Boundary string is just a random ASCII tag that can't appear in
     // either body part.  We use a UUID prefix so the chance of
@@ -1474,5 +1621,225 @@ mod tests {
         let rcpts: Vec<String> = env.to().iter().map(|a| a.to_string()).collect();
         assert!(rcpts.contains(&"a@example.com".into()));
         assert!(rcpts.contains(&"secret@example.com".into()));
+    }
+
+    // ── multipart/encrypted BCC split-send (#341) ───────────────
+
+    use super::plan_pgp_encrypted_envelopes;
+
+    /// Test bridge that records every `encrypt` call's recipient
+    /// list — the property under test for the BCC fan-out is
+    /// "no two ciphertexts share a recipient set, and no
+    /// ciphertext names a BCC recipient alongside any other".
+    /// `encrypt` returns a marker armor blob tagged with the call
+    /// index so wire-byte assertions can tell the per-recipient
+    /// ciphertexts apart.
+    struct RecordingEncryptBridge {
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+    impl RecordingEncryptBridge {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn recorded(&self) -> Vec<Vec<String>> {
+            self.calls.lock().expect("mutex").clone()
+        }
+    }
+    impl CryptoBridge for RecordingEncryptBridge {
+        fn decrypt(&self, _: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
+            unreachable!()
+        }
+        fn verify(&self, _: &[u8], _: &[u8]) -> Result<VerifyOutcome, UnkaiError> {
+            unreachable!()
+        }
+        fn encrypt(
+            &self,
+            _: &[u8],
+            recipients: &[String],
+            _: bool,
+        ) -> Result<EncryptedOutput, UnkaiError> {
+            let mut guard = self.calls.lock().expect("mutex");
+            let idx = guard.len();
+            guard.push(recipients.to_vec());
+            let armor = format!(
+                "-----BEGIN PGP MESSAGE-----\nUNKAI-TEST-CIPHERTEXT-{idx}\n-----END PGP MESSAGE-----\n"
+            );
+            Ok(EncryptedOutput {
+                ciphertext_armor: armor.into_bytes(),
+            })
+        }
+        fn sign(&self, _: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn plan_without_bcc_emits_one_envelope_to_visible_recipients() {
+        // The non-BCC case must keep the historical single-envelope
+        // shape — one ciphertext encrypted to every TO + CC key,
+        // one RCPT TO list covering them all.  Anything else would
+        // double the SMTP load for the common case.
+        let mut email = outgoing("regular send", &["to1@example.com"]);
+        email.cc = vec!["cc1@example.com".into()];
+        let bridge = RecordingEncryptBridge::new();
+        let planned = plan_pgp_encrypted_envelopes(&email, &bridge).expect("plan");
+
+        assert_eq!(planned.len(), 1);
+
+        let recipients = bridge.recorded();
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(
+            recipients[0],
+            vec!["to1@example.com".to_string(), "cc1@example.com".to_string()]
+        );
+
+        let rcpts: Vec<String> = planned[0]
+            .envelope
+            .to()
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert!(rcpts.contains(&"to1@example.com".into()));
+        assert!(rcpts.contains(&"cc1@example.com".into()));
+    }
+
+    #[test]
+    fn plan_with_bcc_isolates_each_bcc_in_its_own_envelope() {
+        // The core split-send property: with BCC recipients in the
+        // mix, we emit one envelope for the visible TO + CC and one
+        // additional envelope per BCC.  Each BCC envelope's
+        // ciphertext is encrypted ONLY to that BCC's key (so no
+        // other recipient ever appears in the ESK packets that
+        // BCC recipient could read), and the SMTP envelope routes
+        // to that single BCC address (so the receiving relay can't
+        // accidentally fan it out further).
+        let mut email = outgoing("split-send", &["to1@example.com"]);
+        email.cc = vec!["cc1@example.com".into()];
+        email.bcc = vec!["bcc1@example.com".into(), "bcc2@example.com".into()];
+
+        let bridge = RecordingEncryptBridge::new();
+        let planned = plan_pgp_encrypted_envelopes(&email, &bridge).expect("plan");
+
+        assert_eq!(planned.len(), 3, "1 TO+CC envelope + 2 per-BCC envelopes");
+
+        let recipients = bridge.recorded();
+        assert_eq!(recipients.len(), 3);
+        // (1) TO + CC copy: both visible recipients in one ESK set.
+        assert_eq!(
+            recipients[0],
+            vec!["to1@example.com".to_string(), "cc1@example.com".to_string()]
+        );
+        // (2) bcc1 copy: ESK set is exactly { bcc1 }.
+        assert_eq!(recipients[1], vec!["bcc1@example.com".to_string()]);
+        // (3) bcc2 copy: ESK set is exactly { bcc2 }.
+        assert_eq!(recipients[2], vec!["bcc2@example.com".to_string()]);
+
+        // Envelopes route to the matching addresses.
+        let env0_rcpts: Vec<String> = planned[0]
+            .envelope
+            .to()
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert!(env0_rcpts.contains(&"to1@example.com".into()));
+        assert!(env0_rcpts.contains(&"cc1@example.com".into()));
+        assert!(!env0_rcpts.contains(&"bcc1@example.com".into()));
+        assert!(!env0_rcpts.contains(&"bcc2@example.com".into()));
+
+        let env1_rcpts: Vec<String> = planned[1]
+            .envelope
+            .to()
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert_eq!(env1_rcpts, vec!["bcc1@example.com".to_string()]);
+
+        let env2_rcpts: Vec<String> = planned[2]
+            .envelope
+            .to()
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert_eq!(env2_rcpts, vec!["bcc2@example.com".to_string()]);
+    }
+
+    #[test]
+    fn plan_with_bcc_keeps_bcc_out_of_every_copys_headers() {
+        // No copy may carry a `Bcc:` header — the visible TO + CC
+        // copy must not let TO / CC recipients see that BCC was
+        // used at all, and each per-BCC copy must not let its
+        // recipient see the other BCCs.  Same disclosure shape as
+        // the plaintext BCC fan-out.
+        let mut email = outgoing("no bcc header anywhere", &["to1@example.com"]);
+        email.bcc = vec!["bcc1@example.com".into(), "bcc2@example.com".into()];
+
+        let bridge = RecordingEncryptBridge::new();
+        let planned = plan_pgp_encrypted_envelopes(&email, &bridge).expect("plan");
+        assert_eq!(planned.len(), 3);
+
+        for (idx, env) in planned.iter().enumerate() {
+            let wire = std::str::from_utf8(&env.wire_bytes).expect("utf-8");
+            assert!(
+                !wire.to_ascii_lowercase().contains("bcc:"),
+                "envelope {idx} wire bytes must not carry any `Bcc:` header: {wire}"
+            );
+            // Visible To header still appears so the recipient
+            // knows who else was on the (visible) recipient list.
+            assert!(
+                wire.contains("To: to1@example.com"),
+                "envelope {idx} must keep the visible To header: {wire}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_with_bcc_only_skips_the_visible_copy() {
+        // A BCC-only send (no TO, no CC) must NOT emit a wasted
+        // empty envelope — only the per-BCC copies should be
+        // queued.  Otherwise the SMTP server would reject a
+        // RCPT-less transaction and fail the entire send.
+        let mut email = outgoing("bcc-only", &[]);
+        email.bcc = vec!["only@example.com".into()];
+
+        let bridge = RecordingEncryptBridge::new();
+        let planned = plan_pgp_encrypted_envelopes(&email, &bridge).expect("plan");
+        assert_eq!(planned.len(), 1);
+
+        let recipients = bridge.recorded();
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(recipients[0], vec!["only@example.com".to_string()]);
+
+        let rcpts: Vec<String> = planned[0]
+            .envelope
+            .to()
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert_eq!(rcpts, vec!["only@example.com".to_string()]);
+    }
+
+    #[test]
+    fn plan_strips_display_names_before_handing_recipients_to_bridge() {
+        // The bridge's public-key cache is keyed on the bare
+        // email — handing it `"Alex Morgan <alex@example.com>"`
+        // would miss the cached key and surface a spurious
+        // CryptoKeyNotFound.  `address_only` strips the display
+        // name on every recipient before the encrypt call.
+        let mut email = outgoing(
+            "display-name stripping",
+            &["Alex Morgan <alex@example.com>"],
+        );
+        email.bcc = vec!["Sam Lee <sam@example.com>".into()];
+
+        let bridge = RecordingEncryptBridge::new();
+        let planned = plan_pgp_encrypted_envelopes(&email, &bridge).expect("plan");
+        assert_eq!(planned.len(), 2);
+
+        let recipients = bridge.recorded();
+        // TO copy keyed on the bare alex@…, BCC copy on the bare sam@….
+        assert_eq!(recipients[0], vec!["alex@example.com".to_string()]);
+        assert_eq!(recipients[1], vec!["sam@example.com".to_string()]);
     }
 }
