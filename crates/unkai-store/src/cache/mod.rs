@@ -1962,6 +1962,30 @@ impl Cache {
         Ok(updated > 0)
     }
 
+    /// Unconditional variant of [`claim_outbox_for_drain`] — stamps
+    /// `last_attempt_at` to `now` regardless of any prior claim
+    /// inside the TTL window.  Used by the user-driven retry path
+    /// (#341 / PR #361) where the CAS-style guard the periodic
+    /// sweep and post-enqueue spawn rely on is the wrong shape:
+    /// the user clicked Retry on a row whose previous attempt
+    /// already failed (otherwise the row would be gone), so there
+    /// is no concurrent drain to protect against, and refusing the
+    /// re-claim inside the 30 s window made the awaiting retry
+    /// command return `Ok` without actually running — a silent
+    /// success that closed the passphrase panel deceptively.
+    /// Returns `true` when the row exists, `false` when it has
+    /// vanished (drained, deleted) in between — same shape as
+    /// `claim_outbox_for_drain` so callers can branch identically.
+    pub fn force_claim_outbox_for_drain(&self, id: i64) -> Result<bool, CacheError> {
+        let conn = self.conn()?;
+        let now = Utc::now().timestamp();
+        let updated = conn.execute(
+            "UPDATE outbox_messages SET last_attempt_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        Ok(updated > 0)
+    }
+
     pub fn enqueue_outbox(&self, input: &OutboxEnqueue) -> Result<i64, CacheError> {
         let conn = self.conn()?;
         let now = Utc::now().timestamp();
