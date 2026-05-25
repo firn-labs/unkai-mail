@@ -42,14 +42,112 @@
   let busy = $state(false)
   let actionError = $state('')
 
+  /** Inline passphrase prompt state for the encrypted-retry UX
+   *  (#341).  `passphrasePanelOpen` is the toggle that reveals the
+   *  panel under the action cluster; `passphraseInput` is the
+   *  bound value (typed locally — only flows out via the invoke
+   *  argument, never stored).  `passphraseError` is the inline
+   *  status line so the user can re-type after a wrong-passphrase
+   *  attempt without losing the panel.  Cleared on every fresh
+   *  submit so a stale error never paints alongside a new attempt.
+   *  We track the row id we opened on so we can collapse the panel
+   *  automatically when the user clicks a different row (the
+   *  parent OutboxView is re-used across rows; without this guard
+   *  the panel would carry between rows). */
+  let passphrasePanelOpen = $state(false)
+  let passphraseInput = $state('')
+  let passphraseError = $state('')
+  let passphrasePanelRowId = $state<number | null>(null)
+
+  $effect(() => {
+    // Collapse + scrub the panel whenever the selected row
+    // changes.  Reading `row.id` ties the effect to the row swap;
+    // the password value never lingers across rows.
+    if (passphrasePanelRowId !== null && passphrasePanelRowId !== row.id) {
+      passphrasePanelOpen = false
+      passphraseInput = ''
+      passphraseError = ''
+      passphrasePanelRowId = null
+    }
+  })
+
+  /** Auto-unlock fast path (#341, #355).  When the account this
+   *  row belongs to has the per-account "Unlock automatically"
+   *  toggle on, the backend's send pipeline resolves the
+   *  passphrase from the OS keychain — no prompt needed.  We
+   *  pre-check the toggle, and if it's on we just submit an empty
+   *  passphrase to the awaiting retry command and let the backend
+   *  precedence (caller -> keychain) handle the rest.  The check
+   *  is per-row (the user may have a mix of opted-in and opted-out
+   *  accounts), so we re-fetch on every retry click rather than
+   *  caching the answer.  Falls back to the prompt path on any
+   *  IPC error rather than blocking the user. */
+  async function accountHasAutoUnlock(): Promise<boolean> {
+    try {
+      return await invoke<boolean>('pgp_has_unlock_automatically', {
+        accountId: row.accountId,
+      })
+    } catch (e) {
+      console.warn('pgp_has_unlock_automatically lookup failed', e)
+      return false
+    }
+  }
+
   async function retry() {
     if (busy) return
+    // For PGP-active rows that previously failed, open the
+    // passphrase panel (or skip it on the auto-unlock fast path)
+    // instead of firing the no-passphrase retry that the
+    // background sweep already runs and that already failed.
+    if (pgpActive && row.lastError) {
+      if (await accountHasAutoUnlock()) {
+        await submitWithPassphrase('')
+        return
+      }
+      passphrasePanelOpen = true
+      passphrasePanelRowId = row.id
+      passphraseError = ''
+      return
+    }
     busy = true
     actionError = ''
     try {
       await invoke('retry_outbox_entry', { id: row.id })
     } catch (e) {
       actionError = `${e}`
+    } finally {
+      busy = false
+    }
+  }
+
+  /** Drive the awaiting backend command + map the result into the
+   *  inline error / collapsed-panel transitions.  Used by both the
+   *  auto-unlock fast path (empty `passphrase`) and the user-typed
+   *  submit.  The success branch leaves cleanup to the
+   *  `outbox-updated` event — the OutboxList listener re-fetches,
+   *  the row vanishes, and the parent passes `null` back through
+   *  `onselect` which unmounts this whole view. */
+  async function submitWithPassphrase(passphrase: string) {
+    busy = true
+    actionError = ''
+    passphraseError = ''
+    try {
+      await invoke('retry_outbox_entry_with_passphrase', {
+        id: row.id,
+        pgpPassphrase: passphrase,
+      })
+      // Successful drain — clear the typed value and let the
+      // outbox-updated event collapse the surface around us.
+      passphraseInput = ''
+      passphrasePanelOpen = false
+      passphrasePanelRowId = null
+    } catch (e) {
+      // Stay on the panel so the user can re-type without
+      // re-finding it.  We surface the raw error string —
+      // "Crypto error: …" for a wrong passphrase, "Network
+      // error: …" for transport, etc. — so the user can tell a
+      // typo from a server problem.
+      passphraseError = `${e}`
     } finally {
       busy = false
     }
@@ -93,6 +191,14 @@
     body_text: string | null
     body_html: string | null
     attachments: Array<{ filename: string; content_type: string }>
+    /** Outgoing `OutgoingEmail.encryption_mode` (#57).  `"pgp"`
+     *  means the row asked for PGP/MIME encryption; anything else
+     *  (`null`, `"none"`) is plaintext from the encryption side. */
+    encryption_mode?: string | null
+    /** Outgoing `OutgoingEmail.signing_enabled` (#341 Part 7).
+     *  `true` for the sign-only path which also needs the private
+     *  key unlocked — same passphrase precedence as encryption. */
+    signing_enabled?: boolean
   }
 
   let parsed = $derived.by<ParsedOutgoing | null>(() => {
@@ -127,6 +233,17 @@
 
   let renderedHtml = $derived(
     parsed && parsed.body_html ? sanitiseHtml(parsed.body_html) : '',
+  )
+
+  /** True when this queued message will exercise the PGP private
+   *  key on send — either full `multipart/encrypted` (encryption
+   *  mode "pgp") or sign-only (#341 Part 7).  Both paths need the
+   *  same passphrase prompt UX on a failed retry; plaintext rows
+   *  fall back to the standard fire-and-forget Retry. */
+  let pgpActive = $derived(
+    parsed
+      ? parsed.encryption_mode === 'pgp' || parsed.signing_enabled === true
+      : false,
   )
 
   function formatTimestamp(unixSec: number): string {
@@ -190,10 +307,14 @@
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
           disabled={busy}
           onclick={() => void retry()}
-          title={m.outbox_button_retry_title()}
+          title={pgpActive && row.lastError
+            ? m.outbox_button_retry_with_passphrase_title()
+            : m.outbox_button_retry_title()}
         >
-          <Icon name={busy ? 'loading' : 'sync'} size={14} />
-          {m.outbox_button_retry()}
+          <Icon name={busy ? 'loading' : pgpActive && row.lastError ? 'lock' : 'sync'} size={14} />
+          {pgpActive && row.lastError
+            ? m.outbox_button_retry_with_passphrase()
+            : m.outbox_button_retry()}
         </button>
         <button
           type="button"
@@ -219,6 +340,70 @@
       {#if actionError}
         <div class="mt-2 text-xs text-error-500 wrap-break-word">
           {actionError}
+        </div>
+      {/if}
+
+      <!-- Inline passphrase panel for the encrypted-retry UX
+           (#341).  Mirrors MailView's decrypt-passphrase panel —
+           explanation copy on top, input + submit on a second
+           row — so the two encryption-passphrase surfaces share a
+           visual language.  Hidden by default; the Retry button
+           toggles it on for PGP-active rows that have a previous
+           failure (rows that haven't tried yet still get the
+           plain fire-and-forget retry). -->
+      {#if passphrasePanelOpen}
+        <div
+          class="mt-3 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
+        >
+          <p class="text-sm text-surface-600 dark:text-surface-400">
+            {m.outbox_passphrase_explain()}
+          </p>
+          <div class="flex items-center gap-2">
+            <input
+              type="password"
+              class="input text-sm px-2 py-1.5 rounded-md flex-1"
+              placeholder={m.outbox_passphrase_input_placeholder()}
+              bind:value={passphraseInput}
+              disabled={busy}
+              autocomplete="off"
+              onkeydown={(e) => {
+                if (e.key === 'Enter' && passphraseInput) {
+                  void submitWithPassphrase(passphraseInput)
+                } else if (e.key === 'Escape') {
+                  passphrasePanelOpen = false
+                  passphraseInput = ''
+                  passphraseError = ''
+                }
+              }}
+            />
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5 hover:border-surface-50 shrink-0"
+              disabled={busy || !passphraseInput}
+              onclick={() => void submitWithPassphrase(passphraseInput)}
+              title={m.outbox_button_retry_with_passphrase_title()}
+            >
+              {busy ? m.outbox_passphrase_submit_busy() : m.outbox_passphrase_submit()}
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center shrink-0"
+              disabled={busy}
+              onclick={() => {
+                passphrasePanelOpen = false
+                passphraseInput = ''
+                passphraseError = ''
+              }}
+              title={m.outbox_passphrase_cancel()}
+            >
+              {m.outbox_passphrase_cancel()}
+            </button>
+          </div>
+          {#if passphraseError}
+            <div class="text-xs text-error-500 wrap-break-word">
+              {passphraseError}
+            </div>
+          {/if}
         </div>
       {/if}
 

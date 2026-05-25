@@ -8219,7 +8219,7 @@ async fn send_email(
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         let cache = app_clone.state::<Cache>();
-        try_drain_outbox_entry_with_passphrase(
+        let _ = try_drain_outbox_entry_with_passphrase(
             &app_clone,
             &cache,
             entry_id,
@@ -8252,7 +8252,7 @@ async fn send_email(
 /// missing local-side bookkeeping will reconcile on the next
 /// envelope fetch).
 async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
-    try_drain_outbox_entry_with_passphrase(app, cache, entry_id, None).await
+    let _ = try_drain_outbox_entry_with_passphrase(app, cache, entry_id, None).await;
 }
 
 /// Variant of [`try_drain_outbox_entry`] that carries a freshly-
@@ -8261,12 +8261,22 @@ async fn try_drain_outbox_entry(app: &AppHandle, cache: &Cache, entry_id: i64) {
 /// other caller (periodic sweep, manual retry) drops back to the
 /// no-passphrase shape above and the encryption path surfaces a
 /// clear "needs interactive retry" error.
+///
+/// Returns the inner send result so callers that need to surface a
+/// precise error inline (the Outbox encrypted-retry UI in
+/// `retry_outbox_entry_with_passphrase`, #341) can do so.  The cache
+/// is still mutated internally either way — `remove_outbox` on
+/// success, `record_outbox_failure` on error — so fire-and-forget
+/// callers see no behavioural change and can ignore the result.
+/// Returns `Ok(())` for the "row vanished mid-drain" and "claim held
+/// by another drain" no-op branches; those aren't errors the user
+/// needs to see.
 async fn try_drain_outbox_entry_with_passphrase(
     app: &AppHandle,
     cache: &Cache,
     entry_id: i64,
     pgp_passphrase: Option<&str>,
-) {
+) -> Result<(), UnkaiError> {
     // Claim the row before doing any real work (#292 follow-up).
     // Without this guard, the spawned drain `send_email` kicks off
     // and the periodic `drain_outbox_sweep` can both reach this
@@ -8281,20 +8291,20 @@ async fn try_drain_outbox_entry_with_passphrase(
             tracing::debug!(
                 "try_drain_outbox_entry: skipping entry {entry_id}, claim held by another drain"
             );
-            return;
+            return Ok(());
         }
         Err(e) => {
             tracing::warn!("claim_outbox_for_drain({entry_id}) failed: {e}");
-            return;
+            return Err(e.into());
         }
     }
 
     let row = match cache.get_outbox(entry_id) {
         Ok(Some(r)) => r,
-        Ok(None) => return, // Already removed (manual delete, race with another drain).
+        Ok(None) => return Ok(()), // Already removed (manual delete, race with another drain).
         Err(e) => {
             tracing::warn!("get_outbox({entry_id}) failed: {e}");
-            return;
+            return Err(e.into());
         }
     };
 
@@ -8309,7 +8319,7 @@ async fn try_drain_outbox_entry_with_passphrase(
             if let Err(c) = cache.record_outbox_failure(entry_id, &msg) {
                 tracing::warn!("record_outbox_failure failed: {c}");
             }
-            return;
+            return Err(UnkaiError::Other(msg));
         }
     };
     let replied_to: Option<RepliedToRef> =
@@ -8334,7 +8344,7 @@ async fn try_drain_outbox_entry_with_passphrase(
             );
             let _ = cache.remove_outbox(entry_id);
             emit_outbox_updated(app);
-            return;
+            return Err(e);
         }
     };
 
@@ -8357,6 +8367,7 @@ async fn try_drain_outbox_entry_with_passphrase(
                 tracing::warn!("remove_outbox after success failed: {e}");
             }
             emit_outbox_updated(app);
+            Ok(())
         }
         Err(e) => {
             let msg = format!("{e}");
@@ -8368,6 +8379,7 @@ async fn try_drain_outbox_entry_with_passphrase(
                 tracing::warn!("record_outbox_failure failed: {c}");
             }
             emit_outbox_updated(app);
+            Err(e)
         }
     }
 }
@@ -8606,6 +8618,30 @@ async fn retry_outbox_entry(id: i64, app: AppHandle) -> Result<(), UnkaiError> {
         try_drain_outbox_entry(&app_clone, &cache, id).await;
     });
     Ok(())
+}
+
+/// Awaiting variant of [`retry_outbox_entry`] that threads a fresh
+/// PGP passphrase forward and surfaces the precise send error inline
+/// (#341).  Backs the Outbox's "Retry with passphrase" panel: a row
+/// that failed to drain because the background sweep had no
+/// passphrase is retried with the one the user just typed.  Unlike
+/// the fire-and-forget sibling, this awaits the drain so the panel
+/// can re-prompt on a `Crypto: ...` (wrong-passphrase) error without
+/// racing the `outbox-updated` event back to the list.
+///
+/// `pgp_passphrase` may be empty — that's the auto-unlock fast path
+/// where the account has [`pgp_has_unlock_automatically`] turned on
+/// and `run_send_pipeline`'s precedence (caller → keychain) resolves
+/// from the keychain entry.  The frontend pre-checks the toggle and
+/// submits an empty string when it's on, sparing the user a prompt.
+#[tauri::command]
+async fn retry_outbox_entry_with_passphrase(
+    id: i64,
+    pgp_passphrase: String,
+    app: AppHandle,
+) -> Result<(), UnkaiError> {
+    let cache = app.state::<Cache>();
+    try_drain_outbox_entry_with_passphrase(&app, &cache, id, Some(pgp_passphrase.as_str())).await
 }
 
 /// Drop a queued row without sending (#276).  Used by the
@@ -13377,6 +13413,7 @@ fn main() {
             count_outbox,
             count_outbox_by_account,
             retry_outbox_entry,
+            retry_outbox_entry_with_passphrase,
             delete_outbox_entry,
             edit_outbox_entry,
             save_draft,
