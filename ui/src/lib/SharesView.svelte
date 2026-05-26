@@ -170,10 +170,28 @@
     { value: 4, label: () => m.shares_view_perm_filedrop() },
   ] as const
 
+  /** Strip Nextcloud's "reshare" bit (16) before matching against the
+   *  canonical dropdown values.  Public-link shares come back from
+   *  the server with bit 16 set as a bookkeeping artefact even
+   *  though there's no real reshare affordance on a public link
+   *  itself — Nextcloud's own picker hides this bit too.  Result:
+   *  `17` (1 + 16) reads as "View only" instead of "Custom (17)",
+   *  `19` (3 + 16) reads as "View and edit", and so on. */
+  function snapPermissionBitsForDisplay(value: number): number {
+    const stripped = value & ~16
+    // If stripping the reshare bit lands us on a canonical option,
+    // surface that; otherwise we genuinely have an exotic
+    // combination and fall back to the raw value so the chip /
+    // dropdown is at least truthful.
+    if (PERMISSION_OPTIONS.some((o) => o.value === stripped)) return stripped
+    return value
+  }
+
   function permissionLabel(value: number): string {
+    const snapped = snapPermissionBitsForDisplay(value)
     return (
-      PERMISSION_OPTIONS.find((o) => o.value === value)?.label() ??
-      m.shares_view_perm_custom({ value: String(value) })
+      PERMISSION_OPTIONS.find((o) => o.value === snapped)?.label() ??
+      m.shares_view_perm_custom({ value: String(snapped) })
     )
   }
 
@@ -247,8 +265,13 @@
    *  else → view-only. */
   function snapToCanonicalPermission(p: number): number {
     if (PERMISSION_OPTIONS.some((o) => o.value === p)) return p
-    const hasUpdate = (p & 2) !== 0
-    const hasCreate = (p & 4) !== 0
+    // Strip the reshare bit first — most "non-canonical" values in
+    // practice are just (canonical | 16), so dropping it lands us on
+    // a clean dropdown option without losing real information.
+    const stripped = p & ~16
+    if (PERMISSION_OPTIONS.some((o) => o.value === stripped)) return stripped
+    const hasUpdate = (stripped & 2) !== 0
+    const hasCreate = (stripped & 4) !== 0
     if (hasCreate && !hasUpdate) return 4
     if (hasUpdate && hasCreate) return 15
     if (hasUpdate) return 3
@@ -428,7 +451,7 @@
                     {permissionLabel(row.permissions)}
                   </span>
                   <span class="inline-flex items-center gap-1" title={row.has_password ? m.shares_view_password_set_title() : m.shares_view_password_none_title()}>
-                    <Icon name={row.has_password ? 'lock' : 'unread'} size={12} />
+                    <Icon name={row.has_password ? 'lock' : 'unlocked'} size={12} />
                     {row.has_password ? m.shares_view_password_set() : m.shares_view_password_none()}
                   </span>
                   {#if row.expiration}
