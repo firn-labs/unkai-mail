@@ -21,6 +21,7 @@
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import type { ComposeInitial } from './Compose.svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import { m } from '../paraglide/messages'
 
   interface NextcloudAccount {
     id: string
@@ -30,11 +31,10 @@
   }
 
   interface Props {
-    onclose: () => void
     /** Open Compose with the given prefill (used for "Share link"). */
     oncompose: (initial: ComposeInitial) => void
   }
-  const { onclose, oncompose }: Props = $props()
+  const { oncompose }: Props = $props()
 
   let accounts = $state<NextcloudAccount[]>([])
   let accountId = $state('')
@@ -190,18 +190,24 @@
   >
     <h2 class="text-xl font-semibold">Talk Rooms</h2>
     <div class="flex items-center gap-2">
+      <!-- Primary CTA: "New room" stays filled-primary so it still
+           reads as the page's main action.  Icon-only via the
+           shared `plus` glyph; tooltip + aria-label carry the
+           label for keyboard / screen-reader users. -->
       <button
-        class="btn preset-filled-primary-500 text-sm"
+        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
         disabled={!accountId}
         onclick={() => (showCreate = true)}
-      >+ New room</button>
+        title={m.talk_view_new_room_title()}
+        aria-label={m.talk_view_new_room()}
+      ><Icon name="plus" size={14} /></button>
       <button
-        class="btn preset-tonal-surface text-sm inline-flex items-center gap-1.5"
+        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
         disabled={!accountId || loading}
         onclick={() => refresh()}
-        title="Refresh room list"
-      ><Icon name={loading ? 'loading' : 'refresh'} size={14} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
-      <button class="btn preset-tonal-surface text-sm" onclick={onclose}>Close</button>
+        title={loading ? m.talk_view_refreshing() : m.talk_view_refresh_title()}
+        aria-label={loading ? m.talk_view_refreshing() : m.talk_view_refresh()}
+      ><Icon name={loading ? 'loading' : 'refresh'} size={14} /></button>
     </div>
   </div>
 
@@ -261,22 +267,30 @@
             </p>
           </div>
 
+          <!-- Per-row icon-only action buttons.  Class string
+               matches the canonical pattern in CLAUDE.md so every
+               row's set of actions reads as siblings of one shape;
+               only the destructive (delete) variant adds the
+               red-on-hover overlay so it stays calm at rest. -->
           <button
-            class="btn preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
             onclick={() => shareRoom(room)}
-            title="Open a new mail with this room's join link"
-          ><Icon name="share-links" size={14} /> Share link</button>
+            title={m.talk_view_share_link_title()}
+            aria-label={m.talk_view_share_link()}
+          ><Icon name="share-links" size={14} /></button>
           <button
-            class="btn preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
             onclick={() => openRoom(room)}
-            title="Open this Talk room in your browser"
-          >Open <Icon name="open-link" size={14} /></button>
+            title={m.talk_view_open_title()}
+            aria-label={m.talk_view_open()}
+          ><Icon name="open-link" size={14} /></button>
           <button
-            class="btn preset-outlined-error-500 text-xs inline-flex items-center gap-1.5 hover:bg-error-500/15 hover:text-error-500"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
             disabled={deletingToken === room.token}
             onclick={() => void deleteRoom(room)}
-            title="Delete this Talk room for everyone"
-          ><Icon name={deletingToken === room.token ? 'loading' : 'trash'} size={14} /> {deletingToken === room.token ? 'Deleting…' : 'Delete'}</button>
+            title={deletingToken === room.token ? m.talk_view_deleting() : m.talk_view_delete_title()}
+            aria-label={deletingToken === room.token ? m.talk_view_deleting() : m.talk_view_delete()}
+          ><Icon name={deletingToken === room.token ? 'loading' : 'trash'} size={14} /></button>
         </li>
       {/snippet}
       <div class="flex-1 overflow-y-auto flex flex-col">

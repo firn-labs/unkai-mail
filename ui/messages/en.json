@@ -324,6 +324,19 @@
 
   "search_input_clear": "Clear search",
 
+  "talk_view_new_room": "New room",
+  "talk_view_new_room_title": "Start a new Talk room",
+  "talk_view_refresh": "Refresh",
+  "talk_view_refreshing": "Refreshing…",
+  "talk_view_refresh_title": "Refresh room list",
+  "talk_view_share_link": "Share link in mail",
+  "talk_view_share_link_title": "Open a new mail with this room's join link",
+  "talk_view_open": "Open",
+  "talk_view_open_title": "Open this Talk room in your browser",
+  "talk_view_delete": "Delete",
+  "talk_view_deleting": "Deleting…",
+  "talk_view_delete_title": "Delete this Talk room for everyone",
+
   "shares_view_title": "Share Links",
   "shares_view_search_placeholder": "Search shares",
   "shares_view_no_matches": "No share links match this search.",

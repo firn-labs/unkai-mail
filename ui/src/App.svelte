@@ -3326,7 +3326,7 @@
       </div>
     {:else if currentView === 'talk'}
       <div class="flex-1 min-w-0">
-        <TalkView onclose={goToInbox} oncompose={openCompose} />
+        <TalkView oncompose={openCompose} />
       </div>
     {:else if currentView === 'notes'}
       <div class="flex-1 min-w-0">
