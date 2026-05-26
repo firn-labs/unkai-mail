@@ -148,6 +148,24 @@
     return parts.length === 0 ? '/' : '/' + parts.join('/')
   }
 
+  /** Format a `YYYY-MM-DD` calendar date the way the user's locale
+   *  writes dates (`18.06.2026` in de, `6/18/2026` in en-US, etc.).
+   *
+   *  We deliberately parse the parts and build the `Date` via the
+   *  local-zone `Date(y, m, d)` ctor instead of `new Date("YYYY-MM-DD")`
+   *  — the string-arg form interprets the value as UTC midnight, which
+   *  in negative-offset zones rolls back to the previous day and would
+   *  silently shift the displayed expiry one day earlier. */
+  function formatExpiryDate(iso: string): string {
+    const [yStr, mStr, dStr] = iso.split('-')
+    const y = Number(yStr)
+    const m = Number(mStr)
+    const d = Number(dStr)
+    if (!y || !m || !d) return iso
+    const date = new Date(y, m - 1, d)
+    return date.toLocaleDateString()
+  }
+
   function formatRelative(unix: number): string {
     if (!unix) return ''
     const now = Date.now() / 1000
@@ -457,7 +475,7 @@
                   {#if row.expiration}
                     <span class="inline-flex items-center gap-1" title={m.shares_view_expires_title()}>
                       <Icon name="time" size={12} />
-                      {m.shares_view_expires_label({ date: row.expiration })}
+                      {m.shares_view_expires_label({ date: formatExpiryDate(row.expiration) })}
                     </span>
                   {:else}
                     <span class="inline-flex items-center gap-1" title={m.shares_view_no_expiry_title()}>
