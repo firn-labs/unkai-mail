@@ -341,6 +341,9 @@
   "files_view_send_attachment_title": "Eine neue Mail mit den ausgewählten Dateien als Anhang öffnen",
   "files_view_send_attachment_folders_only_title": "Ordner können als Link geteilt, aber nicht als Bytes angehängt werden",
   "files_view_send_attachment_downloading": "Lade herunter…",
+  "files_view_create_folder_confirm": "Ordner erstellen",
+  "files_view_create_folder_confirming": "Erstelle Ordner…",
+  "files_view_create_folder_cancel": "Abbrechen",
 
   "calendar_view_new_event": "Neuer Termin",
   "calendar_view_new_event_title": "Einen neuen Kalendertermin erstellen",

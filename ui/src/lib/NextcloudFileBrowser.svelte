@@ -424,16 +424,26 @@
             else if (e.key === 'Escape') cancelCreateFolder()
           }}
         />
+        <!-- Inline-form action buttons: icon-only `btn-sm` shape
+             so they match the header / footer icon-button family.
+             Confirm uses the project-wide `save-draft` save glyph;
+             cancel uses the `close` (X) glyph.  Loading state
+             swaps the save icon to `loading` so the button width
+             stays stable while the request is in flight. -->
         <button
-          class="btn preset-filled-primary-500 text-xs"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
           disabled={creatingFolderInFlight || !newFolderName.trim()}
           onclick={confirmCreateFolder}
-        >{creatingFolderInFlight ? 'Creating…' : 'Create'}</button>
+          title={creatingFolderInFlight ? m.files_view_create_folder_confirming() : m.files_view_create_folder_confirm()}
+          aria-label={creatingFolderInFlight ? m.files_view_create_folder_confirming() : m.files_view_create_folder_confirm()}
+        ><Icon name={creatingFolderInFlight ? 'loading' : 'save-draft'} size={14} /></button>
         <button
-          class="btn preset-outlined-surface-500 text-xs"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           disabled={creatingFolderInFlight}
           onclick={cancelCreateFolder}
-        >Cancel</button>
+          title={m.files_view_create_folder_cancel()}
+          aria-label={m.files_view_create_folder_cancel()}
+        ><Icon name="close" size={14} /></button>
       </div>
     {/if}
 
