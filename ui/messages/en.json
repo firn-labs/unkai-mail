@@ -334,6 +334,12 @@
   "files_view_refreshing": "Refreshing…",
   "files_view_refresh_title": "Reload this folder from the server",
 
+  "calendar_view_new_event": "New event",
+  "calendar_view_new_event_title": "Create a new calendar event",
+  "calendar_view_sync": "Sync",
+  "calendar_view_syncing": "Syncing…",
+  "calendar_view_sync_title": "Sync calendars with the server now",
+
   "talk_view_new_room": "New room",
   "talk_view_new_room_title": "Start a new Talk room",
   "talk_view_refresh": "Refresh",

@@ -34,6 +34,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
+  import { m } from '../paraglide/messages'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import Select from './Select.svelte'
   import { resizableSidebar } from './resizableSidebar'
@@ -1248,18 +1249,27 @@
       {/if}
     </div>
     <div class="flex items-center gap-2">
+      <!-- Icon-only header actions matching the canonical shape
+           used by SharesView / TalkView / FilesView.  "New event"
+           stays filled-primary because it's the page's primary
+           CTA; Sync sits next to it as the secondary action with
+           the tonal-surface shape.  Sync swaps its glyph to
+           `loading` while a background sync is in flight, mirroring
+           how the other views' refresh buttons telegraph state. -->
       <button
-        class="btn preset-filled-primary-500 text-sm"
+        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
         disabled={calendars.length === 0}
         onclick={openCreateBlank}
-      >
-        + New event
-      </button>
-      <!-- "Sync now" lives in Settings → Nextcloud → Calendars now;
-           keeping a button here was the second sync-trigger surface
-           and made the row in settings feel redundant. The "Syncing…"
-           badge above still tells the user when a background sync
-           that *was* triggered from settings is in flight. -->
+        title={m.calendar_view_new_event_title()}
+        aria-label={m.calendar_view_new_event()}
+      ><Icon name="plus" size={14} /></button>
+      <button
+        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+        disabled={accounts.length === 0 || syncing}
+        onclick={() => void syncInBackground()}
+        title={syncing ? m.calendar_view_syncing() : m.calendar_view_sync_title()}
+        aria-label={syncing ? m.calendar_view_syncing() : m.calendar_view_sync()}
+      ><Icon name={syncing ? 'loading' : 'sync'} size={14} /></button>
     </div>
   </div>
 
