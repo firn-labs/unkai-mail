@@ -865,6 +865,87 @@ async fn update_nextcloud_share_label(
     .await
 }
 
+/// Snapshot of a single public share for the management UI (#117).
+/// Mirrors `unkai_nextcloud::PublicShareInfo` but carries the
+/// originating `nc_id` so the UI can dispatch follow-up updates /
+/// deletes against the right account when the user has more than
+/// one Nextcloud connected.
+#[derive(serde::Serialize)]
+struct NextcloudShareRow {
+    nc_id: String,
+    id: String,
+    path: String,
+    item_type: String,
+    url: String,
+    token: String,
+    label: Option<String>,
+    permissions: u8,
+    has_password: bool,
+    expiration: Option<String>,
+    stime: i64,
+    mimetype: String,
+}
+
+/// List every public share link the given Nextcloud account owns
+/// (#117).  Powers the dedicated share-management view in the rail.
+#[tauri::command]
+async fn list_nextcloud_shares(nc_id: String) -> Result<Vec<NextcloudShareRow>, UnkaiError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let shares = unkai_nextcloud::list_public_shares(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
+    Ok(shares
+        .into_iter()
+        .map(|s| NextcloudShareRow {
+            nc_id: nc_id.clone(),
+            id: s.id,
+            path: s.path,
+            item_type: s.item_type,
+            url: s.url,
+            token: s.token,
+            label: s.label,
+            permissions: s.permissions,
+            has_password: s.has_password,
+            expiration: s.expiration,
+            stime: s.stime,
+            mimetype: s.mimetype,
+        })
+        .collect())
+}
+
+/// Update a Nextcloud public share's password / permissions /
+/// expiry from the share-management view (#117).  Each field is
+/// optional — only the ones the caller passes get sent to the
+/// server.  Empty-string `password` clears the password gate;
+/// empty-string `expire_date` clears the expiration.
+#[tauri::command]
+async fn update_nextcloud_share(
+    nc_id: String,
+    share_id: String,
+    password: Option<String>,
+    permissions: Option<u8>,
+    expire_date: Option<String>,
+) -> Result<(), UnkaiError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    unkai_nextcloud::update_public_share(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &share_id,
+        password.as_deref(),
+        permissions,
+        expire_date.as_deref(),
+        &account.trusted_certs,
+    )
+    .await
+}
+
 /// Delete a Nextcloud public share by id (#193).
 ///
 /// Compose calls this when the user discards a draft after having
@@ -13479,6 +13560,8 @@ fn main() {
             nextcloud_file_preview,
             create_nextcloud_share,
             update_nextcloud_share_label,
+            update_nextcloud_share,
+            list_nextcloud_shares,
             delete_nextcloud_share,
             create_nextcloud_directory,
             list_talk_rooms,

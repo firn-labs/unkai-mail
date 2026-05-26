@@ -57,6 +57,7 @@
     | 'contacts'
     | 'calendar'
     | 'files'
+    | 'shares'
     | 'talk'
     | 'notes'
     | 'settings'
@@ -243,6 +244,7 @@
     { match: 'contacts', label: 'Contacts', icon: 'contacts' },
     { match: 'calendar', label: 'Calendar', icon: 'calendar' },
     { match: 'files', label: 'Files', icon: 'files' },
+    { match: 'shares', label: 'Share links', icon: 'share-links' },
     { match: 'talk', label: 'Talk', icon: 'meetings' },
     { match: 'notes', label: 'Notes', icon: 'notes' },
   ]
@@ -262,6 +264,7 @@
             case 'contacts': return ncCaps.contacts
             case 'calendar': return ncCaps.calendar
             case 'files':    return ncCaps.files
+            case 'shares':   return ncCaps.files
             case 'talk':     return ncCaps.talk
             case 'notes':    return ncCaps.notes
             default:         return true

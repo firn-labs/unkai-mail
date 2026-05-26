@@ -515,6 +515,301 @@ pub async fn delete_share(
     Ok(())
 }
 
+/// Snapshot of a single public share returned by `list_public_shares`
+/// (#117).  Mirrors the OCS `shares` GET response with the fields the
+/// share-management UI actually surfaces — `id`, what file/folder is
+/// being shared, the public URL, optional label/password/expiry/
+/// permission metadata.
+///
+/// Password is reported as a boolean only: the OCS response carries
+/// either `null` (no password) or a bcrypt-style hash, and exposing
+/// the hash to the frontend would be misleading.  The UI re-PUTs a
+/// fresh password via `update_public_share` when the user changes it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PublicShareInfo {
+    pub id: String,
+    /// Path in the user's Nextcloud root (e.g. `/Documents/foo.pdf`).
+    pub path: String,
+    /// "file" or "folder" — drives which permission options the UI
+    /// can offer when editing the share.
+    pub item_type: String,
+    /// Public URL the recipient opens.
+    pub url: String,
+    /// Bare token (the trailing `/s/<token>` segment); handy for
+    /// cross-referencing with `data-unkai-share-id` markers in
+    /// draft bodies even if the share id round-trips elsewhere.
+    pub token: String,
+    /// Human-readable label set on the share (#91).  `None` when the
+    /// user never set one.
+    pub label: Option<String>,
+    /// Nextcloud permission bitmask (1 read, 2 update, 4 create,
+    /// 8 delete, 16 share).
+    pub permissions: u8,
+    /// True when the share is gated behind a password.  The actual
+    /// password is never sent to the client.
+    pub has_password: bool,
+    /// Expiration date in `YYYY-MM-DD` form, or `None` when the
+    /// share never expires.  Nextcloud reports expiry as
+    /// `YYYY-MM-DD HH:MM:SS` so we trim the time portion.
+    pub expiration: Option<String>,
+    /// Unix timestamp (seconds) of when the share was created.
+    pub stime: i64,
+    /// File mimetype as reported by Nextcloud; helps the UI pick the
+    /// right icon glyph.  May be empty for folders.
+    pub mimetype: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListShareItem {
+    id: serde_json::Value,
+    #[serde(default)]
+    share_type: i64,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    item_type: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    permissions: u8,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    expiration: Option<String>,
+    #[serde(default)]
+    stime: i64,
+    #[serde(default)]
+    mimetype: String,
+}
+
+/// List every public share link the authenticated user currently owns
+/// (#117).
+///
+/// Drives the share-management UI: the user wants to see all shares
+/// they've created across every file so they can revoke, re-password,
+/// or repermission them in one place.
+///
+/// Endpoint:
+/// ```text
+///   GET  /ocs/v2.php/apps/files_sharing/api/v1/shares?format=json
+///   OCS-APIRequest: true
+/// ```
+///
+/// We filter to `share_type == 3` (public link) on the client side —
+/// the OCS endpoint returns user / group / circle shares mixed in,
+/// but the management UI is scoped to link shares since those are the
+/// ones where password / expiry / permission tweaks make sense.
+pub async fn list_public_shares(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    trusted_certs: &[TrustedCert],
+) -> Result<Vec<PublicShareInfo>, UnkaiError> {
+    let server = client::normalize_server_url(server_url);
+    let url = format!("{server}/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json");
+
+    tracing::debug!("GET {url}");
+
+    let http = client::build(trusted_certs)?;
+    let resp = http
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| UnkaiError::Network(format!("share list failed: {e}")))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(UnkaiError::Auth(
+            "Nextcloud rejected app password (revoked or expired)".into(),
+        ));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| UnkaiError::Network(format!("share list body read failed: {e}")))?;
+    if !status.is_success() {
+        return Err(UnkaiError::Nextcloud(
+            ocs_message(&body)
+                .map(|m| friendly_share_error(&m))
+                .unwrap_or_else(|| body.trim().to_string()),
+        ));
+    }
+    parse_list_response(&body)
+}
+
+fn parse_list_response(body: &str) -> Result<Vec<PublicShareInfo>, UnkaiError> {
+    let raw: OcsRaw = serde_json::from_str(body)
+        .map_err(|e| UnkaiError::Protocol(format!("share list bad JSON: {e}")))?;
+    if raw.ocs.meta.status != "ok" || raw.ocs.meta.statuscode >= 400 {
+        let msg = raw
+            .ocs
+            .meta
+            .message
+            .unwrap_or_else(|| "share list rejected by server".to_string());
+        return Err(UnkaiError::Nextcloud(format!(
+            "share list failed (OCS {}): {}",
+            raw.ocs.meta.statuscode, msg
+        )));
+    }
+    let items: Vec<ListShareItem> = serde_json::from_value(raw.ocs.data)
+        .map_err(|e| UnkaiError::Protocol(format!("share list data bad shape: {e}")))?;
+    let mut out: Vec<PublicShareInfo> = Vec::with_capacity(items.len());
+    for it in items {
+        // Filter to public-link shares only — user / group / circle
+        // shares ride along on the same endpoint but live in their
+        // own UI surface.
+        if it.share_type != SHARE_TYPE_PUBLIC_LINK as i64 {
+            continue;
+        }
+        let id = match it.id {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Number(n) => n.to_string(),
+            _ => continue,
+        };
+        // Trim Nextcloud's "YYYY-MM-DD HH:MM:SS" expiry down to the
+        // date — the DateField on the UI side round-trips through
+        // `YYYY-MM-DD`, so passing the full timestamp back would
+        // refuse to load into the picker.
+        let expiration = it.expiration.and_then(|s| {
+            let trimmed = s.split_whitespace().next().unwrap_or("").to_string();
+            if trimmed.is_empty() || trimmed == "null" {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        out.push(PublicShareInfo {
+            id,
+            path: it.path,
+            item_type: it.item_type,
+            url: it.url,
+            token: it.token,
+            label: it.label.filter(|s| !s.is_empty()),
+            permissions: it.permissions,
+            has_password: it
+                .password
+                .as_deref()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            expiration,
+            stime: it.stime,
+            mimetype: it.mimetype,
+        });
+    }
+    Ok(out)
+}
+
+/// Update the mutable properties of an existing public share (#117).
+///
+/// Endpoint:
+/// ```text
+///   PUT  /ocs/v2.php/apps/files_sharing/api/v1/shares/{id}?format=json
+///   OCS-APIRequest: true
+/// ```
+///
+/// Each field is optional — only the ones the caller passes get sent
+/// to the server, mirroring how the OCS endpoint treats absent form
+/// fields as "leave alone".  Two sentinels let the UI explicitly
+/// clear a value rather than just skip it:
+///   - `password = Some("")` removes any existing password.
+///   - `expire_date = Some("")` removes the expiration date.
+///
+/// Permission updates pass the raw bitmask Nextcloud uses
+/// (1 read, 2 update, 4 create, 8 delete, 16 share).
+pub async fn update_public_share(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    share_id: &str,
+    password: Option<&str>,
+    permissions: Option<u8>,
+    expire_date: Option<&str>,
+    trusted_certs: &[TrustedCert],
+) -> Result<(), UnkaiError> {
+    if share_id.is_empty() {
+        return Err(UnkaiError::Other("share_id is empty".into()));
+    }
+    if password.is_none() && permissions.is_none() && expire_date.is_none() {
+        // Nothing to update — short-circuit so we don't burn a round
+        // trip on an empty PUT.
+        return Ok(());
+    }
+    let server = client::normalize_server_url(server_url);
+    let url =
+        format!("{server}/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}?format=json");
+
+    tracing::debug!(
+        "PUT {url} (password: {}, permissions: {}, expiry: {})",
+        if password.is_some() { "yes" } else { "no" },
+        permissions
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        if expire_date.is_some() { "yes" } else { "no" }
+    );
+
+    let permissions_s = permissions.map(|p| p.to_string());
+    let mut form: Vec<(&str, &str)> = Vec::new();
+    if let Some(pw) = password {
+        // Empty string is the "clear password" sentinel — Nextcloud
+        // accepts `password=` (no value) to remove the gate.
+        form.push(("password", pw));
+    }
+    if let Some(ref s) = permissions_s {
+        form.push(("permissions", s));
+    }
+    if let Some(exp) = expire_date {
+        // Empty string is the "clear expiry" sentinel — Nextcloud
+        // removes the expiration date when the form value is empty.
+        form.push(("expireDate", exp));
+    }
+
+    let http = client::build(trusted_certs)?;
+    let resp = http
+        .put(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| UnkaiError::Network(format!("share update failed: {e}")))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(UnkaiError::Auth(
+            "Nextcloud rejected app password (revoked or expired)".into(),
+        ));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| UnkaiError::Network(format!("share update body read failed: {e}")))?;
+    if !status.is_success() {
+        return Err(UnkaiError::Nextcloud(
+            ocs_message(&body)
+                .map(|m| friendly_share_error(&m))
+                .unwrap_or_else(|| body.trim().to_string()),
+        ));
+    }
+    if let Ok(raw) = serde_json::from_str::<OcsRaw>(&body)
+        && (raw.ocs.meta.status != "ok" || raw.ocs.meta.statuscode >= 400)
+    {
+        return Err(UnkaiError::Nextcloud(format!(
+            "share update failed (OCS {}): {}",
+            raw.ocs.meta.statuscode,
+            raw.ocs.meta.message.unwrap_or_default()
+        )));
+    }
+    Ok(())
+}
+
 // ── Tests ──────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -590,5 +885,71 @@ mod tests {
     fn surfaces_bad_json_as_protocol_error() {
         let err = parse_share_response("not json at all").unwrap_err();
         assert!(matches!(err, UnkaiError::Protocol(_)));
+    }
+
+    /// `list_public_shares` parser: filters to share_type=3 and
+    /// normalises optional fields.  Trims the `HH:MM:SS` portion off
+    /// the expiry so the date round-trips through DateField.
+    #[test]
+    fn parses_list_response_filters_public_links() {
+        let body = r#"{
+          "ocs": {
+            "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+            "data": [
+              {
+                "id": "1",
+                "share_type": 3,
+                "path": "/Documents/foo.pdf",
+                "item_type": "file",
+                "url": "https://cloud.example.com/s/abc123",
+                "token": "abc123",
+                "label": "for Alex",
+                "permissions": 1,
+                "password": "$2y$10$hash",
+                "expiration": "2026-06-01 00:00:00",
+                "stime": 1716700000,
+                "mimetype": "application/pdf"
+              },
+              {
+                "id": 2,
+                "share_type": 0,
+                "path": "/Documents/bar.txt",
+                "item_type": "file",
+                "url": "",
+                "token": "",
+                "label": null,
+                "permissions": 1,
+                "password": null,
+                "expiration": null,
+                "stime": 1716700100,
+                "mimetype": "text/plain"
+              },
+              {
+                "id": "3",
+                "share_type": 3,
+                "path": "/Shared",
+                "item_type": "folder",
+                "url": "https://cloud.example.com/s/def456",
+                "token": "def456",
+                "permissions": 15,
+                "password": null,
+                "expiration": null,
+                "stime": 1716700200,
+                "mimetype": "httpd/unix-directory"
+              }
+            ]
+          }
+        }"#;
+        let out = parse_list_response(body).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "1");
+        assert_eq!(out[0].path, "/Documents/foo.pdf");
+        assert!(out[0].has_password);
+        assert_eq!(out[0].expiration.as_deref(), Some("2026-06-01"));
+        assert_eq!(out[0].label.as_deref(), Some("for Alex"));
+        assert_eq!(out[1].id, "3");
+        assert_eq!(out[1].item_type, "folder");
+        assert!(!out[1].has_password);
+        assert!(out[1].expiration.is_none());
     }
 }

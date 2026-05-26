@@ -32,7 +32,10 @@ pub use files::{
 pub use notes::{
     NewNote, Note, NoteUpdate, create_note, delete_note, get_note, list_notes, update_note,
 };
-pub use shares::{PublicShare, create_public_share, delete_share, update_share_label};
+pub use shares::{
+    PublicShare, PublicShareInfo, create_public_share, delete_share, list_public_shares,
+    update_public_share, update_share_label,
+};
 pub use talk::{
     CreateRoomOptions, ParticipantSource, RoomType, TalkRoom, add_participant, create_room,
     delete_room, list_rooms, rename_room, set_room_public,

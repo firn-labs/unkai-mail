@@ -41,6 +41,7 @@
   import OutboxList, { type OutboxRowDto } from './lib/OutboxList.svelte'
   import OutboxView from './lib/OutboxView.svelte'
   import FilesView from './lib/FilesView.svelte'
+  import SharesView from './lib/SharesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
   import { unifiedSpecialKind } from './lib/unifiedFolders'
@@ -90,6 +91,7 @@
     | 'contacts'
     | 'calendar'
     | 'files'
+    | 'shares'
     | 'talk'
     | 'notes'
   let currentView = $state<View>('loading')
@@ -3318,6 +3320,10 @@
     {:else if currentView === 'files'}
       <div class="flex-1 min-w-0">
         <FilesView onclose={goToInbox} oncompose={openCompose} />
+      </div>
+    {:else if currentView === 'shares'}
+      <div class="flex-1 min-w-0">
+        <SharesView onclose={goToInbox} />
       </div>
     {:else if currentView === 'talk'}
       <div class="flex-1 min-w-0">
