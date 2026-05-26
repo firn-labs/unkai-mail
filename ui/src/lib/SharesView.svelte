@@ -39,6 +39,7 @@
   import { formatError } from './errors'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import Icon from './Icon.svelte'
+  import SearchInput from './SearchInput.svelte'
   import { m } from '../paraglide/messages'
 
   interface NextcloudAccount {
@@ -75,6 +76,23 @@
   let shares = $state<ShareRow[]>([])
   let loading = $state(false)
   let error = $state('')
+  /** Free-text filter for the current list.  Case-insensitive
+   *  substring match across the share's filename, full path, and
+   *  (when present) user-supplied label.  Kept purely client-side
+   *  — the share list is small enough that round-tripping to OCS
+   *  per keystroke would be wasteful, and filtering in memory keeps
+   *  the input feel instant. */
+  let searchQuery = $state('')
+  const filteredShares = $derived.by(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return shares
+    return shares.filter((s) => {
+      if (basename(s.path).toLowerCase().includes(q)) return true
+      if (s.path.toLowerCase().includes(q)) return true
+      if (s.label && s.label.toLowerCase().includes(q)) return true
+      return false
+    })
+  })
 
   // Periodic refresh — slower than Talk's 30s because share lists
   // don't carry urgent "someone's waiting on you" state.  60s is
@@ -385,17 +403,35 @@
 <svelte:window onkeydown={onEditKeydown} />
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
+  <!-- Three-slot header: title pinned left, search centered, refresh
+       pinned right.  Each side slot is `flex-1` with a directional
+       justify so the centered slot remains visually centered on the
+       window regardless of how wide either side ends up — the title
+       grows by translation length, the action button is fixed-width
+       at btn-sm.  Without the symmetric flex-1 the search drifts
+       off-center as either side changes. -->
   <div
-    class="flex items-center justify-between px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+    class="flex items-center gap-3 px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
   >
-    <h2 class="text-xl font-semibold">{m.shares_view_title()}</h2>
-    <button
-      class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
-      disabled={!accountId || loading}
-      onclick={() => refresh()}
-      title={loading ? m.shares_view_refreshing() : m.shares_view_refresh_title()}
-      aria-label={loading ? m.shares_view_refreshing() : m.shares_view_refresh()}
-    ><Icon name={loading ? 'loading' : 'refresh'} size={14} /></button>
+    <div class="flex-1 min-w-0 flex justify-start">
+      <h2 class="text-xl font-semibold truncate">{m.shares_view_title()}</h2>
+    </div>
+    <div class="flex-1 flex justify-center min-w-0">
+      <SearchInput
+        bind:value={searchQuery}
+        placeholder={m.shares_view_search_placeholder()}
+        class="w-full max-w-md"
+      />
+    </div>
+    <div class="flex-1 flex justify-end">
+      <button
+        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+        disabled={!accountId || loading}
+        onclick={() => refresh()}
+        title={loading ? m.shares_view_refreshing() : m.shares_view_refresh_title()}
+        aria-label={loading ? m.shares_view_refreshing() : m.shares_view_refresh()}
+      ><Icon name={loading ? 'loading' : 'refresh'} size={14} /></button>
+    </div>
   </div>
 
   {#if accounts.length === 0}
@@ -432,10 +468,15 @@
       <div class="p-6 text-sm text-surface-500">
         {@html m.shares_view_empty_html()}
       </div>
+    {:else if filteredShares.length === 0}
+      <!-- Non-empty list but filtered down to nothing — separate
+           empty state so the user understands the search has hit
+           zero rather than the account having no shares at all. -->
+      <p class="p-6 text-sm text-surface-500">{m.shares_view_no_matches()}</p>
     {:else}
       <div class="flex-1 overflow-y-auto">
         <ul class="divide-y divide-surface-200 dark:divide-surface-800">
-          {#each shares as row (row.id)}
+          {#each filteredShares as row (row.id)}
             {@const folder = dirname(row.path)}
             {@const isFolder = row.item_type === 'folder'}
             <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800">
