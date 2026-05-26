@@ -1244,9 +1244,6 @@
   >
     <div class="flex items-center gap-3">
       <h2 class="text-xl font-semibold">Calendar</h2>
-      {#if syncing}
-        <span class="text-xs text-surface-500 ml-2">Syncing…</span>
-      {/if}
     </div>
     <div class="flex items-center gap-2">
       <!-- Icon-only header actions matching the canonical shape
