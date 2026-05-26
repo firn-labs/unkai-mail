@@ -324,6 +324,11 @@
 
   "search_input_clear": "Clear search",
 
+  "talk_view_search_placeholder": "Search rooms",
+  "talk_view_no_matches": "No Talk rooms match this search.",
+  "files_view_search_placeholder": "Search files in this folder",
+  "files_view_no_matches": "No files in this folder match this search.",
+
   "talk_view_new_room": "New room",
   "talk_view_new_room_title": "Start a new Talk room",
   "talk_view_refresh": "Refresh",

@@ -33,6 +33,7 @@
   import Icon, { type IconName } from './Icon.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import NcPreview from './NcPreview.svelte'
+  import { m } from '../paraglide/messages'
 
   interface NextcloudCapabilities {
     version?: string | null
@@ -75,6 +76,12 @@
     entries?: FileEntry[]
     accounts?: NextcloudAccount[]
     error?: string
+    /** Optional case-insensitive substring filter applied to the
+     *  rendered list only.  `bind:entries` still exposes the full
+     *  unfiltered folder listing so the parent's action footer
+     *  (file/folder counts, content_type lookup) doesn't have to
+     *  care about whether the user is searching. */
+    filterQuery?: string
   }
   let {
     pickFolderMode = false,
@@ -85,7 +92,18 @@
     entries = $bindable<FileEntry[]>([]),
     accounts = $bindable<NextcloudAccount[]>([]),
     error = $bindable(''),
+    filterQuery = '',
   }: Props = $props()
+
+  /** Filtered view of `entries` for rendering.  Matches by basename
+   *  case-insensitively; folders match the same way so the user can
+   *  drill into a subfolder by name without leaving the search.
+   *  Empty query short-circuits to the full list. */
+  const visibleEntries = $derived.by(() => {
+    const q = filterQuery.trim().toLowerCase()
+    if (!q) return entries
+    return entries.filter((e) => e.name.toLowerCase().includes(q))
+  })
 
   let loading = $state(false)
   /** Per-`${accountId}::${path}` cache of folder listings.
@@ -388,9 +406,15 @@
         <div class="p-6 text-sm text-surface-500">Loading…</div>
       {:else if entries.length === 0}
         <div class="p-6 text-sm text-surface-500">This folder is empty.</div>
+      {:else if visibleEntries.length === 0}
+        <!-- Folder has files but the filter narrowed everything to
+             zero — distinct empty state so the user understands
+             they've searched themselves out of results rather than
+             landing in an empty folder. -->
+        <div class="p-6 text-sm text-surface-500">{m.files_view_no_matches()}</div>
       {:else}
         <ul class="divide-y divide-surface-200 dark:divide-surface-800">
-          {#each entries as entry (entry.path)}
+          {#each visibleEntries as entry (entry.path)}
             {@const iconName = iconNameFor(entry)}
             <li>
               <!-- Outer row uses role="button" instead of an actual

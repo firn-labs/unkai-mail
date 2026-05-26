@@ -325,6 +325,11 @@
 
   "search_input_clear": "Suche leeren",
 
+  "talk_view_search_placeholder": "Räume durchsuchen",
+  "talk_view_no_matches": "Keine Talk-Räume passen zu dieser Suche.",
+  "files_view_search_placeholder": "Dateien in diesem Ordner durchsuchen",
+  "files_view_no_matches": "Keine Dateien in diesem Ordner passen zu dieser Suche.",
+
   "talk_view_new_room": "Neuer Raum",
   "talk_view_new_room_title": "Einen neuen Talk-Raum starten",
   "talk_view_refresh": "Aktualisieren",

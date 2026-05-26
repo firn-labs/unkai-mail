@@ -21,6 +21,7 @@
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import type { ComposeInitial } from './Compose.svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import SearchInput from './SearchInput.svelte'
   import { m } from '../paraglide/messages'
 
   interface NextcloudAccount {
@@ -49,8 +50,30 @@
       TalkView starts collapsed again, which matches what NC's
       web UI does. */
   let showArchived = $state(false)
-  const activeRooms = $derived(rooms.filter((r) => !r.is_archived))
-  const archivedRooms = $derived(rooms.filter((r) => r.is_archived))
+  /** Free-text filter applied client-side to the room list.  Case-
+   *  insensitive substring match against `display_name`.  The active
+   *  / archived split is applied *after* the filter so an archived
+   *  room matching the query still shows up under the Archived
+   *  collapsible (and the filter result auto-expands that section). */
+  let searchQuery = $state('')
+  const filteredRooms = $derived.by(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return rooms
+    return rooms.filter((r) => r.display_name.toLowerCase().includes(q))
+  })
+  const activeRooms = $derived(filteredRooms.filter((r) => !r.is_archived))
+  const archivedRooms = $derived(filteredRooms.filter((r) => r.is_archived))
+
+  /** Auto-expand the Archived collapsible when a search query is
+   *  active and only archived rooms match — without this the user
+   *  would search and see "no rooms" even though the section just
+   *  needs to be opened.  Clearing the query doesn't re-collapse;
+   *  that would feel jumpy. */
+  $effect(() => {
+    if (searchQuery.trim() && activeRooms.length === 0 && archivedRooms.length > 0) {
+      showArchived = true
+    }
+  })
 
   // Periodic refresh — 30s is the same cadence the Nextcloud web UI
   // polls at. Long enough to be cheap, short enough that the unread
@@ -185,11 +208,24 @@
 </script>
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
+  <!-- Three-slot header: title pinned left, search centered, action
+       buttons pinned right.  Symmetric `flex-1` slots keep the
+       search visually centered as the translated title length
+       changes.  Same layout as SharesView / FilesView. -->
   <div
-    class="flex items-center justify-between px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+    class="flex items-center gap-3 px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
   >
-    <h2 class="text-xl font-semibold">Talk Rooms</h2>
-    <div class="flex items-center gap-2">
+    <div class="flex-1 min-w-0 flex justify-start">
+      <h2 class="text-xl font-semibold truncate">Talk Rooms</h2>
+    </div>
+    <div class="flex-1 flex justify-center min-w-0">
+      <SearchInput
+        bind:value={searchQuery}
+        placeholder={m.talk_view_search_placeholder()}
+        class="w-full max-w-md"
+      />
+    </div>
+    <div class="flex-1 flex justify-end items-center gap-2">
       <!-- Primary CTA: "New room" stays filled-primary so it still
            reads as the page's main action.  Icon-only via the
            shared `plus` glyph; tooltip + aria-label carry the
@@ -246,6 +282,12 @@
       <div class="p-6 text-sm text-surface-500">
         No Talk rooms yet. Click <strong>+ New room</strong> to start your first conversation.
       </div>
+    {:else if filteredRooms.length === 0}
+      <!-- Non-empty room list but the filter narrowed everything
+           to zero — distinct empty state so the user knows the
+           search has hit zero rather than the account having no
+           rooms at all. -->
+      <p class="p-6 text-sm text-surface-500">{m.talk_view_no_matches()}</p>
     {:else}
       {#snippet roomRow(room: TalkRoom)}
         <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800 {room.is_archived ? 'opacity-60' : ''}">

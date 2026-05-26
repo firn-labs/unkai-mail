@@ -32,7 +32,9 @@
   import NextcloudShareDialog, {
     type ShareLink,
   } from './NextcloudShareDialog.svelte'
+  import SearchInput from './SearchInput.svelte'
   import type { ComposeInitial } from './Compose.svelte'
+  import { m } from '../paraglide/messages'
 
   interface Attachment {
     filename: string
@@ -56,6 +58,17 @@
   let entries = $state<FileEntry[]>([])
   let accounts = $state<NextcloudAccount[]>([])
   let error = $state('')
+  /** Free-text filter against the currently-open folder's listing.
+   *  Reset on folder navigation — a search scoped to "Documents/"
+   *  is rarely also useful inside "Documents/Photos/", and clearing
+   *  on nav matches what users expect from local file explorers. */
+  let searchQuery = $state('')
+  $effect(() => {
+    // Touch currentPath so the effect re-runs on navigation; the
+    // assignment clears any in-flight filter.
+    void currentPath
+    searchQuery = ''
+  })
 
   let attaching = $state(false)
   // Snapshot of the selection at the moment "New mail with link" was
@@ -187,17 +200,28 @@
 <svelte:window onkeydown={onSharePromptKeydown} />
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
-  <!-- Header — same shape as the Calendar / Contacts views so the
-       sidebar-routed integrations all feel like one app, not three. -->
+  <!-- Three-slot header: title + breadcrumb pinned left, search
+       centered, empty right slot to keep the centered slot
+       visually centered as the path label changes width.  Same
+       layout as SharesView so the sidebar-routed integrations all
+       feel like one app. -->
   <div
-    class="flex items-center px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+    class="flex items-center gap-3 px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
   >
-    <div class="flex items-center gap-3">
-      <h2 class="text-xl font-semibold">Nextcloud Files</h2>
+    <div class="flex-1 min-w-0 flex items-center gap-3">
+      <h2 class="text-xl font-semibold shrink-0">Nextcloud Files</h2>
       {#if currentPath !== '/'}
-        <span class="text-sm text-surface-500 font-mono">{currentPath}</span>
+        <span class="text-sm text-surface-500 font-mono truncate">{currentPath}</span>
       {/if}
     </div>
+    <div class="flex-1 flex justify-center min-w-0">
+      <SearchInput
+        bind:value={searchQuery}
+        placeholder={m.files_view_search_placeholder()}
+        class="w-full max-w-md"
+      />
+    </div>
+    <div class="flex-1 flex justify-end"></div>
   </div>
 
   <!-- The shared browser fills the rest. The browser itself owns
@@ -211,6 +235,7 @@
       bind:entries
       bind:accounts
       bind:error
+      filterQuery={searchQuery}
     />
 
     {#if error}
