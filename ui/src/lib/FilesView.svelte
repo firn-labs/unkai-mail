@@ -70,6 +70,27 @@
     searchQuery = ''
   })
 
+  // Handles published by the inner browser via the callback-ref
+  // pattern.  Stored as $state so the header's New folder + Refresh
+  // buttons can invoke them; undefined until the browser has
+  // mounted, which the button-disabled state below guards against.
+  let startCreateFolderRef = $state<(() => void) | undefined>(undefined)
+  let refreshRef = $state<(() => Promise<void>) | undefined>(undefined)
+  /** True while a header-driven Refresh is in flight — drives the
+   *  Refresh button's spinner without leaking into the rest of the
+   *  browser's loading semantics (in-folder navigation uses the
+   *  browser's own loading state). */
+  let refreshing = $state(false)
+  async function doRefresh() {
+    if (!refreshRef || refreshing) return
+    refreshing = true
+    try {
+      await refreshRef()
+    } finally {
+      refreshing = false
+    }
+  }
+
   let attaching = $state(false)
   // Snapshot of the selection at the moment "New mail with link" was
   // clicked.  The shared `NextcloudShareDialog` owns the form state
@@ -200,19 +221,33 @@
 <svelte:window onkeydown={onSharePromptKeydown} />
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
-  <!-- Three-slot header: title + breadcrumb pinned left, search
-       centered, empty right slot to keep the centered slot
-       visually centered as the path label changes width.  Same
-       layout as SharesView so the sidebar-routed integrations all
-       feel like one app. -->
+  <!-- Three-slot header: title + action buttons (New folder,
+       Refresh) pinned left, centered search, empty right slot
+       to keep the centered slot visually centered.  The breadcrumb
+       inside the inner browser already conveys the current path
+       so the header doesn't repeat it.  Icon-only buttons follow
+       the same canonical shape used in SharesView / TalkView:
+       tonal-surface for the secondary Refresh, filled-primary
+       for the primary "New folder" CTA. -->
   <div
     class="flex items-center gap-3 px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
   >
-    <div class="flex-1 min-w-0 flex items-center gap-3">
+    <div class="flex-1 min-w-0 flex items-center gap-2">
       <h2 class="text-xl font-semibold shrink-0">Nextcloud Files</h2>
-      {#if currentPath !== '/'}
-        <span class="text-sm text-surface-500 font-mono truncate">{currentPath}</span>
-      {/if}
+      <button
+        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+        disabled={!accountId || !startCreateFolderRef}
+        onclick={() => startCreateFolderRef?.()}
+        title={m.files_view_new_folder_title()}
+        aria-label={m.files_view_new_folder()}
+      ><Icon name="add-folder" size={14} /></button>
+      <button
+        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+        disabled={!accountId || !refreshRef || refreshing}
+        onclick={() => void doRefresh()}
+        title={refreshing ? m.files_view_refreshing() : m.files_view_refresh_title()}
+        aria-label={refreshing ? m.files_view_refreshing() : m.files_view_refresh()}
+      ><Icon name={refreshing ? 'loading' : 'refresh'} size={14} /></button>
     </div>
     <div class="flex-1 flex justify-center min-w-0">
       <SearchInput
@@ -236,6 +271,9 @@
       bind:accounts
       bind:error
       filterQuery={searchQuery}
+      hideInlineNewFolderTrigger
+      onstartcreatefolderref={(fn) => (startCreateFolderRef = fn)}
+      onrefreshref={(fn) => (refreshRef = fn)}
     />
 
     {#if error}

@@ -328,6 +328,11 @@
   "talk_view_no_matches": "No Talk rooms match this search.",
   "files_view_search_placeholder": "Search files in this folder",
   "files_view_no_matches": "No files in this folder match this search.",
+  "files_view_new_folder": "New folder",
+  "files_view_new_folder_title": "Create a new folder in this directory",
+  "files_view_refresh": "Refresh",
+  "files_view_refreshing": "Refreshing…",
+  "files_view_refresh_title": "Reload this folder from the server",
 
   "talk_view_new_room": "New room",
   "talk_view_new_room_title": "Start a new Talk room",
