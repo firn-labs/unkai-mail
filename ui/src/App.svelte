@@ -3323,7 +3323,7 @@
       </div>
     {:else if currentView === 'shares'}
       <div class="flex-1 min-w-0">
-        <SharesView onclose={goToInbox} />
+        <SharesView />
       </div>
     {:else if currentView === 'talk'}
       <div class="flex-1 min-w-0">
