@@ -559,19 +559,31 @@ pub struct PublicShareInfo {
     pub mimetype: String,
 }
 
+/// Wire shape of one item in the OCS `shares` list response.
+///
+/// Every string field is `Option<String>` because Nextcloud emits
+/// `null` (not `""` and not "field absent") for fields that don't
+/// apply to a given row — `token` / `url` are null on user / group
+/// shares, `mimetype` is sometimes null on folders, `label` is null
+/// when the user never set one, etc.  `#[serde(default)]` on a plain
+/// `String` rejects `null` outright, so the whole parse used to
+/// blow up on the first non-public-link row even though we filter
+/// those out in code anyway.  Keeping every field optional lets us
+/// be liberal in what we accept and project down to a clean
+/// `PublicShareInfo` for the rows we keep.
 #[derive(Debug, Deserialize)]
 struct ListShareItem {
     id: serde_json::Value,
     #[serde(default)]
     share_type: i64,
     #[serde(default)]
-    path: String,
+    path: Option<String>,
     #[serde(default)]
-    item_type: String,
+    item_type: Option<String>,
     #[serde(default)]
-    url: String,
+    url: Option<String>,
     #[serde(default)]
-    token: String,
+    token: Option<String>,
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -583,7 +595,7 @@ struct ListShareItem {
     #[serde(default)]
     stime: i64,
     #[serde(default)]
-    mimetype: String,
+    mimetype: Option<String>,
 }
 
 /// List every public share link the authenticated user currently owns
@@ -687,10 +699,10 @@ fn parse_list_response(body: &str) -> Result<Vec<PublicShareInfo>, UnkaiError> {
         });
         out.push(PublicShareInfo {
             id,
-            path: it.path,
-            item_type: it.item_type,
-            url: it.url,
-            token: it.token,
+            path: it.path.unwrap_or_default(),
+            item_type: it.item_type.unwrap_or_default(),
+            url: it.url.unwrap_or_default(),
+            token: it.token.unwrap_or_default(),
             label: it.label.filter(|s| !s.is_empty()),
             permissions: it.permissions,
             has_password: it
@@ -700,7 +712,7 @@ fn parse_list_response(body: &str) -> Result<Vec<PublicShareInfo>, UnkaiError> {
                 .unwrap_or(false),
             expiration,
             stime: it.stime,
-            mimetype: it.mimetype,
+            mimetype: it.mimetype.unwrap_or_default(),
         });
     }
     Ok(out)
@@ -885,6 +897,55 @@ mod tests {
     fn surfaces_bad_json_as_protocol_error() {
         let err = parse_share_response("not json at all").unwrap_err();
         assert!(matches!(err, UnkaiError::Protocol(_)));
+    }
+
+    /// Real-world Nextcloud responses contain user/group/circle
+    /// shares alongside the public links — and those rows often
+    /// have `null` for `token` / `url` / `mimetype` / `item_type`
+    /// because the field doesn't apply.  Parser must tolerate
+    /// those nulls (the rows get filtered out anyway by
+    /// share_type) without failing the whole list.
+    #[test]
+    fn parses_list_response_tolerates_null_strings_on_non_public_rows() {
+        let body = r#"{
+          "ocs": {
+            "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+            "data": [
+              {
+                "id": "10",
+                "share_type": 0,
+                "path": null,
+                "item_type": null,
+                "url": null,
+                "token": null,
+                "label": null,
+                "permissions": 17,
+                "password": null,
+                "expiration": null,
+                "stime": 1716700000,
+                "mimetype": null
+              },
+              {
+                "id": "11",
+                "share_type": 3,
+                "path": "/Documents/keep.pdf",
+                "item_type": "file",
+                "url": "https://cloud.example.com/s/keep",
+                "token": "keep",
+                "label": null,
+                "permissions": 1,
+                "password": null,
+                "expiration": null,
+                "stime": 1716700100,
+                "mimetype": "application/pdf"
+              }
+            ]
+          }
+        }"#;
+        let out = parse_list_response(body).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "11");
+        assert_eq!(out[0].path, "/Documents/keep.pdf");
     }
 
     /// `list_public_shares` parser: filters to share_type=3 and
