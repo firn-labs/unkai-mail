@@ -323,7 +323,11 @@
   "encryption_unlock_auto_storage_hint": "Wird im OS-Schlüsselbund neben dem Mail-Passwort dieses Kontos abgelegt. Entfernen des PGP-Schlüssels hier löscht ihn; Abschalten dieser Option ebenfalls.",
   "compose_pgp_auto_unlock_active": "Automatisch entsperren ist aktiv — deine gespeicherte Passphrase wird verwendet.",
 
+  "search_input_clear": "Suche leeren",
+
   "shares_view_title": "Freigabe-Links",
+  "shares_view_search_placeholder": "Freigaben durchsuchen",
+  "shares_view_no_matches": "Keine Freigabe-Links passen zu dieser Suche.",
   "shares_view_refresh": "Aktualisieren",
   "shares_view_refreshing": "Aktualisiere…",
   "shares_view_refresh_title": "Liste der Freigaben aktualisieren",

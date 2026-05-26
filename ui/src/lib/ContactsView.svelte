@@ -16,6 +16,7 @@
   import Avatar from './Avatar.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import SearchInput from './SearchInput.svelte'
   import Select from './Select.svelte'
   import DateField from './DateField.svelte'
   import AddressSuggestField from './AddressSuggestField.svelte'
@@ -1927,32 +1928,7 @@
          there's a query.  "+ New contact" moved to the sidebar's
          CTA slot so this row is search-only. -->
     <div class="border-b border-surface-200 dark:border-surface-700 p-2">
-      <div class="relative w-full">
-        <span
-          class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
-          aria-hidden="true"
-        >
-          <Icon name="search" size={14} />
-        </span>
-        <input
-          type="text"
-          class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
-          placeholder="Search contacts"
-          bind:value={query}
-          aria-label="Search contacts"
-        />
-        {#if query}
-          <button
-            type="button"
-            class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
-            onclick={() => (query = '')}
-            title="Clear search"
-            aria-label="Clear search"
-          >
-            &#x2715;
-          </button>
-        {/if}
-      </div>
+      <SearchInput bind:value={query} placeholder="Search contacts" />
     </div>
 
     <div class="flex-1 overflow-y-auto pb-3">
@@ -2047,49 +2023,17 @@
              "+ Add contact" / "Done" toggle sits below the search
              on its own row, anchored right via `self-end`. -->
         <div class="border-b border-surface-200 dark:border-surface-700 p-2 flex flex-col">
-          <div class="relative w-full">
-            <span
-              class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
-              aria-hidden="true"
-            >
-              <Icon name="search" size={14} />
-            </span>
-            {#if pickerOpen}
-              <input
-                type="text"
-                class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
-                placeholder="Search contacts to add"
-                bind:value={pickerQuery}
-                aria-label="Search contacts to add"
-              />
-              {#if pickerQuery}
-                <button
-                  type="button"
-                  class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
-                  onclick={() => (pickerQuery = '')}
-                  title="Clear search"
-                  aria-label="Clear search"
-                >&#x2715;</button>
-              {/if}
-            {:else}
-              <input
-                type="text"
-                class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
-                placeholder="Search members"
-                bind:value={memberQuery}
-                aria-label="Search members"
-              />
-              {#if memberQuery}
-                <button
-                  type="button"
-                  class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
-                  onclick={() => (memberQuery = '')}
-                  title="Clear search"
-                  aria-label="Clear search"
-                >&#x2715;</button>
-              {/if}
-            {/if}
-          </div>
+          {#if pickerOpen}
+            <SearchInput
+              bind:value={pickerQuery}
+              placeholder="Search contacts to add"
+            />
+          {:else}
+            <SearchInput
+              bind:value={memberQuery}
+              placeholder="Search members"
+            />
+          {/if}
           {#if editable}
             <!-- Compact "+ Add contact" / "Done" toggle — same
                  shape as NC Files' "+ New folder" affordance:

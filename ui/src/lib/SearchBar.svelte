@@ -10,7 +10,7 @@
    */
 
   import { onMount, onDestroy } from 'svelte'
-  import Icon from './Icon.svelte'
+  import SearchInput from './SearchInput.svelte'
   import { displayFolderName } from './unifiedFolders'
 
   export type SearchScope = {
@@ -76,9 +76,22 @@
     debounceTimer = setTimeout(fireSearch, 150)
   }
 
-  function onInput() {
+  // Reactive scheduler: any time `query` changes (user typing OR
+  // the shared SearchInput's clear-X programmatically resetting
+  // it), debounce a search.  Replaces the old `oninput` callback
+  // which only fired on real keystrokes — the clear button in the
+  // shared SearchInput assigns `value` directly, so an event-based
+  // hook would have missed that path.
+  let firstRun = true
+  $effect(() => {
+    // Touch the dependency so the effect re-runs on every change.
+    void query
+    if (firstRun) {
+      firstRun = false
+      return
+    }
     scheduleSearch()
-  }
+  })
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -137,46 +150,22 @@
 </script>
 
 <div class="border-b border-surface-200 dark:border-surface-700 p-2 space-y-1.5">
-  <!-- Row 1: search input (full width so the user can actually see
-       what they're typing, even in a narrow mail-list column) -->
-  <div class="relative w-full">
-    <!-- Magnifier icon on the left -->
-    <span
-      class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
-      aria-hidden="true"
-    >
-      <Icon name="search" size={14} />
-    </span>
-    <input
-      bind:this={inputEl}
-      bind:value={query}
-      oninput={onInput}
-      onkeydown={onKeydown}
-      onfocus={() => (showHints = true)}
-      onblur={() => setTimeout(() => (showHints = false), 150)}
-      type="text"
-      placeholder="Search mail  (Ctrl+F)"
-      class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
-      aria-label="Search mail"
-    />
-    {#if query}
-      <button
-        type="button"
-        title="Clear search"
-        class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
-        onclick={() => {
-          query = ''
-          fireSearch()
-          inputEl?.focus()
-        }}
-        aria-label="Clear search"
-      >
-        &#x2715;
-      </button>
-    {/if}
-
-    <!-- Operator hint dropdown — shown while focused + empty -->
+  <!-- Row 1: search input — uses the shared `SearchInput` so the
+       magnifier / clear-X chrome stays in sync with every other
+       "Search …" surface in the app.  The operator-hint dropdown
+       rides along as a child snippet, anchored to SearchInput's
+       relative wrapper. -->
+  <SearchInput
+    bind:inputEl
+    bind:value={query}
+    placeholder="Search mail  (Ctrl+F)"
+    ariaLabel="Search mail"
+    onkeydown={onKeydown}
+    onfocus={() => (showHints = true)}
+    onblur={() => setTimeout(() => (showHints = false), 150)}
+  >
     {#if showHints && query.length === 0}
+      <!-- Operator hint dropdown — shown while focused + empty -->
       <div
         class="absolute left-0 right-0 top-full mt-1 z-40 bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-700 rounded-md shadow-lg p-2 text-xs space-y-0.5"
       >
@@ -228,7 +217,7 @@
         </div>
       </div>
     {/if}
-  </div>
+  </SearchInput>
 
   <!-- Row 2: scope selector on its own line below the input. -->
   <div class="flex items-center gap-1.5">

@@ -35,6 +35,7 @@
   import { formatError } from './errors'
   import type { ComposeInitial } from './Compose.svelte'
   import Icon from './Icon.svelte'
+  import SearchInput from './SearchInput.svelte'
   import NotesMarkdownEditor from './NotesMarkdownEditor.svelte'
   import { resizableSidebar } from './resizableSidebar'
 
@@ -1085,42 +1086,20 @@
       class="shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col"
       use:resizableSidebar={{ key: 'notes.listColumn', defaultWidth: 288, min: 220, max: 600 }}
     >
-      <!-- Search bar — same shape as `SearchBar.svelte` in the
-           mail view: pill `.input` field with the magnifier
-           icon as a left adornment and a clear-X on the right
-           when there's a query.  Background sync still runs on
-           the polling timer + after every cache load, so an
-           explicit refresh button isn't worth its own affordance.
-           Filter is layered on top of the sidebar folder filter
-           so search works "within Joplin" / "within Favorites"
-           / "across all notes" depending on the sidebar pick. -->
+      <!-- Search bar — uses the shared `SearchInput` so the
+           magnifier / clear-X chrome stays in sync with every
+           other "Search …" surface in the app.  Background sync
+           still runs on the polling timer + after every cache
+           load, so an explicit refresh button isn't worth its own
+           affordance.  Filter is layered on top of the sidebar
+           folder filter so search works "within Joplin" /
+           "within Favorites" / "across all notes" depending on
+           the sidebar pick. -->
       <div class="border-b border-surface-200 dark:border-surface-700 p-2">
-        <div class="relative w-full">
-          <span
-            class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
-            aria-hidden="true"
-          >
-            <Icon name="search" size={14} />
-          </span>
-          <input
-            type="text"
-            class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
-            placeholder="Search notes"
-            bind:value={searchQuery}
-            aria-label="Search notes"
-          />
-          {#if searchQuery}
-            <button
-              type="button"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 text-xs"
-              onclick={() => (searchQuery = '')}
-              title="Clear search"
-              aria-label="Clear search"
-            >
-              &#x2715;
-            </button>
-          {/if}
-        </div>
+        <SearchInput
+          bind:value={searchQuery}
+          placeholder="Search notes"
+        />
       </div>
 
       {#if accounts.length > 1}
