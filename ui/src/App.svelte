@@ -3312,14 +3312,13 @@
     {:else if currentView === 'calendar'}
       <div class="flex-1 min-w-0">
         <CalendarView
-          onclose={goToInbox}
           focusEventId={calendarFocusEventId}
           oneventfocused={() => (calendarFocusEventId = null)}
         />
       </div>
     {:else if currentView === 'files'}
       <div class="flex-1 min-w-0">
-        <FilesView onclose={goToInbox} oncompose={openCompose} />
+        <FilesView oncompose={openCompose} />
       </div>
     {:else if currentView === 'shares'}
       <div class="flex-1 min-w-0">

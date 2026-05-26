@@ -39,7 +39,6 @@
   import { resizableSidebar } from './resizableSidebar'
 
   interface Props {
-    onclose: () => void
     /** When set (by the in-app reminder card's "Show event"
      *  action, #203), CalendarView opens this event's editor
      *  as soon as the matching event is loaded into `events`.
@@ -50,7 +49,6 @@
     oneventfocused?: () => void
   }
   const {
-    onclose,
     focusEventId = null,
     oneventfocused,
   }: Props = $props()
@@ -1262,9 +1260,6 @@
            and made the row in settings feel redundant. The "Syncing…"
            badge above still tells the user when a background sync
            that *was* triggered from settings is in flight. -->
-      <button class="btn preset-tonal-surface text-sm" onclick={onclose}>
-        Close
-      </button>
     </div>
   </div>
 
