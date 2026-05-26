@@ -221,19 +221,27 @@
 <svelte:window onkeydown={onSharePromptKeydown} />
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
-  <!-- Three-slot header: title + action buttons (New folder,
-       Refresh) pinned left, centered search, empty right slot
-       to keep the centered slot visually centered.  The breadcrumb
-       inside the inner browser already conveys the current path
-       so the header doesn't repeat it.  Icon-only buttons follow
-       the same canonical shape used in SharesView / TalkView:
-       tonal-surface for the secondary Refresh, filled-primary
-       for the primary "New folder" CTA. -->
+  <!-- Three-slot header: title pinned left, centered search,
+       action buttons (New folder, Refresh) pinned right.  Same
+       layout as SharesView / TalkView so the rail-routed
+       integration views all feel like one app.  Icon-only buttons
+       follow the canonical CLAUDE.md shape: filled-primary for
+       the primary New folder CTA, tonal-surface for the secondary
+       Refresh. -->
   <div
     class="flex items-center gap-3 px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
   >
-    <div class="flex-1 min-w-0 flex items-center gap-2">
-      <h2 class="text-xl font-semibold shrink-0">Nextcloud Files</h2>
+    <div class="flex-1 min-w-0 flex justify-start">
+      <h2 class="text-xl font-semibold truncate">Nextcloud Files</h2>
+    </div>
+    <div class="flex-1 flex justify-center min-w-0">
+      <SearchInput
+        bind:value={searchQuery}
+        placeholder={m.files_view_search_placeholder()}
+        class="w-full max-w-md"
+      />
+    </div>
+    <div class="flex-1 flex justify-end items-center gap-2">
       <button
         class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
         disabled={!accountId || !startCreateFolderRef}
@@ -249,14 +257,6 @@
         aria-label={refreshing ? m.files_view_refreshing() : m.files_view_refresh()}
       ><Icon name={refreshing ? 'loading' : 'refresh'} size={14} /></button>
     </div>
-    <div class="flex-1 flex justify-center min-w-0">
-      <SearchInput
-        bind:value={searchQuery}
-        placeholder={m.files_view_search_placeholder()}
-        class="w-full max-w-md"
-      />
-    </div>
-    <div class="flex-1 flex justify-end"></div>
   </div>
 
   <!-- The shared browser fills the rest. The browser itself owns
