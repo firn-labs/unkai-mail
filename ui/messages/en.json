@@ -340,6 +340,9 @@
   "files_view_send_attachment_title": "Open a new mail with the selected files attached",
   "files_view_send_attachment_folders_only_title": "Folders can be shared as a link, but not attached as bytes",
   "files_view_send_attachment_downloading": "Downloading…",
+  "files_view_create_folder_confirm": "Create folder",
+  "files_view_create_folder_confirming": "Creating folder…",
+  "files_view_create_folder_cancel": "Cancel",
 
   "calendar_view_new_event": "New event",
   "calendar_view_new_event_title": "Create a new calendar event",
