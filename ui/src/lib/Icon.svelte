@@ -28,7 +28,7 @@
     | 'spam' | 'block' | 'important'
     | 'drafts' | 'sent' | 'trash'
     | 'refresh' | 'sync' | 'loading'
-    | 'add-account' | 'sign-out' | 'lock' | 'unlocked' | 'copy'
+    | 'add-account' | 'sign-out' | 'lock' | 'unlocked' | 'copy' | 'plus'
     | 'notification' | 'mute' | 'do-not-disturb'
     | 'encrypted' | 'decrypted' | 'signed' | 'verified'
     // v3 — presence, status, writing tools, navigation
@@ -101,6 +101,7 @@
   import Lock from './icons/Lock.svelte'
   import Unlocked from './icons/Unlocked.svelte'
   import Copy from './icons/Copy.svelte'
+  import Plus from './icons/Plus.svelte'
   import Notification from './icons/Notification.svelte'
   import Mute from './icons/Mute.svelte'
   import DoNotDisturb from './icons/DoNotDisturb.svelte'
@@ -230,6 +231,7 @@
     'lock': Lock,
     'unlocked': Unlocked,
     'copy': Copy,
+    'plus': Plus,
     'notification': Notification,
     'mute': Mute,
     'do-not-disturb': DoNotDisturb,
