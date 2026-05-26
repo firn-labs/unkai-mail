@@ -329,6 +329,11 @@
   "talk_view_no_matches": "Keine Talk-Räume passen zu dieser Suche.",
   "files_view_search_placeholder": "Dateien in diesem Ordner durchsuchen",
   "files_view_no_matches": "Keine Dateien in diesem Ordner passen zu dieser Suche.",
+  "files_view_new_folder": "Neuer Ordner",
+  "files_view_new_folder_title": "Neuen Ordner in diesem Verzeichnis erstellen",
+  "files_view_refresh": "Aktualisieren",
+  "files_view_refreshing": "Aktualisiere…",
+  "files_view_refresh_title": "Diesen Ordner vom Server neu laden",
 
   "talk_view_new_room": "Neuer Raum",
   "talk_view_new_room_title": "Einen neuen Talk-Raum starten",

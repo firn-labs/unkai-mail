@@ -82,6 +82,23 @@
      *  (file/folder counts, content_type lookup) doesn't have to
      *  care about whether the user is searching. */
     filterQuery?: string
+    /** Suppress the inline `+` button on the breadcrumbs row when
+     *  the parent provides its own "New folder" affordance in a
+     *  header / toolbar.  The inline-name-input row is unaffected;
+     *  it still appears once the create flow is triggered, no
+     *  matter who triggered it. */
+    hideInlineNewFolderTrigger?: boolean
+    /** Same callback-ref pattern Compose uses to publish its
+     *  internal cancel / append-attachments functions to the
+     *  parent.  Fires once on mount with a function the parent
+     *  can call to open the inline-name-input row from elsewhere
+     *  (e.g. a header button). */
+    onstartcreatefolderref?: (fn: () => void) => void
+    /** Companion ref for "reload the current folder from the
+     *  server".  Resolves the same Promise the internal navigation
+     *  paths await on, so the parent can flip a loading indicator
+     *  while it's in flight. */
+    onrefreshref?: (fn: () => Promise<void>) => void
   }
   let {
     pickFolderMode = false,
@@ -93,6 +110,9 @@
     accounts = $bindable<NextcloudAccount[]>([]),
     error = $bindable(''),
     filterQuery = '',
+    hideInlineNewFolderTrigger = false,
+    onstartcreatefolderref,
+    onrefreshref,
   }: Props = $props()
 
   /** Filtered view of `entries` for rendering.  Matches by basename
@@ -275,6 +295,22 @@
     creatingFolder = true
   }
 
+  /** Reload the current folder from the server, bypassing the
+   *  in-memory cache.  Published to the parent via
+   *  `onrefreshref` so a header Refresh button can use it. */
+  function refresh(): Promise<void> {
+    FOLDER_CACHE.delete(folderCacheKey(currentPath))
+    return loadFolder(currentPath)
+  }
+
+  // Publish the two action handles to the parent once, on mount.
+  // Same callback-ref pattern Compose uses for its cancel /
+  // append-attachments functions.
+  $effect(() => {
+    onstartcreatefolderref?.(startCreateFolder)
+    onrefreshref?.(refresh)
+  })
+
   function cancelCreateFolder() {
     creatingFolder = false
     newFolderName = ''
@@ -360,7 +396,7 @@
         >{crumb.label}</button>
       {/each}
       <div class="flex-1"></div>
-      {#if !creatingFolder}
+      {#if !creatingFolder && !hideInlineNewFolderTrigger}
         <button
           class="text-primary-500 hover:bg-primary-500/10 rounded-md p-1 inline-flex items-center justify-center"
           onclick={startCreateFolder}
