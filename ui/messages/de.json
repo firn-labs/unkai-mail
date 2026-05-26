@@ -334,6 +334,13 @@
   "files_view_refresh": "Aktualisieren",
   "files_view_refreshing": "Aktualisiere…",
   "files_view_refresh_title": "Diesen Ordner vom Server neu laden",
+  "files_view_send_link": "Link",
+  "files_view_send_link_title": "Eine neue Mail mit öffentlichen Download-Links im Text öffnen",
+  "files_view_send_link_sharing": "Teile…",
+  "files_view_send_attachment": "Anhang",
+  "files_view_send_attachment_title": "Eine neue Mail mit den ausgewählten Dateien als Anhang öffnen",
+  "files_view_send_attachment_folders_only_title": "Ordner können als Link geteilt, aber nicht als Bytes angehängt werden",
+  "files_view_send_attachment_downloading": "Lade herunter…",
 
   "calendar_view_new_event": "Neuer Termin",
   "calendar_view_new_event_title": "Einen neuen Kalendertermin erstellen",

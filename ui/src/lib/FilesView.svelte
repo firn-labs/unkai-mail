@@ -354,31 +354,35 @@
           {/if}
         </span>
         <div class="flex-1"></div>
+        <!-- Labeled action buttons in the same `btn-sm` +
+             `inline-flex items-center gap-1.5` shape the header
+             buttons use, so the footer reads as part of one
+             button family.  Filled-primary on Attachment marks
+             it as the default action; outlined-primary on Link
+             keeps the alternative legible without competing.
+             Loading-state swaps the leading icon to `loading`
+             instead of replacing the whole label with text, so
+             the button width doesn't jump while the action is
+             in flight. -->
         <button
-          class="btn preset-outlined-primary-500"
+          class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
           disabled={selected.size === 0 || sharing || attaching}
           onclick={sendAsLink}
-          title="Open a new mail with public download links inserted into the body"
+          title={m.files_view_send_link_title()}
         >
-          {#if sharing}
-            Sharing…
-          {:else}
-            <Icon name="share-links" size={14} class="inline-block align-text-bottom mr-1.5" />Link
-          {/if}
+          <Icon name={sharing ? 'loading' : 'share-links'} size={14} />
+          {sharing ? m.files_view_send_link_sharing() : m.files_view_send_link()}
         </button>
         <button
-          class="btn preset-filled-primary-500"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
           disabled={selectedFileCount === 0 || attaching || sharing}
           onclick={sendAsAttachment}
           title={selectedFileCount === 0 && selectedFolderCount > 0
-            ? 'Folders can be shared as a link, but not attached as bytes'
-            : 'Open a new mail with the selected files attached'}
+            ? m.files_view_send_attachment_folders_only_title()
+            : m.files_view_send_attachment_title()}
         >
-          {#if attaching}
-            Downloading…
-          {:else}
-            <Icon name="attachment" size={14} class="inline-block align-text-bottom mr-1.5" />Attachment
-          {/if}
+          <Icon name={attaching ? 'loading' : 'attachment'} size={14} />
+          {attaching ? m.files_view_send_attachment_downloading() : m.files_view_send_attachment()}
         </button>
       </footer>
     {/if}
