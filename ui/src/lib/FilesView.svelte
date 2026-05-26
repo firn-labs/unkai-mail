@@ -41,13 +41,12 @@
   }
 
   interface Props {
-    onclose: () => void
     /** Open Compose with the given prefill (attachments / share links).
         Wired by App.svelte to the same handler that drives every other
         Compose entry point. */
     oncompose: (initial: ComposeInitial) => void
   }
-  let { onclose, oncompose }: Props = $props()
+  let { oncompose }: Props = $props()
 
   // Bound from the inner browser. The view's own footer reads these
   // to label/disable buttons and to drive the action commands.
@@ -191,18 +190,13 @@
   <!-- Header — same shape as the Calendar / Contacts views so the
        sidebar-routed integrations all feel like one app, not three. -->
   <div
-    class="flex items-center justify-between px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+    class="flex items-center px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
   >
     <div class="flex items-center gap-3">
       <h2 class="text-xl font-semibold">Nextcloud Files</h2>
       {#if currentPath !== '/'}
         <span class="text-sm text-surface-500 font-mono">{currentPath}</span>
       {/if}
-    </div>
-    <div class="flex items-center gap-2">
-      <button class="btn preset-tonal-surface text-sm" onclick={onclose}>
-        Close
-      </button>
     </div>
   </div>
 
