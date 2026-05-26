@@ -363,7 +363,7 @@
           {#if sharing}
             Sharing…
           {:else}
-            <Icon name="share-links" size={14} class="inline-block align-text-bottom mr-1.5" />New mail with link
+            <Icon name="share-links" size={14} class="inline-block align-text-bottom mr-1.5" />Link
           {/if}
         </button>
         <button
@@ -377,7 +377,7 @@
           {#if attaching}
             Downloading…
           {:else}
-            <Icon name="attachment" size={14} class="inline-block align-text-bottom mr-1.5" />New mail with attachment
+            <Icon name="attachment" size={14} class="inline-block align-text-bottom mr-1.5" />Attachment
           {/if}
         </button>
       </footer>
