@@ -327,7 +327,6 @@
   "shares_view_refresh": "Aktualisieren",
   "shares_view_refreshing": "Aktualisiere…",
   "shares_view_refresh_title": "Liste der Freigaben aktualisieren",
-  "shares_view_close": "Schließen",
   "shares_view_no_account_html": "Kein Nextcloud-Konto verbunden. Füge zuerst eines unter <strong>Einstellungen → Nextcloud</strong> hinzu.",
   "shares_view_account_label": "Konto",
   "shares_view_account_placeholder": "Konto wählen",

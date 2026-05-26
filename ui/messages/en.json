@@ -326,7 +326,6 @@
   "shares_view_refresh": "Refresh",
   "shares_view_refreshing": "Refreshing…",
   "shares_view_refresh_title": "Refresh share list",
-  "shares_view_close": "Close",
   "shares_view_no_account_html": "No Nextcloud account connected. Add one under <strong>Settings → Nextcloud</strong> first.",
   "shares_view_account_label": "Account",
   "shares_view_account_placeholder": "Choose an account",

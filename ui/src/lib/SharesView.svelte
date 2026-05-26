@@ -64,10 +64,11 @@
     mimetype: string
   }
 
-  interface Props {
-    onclose: () => void
-  }
-  const { onclose }: Props = $props()
+  // No props — navigation back to the inbox is owned by the
+  // IconRail (clicking another account avatar or rail entry routes
+  // away).  The view used to carry an `onclose` callback for a
+  // dedicated Close button in the header but that button has been
+  // retired since it duplicated the rail's job.
 
   let accounts = $state<NextcloudAccount[]>([])
   let accountId = $state('')
@@ -388,15 +389,13 @@
     class="flex items-center justify-between px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
   >
     <h2 class="text-xl font-semibold">{m.shares_view_title()}</h2>
-    <div class="flex items-center gap-2">
-      <button
-        class="btn preset-tonal-surface text-sm inline-flex items-center gap-1.5"
-        disabled={!accountId || loading}
-        onclick={() => refresh()}
-        title={m.shares_view_refresh_title()}
-      ><Icon name={loading ? 'loading' : 'refresh'} size={14} /> {loading ? m.shares_view_refreshing() : m.shares_view_refresh()}</button>
-      <button class="btn preset-tonal-surface text-sm" onclick={onclose}>{m.shares_view_close()}</button>
-    </div>
+    <button
+      class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+      disabled={!accountId || loading}
+      onclick={() => refresh()}
+      title={loading ? m.shares_view_refreshing() : m.shares_view_refresh_title()}
+      aria-label={loading ? m.shares_view_refreshing() : m.shares_view_refresh()}
+    ><Icon name={loading ? 'loading' : 'refresh'} size={14} /></button>
   </div>
 
   {#if accounts.length === 0}
@@ -497,7 +496,7 @@
                 onclick={() => copyUrl(row)}
                 title={copiedId === row.id ? m.shares_view_copied() : m.shares_view_copy_title()}
                 aria-label={copiedId === row.id ? m.shares_view_copied() : m.shares_view_copy_link()}
-              ><Icon name={copiedId === row.id ? 'success' : 'copy-link'} size={14} /></button>
+              ><Icon name={copiedId === row.id ? 'success' : 'copy'} size={14} /></button>
               <button
                 class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={() => openEdit(row)}
