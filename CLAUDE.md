@@ -78,11 +78,19 @@ These are project-wide affordances we expect Claude to apply automatically when 
   - Canonical refs for the full set living side-by-side: the title-row Replace + Remove and the form-row Save + Cancel in `EncryptionSettings.svelte`.
 - **Standard icon idioms** — reach for the registered `IconName` in [`ui/src/lib/Icon.svelte`](ui/src/lib/Icon.svelte) before introducing a new SVG:
   - `compose` → **edit / rename / replace** (project-wide "edit" glyph, including outside Compose — e.g. SecuritySettings' "Change passphrase" affordance, EncryptionSettings' "Replace key")
-  - `save-draft` → **save**
+  - `save-draft` → **save** (inline form-confirm buttons too — see NextcloudFileBrowser's create-folder row for the canonical icon-only save / cancel pair)
   - `trash` → **remove / delete** (destructive, pair with the red-on-hover shape above)
   - `more` → **more actions / overflow / settings on a row**
   - `success` → **saved / ok / verified** (pair with a short label for status badges; see below)
   - `lock` / `encrypted` → **encryption is on**
+  - `unlocked` → **password not set / no gate** (the open-padlock companion to `lock`; e.g. the share-management row chip when a share has no password)
+  - `plus` → **create new** (the universal "+" glyph — New event, New room, New folder, etc.; pair with a filled-primary button to signal a primary CTA)
+  - `copy` → **copy to clipboard** (two-overlapping-pages glyph; flip the icon to `success` for the post-copy "Copied" tick state)
+  - `refresh` → **reload the current view** (purely client-side cache flush + re-fetch, no server-side write)
+  - `sync` → **sync with the server** (semantically heavier than `refresh` — pushes / pulls state, drives a long-running task; surface with the `loading` swap below)
+  - `close` → **dismiss / cancel** (X glyph — inline-form cancel buttons, modal close, etc.)
+  - `share-links` → **share a public link** (chain-link glyph; the rail entry for the share manager and the row chip for "this share has a link")
+  - `loading` → **action is in flight** — swap the leading icon to `loading` on stateful buttons (Refresh, Sync, Save, Sharing…, Downloading…) instead of replacing the whole label with text. Keeps the button width stable mid-action and removes a layout flicker; canonical refs are the SharesView / TalkView / FilesView header refresh buttons.
 - **Status badges pair `success` with a short label, not descriptive prose.** When a toggle or setting has a saved/active confirmation, render an inline badge: `<div class="inline-flex items-center gap-1 mt-1 text-xs text-success-500" aria-live="polite"><Icon name="success" size={14} /><span>{label}</span></div>`. The badge replaces the on-state hint copy — don't render both, the badge IS the confirmation. Off-state hint copy is still useful (it explains what the toggle *would* do). Canonical ref: Encryption Settings "Passphrase saved" badge.
 - **Settings panels share one button + input + dropdown vocabulary — never invent a panel-specific shape.** Every control in `AccountSettings`, `SecuritySettings`, `EncryptionSettings`, `NextcloudSettings`, and any future settings sub-panel must match an existing control in another settings panel rather than introducing a new style. Before adding a button / `<input>` / `<select>`, search the other settings files for the closest analogous control and copy its class string exactly. The Settings menu should read as one design language; a panel that uses tonal-filled buttons when its neighbours use outlined-icon, or a `border-2 border-surface-400` input when its neighbours use the default `input` shape, breaks the visual rhythm and ages the panel out of the system.
   - **Buttons**: the icon-only `preset-outlined-surface-500` shape documented above (one shape, optional red-hover overlay for destructive). No tonal/filled wide-text buttons for per-row actions.
@@ -90,6 +98,51 @@ These are project-wide affordances we expect Claude to apply automatically when 
   - **Toggle rows**: toggle on the left, then a `flex-1` column with the label + saved-badge / off-state hint + any dependent sub-form (so the form aligns with the label, not the toggle button). Canonical refs: `SecuritySettings` Key Encryption toggle, `EncryptionSettings` Unlock automatically toggle.
 
 When in doubt, look at how `ContactsView` (mailing-list rows) and `Sidebar` (mail-folder rows) implement these — they're the canonical reference.
+
+## Sidebar-routed integration view shell
+
+These conventions apply to every full-pane view the `IconRail` routes to — `FilesView`, `CalendarView`, `TalkView`, `NotesView`, `ContactsView`, `SharesView`. They emerged from the #117 redesign that unified those views into one design language; future integration views should follow the same shape from day one rather than re-inventing.
+
+- **No Close button in the header.** The `IconRail` owns navigation back to the inbox — every Close button in an integration view duplicates the rail's job. Drop the button *and* the `onclose` prop entirely; don't leave a dead prop behind. (Settings is the one exception: it's reached via the rail but uses its own shell.)
+- **Three-slot header when the view has a search bar.** Title pinned left, centered `SearchInput`, action buttons pinned right. Symmetric `flex-1` slots keep the search visually centered as the translated title length changes (German vs. English):
+  ```html
+  <div class="flex items-center gap-3 px-6 py-3 border-b ...">
+    <div class="flex-1 min-w-0 flex justify-start">
+      <h2 class="text-xl font-semibold truncate">…</h2>
+    </div>
+    <div class="flex-1 flex justify-center min-w-0">
+      <SearchInput bind:value={query} placeholder={…} class="w-full max-w-md" />
+    </div>
+    <div class="flex-1 flex justify-end items-center gap-2">
+      … icon-only action buttons …
+    </div>
+  </div>
+  ```
+  When there's no search bar (`CalendarView` today), a plain `flex items-center justify-between` is fine — the 3-slot is only needed to keep a centered child visually centered as the side slots change width.
+- **Shared `SearchInput` component**, never re-inline the magnifier-icon + clear-X pattern. [`ui/src/lib/SearchInput.svelte`](ui/src/lib/SearchInput.svelte) wraps the canonical magnifier + Skeleton `.input` + clear-X shape and is used by every "Search …" surface (mail, contacts, notes, shares, files, talk). Accepts a `children` snippet that renders inside the relative wrapper, so callers that need a popover (the mail `SearchBar`'s operator-hint dropdown) can anchor it to the input's bounding box without re-pasting the absolute positioning.
+  - **The clear-X assigns `value = ''` programmatically**, which doesn't fire the underlying input's native `input` event. Callers debouncing keystrokes should react via `$effect(() => { void value; scheduleSearch() })` rather than `oninput=`, otherwise the clear button won't kick off a re-search. Canonical ref: `SearchBar.svelte`'s `$effect`-based scheduler.
+- **Header action buttons are icon-only** — the same shape vocabulary as the per-row icon buttons but at the page level. Always carry both `title=` (tooltip) **and** `aria-label=` (screen reader) since the visible text label is gone; neither is optional.
+  - **Primary CTA** (New event, New folder, New room, New …): `class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"` with the action icon (`plus`, `add-folder`, …).
+  - **Secondary** (Refresh, Sync): `class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"` with the matching glyph.
+  - **Both swap their leading icon to `loading`** mid-action — see the `loading` entry in the icon idioms above.
+- **Filter views with a `$derived` filtered list and a dedicated "no matches" empty state.** The user needs to know whether the search narrowed too far or whether the underlying data is empty — never collapse the two:
+  ```svelte
+  {#if rooms.length === 0}
+    <p>No Talk rooms yet …</p>            {/* genuine empty */}
+  {:else if filteredRooms.length === 0}
+    <p>No rooms match this search.</p>     {/* filter narrowed to zero */}
+  {:else}
+    {#each filteredRooms as r (r.id)}…
+  {/if}
+  ```
+- **Context-changing navigation clears the filter.** When the user moves to a different folder / calendar / list / etc., reset `searchQuery` — a filter scoped to "Documents/" is rarely also useful inside "Documents/Photos/", and matching local-explorer conventions is more predictable than carrying stale filters. Canonical ref: `FilesView` resets on `currentPath` change via a `$effect`.
+- **Labeled action buttons in footers** (e.g. FilesView's "Link" / "Attachment" selection-commit row) use the *same* `btn-sm` + `inline-flex items-center gap-1.5` shape as the icon-only header buttons — just with the label after the icon. Filled-primary for the default action, outlined-primary for the alternative. Loading state swaps the leading icon to `loading` (not the label) so the button width stays stable mid-action.
+- **Inline-edit form Confirm / Cancel buttons** use the icon-only shape too — `save-draft` glyph for Confirm, `close` (X) for Cancel. Canonical ref: NextcloudFileBrowser's create-folder name-input row.
+- **Modal dialog shape** is consistent across views: `class="fixed inset-0 flex items-center justify-center bg-black/50"` backdrop + `class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-[28rem] max-w-full p-5"` card. Escape + outside-click both dismiss. When editing a value that's intentionally hidden (e.g. a stored password's hash), use a tri-state radio (Keep current / Remove / Replace) rather than a single text input — explicit modes prevent the "submitting blank silently clears the value" trap. Canonical ref: SharesView's edit-share modal.
+- **Children-of-`NextcloudFileBrowser`-style imperative actions**: when an inner reusable browser owns state (folder navigation, listing, create-folder) and the parent wants to surface a header-level trigger for one of those actions, expose the function via the `on…ref?: (fn) => void` callback pattern Compose uses (see `oncancelref` / `onaddattachmentsref`). The child fires it once on mount with its internal function; the parent stores it in `$state` and invokes it imperatively. Pair with an optional `hide…Trigger` boolean prop so the child can drop its own inline affordance when the parent provides a header one. Canonical ref: `NextcloudFileBrowser`'s `onstartcreatefolderref` / `onrefreshref` / `hideInlineNewFolderTrigger`.
+- **Localised dates via `toLocaleDateString`**, never the raw `YYYY-MM-DD` string from the server. Parse the parts and construct via the local-zone `new Date(y, m - 1, d)` ctor — the `new Date("YYYY-MM-DD")` string-arg form interprets the value as UTC midnight and silently shifts one day earlier in negative-offset zones. Canonical ref: `SharesView`'s `formatExpiryDate`.
+
+When in doubt, copy the shape from `SharesView` — it was the first view written from scratch under these conventions and is the cleanest reference.
 
 ## Email-rendering conventions
 
