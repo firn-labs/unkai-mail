@@ -486,27 +486,37 @@
                 </div>
               </div>
 
+              <!-- Per-row icon-only action buttons.  Class string
+                   matches the canonical pattern in CLAUDE.md so
+                   every row's set of actions reads as siblings of
+                   the same shape; only the destructive (revoke)
+                   variant gets the red-on-hover overlay so it
+                   stays calm at rest. -->
               <button
-                class="btn preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={() => copyUrl(row)}
-                title={m.shares_view_copy_title()}
-              ><Icon name={copiedId === row.id ? 'success' : 'share-links'} size={14} /> {copiedId === row.id ? m.shares_view_copied() : m.shares_view_copy_link()}</button>
+                title={copiedId === row.id ? m.shares_view_copied() : m.shares_view_copy_title()}
+                aria-label={copiedId === row.id ? m.shares_view_copied() : m.shares_view_copy_link()}
+              ><Icon name={copiedId === row.id ? 'success' : 'copy-link'} size={14} /></button>
               <button
-                class="btn preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={() => openEdit(row)}
                 title={m.shares_view_edit_title()}
-              ><Icon name="compose" size={14} /> {m.shares_view_edit()}</button>
+                aria-label={m.shares_view_edit()}
+              ><Icon name="compose" size={14} /></button>
               <button
-                class="btn preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={() => openInBrowser(row)}
                 title={m.shares_view_open_title()}
-              >{m.shares_view_open()} <Icon name="open-link" size={14} /></button>
+                aria-label={m.shares_view_open()}
+              ><Icon name="open-link" size={14} /></button>
               <button
-                class="btn preset-outlined-error-500 text-xs inline-flex items-center gap-1.5 hover:bg-error-500/15 hover:text-error-500"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
                 disabled={deletingId === row.id}
                 onclick={() => void deleteShare(row)}
-                title={m.shares_view_revoke_title()}
-              ><Icon name={deletingId === row.id ? 'loading' : 'trash'} size={14} /> {deletingId === row.id ? m.shares_view_revoking() : m.shares_view_revoke()}</button>
+                title={deletingId === row.id ? m.shares_view_revoking() : m.shares_view_revoke_title()}
+                aria-label={deletingId === row.id ? m.shares_view_revoking() : m.shares_view_revoke()}
+              ><Icon name={deletingId === row.id ? 'loading' : 'trash'} size={14} /></button>
             </li>
           {/each}
         </ul>
