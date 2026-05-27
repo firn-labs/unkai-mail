@@ -1404,15 +1404,15 @@
 
       <div class="flex items-center justify-end gap-2 mt-5">
         <button
-          class="btn btn-sm preset-tonal"
-          onclick={cancelCreate}
-          disabled={creatingInFlight}
-        >Cancel</button>
-        <button
           class="btn btn-sm preset-filled-primary-500"
           onclick={() => void commitCreate()}
           disabled={!newSummary.trim() || !newTaskListId || creatingInFlight}
         >{creatingInFlight ? 'Creating…' : 'Create task'}</button>
+        <button
+          class="btn btn-sm preset-tonal"
+          onclick={cancelCreate}
+          disabled={creatingInFlight}
+        >Cancel</button>
       </div>
     </div>
   </div>
