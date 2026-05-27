@@ -53,6 +53,10 @@
     | 'shield-image-blocked'
     // v6 — UI primitives
     | 'close'
+    // v7 — task lifecycle: Success (#92) shows a done task;
+    // NotDone is the same circle + check with a diagonal slash
+    // for the "Mark as not done" toggle.
+    | 'not-done'
 </script>
 
 <script lang="ts">
@@ -119,6 +123,7 @@
   import Warning from './icons/Warning.svelte'
   import ErrorIcon from './icons/Error.svelte'
   import Success from './icons/Success.svelte'
+  import NotDone from './icons/NotDone.svelte'
   import Translate from './icons/Translate.svelte'
   import Spellcheck from './icons/Spellcheck.svelte'
   import Dictate from './icons/Dictate.svelte'
@@ -248,6 +253,7 @@
     'warning': Warning,
     'error': ErrorIcon,
     'success': Success,
+    'not-done': NotDone,
     'translate': Translate,
     'spellcheck': Spellcheck,
     'dictate': Dictate,
