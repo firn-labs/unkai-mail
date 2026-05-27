@@ -1258,6 +1258,19 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX tasks_by_href
         ON tasks (task_list_id, href);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v36 → v37: per-task-list local hide toggle (#92 follow-up).
+    //
+    // Mirrors `calendars.hidden` (v11 → v12).  Local-only —
+    // never synced to the server.  Drives the "Disable task
+    // list for the UI" checkboxes in NextcloudSettings and the
+    // sidebar / virtual-bucket filters in TasksView.  Default
+    // 0 (visible) so existing task lists roll forward unchanged.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE task_lists
+        ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

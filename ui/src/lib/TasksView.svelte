@@ -58,6 +58,12 @@
     display_name: string
     color?: string | null
     read_only: boolean
+    /** Local-only flag set via NextcloudSettings → Task lists
+     *  visibility.  `true` drops the row from the sidebar and
+     *  filters its tasks out of the All / Today / Overdue /
+     *  Completed virtuals — same shape as the per-calendar
+     *  `hidden` toggle. */
+    hidden?: boolean
   }
 
   /** Mirrors `unkai_core::models::Task`. */
@@ -249,38 +255,59 @@
     return t.due ? new Date(t.due).getTime() : null
   }
 
+  /** Set of task-list ids the user has marked visible
+   *  (`hidden !== true`).  Drives the virtual-bucket filters and
+   *  the sidebar render — mirroring the calendar `hidden` flag's
+   *  effect on CalendarView.  When the user picks a specific
+   *  list (`selection.kind === 'list'`) we honour the click even
+   *  if the list is hidden, so an explicit drill-in still works
+   *  while the virtuals stay decluttered. */
+  const visibleListIds = $derived(
+    new Set(lists.filter((l) => !l.hidden).map((l) => l.id)),
+  )
+
+  /** Tasks scoped to visible lists only — the input to every
+   *  virtual bucket count and to the unfiltered "All open"
+   *  filter.  Pulled into its own derived so the per-bucket
+   *  expressions below stay readable. */
+  const visibleTasks = $derived(
+    tasks.filter((t) => visibleListIds.has(t.task_list_id)),
+  )
+
   const filteredTasks = $derived.by((): Task[] => {
     let list: Task[]
     switch (selection.kind) {
       case 'today':
-        list = tasks.filter((t) => {
+        list = visibleTasks.filter((t) => {
           if (isCompleted(t)) return false
           const d = dueMs(t)
           return d != null && d >= startOfTodayUtcMs && d < endOfTodayUtcMs
         })
         break
       case 'overdue':
-        list = tasks.filter((t) => {
+        list = visibleTasks.filter((t) => {
           if (isCompleted(t)) return false
           const d = dueMs(t)
           return d != null && d < startOfTodayUtcMs
         })
         break
       case 'completed':
-        list = tasks.filter((t) => isCompleted(t))
+        list = visibleTasks.filter((t) => isCompleted(t))
         break
       case 'list': {
         // Capture the listId locally so TypeScript narrows
         // `selection` inside the filter closure (the discriminated-
         // union narrowing on `selection.kind` doesn't survive a
-        // function boundary).
+        // function boundary).  Honours an explicit click into a
+        // hidden list — visibility filters the virtuals + sidebar,
+        // not a direct drill-in.
         const listId = selection.listId
         list = tasks.filter((t) => t.task_list_id === listId)
         break
       }
       case 'all':
       default:
-        list = tasks.filter((t) => !isCompleted(t))
+        list = visibleTasks.filter((t) => !isCompleted(t))
     }
     const q = searchQuery.trim().toLowerCase()
     if (q) {
@@ -316,22 +343,28 @@
   }
 
   // ── Sidebar counts ──────────────────────────────────────────
-  const allCount = $derived(tasks.filter((t) => !isCompleted(t)).length)
+  // Counts are scoped to visible lists so the virtual badges match
+  // what the user actually sees when they click in (a hidden list's
+  // tasks aren't surfaced via the All / Today / Overdue / Completed
+  // buckets — they only appear when the user explicitly drills into
+  // that list from elsewhere, e.g. the visibility checkbox UI in
+  // Settings).
+  const allCount = $derived(visibleTasks.filter((t) => !isCompleted(t)).length)
   const todayCount = $derived(
-    tasks.filter((t) => {
+    visibleTasks.filter((t) => {
       if (isCompleted(t)) return false
       const d = dueMs(t)
       return d != null && d >= startOfTodayUtcMs && d < endOfTodayUtcMs
     }).length,
   )
   const overdueCount = $derived(
-    tasks.filter((t) => {
+    visibleTasks.filter((t) => {
       if (isCompleted(t)) return false
       const d = dueMs(t)
       return d != null && d < startOfTodayUtcMs
     }).length,
   )
-  const completedCount = $derived(tasks.filter((t) => isCompleted(t)).length)
+  const completedCount = $derived(visibleTasks.filter((t) => isCompleted(t)).length)
   function listOpenCount(id: string): number {
     return tasks.filter((t) => t.task_list_id === id && !isCompleted(t)).length
   }
@@ -402,7 +435,11 @@
     return Math.round(ms / 1000)
   }
 
-  let firstNewListId = $derived(lists[0]?.id ?? '')
+  /** Visible (non-hidden) task lists.  Drives the new-task list
+   *  picker so a hidden list isn't offered as a create target —
+   *  matches the sidebar's filter. */
+  const visibleLists = $derived(lists.filter((l) => !l.hidden))
+  let firstNewListId = $derived(visibleLists[0]?.id ?? '')
 
   /** Inline auto-save with 800 ms debounce — same shape as the
    *  Notes editor.  The `saveStatus` flickers Saving → Saved →
@@ -737,7 +774,11 @@
 
         <div class="my-2 border-t border-surface-200 dark:border-surface-700"></div>
 
-        {#each lists as l (l.id)}
+        <!-- Skip lists the user has flagged hidden in
+             NextcloudSettings → Task lists.  The cache row keeps
+             its `hidden` column so a list reappears the moment
+             the user re-enables it — no re-sync needed. -->
+        {#each lists.filter((l) => !l.hidden) as l (l.id)}
           <button
             class="tasks-side-row group {selectionMatches(selection, { kind: 'list', listId: l.id }) ? 'is-active' : ''}"
             onclick={() => (selection = { kind: 'list', listId: l.id })}
@@ -787,13 +828,16 @@
         <!-- Inline-create row — same shape as NotesView's
              "+ Add folder" draft.  Enter commits, Escape cancels. -->
         <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
-          {#if lists.length > 1}
+          {#if visibleLists.length > 1}
             <select
               class="select text-xs py-1 px-2 rounded-md"
               bind:value={newTaskListId}
               title="Task list"
             >
-              {#each lists as l (l.id)}
+              <!-- Only offer visible lists as create targets — a
+                   user who's hidden a list from the sidebar isn't
+                   expecting it to show up in the picker either. -->
+              {#each visibleLists as l (l.id)}
                 <option value={l.id}>{l.display_name || l.name}</option>
               {/each}
             </select>

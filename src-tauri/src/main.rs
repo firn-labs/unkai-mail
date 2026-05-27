@@ -4645,6 +4645,22 @@ fn set_nextcloud_calendar_muted(
     Ok(())
 }
 
+/// Flip a Nextcloud Tasks task list's sidebar visibility (#92).
+/// Mirrors `set_nextcloud_calendar_hidden` — purely client-side,
+/// no CalDAV traffic.  `hidden = true` removes the list from the
+/// TasksView sidebar AND drops its tasks from the All / Today /
+/// Overdue / Completed virtual buckets so the user can declutter
+/// without unsubscribing from the underlying collection.
+#[tauri::command]
+fn set_nextcloud_task_list_hidden(
+    task_list_id: String,
+    hidden: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    cache.set_task_list_hidden(&task_list_id, hidden)?;
+    Ok(())
+}
+
 /// Events in `[range_start, range_end)` across the given calendars,
 /// with recurring series already expanded into concrete occurrences.
 ///
@@ -13943,6 +13959,7 @@ fn main() {
             update_nextcloud_task,
             delete_nextcloud_task,
             create_nextcloud_task_from_mail,
+            set_nextcloud_task_list_hidden,
             upload_to_nextcloud,
             office_open_attachment,
             office_close_attachment,
