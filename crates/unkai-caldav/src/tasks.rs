@@ -269,6 +269,9 @@ fn parse_task_list_response(
         display_name: display_name.unwrap_or_default(),
         color: color.filter(|s| !s.is_empty()),
         read_only: read_only.unwrap_or(false),
+        // Local-only flag — discovery never writes it, the cache
+        // overlays the user's persisted value when reading back.
+        hidden: false,
     }))
 }
 

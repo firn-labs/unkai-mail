@@ -98,7 +98,7 @@ impl Cache {
     pub fn list_task_lists(&self, nc_id: &str) -> Result<Vec<CachedTaskList>, CacheError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, nextcloud_account_id, path, name, display_name, color, read_only,
+            "SELECT id, nextcloud_account_id, path, name, display_name, color, read_only, hidden,
                     sync_token, ctag, last_synced_at
              FROM task_lists
              WHERE nextcloud_account_id = ?1
@@ -114,10 +114,11 @@ impl Cache {
                     display_name: r.get(4)?,
                     color: r.get::<_, Option<String>>(5)?,
                     read_only: r.get::<_, i64>(6)? != 0,
+                    hidden: r.get::<_, i64>(7)? != 0,
                 },
-                sync_token: r.get::<_, Option<String>>(7)?,
-                ctag: r.get::<_, Option<String>>(8)?,
-                last_synced_at: r.get::<_, Option<i64>>(9)?,
+                sync_token: r.get::<_, Option<String>>(8)?,
+                ctag: r.get::<_, Option<String>>(9)?,
+                last_synced_at: r.get::<_, Option<i64>>(10)?,
             })
         })?;
         let mut out = Vec::new();
@@ -133,7 +134,7 @@ impl Cache {
         let conn = self.conn()?;
         let row = conn
             .query_row(
-                "SELECT id, nextcloud_account_id, path, name, display_name, color, read_only,
+                "SELECT id, nextcloud_account_id, path, name, display_name, color, read_only, hidden,
                         sync_token, ctag, last_synced_at
                  FROM task_lists
                  WHERE id = ?1",
@@ -148,15 +149,27 @@ impl Cache {
                             display_name: r.get(4)?,
                             color: r.get::<_, Option<String>>(5)?,
                             read_only: r.get::<_, i64>(6)? != 0,
+                            hidden: r.get::<_, i64>(7)? != 0,
                         },
-                        sync_token: r.get::<_, Option<String>>(7)?,
-                        ctag: r.get::<_, Option<String>>(8)?,
-                        last_synced_at: r.get::<_, Option<i64>>(9)?,
+                        sync_token: r.get::<_, Option<String>>(8)?,
+                        ctag: r.get::<_, Option<String>>(9)?,
+                        last_synced_at: r.get::<_, Option<i64>>(10)?,
                     })
                 },
             )
             .optional()?;
         Ok(row)
+    }
+
+    /// Flip a task list's local visibility flag.  Purely client-side —
+    /// never touches the CalDAV server.  Mirrors `set_calendar_hidden`.
+    pub fn set_task_list_hidden(&self, task_list_id: &str, hidden: bool) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE task_lists SET hidden = ?2 WHERE id = ?1",
+            params![task_list_id, hidden as i64],
+        )?;
+        Ok(())
     }
 
     /// Apply one task-list sync round.  Upserts the changed tasks,
@@ -449,6 +462,7 @@ mod tests {
             display_name: name.into(),
             color: None,
             read_only: false,
+            hidden: false,
         }
     }
 

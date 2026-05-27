@@ -1344,6 +1344,15 @@ pub struct TaskList {
     /// editor hides the add / edit / delete affordances when set.
     #[serde(default)]
     pub read_only: bool,
+    /// Local-only flag — `true` removes the task list from the
+    /// TasksView sidebar AND drops its tasks from the All / Today
+    /// / Overdue / Completed virtual buckets (#92).  Mirrors the
+    /// per-calendar `hidden` toggle in `Calendar` so the user can
+    /// declutter without unsubscribing from the underlying CalDAV
+    /// collection.  Never synced to the server — purely a client
+    /// preference.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// One Nextcloud Tasks task (#92).

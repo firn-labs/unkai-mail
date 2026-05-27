@@ -137,6 +137,21 @@
   }
   let calendarsList = $state<Record<string, CalendarSummary[]>>({})
 
+  // Per-account cached task-list summaries for the visibility
+  // checkboxes under "Tasks" (#92).  Mirrors `CalendarSummary` /
+  // `calendarsList` — the cache row carries the local `hidden`
+  // flag the TasksView sidebar reads when filtering.
+  interface TaskListSummary {
+    id: string
+    nextcloud_account_id: string
+    display_name: string
+    name: string
+    color: string | null
+    hidden?: boolean
+    read_only?: boolean
+  }
+  let taskListsList = $state<Record<string, TaskListSummary[]>>({})
+
   // ── Settings backup target (#168) ──────────────────────────
 
   async function loadCalendarsList(ncId: string) {
@@ -145,6 +160,20 @@
       calendarsList[ncId] = list
     } catch (e) {
       console.warn('get_cached_calendars failed for', ncId, e)
+    }
+  }
+
+  /** Pull cached task lists for one NC account — feeds the
+   *  visibility checkbox list under "Tasks".  Mirrors
+   *  `loadCalendarsList`.  Failures are non-fatal: we just leave
+   *  the previous list in place so a flaky cache read doesn't
+   *  blank the visibility section. */
+  async function loadTaskListsList(ncId: string) {
+    try {
+      const list = await invoke<TaskListSummary[]>('list_nextcloud_task_lists', { ncId })
+      taskListsList[ncId] = list
+    } catch (e) {
+      console.warn('list_nextcloud_task_lists failed for', ncId, e)
     }
   }
 
@@ -164,6 +193,32 @@
       calendarsList[ncId] = prev
       const state = calendarsState[ncId]
       if (state) state.error = formatError(e) || 'Failed to toggle calendar visibility'
+    }
+  }
+
+  /** Flip a task list's `hidden` flag.  Same optimistic-update
+   *  pattern as `toggleCalendarHidden`.  Rollback on backend
+   *  failure surfaces an error on the calendars sync row (no
+   *  dedicated task-list row yet — the toggle lives in the
+   *  same visual block). */
+  async function toggleTaskListHidden(
+    ncId: string,
+    taskListId: string,
+    hidden: boolean,
+  ) {
+    const list = taskListsList[ncId] ?? []
+    const prev = list.slice()
+    taskListsList[ncId] = list.map((c) =>
+      c.id === taskListId ? { ...c, hidden } : c,
+    )
+    try {
+      await invoke('set_nextcloud_task_list_hidden', { taskListId, hidden })
+    } catch (e) {
+      taskListsList[ncId] = prev
+      const state = calendarsState[ncId]
+      if (state) {
+        state.error = formatError(e) || 'Failed to toggle task list visibility'
+      }
     }
   }
 
@@ -203,6 +258,7 @@
         await refreshContactsStatus(a.id)
         await refreshCalendarsStatus(a.id)
         await loadCalendarsList(a.id)
+        await loadTaskListsList(a.id)
       }
       // Background-refresh the capability snapshot for every account
       // so newly-installed Nextcloud apps (Office, Talk, …) light up
@@ -308,6 +364,15 @@
       // rename, or remove calendars. Refresh the per-account list so
       // the visibility checkboxes reflect what's actually there now.
       await loadCalendarsList(acct.id)
+      // Task lists live in the same CalDAV collections as calendars
+      // — a calendar discovery pass refreshes both surfaces, so
+      // pull the task-list visibility set too (#92).  Best-effort:
+      // an empty / 404 server response just leaves the previous
+      // list in place.
+      void invoke('sync_nextcloud_task_lists', { ncId: acct.id }).catch((e) => {
+        console.warn('sync_nextcloud_task_lists failed for', acct.id, e)
+      })
+      await loadTaskListsList(acct.id)
     } catch (e) {
       state.error = formatError(e) || 'Sync failed'
     } finally {
@@ -693,6 +758,46 @@
                     </ul>
                   </div>
                 {/if}
+              {/if}
+
+              <!-- Task lists visibility (#92).  Mirrors the
+                   per-calendar Visibility block above — same
+                   Toggle + colour swatch + truncated label,
+                   same optimistic-update pattern.  Only renders
+                   when the server advertises the Tasks app
+                   capability AND we have at least one cached
+                   list to toggle; an account with Tasks enabled
+                   but no list yet sees nothing here until
+                   discovery runs. -->
+              {#if acct.capabilities?.tasks && (taskListsList[acct.id]?.length ?? 0) > 0}
+                <div class="pl-6 pb-2 pr-3">
+                  <div class="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">
+                    Task lists
+                  </div>
+                  <ul class="space-y-0.5">
+                    {#each taskListsList[acct.id] as l (l.id)}
+                      <li>
+                        <div
+                          class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-xs"
+                        >
+                          <Toggle
+                            checked={!l.hidden}
+                            label={l.display_name || l.name}
+                            onchange={(v) =>
+                              void toggleTaskListHidden(acct.id, l.id, !v)}
+                          />
+                          <span
+                            class="w-2.5 h-2.5 rounded-sm shrink-0"
+                            style="background-color: {l.color ?? '#6b7280'};"
+                          ></span>
+                          <span class="truncate" title={l.display_name || l.name}>
+                            {l.display_name || l.name}
+                          </span>
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
               {/if}
             {/if}
           </div>
