@@ -615,13 +615,33 @@
   }
 
   // ── New task ────────────────────────────────────────────────
+  //
+  // `New task` opens a centered modal (CLAUDE.md modal idiom)
+  // rather than an inline row at the top of the list pane.  The
+  // modal collects every field the editor exposes — title,
+  // description, reminder date + time, priority, target list —
+  // so a freshly-created task can be filled in without a follow-
+  // up edit pass.
   let creating = $state(false)
+  let creatingInFlight = $state(false)
   let newTaskListId = $state('')
+  let newSummary = $state('')
+  let newDescription = $state('')
+  /** YYYY-MM-DD — DateField bound value. */
+  let newReminderDate = $state('')
+  /** HH:MM — TimeField bound value. */
+  let newReminderTime = $state('')
+  /** Same numeric scale `Task.priority` uses: 0 = none,
+   *  1 = high, 5 = medium, 9 = low.  Round-trips through
+   *  `create_nextcloud_task` unchanged. */
+  let newPriority = $state(0)
+  let newSummaryInput: HTMLInputElement | undefined = $state()
 
   function startCreate() {
     // Default the new task into whichever list the sidebar is
     // focused on (when the user is on a real list).  Otherwise
-    // land in the first list — same heuristic NotesView uses.
+    // land in the first visible list — same heuristic NotesView
+    // uses.
     const seed =
       selection.kind === 'list'
         ? selection.listId
@@ -631,23 +651,62 @@
       error = 'Connect a Nextcloud account with at least one task list first.'
       return
     }
+    // Reset every field so the modal opens clean — without this
+    // the previous create's title / description / reminder leak
+    // into the next "New task" click.
+    newSummary = ''
+    newDescription = ''
+    newReminderDate = ''
+    newReminderTime = ''
+    newPriority = 0
+    creatingInFlight = false
     creating = true
   }
 
-  async function commitCreate(summary: string) {
+  function cancelCreate() {
+    if (creatingInFlight) return
     creating = false
-    if (!accountId || !newTaskListId || !summary.trim()) return
+    newSummary = ''
+    newDescription = ''
+    newReminderDate = ''
+    newReminderTime = ''
+    newPriority = 0
+  }
+
+  async function commitCreate() {
+    if (!accountId || !newTaskListId) return
+    const summary = newSummary.trim()
+    if (!summary) return
+    creatingInFlight = true
     try {
+      // Auto-fill the reminder date to today when the user picked
+      // a time first — mirrors the editor's reminder $effect.  A
+      // time without a date has no instant to save, so we'd drop
+      // it silently otherwise.
+      const dateForSave =
+        newReminderDate || (newReminderTime ? todayLocalDate() : '')
+      const dueUnix = localSplitToUnixSecs(dateForSave, newReminderTime)
       const created = await invoke<Task>('create_nextcloud_task', {
         ncId: accountId,
         listId: newTaskListId,
-        summary: summary.trim(),
+        summary,
+        description: newDescription.trim() || null,
+        dueUnix,
+        priority: newPriority,
       })
       tasks = [created, ...tasks]
       openTask(created)
       selection = { kind: 'list', listId: newTaskListId }
+      creating = false
+      newSummary = ''
+      newDescription = ''
+      newReminderDate = ''
+      newReminderTime = ''
+      newPriority = 0
     } catch (e) {
       error = formatError(e) || 'Failed to create task'
+    } finally {
+      creatingInFlight = false
     }
   }
 
@@ -738,12 +797,12 @@
     return lists.find((l) => l.id === id)?.display_name ?? ''
   }
 
-  // Inline-create input element + value
-  let newSummary = $state('')
-  let newSummaryInput: HTMLInputElement | undefined = $state()
+  // Focus the title input the moment the New-task modal opens —
+  // the user is here to type a title, so we save them the click.
   $effect(() => {
     if (creating && newSummaryInput) {
       newSummaryInput.focus()
+      newSummaryInput.select()
     }
   })
 </script>
@@ -874,59 +933,6 @@
               <option value={a.id}>{a.display_name || a.username}</option>
             {/each}
           </select>
-        </div>
-      {/if}
-
-      {#if creating}
-        <!-- Inline-create row — same shape as NotesView's
-             "+ Add folder" draft.  Enter commits, Escape cancels. -->
-        <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
-          {#if sidebarLists.length > 1}
-            <select
-              class="select text-xs py-1 px-2 rounded-md"
-              bind:value={newTaskListId}
-              title="Task list"
-            >
-              <!-- Only offer non-hidden lists as create targets —
-                   a user who hid a list from Settings isn't
-                   expecting it to show up in the picker either.
-                   Muted lists DO show: muting is "stop counting
-                   these in the virtuals", not "stop using". -->
-              {#each sidebarLists as l (l.id)}
-                <option value={l.id}>{l.display_name || l.name}</option>
-              {/each}
-            </select>
-          {/if}
-          <input
-            bind:this={newSummaryInput}
-            bind:value={newSummary}
-            type="text"
-            class="input flex-1 text-sm px-2 py-1 rounded-md"
-            placeholder="What needs doing?"
-            onkeydown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                const s = newSummary
-                newSummary = ''
-                void commitCreate(s)
-              } else if (e.key === 'Escape') {
-                e.preventDefault()
-                creating = false
-                newSummary = ''
-              }
-            }}
-          />
-          <button
-            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
-            title="Cancel"
-            aria-label="Cancel"
-            onclick={() => {
-              creating = false
-              newSummary = ''
-            }}
-          >
-            <Icon name="close" size={14} />
-          </button>
         </div>
       {/if}
 
@@ -1237,6 +1243,143 @@
     </div>
   {/if}
 </div>
+
+<!-- New-task modal — CLAUDE.md modal idiom: backdrop +
+     centered card, Escape and outside-click dismiss.  Collects
+     every field the editor exposes so a freshly-created task
+     can be filled in without an immediate follow-up edit pass.
+     Mounted at the document-root level (outside the view's
+     flex shell) so the fixed-positioned backdrop sits over
+     every column at once. -->
+{#if creating}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    aria-label="New task"
+    tabindex="-1"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) cancelCreate()
+    }}
+    onkeydown={(e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        cancelCreate()
+      }
+    }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-lg max-w-full max-h-[90vh] overflow-y-auto p-5">
+      <h2 class="text-base font-semibold mb-3">New task</h2>
+
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="block text-xs text-surface-500 mb-1" for="new-task-summary">Title</label>
+          <input
+            id="new-task-summary"
+            bind:this={newSummaryInput}
+            bind:value={newSummary}
+            type="text"
+            class="input w-full text-sm px-3 py-2 rounded-md"
+            placeholder="What needs doing?"
+            onkeydown={(e) => {
+              if (e.key === 'Enter' && newSummary.trim() && newTaskListId && !creatingInFlight) {
+                e.preventDefault()
+                void commitCreate()
+              }
+            }}
+          />
+        </div>
+
+        {#if sidebarLists.length > 0}
+          <div>
+            <label class="block text-xs text-surface-500 mb-1" for="new-task-list">Task list</label>
+            <select
+              id="new-task-list"
+              class="select w-full text-sm px-2 py-1.5 rounded-md"
+              bind:value={newTaskListId}
+            >
+              <!-- Only non-hidden lists are offered as create
+                   targets — matches the sidebar filter.  Muted
+                   lists DO show: muting is "stop counting these
+                   in the virtuals", not "stop using". -->
+              {#each sidebarLists as l (l.id)}
+                <option value={l.id}>{l.display_name || l.name}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+
+        <div>
+          <span class="block text-xs text-surface-500 mb-1">Reminder</span>
+          <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0 max-w-48">
+              <DateField
+                id="new-task-reminder-date"
+                ariaLabel="Reminder date"
+                bind:value={newReminderDate}
+              />
+            </div>
+            <div class="w-28">
+              <TimeField
+                id="new-task-reminder-time"
+                ariaLabel="Reminder time"
+                bind:value={newReminderTime}
+              />
+            </div>
+            {#if newReminderDate || newReminderTime}
+              <button
+                class="ml-1 text-xs text-surface-500 hover:text-surface-900 dark:hover:text-surface-100 underline"
+                onclick={() => {
+                  newReminderDate = ''
+                  newReminderTime = ''
+                }}
+              >Clear</button>
+            {/if}
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs text-surface-500 mb-1" for="new-task-priority">Priority</label>
+          <select
+            id="new-task-priority"
+            class="select w-full text-sm px-2 py-1.5 rounded-md"
+            bind:value={newPriority}
+          >
+            <option value={0}>None</option>
+            <option value={1}>High</option>
+            <option value={5}>Medium</option>
+            <option value={9}>Low</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-xs text-surface-500 mb-1" for="new-task-description">Description</label>
+          <textarea
+            id="new-task-description"
+            bind:value={newDescription}
+            rows="4"
+            class="textarea w-full text-sm px-2 py-1.5 rounded-md"
+            placeholder="Add details…"
+          ></textarea>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 mt-5">
+        <button
+          class="btn btn-sm preset-tonal"
+          onclick={cancelCreate}
+          disabled={creatingInFlight}
+        >Cancel</button>
+        <button
+          class="btn btn-sm preset-filled-primary-500"
+          onclick={() => void commitCreate()}
+          disabled={!newSummary.trim() || !newTaskListId || creatingInFlight}
+        >{creatingInFlight ? 'Creating…' : 'Create task'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   /* Sidebar rows match NotesView's `.notes-side-row` shape so the
