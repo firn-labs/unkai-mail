@@ -36,8 +36,10 @@
   import { invoke } from '@tauri-apps/api/core'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
+  import DateField from './DateField.svelte'
   import Icon from './Icon.svelte'
   import SearchInput from './SearchInput.svelte'
+  import TimeField from './TimeField.svelte'
   import { resizableSidebar } from './resizableSidebar'
 
   interface NextcloudAccount {
@@ -104,7 +106,23 @@
   let selectedUid = $state<string | null>(null)
   let draftSummary = $state('')
   let draftDescription = $state('')
-  let draftDueLocal = $state('')
+  /** Local-zone date half of the due editor (`YYYY-MM-DD`).  Paired
+   *  with `draftDueTime` to drive the shared DateField + TimeField
+   *  components — same split EventEditor uses for VEVENT start /
+   *  end so both views speak the same picker UX. */
+  let draftDueDate = $state('')
+  /** Local-zone time half of the due editor (`HH:MM`).  Empty when
+   *  the task has no due date OR when the user wants an all-day
+   *  due (we still write the time as `00:00` in that case — VTODO
+   *  doesn't model "due without a time of day" separately). */
+  let draftDueTime = $state('')
+  /** Set true by `openTask` right before it overwrites the due
+   *  fields, so the auto-save `$effect` watching them can tell
+   *  "loaded from server" apart from "user picked a new date".
+   *  Reset back to false on the next effect run.  Without this,
+   *  every click on a task row would round-trip a PUT through
+   *  the server that didn't actually change anything. */
+  let skipNextDueSave = $state(false)
   let draftPriority = $state(0)
   let draftEtag = $state('')
   let draftListId = $state('')
@@ -330,7 +348,10 @@
     draftListId = t.task_list_id
     draftSummary = t.summary
     draftDescription = t.description ?? ''
-    draftDueLocal = utcIsoToLocalInput(t.due)
+    const split = utcIsoToLocalSplit(t.due)
+    skipNextDueSave = true
+    draftDueDate = split.date
+    draftDueTime = split.time
     draftPriority = t.priority
     draftEtag = t.etag
     saveStatus = ''
@@ -349,23 +370,34 @@
     }
   }
 
-  /** Convert a UTC RFC-3339 instant to the `<input type="datetime-local">`
-   *  format (`YYYY-MM-DDTHH:MM`) in the user's local zone.  Returns the
-   *  empty string when `iso` is null. */
-  function utcIsoToLocalInput(iso: string | null | undefined): string {
-    if (!iso) return ''
+  /** Convert a UTC RFC-3339 instant to the split DateField /
+   *  TimeField values the editor binds (`YYYY-MM-DD` + `HH:MM`),
+   *  both in the user's local zone.  Returns empty strings when
+   *  `iso` is null so the picker reads "Pick a date" rather than
+   *  whatever today is.  Same idiom EventEditor uses to feed the
+   *  same component pair. */
+  function utcIsoToLocalSplit(
+    iso: string | null | undefined,
+  ): { date: string; time: string } {
+    if (!iso) return { date: '', time: '' }
     const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return ''
+    if (Number.isNaN(d.getTime())) return { date: '', time: '' }
     const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    return {
+      date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+      time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    }
   }
 
-  /** Convert a `<input type="datetime-local">` value back to a UTC
-   *  epoch in seconds, or `null` for empty.  Local-zone interpretation
-   *  matches what the user typed. */
-  function localInputToUnixSecs(value: string): number | null {
-    if (!value) return null
-    const ms = new Date(value).getTime()
+  /** Combine the DateField + TimeField split values into a UTC
+   *  epoch in seconds.  `null` when no date is set; an empty time
+   *  defaults to midnight local (we don't model "all-day due"
+   *  separately — VTODO's DUE is always a single instant).  Browsers
+   *  parse `YYYY-MM-DDTHH:MM` (no offset) as local time, so the
+   *  Date constructor stores it as the correct UTC instant. */
+  function localSplitToUnixSecs(date: string, time: string): number | null {
+    if (!date) return null
+    const ms = new Date(`${date}T${time || '00:00'}`).getTime()
     if (Number.isNaN(ms)) return null
     return Math.round(ms / 1000)
   }
@@ -382,11 +414,29 @@
     saveTimer = setTimeout(saveNow, 800)
   }
 
+  // Auto-save when DateField / TimeField mutate the bound values.
+  // The shared pickers are bind-only (no onchange callback), so we
+  // hook reactivity here.  `openTask` flips `skipNextDueSave` true
+  // right before it overwrites the drafts so "loaded a different
+  // task" doesn't trigger a no-op PUT.  Reading both pieces at the
+  // top of the effect — before the guard — so Svelte tracks them
+  // as deps unconditionally (per CLAUDE-style guidance, conditional
+  // reads inside an effect can silently lose reactivity).
+  $effect(() => {
+    void draftDueDate
+    void draftDueTime
+    if (skipNextDueSave) {
+      skipNextDueSave = false
+      return
+    }
+    scheduleSave()
+  })
+
   async function saveNow() {
     if (selectedUid == null || !accountId) return
     const uid = selectedUid
     const listId = draftListId
-    const dueUnix = localInputToUnixSecs(draftDueLocal)
+    const dueUnix = localSplitToUnixSecs(draftDueDate, draftDueTime)
     try {
       const updated = await invoke<Task>('update_nextcloud_task', {
         ncId: accountId,
@@ -944,23 +994,43 @@
 
           <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4 text-sm">
             <div>
-              <label class="block text-xs text-surface-500 mb-1" for="tasks-editor-due">Due</label>
-              <input
-                id="tasks-editor-due"
-                type="datetime-local"
-                class="input text-sm px-2 py-1 rounded-md"
-                bind:value={draftDueLocal}
-                onchange={scheduleSave}
-              />
-              {#if draftDueLocal}
-                <button
-                  class="ml-2 text-xs text-surface-500 hover:text-surface-900 dark:hover:text-surface-100 underline"
-                  onclick={() => {
-                    draftDueLocal = ''
-                    scheduleSave()
-                  }}
-                >Clear due</button>
-              {/if}
+              <span class="block text-xs text-surface-500 mb-1">Due</span>
+              <!-- Shared DateField + TimeField pair (#126) — same
+                   calendar-grid + slot-list pickers EventEditor
+                   renders for VEVENT start / end, so a user
+                   switching between the Tasks and Calendar views
+                   gets the same date/time UX in both places.
+                   Native `<input type="datetime-local">` was
+                   replaced for that consistency reason — the
+                   browser-supplied picker varies wildly across
+                   platforms and doesn't match the rest of the
+                   form vocabulary. -->
+              <div class="flex items-center gap-2">
+                <div class="flex-1 min-w-0 max-w-48">
+                  <DateField
+                    id="tasks-editor-due-date"
+                    ariaLabel="Due date"
+                    bind:value={draftDueDate}
+                  />
+                </div>
+                {#if draftDueDate}
+                  <div class="w-28">
+                    <TimeField
+                      id="tasks-editor-due-time"
+                      ariaLabel="Due time"
+                      bind:value={draftDueTime}
+                    />
+                  </div>
+                  <button
+                    class="ml-1 text-xs text-surface-500 hover:text-surface-900 dark:hover:text-surface-100 underline"
+                    onclick={() => {
+                      draftDueDate = ''
+                      draftDueTime = ''
+                      scheduleSave()
+                    }}
+                  >Clear due</button>
+                {/if}
+              </div>
             </div>
 
             <div>
