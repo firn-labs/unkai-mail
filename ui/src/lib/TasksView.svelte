@@ -1131,7 +1131,14 @@
               aria-label={isCompleted(open) ? 'Mark as not done' : 'Mark as done'}
               aria-pressed={isCompleted(open)}
             >
-              <Icon name={isCompleted(open) ? 'success' : 'unread'} size={16} />
+              <!-- Icon shows the action the button performs.  When
+                   the task is not yet done, the button reads "Mark
+                   as done" and shows a plain checkmark.  Once
+                   completed, the button flips to "Mark as not
+                   done" and shows the same checkmark with a
+                   diagonal slash through it — visually "undo this
+                   check". -->
+              <Icon name={isCompleted(open) ? 'not-done' : 'success'} size={16} />
             </button>
             <button
               class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
