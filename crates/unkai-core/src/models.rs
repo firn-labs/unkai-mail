@@ -1314,3 +1314,117 @@ pub struct Note {
     /// folder in the sidebar.
     pub favorite: bool,
 }
+
+/// One Nextcloud Tasks task list (#92).
+///
+/// Nextcloud Tasks stores tasks as VTODO components inside CalDAV
+/// collections.  A "task list" is the same kind of CalDAV
+/// collection a calendar lives in — distinguished by the
+/// `supported-calendar-component-set` PROPFIND prop including
+/// `VTODO`.  The app-side `id` is `{nc_id}::{path}` so the UI can
+/// reference a single string while the natural
+/// `(nextcloud_account_id, path)` stays the cache key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskList {
+    /// Composite app-side id (`{nc_id}::{path}`).
+    pub id: String,
+    pub nextcloud_account_id: String,
+    /// Absolute URL of the CalDAV collection (used for PUT / sync).
+    pub path: String,
+    /// Last path segment of `path` — stable cache key even if
+    /// `display_name` changes server-side.
+    pub name: String,
+    /// User-facing label from the CalDAV `displayname` prop.
+    pub display_name: String,
+    /// Hex colour assigned to the collection (`apple:calendar-color`).
+    /// Empty when the server didn't advertise one.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// True when the user only has read access on this list — the
+    /// editor hides the add / edit / delete affordances when set.
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+/// One Nextcloud Tasks task (#92).
+///
+/// Mirrors the subset of RFC 5545 VTODO fields we surface in the
+/// UI.  The task's CalDAV UID is the natural key; `task_list_id`
+/// is the composite id of the owning `TaskList` so the cache can
+/// keep tasks from many lists in one table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Task {
+    /// VTODO `UID` — globally unique per RFC 5545.  Carries the
+    /// suffix `.ics` is *not* part of this value; the on-server
+    /// href is `{task_list_path}/{uid}.ics`.
+    pub uid: String,
+    /// Composite app-side id of the owning task list.
+    pub task_list_id: String,
+    /// Absolute URL of the calendar object resource (used for
+    /// PUT / DELETE with `If-Match`).
+    pub href: String,
+    /// Server etag — sent back on update so a concurrent edit
+    /// surfaces as 412 instead of silent overwrite.
+    pub etag: String,
+    /// VTODO `SUMMARY` — the task's headline.
+    pub summary: String,
+    /// VTODO `DESCRIPTION` — multi-line body.  `None` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// VTODO `STATUS` — one of `NEEDS-ACTION` / `IN-PROCESS` /
+    /// `COMPLETED` / `CANCELLED`.  Stored as the raw RFC token so
+    /// CalDAV round-trips losslessly; the UI maps to a checkbox +
+    /// strikethrough.  Defaults to `NEEDS-ACTION` when absent.
+    #[serde(default)]
+    pub status: String,
+    /// VTODO `PRIORITY` (RFC 5545 §3.8.1.9) — integer 1..=9 where
+    /// 1 is highest, 5 is medium, 9 is lowest, and 0 / absent means
+    /// "no priority".  We map 1..=4 to "high", 5 to "medium",
+    /// 6..=9 to "low" in the UI.  Round-trips the raw number so an
+    /// external client's exact value survives an edit cycle.
+    #[serde(default)]
+    pub priority: u8,
+    /// VTODO `DUE` — when the task is due, as a UTC instant.  All-
+    /// day dues are normalised to midnight UTC; the UI re-renders
+    /// in the user's locale.  `None` for tasks without a deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<DateTime<Utc>>,
+    /// VTODO `COMPLETED` — when the user marked it done.  Pairs
+    /// with `status == COMPLETED`; the writer keeps the two in
+    /// lockstep so a CalDAV client that only reads one column
+    /// still gets the right answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<DateTime<Utc>>,
+    /// VTODO `CREATED` — when the task was first created.  Used
+    /// as a fallback sort key when `due` is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<DateTime<Utc>>,
+    /// VTODO `LAST-MODIFIED` — server-stamped on every change.
+    /// Used by the list view's "modified" sort and as a tiebreaker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<DateTime<Utc>>,
+    /// VTODO `URL` — when the URL is an Unkai mail reference
+    /// (`mail://account/folder/uid`), the UI renders a "Source
+    /// mail" chip that opens the originating message.  Any other
+    /// URL is shown as-is.  `None` when the task has no `URL`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `CATEGORIES` tag list (RFC 5545 §3.8.1.2).  Free-form
+    /// strings; the UI surfaces them as chips on the task row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    /// Raw VCALENDAR/VTODO body — kept so the store can re-parse
+    /// later without re-syncing, same pattern as `CalendarEvent`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ics_raw: String,
+}
+
+impl Task {
+    /// True when `status` is `COMPLETED`.  The UI uses this for
+    /// the checkbox state and the strikethrough; backed by RFC
+    /// 5545 §3.8.1.11 STATUS, not by the presence of `COMPLETED`
+    /// (which is a separate timestamp property).
+    pub fn is_completed(&self) -> bool {
+        self.status.eq_ignore_ascii_case("COMPLETED")
+    }
+}

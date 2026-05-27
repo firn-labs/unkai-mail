@@ -44,6 +44,7 @@
   import SharesView from './lib/SharesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
+  import TasksView from './lib/TasksView.svelte'
   import { unifiedSpecialKind } from './lib/unifiedFolders'
   import { openMailInStandaloneWindow } from './lib/standaloneMailWindow'
   import { openComposeInStandaloneWindow } from './lib/standaloneComposeWindow'
@@ -94,6 +95,7 @@
     | 'shares'
     | 'talk'
     | 'notes'
+    | 'tasks'
   let currentView = $state<View>('loading')
 
 
@@ -139,6 +141,7 @@
       caldav?: boolean
       carddav?: boolean
       notes?: boolean
+      tasks?: boolean
     } | null
   }
   // Settings category persistence (#318) — lifted out of
@@ -160,6 +163,7 @@
     files: false,
     talk: false,
     notes: false,
+    tasks: false,
   })
 
   async function refreshNextcloudCapabilities() {
@@ -174,6 +178,13 @@
         files: any((a) => a.capabilities?.files === true),
         talk: any((a) => a.capabilities?.talk === true),
         notes: any((a) => a.capabilities?.notes === true),
+        // Tasks reuses CalDAV under the hood, so the chip lights
+        // up whenever the server has the Tasks app installed *and*
+        // CalDAV is reachable.  We gate on both so a server with
+        // Tasks navigation but no DAV (impossible in practice, but
+        // future-proofs against partial setups) doesn't surface a
+        // dead icon.
+        tasks: any((a) => a.capabilities?.tasks === true && a.capabilities?.caldav === true),
       }
     } catch (e) {
       console.warn('refreshNextcloudCapabilities failed', e)
@@ -3168,6 +3179,81 @@
       preference: plain text first (already the right shape for
       markdown), falling back to a stripped HTML body so users on
       HTML-only senders still get readable note content. */
+  /** "Create task from this mail" handler (#92).  Picks the first
+   *  connected Nextcloud account + its first task list and writes
+   *  a VTODO whose `URL` is the `mail://account/folder/uid` ref so
+   *  the task carries a clickable backlink to the source message.
+   *  Mirrors `onSaveMailAsNote`'s ergonomics — no modal, no
+   *  picker, the Tasks view is where the user nuances the
+   *  result.  Surface via OS toast when available so a successful
+   *  triage doesn't break the user's flow with a blocking alert. */
+  async function onCreateTaskFromMail(
+    mail: {
+      account_id: string
+      folder: string
+      uid: number
+      subject: string
+      from: string
+    },
+  ) {
+    let ncId = ''
+    try {
+      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      if (list.length === 0) {
+        alert('Connect a Nextcloud account first (Settings → Nextcloud).')
+        return
+      }
+      ncId = list[0].id
+    } catch (e) {
+      alert(`Failed to load Nextcloud accounts: ${e}`)
+      return
+    }
+
+    // Pull task lists from the cache; if empty, fall back to a
+    // server discovery round-trip.  An NC server with the Tasks
+    // app enabled always returns at least the "Personal" calendar
+    // (which accepts VTODO), so the empty result here is the
+    // "we haven't synced yet" case.
+    let lists: { id: string; display_name: string; name: string }[] = []
+    try {
+      lists = await invoke('list_nextcloud_task_lists', { ncId })
+      if (lists.length === 0) {
+        lists = await invoke('sync_nextcloud_task_lists', { ncId })
+      }
+    } catch (e) {
+      alert(`Failed to load task lists: ${e}`)
+      return
+    }
+    if (lists.length === 0) {
+      alert(
+        'No task lists found.  Create one in the Nextcloud Tasks app first.',
+      )
+      return
+    }
+    const targetListId = lists[0].id
+    const targetListLabel = lists[0].display_name || lists[0].name
+
+    try {
+      await invoke('create_nextcloud_task_from_mail', {
+        ncId,
+        listId: targetListId,
+        mailAccountId: mail.account_id,
+        folder: mail.folder,
+        uid: mail.uid,
+        subject: mail.subject || '',
+        from: mail.from || '',
+      })
+      const summary = mail.subject || '(no subject)'
+      if (notificationsGranted) {
+        fireToast(`Added to ${targetListLabel}`, summary)
+      } else {
+        alert(`Created task "${summary}" in ${targetListLabel}.`)
+      }
+    } catch (e) {
+      alert(`Failed to create task: ${e}`)
+    }
+  }
+
   async function onSaveMailAsNote(mail: OpenMail & { body_html?: string | null }) {
     let ncId = ''
     try {
@@ -3337,6 +3423,10 @@
           onopenmail={openMailRef}
         />
       </div>
+    {:else if currentView === 'tasks'}
+      <div class="flex-1 min-w-0">
+        <TasksView onopenmail={openMailRef} />
+      </div>
     {:else}
       <!-- Mail view: Sidebar (folders) + mail-list column + MailView.
            Sidebar is now much leaner — just Compose + folder tree —
@@ -3447,6 +3537,7 @@
           onforward={onForward}
           onrespondwithmeeting={onRespondWithMeeting}
           onsavenote={onSaveMailAsNote}
+          oncreatetask={ncCaps.tasks ? onCreateTaskFromMail : undefined}
           isDraftsFolder={isDraftsFolder}
           isSentFolder={isSentFolder}
           oneditdraft={onEditDraft}
