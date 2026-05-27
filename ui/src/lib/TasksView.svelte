@@ -414,19 +414,43 @@
     saveTimer = setTimeout(saveNow, 800)
   }
 
+  /** `YYYY-MM-DD` for today in the user's local zone — same
+   *  shape DateField's `value` accepts. */
+  function todayLocalDate(): string {
+    const d = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
+
   // Auto-save when DateField / TimeField mutate the bound values.
   // The shared pickers are bind-only (no onchange callback), so we
-  // hook reactivity here.  `openTask` flips `skipNextDueSave` true
-  // right before it overwrites the drafts so "loaded a different
-  // task" doesn't trigger a no-op PUT.  Reading both pieces at the
-  // top of the effect — before the guard — so Svelte tracks them
-  // as deps unconditionally (per CLAUDE-style guidance, conditional
-  // reads inside an effect can silently lose reactivity).
+  // hook reactivity here.  Reading both pieces at the top of the
+  // effect — before any guard — so Svelte tracks them as deps
+  // unconditionally (per CLAUDE-style guidance, conditional reads
+  // inside an effect can silently lose reactivity).
+  //
+  // `openTask` flips `skipNextDueSave` true right before it
+  // overwrites the drafts so "loaded a different task" doesn't
+  // spawn a no-op PUT.
+  //
+  // When the user picks a time without a date, auto-fill the date
+  // to today so the reminder writes back as "today at <time>"
+  // rather than silently dropping (a time-only value has no
+  // instant to save).  The date mutation re-triggers this effect
+  // — we set `skipNextDueSave` first so the re-fire is a no-op,
+  // and call `scheduleSave` directly so the save still happens
+  // for the combined value the user just produced.
   $effect(() => {
-    void draftDueDate
-    void draftDueTime
+    const date = draftDueDate
+    const time = draftDueTime
     if (skipNextDueSave) {
       skipNextDueSave = false
+      return
+    }
+    if (!date && time) {
+      skipNextDueSave = true
+      draftDueDate = todayLocalDate()
+      scheduleSave()
       return
     }
     scheduleSave()
@@ -994,7 +1018,7 @@
 
           <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4 text-sm">
             <div>
-              <span class="block text-xs text-surface-500 mb-1">Due</span>
+              <span class="block text-xs text-surface-500 mb-1">Reminder</span>
               <!-- Shared DateField + TimeField pair (#126) — same
                    calendar-grid + slot-list pickers EventEditor
                    renders for VEVENT start / end, so a user
@@ -1004,31 +1028,41 @@
                    replaced for that consistency reason — the
                    browser-supplied picker varies wildly across
                    platforms and doesn't match the rest of the
-                   form vocabulary. -->
+                   form vocabulary.
+                   Both pickers render unconditionally — the user
+                   can pick a time first and we'll auto-fill the
+                   date to today (handled by the auto-default
+                   `$effect` further up), so the field reads as a
+                   single "Reminder" unit rather than a sequential
+                   date-then-time gate. -->
               <div class="flex items-center gap-2">
                 <div class="flex-1 min-w-0 max-w-48">
                   <DateField
-                    id="tasks-editor-due-date"
-                    ariaLabel="Due date"
+                    id="tasks-editor-reminder-date"
+                    ariaLabel="Reminder date"
                     bind:value={draftDueDate}
                   />
                 </div>
-                {#if draftDueDate}
-                  <div class="w-28">
-                    <TimeField
-                      id="tasks-editor-due-time"
-                      ariaLabel="Due time"
-                      bind:value={draftDueTime}
-                    />
-                  </div>
+                <div class="w-28">
+                  <TimeField
+                    id="tasks-editor-reminder-time"
+                    ariaLabel="Reminder time"
+                    bind:value={draftDueTime}
+                  />
+                </div>
+                {#if draftDueDate || draftDueTime}
                   <button
                     class="ml-1 text-xs text-surface-500 hover:text-surface-900 dark:hover:text-surface-100 underline"
                     onclick={() => {
+                      // Suppress the next reactive save: the two
+                      // assignments below would otherwise fire the
+                      // due-watcher $effect twice (once per write).
+                      skipNextDueSave = true
                       draftDueDate = ''
                       draftDueTime = ''
                       scheduleSave()
                     }}
-                  >Clear due</button>
+                  >Clear reminder</button>
                 {/if}
               </div>
             </div>
