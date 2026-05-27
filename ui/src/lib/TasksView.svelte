@@ -537,7 +537,18 @@
         status: becomeCompleted ? 'COMPLETED' : 'NEEDS-ACTION',
       })
       tasks = tasks.map((x) => (x.uid === updated.uid ? updated : x))
-      if (selectedUid === updated.uid) draftEtag = updated.etag
+      if (selectedUid === updated.uid) {
+        if (becomeCompleted) {
+          // Close the editor when the user marks the open task
+          // complete — typical task-app flow ("done, move on").
+          // The un-complete direction keeps the editor open so
+          // the user can immediately keep editing if they undid
+          // a mistaken completion.
+          clearSelection()
+        } else {
+          draftEtag = updated.etag
+        }
+      }
     } catch (e) {
       error = formatError(e) || 'Failed to update task'
     }
