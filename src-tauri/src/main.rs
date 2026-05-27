@@ -4661,6 +4661,36 @@ fn set_nextcloud_task_list_hidden(
     Ok(())
 }
 
+/// Layer-2 mute toggle for a task list (#92).  Mirrors
+/// `set_nextcloud_calendar_muted` — keeps the list in the
+/// sidebar but suppresses its tasks from the virtual buckets so
+/// the user can dim a list without dropping it from the sidebar
+/// entirely.  Controlled by clicking the row's colour swatch.
+#[tauri::command]
+fn set_nextcloud_task_list_muted(
+    task_list_id: String,
+    muted: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    cache.set_task_list_muted(&task_list_id, muted)?;
+    Ok(())
+}
+
+/// Aggregate sync status for one NC account's task lists —
+/// powers the "Task lists" SyncStatusRow in NextcloudSettings.
+/// Mirrors `get_calendars_sync_status` / `get_contacts_sync_status`.
+#[tauri::command]
+fn get_tasks_sync_status(nc_id: String, cache: State<'_, Cache>) -> Result<SyncStatus, UnkaiError> {
+    let (count, last_synced_at) = cache.tasks_sync_summary(&nc_id)?;
+    let last_synced_iso = last_synced_at
+        .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0))
+        .map(|dt| dt.to_rfc3339());
+    Ok(SyncStatus {
+        count: count.max(0) as u32,
+        last_synced_at: last_synced_iso,
+    })
+}
+
 /// Events in `[range_start, range_end)` across the given calendars,
 /// with recurring series already expanded into concrete occurrences.
 ///
@@ -13960,6 +13990,8 @@ fn main() {
             delete_nextcloud_task,
             create_nextcloud_task_from_mail,
             set_nextcloud_task_list_hidden,
+            set_nextcloud_task_list_muted,
+            get_tasks_sync_status,
             upload_to_nextcloud,
             office_open_attachment,
             office_close_attachment,

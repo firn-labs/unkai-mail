@@ -58,12 +58,17 @@
     display_name: string
     color?: string | null
     read_only: boolean
-    /** Local-only flag set via NextcloudSettings → Task lists
-     *  visibility.  `true` drops the row from the sidebar and
-     *  filters its tasks out of the All / Today / Overdue /
+    /** Layer-1 local toggle set via NextcloudSettings → Task
+     *  lists visibility.  `true` drops the row from the sidebar
+     *  and filters its tasks out of the All / Today / Overdue /
      *  Completed virtuals — same shape as the per-calendar
      *  `hidden` toggle. */
     hidden?: boolean
+    /** Layer-2 local toggle controlled by the per-row colour
+     *  swatch in the sidebar.  `true` keeps the list visible
+     *  (greyed out) but suppresses its tasks from the virtual
+     *  buckets — mirrors the calendar's mute swatch. */
+    muted?: boolean
   }
 
   /** Mirrors `unkai_core::models::Task`. */
@@ -255,23 +260,25 @@
     return t.due ? new Date(t.due).getTime() : null
   }
 
-  /** Set of task-list ids the user has marked visible
-   *  (`hidden !== true`).  Drives the virtual-bucket filters and
-   *  the sidebar render — mirroring the calendar `hidden` flag's
-   *  effect on CalendarView.  When the user picks a specific
-   *  list (`selection.kind === 'list'`) we honour the click even
-   *  if the list is hidden, so an explicit drill-in still works
-   *  while the virtuals stay decluttered. */
-  const visibleListIds = $derived(
-    new Set(lists.filter((l) => !l.hidden).map((l) => l.id)),
+  /** Lists rendered in the sidebar — anything not `hidden`.  The
+   *  Settings → Task lists visibility toggle controls this set;
+   *  muted lists still appear (just greyed out). */
+  const sidebarLists = $derived(lists.filter((l) => !l.hidden))
+
+  /** Ids of lists whose tasks should land in the virtual
+   *  buckets.  Drops both Layer-1 hidden lists and Layer-2 muted
+   *  lists — clicking the sidebar swatch on a list mutes it,
+   *  which is exactly the "stop counting these in the virtuals"
+   *  knob the user reaches for when one project is noisy. */
+  const activeListIds = $derived(
+    new Set(lists.filter((l) => !l.hidden && !l.muted).map((l) => l.id)),
   )
 
-  /** Tasks scoped to visible lists only — the input to every
-   *  virtual bucket count and to the unfiltered "All open"
-   *  filter.  Pulled into its own derived so the per-bucket
-   *  expressions below stay readable. */
+  /** Tasks scoped to active (non-hidden, non-muted) lists.  Feeds
+   *  every virtual-bucket count and filter below; pulled into its
+   *  own derived so the per-bucket expressions stay readable. */
   const visibleTasks = $derived(
-    tasks.filter((t) => visibleListIds.has(t.task_list_id)),
+    tasks.filter((t) => activeListIds.has(t.task_list_id)),
   )
 
   const filteredTasks = $derived.by((): Task[] => {
@@ -435,11 +442,7 @@
     return Math.round(ms / 1000)
   }
 
-  /** Visible (non-hidden) task lists.  Drives the new-task list
-   *  picker so a hidden list isn't offered as a create target —
-   *  matches the sidebar's filter. */
-  const visibleLists = $derived(lists.filter((l) => !l.hidden))
-  let firstNewListId = $derived(visibleLists[0]?.id ?? '')
+  let firstNewListId = $derived(sidebarLists[0]?.id ?? '')
 
   /** Inline auto-save with 800 ms debounce — same shape as the
    *  Notes editor.  The `saveStatus` flickers Saving → Saved →
@@ -537,6 +540,29 @@
       if (selectedUid === updated.uid) draftEtag = updated.etag
     } catch (e) {
       error = formatError(e) || 'Failed to update task'
+    }
+  }
+
+  /** Flip a task list's Layer-2 mute flag (#92).  Same optimistic-
+   *  update + rollback shape `CalendarView.toggleCalendarMuted` uses
+   *  for VEVENT calendars.  Muting a list greys its sidebar row
+   *  and drops its tasks from the All / Today / Overdue / Completed
+   *  virtual buckets, but the user can still click the row to
+   *  drill in. */
+  async function toggleListMuted(l: TaskList) {
+    const newMuted = !l.muted
+    const idx = lists.findIndex((x) => x.id === l.id)
+    if (idx !== -1) lists[idx] = { ...lists[idx], muted: newMuted }
+    try {
+      await invoke('set_nextcloud_task_list_muted', {
+        taskListId: l.id,
+        muted: newMuted,
+      })
+    } catch (e) {
+      // Rollback on failure so the swatch state matches the cache.
+      const i = lists.findIndex((x) => x.id === l.id)
+      if (i !== -1) lists[i] = { ...lists[i], muted: !newMuted }
+      error = formatError(e) || 'Failed to update list visibility'
     }
   }
 
@@ -775,22 +801,38 @@
         <div class="my-2 border-t border-surface-200 dark:border-surface-700"></div>
 
         <!-- Skip lists the user has flagged hidden in
-             NextcloudSettings → Task lists.  The cache row keeps
-             its `hidden` column so a list reappears the moment
-             the user re-enables it — no re-sync needed. -->
-        {#each lists.filter((l) => !l.hidden) as l (l.id)}
-          <button
+             NextcloudSettings → Task lists visibility.  The cache
+             row keeps its `hidden` column so a list reappears the
+             moment the user re-enables it — no re-sync needed.
+             Swatch on each row doubles as a Layer-2 mute toggle
+             (same idiom as CalendarView's mute swatch): filled =
+             counted in the virtuals, outlined = muted + greyed. -->
+        {#each sidebarLists as l (l.id)}
+          {@const isMuted = l.muted === true}
+          <div
             class="tasks-side-row group {selectionMatches(selection, { kind: 'list', listId: l.id }) ? 'is-active' : ''}"
-            onclick={() => (selection = { kind: 'list', listId: l.id })}
+            role="listitem"
           >
-            <span
-              class="tasks-side-swatch"
-              style:background-color={l.color || '#6b7280'}
-              aria-hidden="true"
-            ></span>
-            <span class="flex-1 truncate text-left">{l.display_name || l.name}</span>
-            <span class="tasks-side-count">{listOpenCount(l.id)}</span>
-          </button>
+            <button
+              class="tasks-side-swatch tasks-side-swatch-button shrink-0"
+              style={isMuted
+                ? `background-color: transparent; border-color: ${l.color || '#6b7280'};`
+                : `background-color: ${l.color || '#6b7280'}; border-color: ${l.color || '#6b7280'};`}
+              title={isMuted ? 'Show tasks in the virtual buckets' : 'Hide tasks from the virtual buckets'}
+              aria-label={isMuted ? 'Show list tasks' : 'Hide list tasks'}
+              onclick={(e) => {
+                e.stopPropagation()
+                void toggleListMuted(l)
+              }}
+            ></button>
+            <button
+              class="flex-1 min-w-0 flex items-center gap-1 text-left {isMuted ? 'text-surface-400 dark:text-surface-500' : ''}"
+              onclick={() => (selection = { kind: 'list', listId: l.id })}
+            >
+              <span class="flex-1 truncate">{l.display_name || l.name}</span>
+              <span class="tasks-side-count">{listOpenCount(l.id)}</span>
+            </button>
+          </div>
         {/each}
         {#if lists.length === 0 && !loading}
           <p class="px-4 py-3 text-xs text-surface-500">
@@ -828,16 +870,18 @@
         <!-- Inline-create row — same shape as NotesView's
              "+ Add folder" draft.  Enter commits, Escape cancels. -->
         <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
-          {#if visibleLists.length > 1}
+          {#if sidebarLists.length > 1}
             <select
               class="select text-xs py-1 px-2 rounded-md"
               bind:value={newTaskListId}
               title="Task list"
             >
-              <!-- Only offer visible lists as create targets — a
-                   user who's hidden a list from the sidebar isn't
-                   expecting it to show up in the picker either. -->
-              {#each visibleLists as l (l.id)}
+              <!-- Only offer non-hidden lists as create targets —
+                   a user who hid a list from Settings isn't
+                   expecting it to show up in the picker either.
+                   Muted lists DO show: muting is "stop counting
+                   these in the virtuals", not "stop using". -->
+              {#each sidebarLists as l (l.id)}
                 <option value={l.id}>{l.display_name || l.name}</option>
               {/each}
             </select>
@@ -1234,5 +1278,18 @@
   }
   :global([data-mode='dark'] .tasks-side-swatch) {
     border-color: var(--color-surface-700);
+  }
+  /* Clickable variant — same shape, but rendered as a button so
+     the swatch can carry the Layer-2 mute toggle.  No padding /
+     no shadow so it stays visually identical to the static
+     swatch; the colour state (filled vs outlined, driven inline
+     via `style`) carries the on / off signal. */
+  :global(.tasks-side-swatch-button) {
+    padding: 0;
+    cursor: pointer;
+    transition: opacity 80ms ease;
+  }
+  :global(.tasks-side-swatch-button:hover) {
+    opacity: 0.75;
   }
 </style>

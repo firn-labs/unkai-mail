@@ -118,6 +118,10 @@
   // doesn't wipe in-flight sync status.
   let contactsState = $state<Record<string, SyncRowState>>({})
   let calendarsState = $state<Record<string, SyncRowState>>({})
+  /** Sync-row state for the new "Task lists" block (#92) — same
+   *  shape as `contactsState` / `calendarsState` so the row
+   *  speaks the same SyncStatusRow vocabulary. */
+  let tasksState = $state<Record<string, SyncRowState>>({})
 
   // Per-account cached calendar list for the visibility checkboxes
   // under "Calendars". Reloaded after a sync + after a visibility
@@ -255,8 +259,10 @@
       for (const a of accounts) {
         ensureRow(contactsState, a.id)
         ensureRow(calendarsState, a.id)
+        ensureRow(tasksState, a.id)
         await refreshContactsStatus(a.id)
         await refreshCalendarsStatus(a.id)
+        await refreshTasksStatus(a.id)
         await loadCalendarsList(a.id)
         await loadTaskListsList(a.id)
       }
@@ -316,6 +322,21 @@
     }
   }
 
+  /** Mirror of `refreshCalendarsStatus` for the Task lists row.
+   *  Backed by `get_tasks_sync_status` which aggregates count +
+   *  max(last_synced_at) across the cached task_lists. */
+  async function refreshTasksStatus(ncId: string) {
+    try {
+      const s = await invoke<SyncStatus>('get_tasks_sync_status', { ncId })
+      if (tasksState[ncId]) {
+        tasksState[ncId].lastSyncedAt = s.last_synced_at
+        tasksState[ncId].count = s.count
+      }
+    } catch (e) {
+      console.warn('get_tasks_sync_status failed for', ncId, e)
+    }
+  }
+
   /**
    * Trigger a fresh contacts sync for one NC account.
    *
@@ -364,14 +385,45 @@
       // rename, or remove calendars. Refresh the per-account list so
       // the visibility checkboxes reflect what's actually there now.
       await loadCalendarsList(acct.id)
-      // Task lists live in the same CalDAV collections as calendars
-      // — a calendar discovery pass refreshes both surfaces, so
-      // pull the task-list visibility set too (#92).  Best-effort:
-      // an empty / 404 server response just leaves the previous
-      // list in place.
-      void invoke('sync_nextcloud_task_lists', { ncId: acct.id }).catch((e) => {
-        console.warn('sync_nextcloud_task_lists failed for', acct.id, e)
-      })
+    } catch (e) {
+      state.error = formatError(e) || 'Sync failed'
+    } finally {
+      state.syncing = false
+    }
+  }
+
+  /** Mirror of `syncCalendars` for the Task lists row (#92).
+   *  Drives `sync_nextcloud_task_lists` which PROPFINDs the
+   *  user's calendar home and keeps only collections that
+   *  advertise VTODO support, then per-list `sync_nextcloud_tasks`
+   *  for each one so the cache picks up the latest tasks
+   *  alongside the latest list metadata. */
+  async function syncTasks(acct: NextcloudAccount) {
+    const state = tasksState[acct.id]
+    if (!state || state.syncing) return
+    state.syncing = true
+    state.error = ''
+    try {
+      const lists = await invoke<TaskListSummary[]>(
+        'sync_nextcloud_task_lists',
+        { ncId: acct.id },
+      )
+      // Pull the latest tasks for every discovered list so the
+      // virtual-bucket badges in TasksView reflect the current
+      // server contents.  Failures on one list don't block the
+      // others — log and keep going so a single-list problem
+      // doesn't blank the whole status row.
+      for (const list of lists) {
+        try {
+          await invoke('sync_nextcloud_tasks', {
+            ncId: acct.id,
+            listId: list.id,
+          })
+        } catch (e) {
+          console.warn('sync_nextcloud_tasks failed for', list.id, e)
+        }
+      }
+      await refreshTasksStatus(acct.id)
       await loadTaskListsList(acct.id)
     } catch (e) {
       state.error = formatError(e) || 'Sync failed'
@@ -396,6 +448,14 @@
     }
     if (acct.capabilities?.caldav) {
       tasks.push(syncCalendars(acct))
+    }
+    // Task lists piggy-back on CalDAV (VTODO collections) but
+    // need their own discovery + per-list sync round-trip, so
+    // gate on the Tasks app capability and queue alongside the
+    // others.  Errors are swallowed in `syncTasks`; we just
+    // schedule the work.
+    if (acct.capabilities?.tasks && acct.capabilities?.caldav) {
+      tasks.push(syncTasks(acct))
     }
     if (tasks.length === 0) return
     await Promise.allSettled(tasks)
@@ -760,44 +820,56 @@
                 {/if}
               {/if}
 
-              <!-- Task lists visibility (#92).  Mirrors the
-                   per-calendar Visibility block above — same
-                   Toggle + colour swatch + truncated label,
-                   same optimistic-update pattern.  Only renders
-                   when the server advertises the Tasks app
-                   capability AND we have at least one cached
-                   list to toggle; an account with Tasks enabled
-                   but no list yet sees nothing here until
-                   discovery runs. -->
-              {#if acct.capabilities?.tasks && (taskListsList[acct.id]?.length ?? 0) > 0}
-                <div class="pl-6 pb-2 pr-3">
-                  <div class="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">
-                    Task lists
+              <!-- Task lists block (#92) — sibling to Contacts /
+                   Calendars, not nested under them.  Same
+                   SyncStatusRow + Visibility list shape so the
+                   three integration surfaces speak one design
+                   language.  Gated on the Tasks app capability
+                   (VTODO storage piggy-backs on CalDAV but the
+                   Tasks app is the user-facing chip).  An account
+                   with Tasks enabled but no list discovered yet
+                   shows just the sync row — clicking Sync runs
+                   discovery + per-list pulls in one batch. -->
+              {#if acct.capabilities?.tasks}
+                {@const ts = tasksState[acct.id]}
+                <SyncStatusRow
+                  label="Task lists"
+                  count={ts?.count ?? null}
+                  lastSyncedAt={ts?.lastSyncedAt ?? null}
+                  syncing={ts?.syncing ?? false}
+                  error={ts?.error ?? null}
+                  onsync={() => syncTasks(acct)}
+                />
+                {#if (taskListsList[acct.id]?.length ?? 0) > 0}
+                  <div class="pl-6 pb-2 pr-3">
+                    <div class="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">
+                      Visibility
+                    </div>
+                    <ul class="space-y-0.5">
+                      {#each taskListsList[acct.id] as l (l.id)}
+                        <li>
+                          <div
+                            class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-xs"
+                          >
+                            <Toggle
+                              checked={!l.hidden}
+                              label={l.display_name || l.name}
+                              onchange={(v) =>
+                                void toggleTaskListHidden(acct.id, l.id, !v)}
+                            />
+                            <span
+                              class="w-2.5 h-2.5 rounded-sm shrink-0"
+                              style="background-color: {l.color ?? '#6b7280'};"
+                            ></span>
+                            <span class="truncate" title={l.display_name || l.name}>
+                              {l.display_name || l.name}
+                            </span>
+                          </div>
+                        </li>
+                      {/each}
+                    </ul>
                   </div>
-                  <ul class="space-y-0.5">
-                    {#each taskListsList[acct.id] as l (l.id)}
-                      <li>
-                        <div
-                          class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-xs"
-                        >
-                          <Toggle
-                            checked={!l.hidden}
-                            label={l.display_name || l.name}
-                            onchange={(v) =>
-                              void toggleTaskListHidden(acct.id, l.id, !v)}
-                          />
-                          <span
-                            class="w-2.5 h-2.5 rounded-sm shrink-0"
-                            style="background-color: {l.color ?? '#6b7280'};"
-                          ></span>
-                          <span class="truncate" title={l.display_name || l.name}>
-                            {l.display_name || l.name}
-                          </span>
-                        </div>
-                      </li>
-                    {/each}
-                  </ul>
-                </div>
+                {/if}
               {/if}
             {/if}
           </div>

@@ -1271,6 +1271,22 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE task_lists
         ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v37 → v38: per-task-list mute toggle (#92 follow-up,
+    // mirrors v12 → v13 for calendars).
+    //
+    // Layer 1 (`hidden`, v36 → v37) removes the list from the
+    // TasksView sidebar entirely.  Layer 2 (`muted`, this
+    // migration) keeps it in the sidebar (greyed out) but
+    // suppresses its tasks from the All / Today / Overdue /
+    // Completed virtual buckets — controlled via the per-row
+    // colour swatch.  Default 0 so existing lists carry the
+    // pre-#92 happy path forward.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE task_lists
+        ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
