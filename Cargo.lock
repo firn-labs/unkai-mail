@@ -7286,6 +7286,7 @@ dependencies = [
 name = "unkai-crypto"
 version = "0.1.0"
 dependencies = [
+ "openssl",
  "pgp",
  "rand 0.8.5",
  "serde",

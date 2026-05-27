@@ -105,13 +105,15 @@ with downstream consumers who require it):
 `open`, `hex`, `async-imap`, `futures`, `rustls`, `tokio-rustls`,
 `rustls-pki-types`, `mail-parser`, `ical`, `base64`, `aes-gcm`,
 `pbkdf2`, `hmac`, `uuid`, `hickory-resolver`, `font-kit`,
-`pgp` (rpgp), `rand`, `tauri`, `tauri-build`,
+`pgp` (rpgp), `rand`, `openssl`, `tauri`, `tauri-build`,
 `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
 `tauri-plugin-single-instance`, `notify-rust`, `windows`.
 
 **Vendored libraries**: OpenSSL (statically linked through
-`rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature).
+`rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature for the
+SQLCipher build, and through the `openssl` crate's `vendored` feature
+for the S/MIME / CMS path added in #338).
 
 **npm packages**: `dompurify` (alternate half of `MPL-2.0 OR
 Apache-2.0`), `typescript`.
