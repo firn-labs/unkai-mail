@@ -2729,6 +2729,49 @@
     return out
   }
 
+  /** #362 — Build the plain-text "original message" block that
+   *  pre-fills the meeting event's DESCRIPTION so invitees see the
+   *  thread the meeting was scheduled from.  CalDAV's DESCRIPTION is
+   *  a plain-text property, so we ship a quoted-headers + body block
+   *  rather than HTML.
+   *
+   *  Returns `null` when there's nothing useful to insert — either
+   *  the body is empty, or the source thread is still encrypted and
+   *  no decrypted body is in the cache.  In the encrypted-but-not-
+   *  decrypted case we deliberately skip the description: we don't
+   *  want a header-only stub that looks like a failed quote, and
+   *  silently shipping a half-block would be confusing. */
+  function buildMeetingHistoryDescription(mail: ReplyableMail): string | null {
+    if (needsDecryptForReply(mail)) return null
+
+    let body = (mail.body_text ?? '').trim()
+    if (!body && mail.body_html) {
+      const tmp = document.createElement('div')
+      tmp.innerHTML = mail.body_html
+      body = (tmp.textContent ?? '').trim()
+    }
+    if (!body) return null
+
+    // Two leading blank lines give the user a roomy gap above the
+    // history block to type their own agenda / notes before the
+    // quoted thread.
+    const lines: string[] = ['', '', m.event_editor_history_header()]
+    lines.push(`${m.event_editor_history_from()} ${mail.from}`)
+    if (mail.to.length) {
+      lines.push(`${m.event_editor_history_to()} ${mail.to.join(', ')}`)
+    }
+    if (mail.cc.length) {
+      lines.push(`${m.event_editor_history_cc()} ${mail.cc.join(', ')}`)
+    }
+    lines.push(`${m.event_editor_history_sent()} ${new Date(mail.date).toLocaleString()}`)
+    if (mail.subject) {
+      lines.push(`${m.event_editor_history_subject()} ${mail.subject}`)
+    }
+    lines.push('')
+    lines.push(body)
+    return lines.join('\n')
+  }
+
   /** Shared prep for the "Respond with meeting" flow — fetches the
    *  Nextcloud account list, the cached calendars, the default
    *  calendar pref, and splits the thread's participants into
@@ -2805,6 +2848,7 @@
       const start = nextHalfHour(new Date())
       const end = new Date(start.getTime() + 30 * 60 * 1000)
 
+      const history = buildMeetingHistoryDescription(mail)
       return {
         calendars: visible,
         draft: {
@@ -2812,6 +2856,7 @@
           start,
           end,
           summary: meetingSubject(mail.subject),
+          ...(history ? { description: history } : {}),
           requiredAttendees: required,
           optionalAttendees: optional,
           createTalkRoom: true,
