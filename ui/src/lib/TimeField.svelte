@@ -1,18 +1,21 @@
 <script lang="ts">
   /**
-   * TimeField — slot-list time picker (#126).
+   * TimeField — split hour / minute dropdown time picker (#126).
    *
    * Replaces the native `<input type="time">` for consistency
-   * with `DateField` and to give users a familiar
-   * 15-minute slot dropdown.  The text input
-   * itself stays editable so power users can type "08:45"
-   * directly without scrolling the list — clicking or focusing
-   * just additionally surfaces the slot picker.  Slots run
-   * 00:00 → 23:45 in 15-minute increments and the dropdown
-   * auto-scrolls to the currently-selected slot on open.
+   * with `DateField` (calendar-grid popover).  Click / focus
+   * opens a popover with TWO scrollable columns side by side:
+   * hours `00 … 23` on the left, minutes `00 … 59` on the
+   * right.  Picking from one column updates the matching half
+   * of the value and leaves the popover open so the user can
+   * dial in the other half.  Clicking outside, hitting Escape,
+   * or pressing Enter closes the popover.  The text input
+   * itself stays editable for power users who'd rather type
+   * "08:45" directly.
    *
    * Value is `HH:MM` so it round-trips through the existing
-   * `fromLocalSplit` helper in EventEditor unchanged.
+   * `fromLocalSplit` helper in EventEditor unchanged and slots
+   * straight into TasksView's reminder serialiser.
    */
 
   import { onMount, tick } from 'svelte'
@@ -29,30 +32,62 @@
 
   let open = $state(false)
   let anchor: HTMLDivElement | undefined = $state()
-  let listEl: HTMLUListElement | undefined = $state()
-  // Stable id for the combobox / listbox `aria-controls` link.
-  // A counter would also work; uniqueness is what matters.
-  const listId = `timefield-list-${crypto.randomUUID()}`
+  let hourListEl: HTMLUListElement | undefined = $state()
+  let minuteListEl: HTMLUListElement | undefined = $state()
+  // Stable id for the combobox / popover `aria-controls` link.
+  const popoverId = `timefield-popover-${crypto.randomUUID()}`
 
-  /** Pre-computed list of selectable times.  5-min increments
-   *  (#236) so a user can pick odd off-the-hour starts like
-   *  09:25 from the dropdown without dropping into the typed
-   *  fallback.  The list is ~12× longer than the old 15-min
-   *  set (288 entries) — still a single-frame render in the
-   *  current listbox, no scroll-perf hit. */
-  const slots = (() => {
+  /** 24 entries — `'00'` … `'23'`.  Pre-computed once at module
+   *  init so the popover render is just a string-list iteration. */
+  const HOURS: string[] = (() => {
     const out: string[] = []
-    for (let h = 0; h < 24; h++) {
-      for (let m = 0; m < 60; m += 5) {
-        out.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`)
-      }
-    }
+    for (let h = 0; h < 24; h++) out.push(String(h).padStart(2, '0'))
     return out
   })()
 
-  function pick(slot: string) {
-    value = slot
-    open = false
+  /** 60 entries — `'00'` … `'59'`.  Same shape as `HOURS` so the
+   *  two columns render with identical row geometry. */
+  const MINUTES: string[] = (() => {
+    const out: string[] = []
+    for (let m = 0; m < 60; m++) out.push(String(m).padStart(2, '0'))
+    return out
+  })()
+
+  /** Split the bound `value` into its two halves, defaulting
+   *  unset / malformed input to `'00'` so the popover always has
+   *  *something* highlighted as selected.  The empty-value case
+   *  treats both halves as unset (we render no row as selected
+   *  but still default-scroll to 00 on open). */
+  function splitValue(v: string): { h: string; m: string } {
+    if (!v) return { h: '00', m: '00' }
+    const [rawH = '', rawM = ''] = v.split(':')
+    const h = rawH.padStart(2, '0').slice(0, 2)
+    const m = rawM.padStart(2, '0').slice(0, 2)
+    return {
+      h: /^\d{2}$/.test(h) ? h : '00',
+      m: /^\d{2}$/.test(m) ? m : '00',
+    }
+  }
+
+  /** `true` iff the input is truly empty — drives the "no row
+   *  selected" highlight state so an opening popover doesn't
+   *  visually pre-commit the user to 00:00. */
+  const isUnset = $derived(value === '')
+  const selectedH = $derived(splitValue(value).h)
+  const selectedM = $derived(splitValue(value).m)
+
+  function pickHour(h: string) {
+    // Pulling from the *current* value (not the `selectedM`
+    // derived) keeps the write atomic — `value = ...` triggers
+    // exactly one bound-state assignment.  Default the minute
+    // half to '00' the first time the user touches the picker
+    // on a previously-empty field.
+    const { m } = splitValue(value)
+    value = `${h}:${m}`
+  }
+  function pickMinute(m: string) {
+    const { h } = splitValue(value)
+    value = `${h}:${m}`
   }
 
   function onInputKey(e: KeyboardEvent) {
@@ -65,20 +100,22 @@
     }
   }
 
-  // Auto-scroll the list to the selected slot when the
-  // popover opens, so the user lands on something familiar
-  // instead of always at 00:00.
+  // Auto-scroll both columns to the currently-selected row when
+  // the popover opens, so the user lands on something familiar
+  // instead of always at 00.  Runs after `tick()` so the
+  // `bind:this` refs are settled.
   $effect(() => {
     if (!open) return
     void tick().then(() => {
-      const li = listEl?.querySelector(`[data-slot="${value}"]`)
-      if (li instanceof HTMLElement) {
-        li.scrollIntoView({ block: 'center' })
-      }
+      const hEl = hourListEl?.querySelector(`[data-slot="${selectedH}"]`)
+      if (hEl instanceof HTMLElement) hEl.scrollIntoView({ block: 'center' })
+      const mEl = minuteListEl?.querySelector(`[data-slot="${selectedM}"]`)
+      if (mEl instanceof HTMLElement) mEl.scrollIntoView({ block: 'center' })
     })
   })
 
-  // Outside-click closes.
+  // Outside-click closes.  Same idiom as DateField / the broader
+  // popover-dismissal convention from CLAUDE.md.
   onMount(() => {
     function onClick(e: MouseEvent) {
       if (!open || !anchor) return
@@ -97,10 +134,10 @@
     pattern="[0-9]{'{1,2}'}:[0-9]{'{2}'}"
     placeholder="HH:MM"
     aria-label={ariaLabel}
-    aria-haspopup="listbox"
     role="combobox"
+    aria-haspopup="dialog"
     aria-expanded={open}
-    aria-controls={listId}
+    aria-controls={popoverId}
     autocomplete="off"
     class="input w-full px-3 py-2 text-sm rounded-md pr-9"
     bind:value
@@ -127,28 +164,71 @@
   </svg>
 
   {#if open}
-    <ul
-      id={listId}
-      bind:this={listEl}
-      class="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg"
-      role="listbox"
+    <div
+      id={popoverId}
+      class="absolute z-50 mt-1 rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg p-2 flex gap-1"
+      role="dialog"
+      aria-label="Pick a time"
     >
-      {#each slots as slot (slot)}
-        <li
-          role="option"
-          aria-selected={slot === value}
-          data-slot={slot}
-          class="px-3 py-1.5 text-sm cursor-pointer {slot === value
-            ? 'bg-primary-500 text-white'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
-          onmousedown={(e) => {
-            e.preventDefault()
-            pick(slot)
-          }}
+      <!-- Hours column.  Fixed width so the two columns stay
+           visually balanced; `min-w-0` on the lists keeps a long
+           hover state from stretching the popover. -->
+      <div class="flex flex-col items-stretch">
+        <div class="text-[10px] uppercase tracking-wide text-surface-500 text-center pb-1">
+          Hours
+        </div>
+        <ul
+          bind:this={hourListEl}
+          class="w-16 max-h-56 overflow-y-auto rounded-md"
+          role="listbox"
+          aria-label="Hours"
         >
-          {slot}
-        </li>
-      {/each}
-    </ul>
+          {#each HOURS as h (h)}
+            <li
+              role="option"
+              aria-selected={!isUnset && h === selectedH}
+              data-slot={h}
+              class="px-3 py-1 text-sm text-center cursor-pointer rounded-sm {!isUnset && h === selectedH
+                ? 'bg-primary-500 text-white'
+                : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+              onmousedown={(e) => {
+                e.preventDefault()
+                pickHour(h)
+              }}
+            >
+              {h}
+            </li>
+          {/each}
+        </ul>
+      </div>
+      <div class="flex flex-col items-stretch">
+        <div class="text-[10px] uppercase tracking-wide text-surface-500 text-center pb-1">
+          Min
+        </div>
+        <ul
+          bind:this={minuteListEl}
+          class="w-16 max-h-56 overflow-y-auto rounded-md"
+          role="listbox"
+          aria-label="Minutes"
+        >
+          {#each MINUTES as m (m)}
+            <li
+              role="option"
+              aria-selected={!isUnset && m === selectedM}
+              data-slot={m}
+              class="px-3 py-1 text-sm text-center cursor-pointer rounded-sm {!isUnset && m === selectedM
+                ? 'bg-primary-500 text-white'
+                : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+              onmousedown={(e) => {
+                e.preventDefault()
+                pickMinute(m)
+              }}
+            >
+              {m}
+            </li>
+          {/each}
+        </ul>
+      </div>
+    </div>
   {/if}
 </div>
