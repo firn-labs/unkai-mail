@@ -60,6 +60,7 @@
     | 'shares'
     | 'talk'
     | 'notes'
+    | 'tasks'
     | 'settings'
 
   interface Props {
@@ -98,6 +99,7 @@
       files: boolean
       talk: boolean
       notes: boolean
+      tasks: boolean
     }
   }
   let {
@@ -115,6 +117,7 @@
       files: true,
       talk: true,
       notes: true,
+      tasks: true,
     },
   }: Props = $props()
 
@@ -247,6 +250,7 @@
     { match: 'shares', label: 'Share links', icon: 'share-links' },
     { match: 'talk', label: 'Talk', icon: 'meetings' },
     { match: 'notes', label: 'Notes', icon: 'notes' },
+    { match: 'tasks', label: 'Tasks', icon: 'tasks' },
   ]
 
   /** Filtered view of `MAIN_NAV` honouring the Nextcloud
@@ -267,6 +271,7 @@
             case 'shares':   return ncCaps.files
             case 'talk':     return ncCaps.talk
             case 'notes':    return ncCaps.notes
+            case 'tasks':    return ncCaps.tasks
             default:         return true
           }
         }),

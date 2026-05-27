@@ -37,6 +37,7 @@ pub mod pgp_keys;
 pub mod pool;
 pub mod schema;
 pub mod search;
+pub mod tasks;
 
 pub use calendars::{
     CachedCalendar, CalendarEventRow, CalendarEventServerHandle, CalendarRow, CalendarSyncState,
@@ -46,6 +47,7 @@ pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 pub use notes::NotesSyncState;
 pub use pgp_keys::{PgpKeySource, PgpPublicKeyRow};
 pub use search::{SearchFilters, SearchHit, SearchScope};
+pub use tasks::{CachedTaskList, TaskListSyncState};
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};

@@ -1180,6 +1180,84 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE message_bodies ADD COLUMN encrypted_raw_eml BLOB;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v35 → v36: Nextcloud Tasks cache (#92).
+    //
+    // Nextcloud Tasks stores tasks as VTODO components inside the
+    // same CalDAV collections the Calendar app uses for VEVENTs.
+    // We give them their own pair of tables — `task_lists` for
+    // the collection metadata and `tasks` for the VTODO rows —
+    // because (a) the "list of lists" sidebar wants a separate
+    // ordering / colour / read-only flag from the calendar set
+    // and (b) tasks have a different set of fields (status,
+    // priority, due / completed) the calendar table doesn't
+    // need.  Keeping the schemas independent also means a future
+    // change to one model doesn't churn the other's storage.
+    //
+    // - `task_lists.id` is the composite `{nc_id}::{path}` so the
+    //   UI can carry a single string handle the same way it does
+    //   for calendars.  `sync_token` / `ctag` / `last_synced_at`
+    //   live here because RFC 6578 sync is collection-scoped.
+    // - `tasks` is keyed by `(task_list_id, uid)` — VTODO UIDs
+    //   are globally unique per RFC 5545 but we still scope to the
+    //   list to keep upserts O(log n) inside a single collection.
+    //   `due_utc` / `completed_utc` / `created_utc` /
+    //   `last_modified_utc` are unix epoch seconds (NULL when
+    //   absent); `categories_json` carries the free-form tag list
+    //   the same JSON-blob pattern other tables use; `ics_raw`
+    //   keeps the source body so future model evolutions can
+    //   re-extract without a re-sync.
+    // - Two indexes: by-list-and-due-date for the sort the list
+    //   view uses, and by-href so sync-collection's delete
+    //   pass is O(1).
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE task_lists (
+        id                    TEXT PRIMARY KEY,
+        nextcloud_account_id  TEXT NOT NULL,
+        path                  TEXT NOT NULL,
+        name                  TEXT NOT NULL,
+        display_name          TEXT NOT NULL DEFAULT '',
+        color                 TEXT,
+        read_only             INTEGER NOT NULL DEFAULT 0,
+        sync_token            TEXT,
+        ctag                  TEXT,
+        last_synced_at        INTEGER,
+        UNIQUE (nextcloud_account_id, path)
+    );
+
+    CREATE INDEX task_lists_by_nc_account
+        ON task_lists (nextcloud_account_id);
+
+    CREATE TABLE tasks (
+        task_list_id        TEXT    NOT NULL,
+        uid                 TEXT    NOT NULL,
+        href                TEXT    NOT NULL,
+        etag                TEXT    NOT NULL,
+        summary             TEXT    NOT NULL DEFAULT '',
+        description         TEXT,
+        status              TEXT    NOT NULL DEFAULT 'NEEDS-ACTION',
+        priority            INTEGER NOT NULL DEFAULT 0,
+        due_utc             INTEGER,
+        completed_utc       INTEGER,
+        created_utc         INTEGER,
+        last_modified_utc   INTEGER,
+        url                 TEXT,
+        categories_json     TEXT    NOT NULL DEFAULT '[]',
+        ics_raw             TEXT    NOT NULL DEFAULT '',
+        cached_at           INTEGER NOT NULL,
+        PRIMARY KEY (task_list_id, uid),
+        FOREIGN KEY (task_list_id)
+            REFERENCES task_lists (id)
+            ON DELETE CASCADE
+    );
+
+    CREATE INDEX tasks_by_list_due
+        ON tasks (task_list_id, due_utc);
+
+    CREATE INDEX tasks_by_href
+        ON tasks (task_list_id, href);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

@@ -29,6 +29,7 @@ pub mod expand;
 pub mod freebusy;
 pub mod ical;
 pub mod sync;
+pub mod tasks;
 pub mod write;
 mod xml_util;
 
@@ -39,4 +40,8 @@ pub use expand::expand_event;
 pub use freebusy::{BusyKind, BusyPeriod, nc_principal_home, query_free_busy};
 pub use ical::{build_ics, parse_ics};
 pub use sync::{CalendarSyncDelta, RawEvent, sync_calendar};
+pub use tasks::{
+    RawTask, TaskSyncDelta, TaskWriteOutcome, build_vtodo_ics, create_task, delete_task,
+    list_task_lists, parse_vtodo_ics, sync_tasks, update_task,
+};
 pub use write::{WriteOutcome, create_event, delete_event, delete_event_silent, update_event};

@@ -101,6 +101,15 @@
         API — we just hand over the email so the title/body are
         sourced consistently with what's currently visible. */
     onsavenote?: (mail: Email) => void
+    /** Create a Nextcloud task seeded from this email (#92).
+        The handler in `App.svelte` picks the NC account + first
+        task list and writes a VTODO whose `URL` is the
+        `mail://account/folder/uid` ref so the task carries a
+        clickable backlink to the source message.  Mirrors
+        `onsavenote`'s ergonomics — we hand over the email + its
+        UID so the title / source-link are sourced from the
+        currently-rendered message. */
+    oncreatetask?: (mail: Email & { uid: number }) => void
     /** True when the currently selected folder is the account's
         Drafts mailbox. Swaps the toolbar over from the reply/forward
         cluster to a single "Edit" action, because Reply-to-a-draft
@@ -175,6 +184,7 @@
     onforward,
     onrespondwithmeeting,
     onsavenote,
+    oncreatetask,
     isDraftsFolder = false,
     isSentFolder = false,
     oneditdraft,
@@ -2133,6 +2143,14 @@
             title="Save this email as a Nextcloud note"
             aria-label="Save as note"
           ><Icon name="notes" size={16} /></button>
+        {/if}
+        {#if oncreatetask}
+          <button
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
+            onclick={() => email && uid != null && oncreatetask?.({ ...email, uid })}
+            title="Create a Nextcloud task seeded from this email"
+            aria-label="Create task from this email"
+          ><Icon name="tasks" size={16} /></button>
         {/if}
         <button
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
