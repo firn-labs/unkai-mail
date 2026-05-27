@@ -98,7 +98,7 @@ impl Cache {
     pub fn list_task_lists(&self, nc_id: &str) -> Result<Vec<CachedTaskList>, CacheError> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, nextcloud_account_id, path, name, display_name, color, read_only, hidden,
+            "SELECT id, nextcloud_account_id, path, name, display_name, color, read_only, hidden, muted,
                     sync_token, ctag, last_synced_at
              FROM task_lists
              WHERE nextcloud_account_id = ?1
@@ -115,10 +115,11 @@ impl Cache {
                     color: r.get::<_, Option<String>>(5)?,
                     read_only: r.get::<_, i64>(6)? != 0,
                     hidden: r.get::<_, i64>(7)? != 0,
+                    muted: r.get::<_, i64>(8)? != 0,
                 },
-                sync_token: r.get::<_, Option<String>>(8)?,
-                ctag: r.get::<_, Option<String>>(9)?,
-                last_synced_at: r.get::<_, Option<i64>>(10)?,
+                sync_token: r.get::<_, Option<String>>(9)?,
+                ctag: r.get::<_, Option<String>>(10)?,
+                last_synced_at: r.get::<_, Option<i64>>(11)?,
             })
         })?;
         let mut out = Vec::new();
@@ -134,7 +135,7 @@ impl Cache {
         let conn = self.conn()?;
         let row = conn
             .query_row(
-                "SELECT id, nextcloud_account_id, path, name, display_name, color, read_only, hidden,
+                "SELECT id, nextcloud_account_id, path, name, display_name, color, read_only, hidden, muted,
                         sync_token, ctag, last_synced_at
                  FROM task_lists
                  WHERE id = ?1",
@@ -150,10 +151,11 @@ impl Cache {
                             color: r.get::<_, Option<String>>(5)?,
                             read_only: r.get::<_, i64>(6)? != 0,
                             hidden: r.get::<_, i64>(7)? != 0,
+                            muted: r.get::<_, i64>(8)? != 0,
                         },
-                        sync_token: r.get::<_, Option<String>>(8)?,
-                        ctag: r.get::<_, Option<String>>(9)?,
-                        last_synced_at: r.get::<_, Option<i64>>(10)?,
+                        sync_token: r.get::<_, Option<String>>(9)?,
+                        ctag: r.get::<_, Option<String>>(10)?,
+                        last_synced_at: r.get::<_, Option<i64>>(11)?,
                     })
                 },
             )
@@ -170,6 +172,37 @@ impl Cache {
             params![task_list_id, hidden as i64],
         )?;
         Ok(())
+    }
+
+    /// Flip a task list's Layer-2 mute flag.  Same shape as
+    /// `set_calendar_muted` — keeps the list in the sidebar but
+    /// suppresses its tasks from the virtual buckets.  Purely
+    /// client-side; never touches the server.
+    pub fn set_task_list_muted(&self, task_list_id: &str, muted: bool) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE task_lists SET muted = ?2 WHERE id = ?1",
+            params![task_list_id, muted as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Aggregate sync status for one NC account's task lists — drives
+    /// the "Task lists" SyncStatusRow in NextcloudSettings.  Mirrors
+    /// `get_calendars_sync_status`: count of cached lists + the most
+    /// recent per-list `last_synced_at` (max across all lists).  An
+    /// account with no discovered lists yet returns count=0 and
+    /// last_synced_at=None.
+    pub fn tasks_sync_summary(&self, nc_id: &str) -> Result<(i64, Option<i64>), CacheError> {
+        let conn = self.conn()?;
+        let (count, last_synced_at): (i64, Option<i64>) = conn.query_row(
+            "SELECT COUNT(*), MAX(last_synced_at)
+             FROM task_lists
+             WHERE nextcloud_account_id = ?1",
+            params![nc_id],
+            |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?)),
+        )?;
+        Ok((count, last_synced_at))
     }
 
     /// Apply one task-list sync round.  Upserts the changed tasks,
@@ -463,6 +496,7 @@ mod tests {
             color: None,
             read_only: false,
             hidden: false,
+            muted: false,
         }
     }
 

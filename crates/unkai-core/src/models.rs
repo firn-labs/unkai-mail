@@ -1353,6 +1353,14 @@ pub struct TaskList {
     /// preference.
     #[serde(default)]
     pub hidden: bool,
+    /// Layer-2 local toggle.  `true` keeps the list in the
+    /// TasksView sidebar (greyed out) but suppresses its tasks
+    /// from the All / Today / Overdue / Completed virtuals —
+    /// same shape as `Calendar::muted` (which keeps a calendar in
+    /// the sidebar but stops its events from painting on the
+    /// grid).  Controlled by clicking the row's color swatch.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 /// One Nextcloud Tasks task (#92).
