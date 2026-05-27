@@ -2025,7 +2025,18 @@ async fn sync_nextcloud_task_lists(
     )
     .await?;
     cache.apply_task_lists_delta(&nc_id, &lists)?;
-    Ok(lists)
+    // Return the cache-read view, not the raw discovery — the user's
+    // local-only `hidden` / `muted` flags are stored in the cache
+    // row and would be wiped from the frontend state if we returned
+    // `lists` (which carries the defaults `false` / `false` from the
+    // PROPFIND).  `apply_task_lists_delta` deliberately doesn't touch
+    // those columns on upsert, so the cache row still has the user's
+    // persisted values after this call.
+    Ok(cache
+        .list_task_lists(&nc_id)?
+        .into_iter()
+        .map(|c| c.list)
+        .collect())
 }
 
 /// Cache-first list of every task across the account's lists.
