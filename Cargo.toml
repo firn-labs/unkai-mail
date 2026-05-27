@@ -148,6 +148,19 @@ font-kit = "0.14"
 # acronym.  Pinned at the minor — the 0.x line still ships
 # breaking changes between minors.
 pgp = "0.19"
+# S/MIME (RFC 8551 / RFC 5652 CMS) sign + verify + encrypt +
+# decrypt and PKCS#12 import for the X.509-based half of mail
+# encryption (#338).  Pure Rust bindings around OpenSSL's CMS
+# implementation — the reference S/MIME implementation everyone
+# else interops against.  We get the C OpenSSL build effectively
+# for free because SQLCipher already statically vendors it (see
+# `rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature
+# above); adding the bindings here just gives us a Rust shim
+# onto that same library.  `vendored` forces the crate to build
+# its own OpenSSL too — necessary on Windows where there is no
+# system OpenSSL.  Worst case is two static copies in the final
+# binary, which is acceptable for now.
+openssl = { version = "0.10", features = ["vendored"] }
 # CSPRNG passed to rpgp for session-key generation when
 # encrypting.  Version pinned to whatever the current `pgp`
 # release re-exports in its public API to avoid two `rand`s

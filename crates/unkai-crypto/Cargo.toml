@@ -14,3 +14,8 @@ tracing.workspace = true
 rpgp = { package = "pgp", version = "0.19" }
 rand = { workspace = true }
 thiserror = { workspace = true }
+# S/MIME (#338).  See workspace Cargo.toml for the dependency
+# rationale — we use openssl's CMS bindings as the reference
+# S/MIME implementation rather than assembling RFC 5652 ASN.1
+# from RustCrypto primitives ourselves.
+openssl = { workspace = true }
