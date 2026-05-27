@@ -249,8 +249,8 @@
     { match: 'files', label: 'Files', icon: 'files' },
     { match: 'shares', label: 'Share links', icon: 'share-links' },
     { match: 'talk', label: 'Talk', icon: 'meetings' },
-    { match: 'notes', label: 'Notes', icon: 'notes' },
     { match: 'tasks', label: 'Tasks', icon: 'tasks' },
+    { match: 'notes', label: 'Notes', icon: 'notes' },
   ]
 
   /** Filtered view of `MAIN_NAV` honouring the Nextcloud
