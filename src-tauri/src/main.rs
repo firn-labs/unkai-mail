@@ -2091,6 +2091,7 @@ async fn create_nextcloud_task(
     summary: String,
     description: Option<String>,
     due_unix: Option<i64>,
+    due_tz: Option<String>,
     priority: Option<u8>,
     url: Option<String>,
     cache: State<'_, Cache>,
@@ -2120,7 +2121,7 @@ async fn create_nextcloud_task(
         categories: Vec::new(),
         ics_raw: String::new(),
     };
-    let ics = caldav_build_vtodo_ics(&task);
+    let ics = caldav_build_vtodo_ics(&task, due_tz.as_deref());
     let outcome = caldav_create_task(
         &account.server_url,
         &cached_list.list.path,
@@ -2156,6 +2157,7 @@ async fn update_nextcloud_task(
     status: Option<String>,
     priority: Option<u8>,
     due_unix: Option<i64>,
+    due_tz: Option<String>,
     clear_due: Option<bool>,
     completed_unix: Option<i64>,
     clear_completed: Option<bool>,
@@ -2207,7 +2209,7 @@ async fn update_nextcloud_task(
     }
     task.last_modified = Some(chrono::Utc::now());
 
-    let ics = caldav_build_vtodo_ics(&task);
+    let ics = caldav_build_vtodo_ics(&task, due_tz.as_deref());
     let outcome = caldav_update_task(
         &task.href,
         &account.username,
@@ -2316,7 +2318,12 @@ async fn create_nextcloud_task_from_mail(
         categories: Vec::new(),
         ics_raw: String::new(),
     };
-    let ics = caldav_build_vtodo_ics(&task);
+    // No DUE on a from-mail task — the TZID parameter is a no-op
+    // here, so we pass None and the builder's UTC-Z fallback path
+    // is irrelevant.  When the user adds a reminder later, the
+    // editor's save sends the user's IANA zone and the rebuild
+    // picks up the TZID-anchored form.
+    let ics = caldav_build_vtodo_ics(&task, None);
     let outcome = caldav_create_task(
         &account.server_url,
         &cached_list.list.path,

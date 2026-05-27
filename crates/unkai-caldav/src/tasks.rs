@@ -757,7 +757,26 @@ fn unescape_text(s: &str) -> String {
 
 /// Render a `Task` as a complete iCalendar VTODO body suitable for PUT
 /// to a CalDAV server.
-pub fn build_vtodo_ics(task: &Task) -> String {
+/// Render a `Task` as a complete iCalendar VTODO body suitable
+/// for PUT to a CalDAV server.
+///
+/// `due_tz_iana` opts the DUE property into TZID-anchored local
+/// time rather than UTC.  When `Some(zone)` and `zone` parses as
+/// a valid IANA timezone, DUE is rendered as
+/// `DUE;TZID=<zone>:YYYYMMDDTHHMMSS` (the local wall-clock time
+/// for the user's zone).  This is what most third-party CalDAV
+/// clients — notably the iOS Reminders / Apple Calendar pair —
+/// want to display reminders as "5pm in your zone" rather than
+/// "the UTC instant that happens to map to 5pm right now".
+/// When `None` (or an unrecognised zone), DUE falls back to the
+/// `DUE:YYYYMMDDTHHMMSSZ` UTC form, which is still RFC 5545 §3.8.2.3
+/// valid but can render as a literal GMT time on some readers.
+///
+/// `DTSTAMP`, `CREATED`, `LAST-MODIFIED`, and `COMPLETED` all
+/// stay UTC per RFC 5545 §3.8.7 — they record actual instants,
+/// not wall-clock-in-some-zone, so TZID-anchoring would be
+/// wrong.
+pub fn build_vtodo_ics(task: &Task, due_tz_iana: Option<&str>) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push("BEGIN:VCALENDAR".into());
     lines.push("VERSION:2.0".into());
@@ -792,7 +811,24 @@ pub fn build_vtodo_ics(task: &Task) -> String {
         lines.push(format!("PRIORITY:{}", task.priority));
     }
     if let Some(due) = task.due {
-        lines.push(format!("DUE:{}", format_utc_dt(&due)));
+        let resolved_tz: Option<Tz> = due_tz_iana
+            .filter(|s| !s.is_empty())
+            .and_then(|name| name.parse::<Tz>().ok());
+        if let Some(tz) = resolved_tz {
+            let local = due.with_timezone(&tz);
+            // `TZID=<iana name>` parameter + local wall-clock
+            // time (no `Z` suffix).  Compliant clients look up
+            // their own tzdata for `<iana name>` and display the
+            // value as wall-clock-in-that-zone rather than as a
+            // UTC instant.
+            lines.push(format!(
+                "DUE;TZID={}:{}",
+                tz.name(),
+                local.format("%Y%m%dT%H%M%S")
+            ));
+        } else {
+            lines.push(format!("DUE:{}", format_utc_dt(&due)));
+        }
     }
     if let Some(c) = task.completed {
         lines.push(format!("COMPLETED:{}", format_utc_dt(&c)));
@@ -1103,7 +1139,8 @@ END:VCALENDAR\r\n";
             categories: vec!["Work".into(), "Mail".into()],
             ics_raw: String::new(),
         };
-        let body = build_vtodo_ics(&task);
+        // No TZID — UTC-Z fallback for the no-zone caller.
+        let body = build_vtodo_ics(&task, None);
         assert!(body.contains("BEGIN:VTODO"));
         assert!(body.contains("UID:round@example.com"));
         assert!(body.contains("SUMMARY:Round-trip"));
@@ -1124,6 +1161,70 @@ END:VCALENDAR\r\n";
         assert_eq!(t.priority, 3);
         assert_eq!(t.url.as_deref(), Some("mail://acc/INBOX/42"));
         assert_eq!(t.categories, vec!["Work".to_string(), "Mail".to_string()]);
+    }
+
+    #[test]
+    fn build_emits_tzid_when_zone_provided() {
+        // DUE = 2026-05-01 12:00 UTC = 2026-05-01 14:00 Berlin (CEST).
+        // With TZID=Europe/Berlin we expect the local 14:00 wall-clock
+        // anchored to that zone, not the UTC Z form — the iOS
+        // Reminders / Apple Calendar pair displays this correctly as
+        // 2pm local rather than as a literal GMT instant.
+        let due = Utc.with_ymd_and_hms(2026, 5, 1, 12, 0, 0).unwrap();
+        let task = Task {
+            uid: "tz@example.com".into(),
+            task_list_id: "tl-1".into(),
+            href: String::new(),
+            etag: String::new(),
+            summary: "TZ test".into(),
+            description: None,
+            status: "NEEDS-ACTION".into(),
+            priority: 0,
+            due: Some(due),
+            completed: None,
+            created: None,
+            last_modified: None,
+            url: None,
+            categories: Vec::new(),
+            ics_raw: String::new(),
+        };
+        let body = build_vtodo_ics(&task, Some("Europe/Berlin"));
+        assert!(
+            body.contains("DUE;TZID=Europe/Berlin:20260501T140000"),
+            "expected TZID-anchored DUE line, got:\n{body}"
+        );
+        assert!(!body.contains("DUE:20260501T120000Z"));
+        // Round-trip should resolve back to the same UTC instant.
+        let parsed = parse_vtodo_ics(&body, "tl-1", "https://x/tz.ics", "etag-tz").unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].due, Some(due));
+    }
+
+    #[test]
+    fn build_falls_back_to_utc_for_unknown_zone() {
+        // `Mars/Olympus` doesn't parse — we fall back to UTC-Z
+        // rather than emit a malformed TZID.
+        let due = Utc.with_ymd_and_hms(2026, 5, 1, 12, 0, 0).unwrap();
+        let task = Task {
+            uid: "bad-tz@example.com".into(),
+            task_list_id: "tl-1".into(),
+            href: String::new(),
+            etag: String::new(),
+            summary: "Bad TZ".into(),
+            description: None,
+            status: "NEEDS-ACTION".into(),
+            priority: 0,
+            due: Some(due),
+            completed: None,
+            created: None,
+            last_modified: None,
+            url: None,
+            categories: Vec::new(),
+            ics_raw: String::new(),
+        };
+        let body = build_vtodo_ics(&task, Some("Mars/Olympus"));
+        assert!(body.contains("DUE:20260501T120000Z"));
+        assert!(!body.contains("TZID="));
     }
 
     #[test]

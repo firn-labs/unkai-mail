@@ -454,6 +454,22 @@
     saveTimer = setTimeout(saveNow, 800)
   }
 
+  /** Resolved IANA timezone for the running browser session,
+   *  e.g. `"Europe/Berlin"`.  Sent alongside reminder timestamps
+   *  on create / update so the backend writes
+   *  `DUE;TZID=<zone>:<localtime>` rather than `DUE:<utc>Z`.
+   *  Falls back to the empty string if the platform's
+   *  `Intl.DateTimeFormat` doesn't resolve a zone — the backend
+   *  treats empty / unknown zones as "fall back to UTC-Z" so
+   *  the round-trip still produces a valid VTODO body. */
+  function localIanaZone(): string {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''
+    } catch {
+      return ''
+    }
+  }
+
   /** `YYYY-MM-DD` for today in the user's local zone — same
    *  shape DateField's `value` accepts. */
   function todayLocalDate(): string {
@@ -511,6 +527,16 @@
         description: draftDescription,
         priority: draftPriority,
         dueUnix,
+        // Send the user's IANA zone alongside the epoch so the
+        // backend emits `DUE;TZID=<zone>:<localtime>` instead of
+        // the raw `DUE:<utc>Z` form.  Some readers (notably the
+        // iOS Reminders / Apple Calendar pair) render the UTC
+        // form as a literal GMT instant rather than converting
+        // to the device's local zone; TZID-anchoring lets every
+        // compliant client display the reminder as "<time> in
+        // your zone".  Falls back to UTC-Z when the resolved
+        // zone is unknown to the backend (chrono-tz miss).
+        dueTz: localIanaZone(),
         clearDue: dueUnix === null,
       })
       tasks = tasks.map((t) => (t.uid === updated.uid ? updated : t))
@@ -692,6 +718,10 @@
         summary,
         description: newDescription.trim() || null,
         dueUnix,
+        // Sending the user's IANA zone routes the backend through
+        // the TZID-anchored DUE writer (see `saveNow` for the
+        // longer note on why).
+        dueTz: localIanaZone(),
         priority: newPriority,
       })
       tasks = [created, ...tasks]
