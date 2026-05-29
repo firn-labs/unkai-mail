@@ -55,6 +55,7 @@ use unkai_store::{
     Cache, account_store, app_settings, credentials, link_check, nextcloud_store, settings_bundle,
     settings_sync,
 };
+use zeroize::Zeroizing;
 
 /// Shared, mutable app preferences. Held as Tauri managed state so the
 /// background loop can snapshot under a read lock on every tick while
@@ -12979,7 +12980,14 @@ async fn pgp_import_private_key(
     cache: State<'_, Cache>,
     notify: State<'_, SettingsSyncNotify>,
 ) -> Result<String, UnkaiError> {
-    let parsed = unkai_crypto::parse_private_key(armored_key.as_bytes(), Some(&passphrase))
+    // Wrap the cleartext secrets so their heap buffers are scrubbed on
+    // drop rather than lingering in freed memory (#370).  These are the
+    // longest-lived copies in our control — Tauri allocated them when it
+    // deserialised the IPC payload.
+    let armored_key = Zeroizing::new(armored_key);
+    let passphrase = Zeroizing::new(passphrase);
+
+    let parsed = unkai_crypto::parse_private_key(armored_key.as_bytes(), Some(passphrase.as_str()))
         .map_err(|e| UnkaiError::Crypto(format!("PGP key import failed: {e}")))?;
     let fingerprint = parsed.fingerprint();
     // Drop the parsed key + passphrase immediately — we just used
@@ -12987,7 +12995,7 @@ async fn pgp_import_private_key(
     // re-parse against a fresh passphrase the user types.
     drop(parsed);
 
-    credentials::store_pgp_private_key(&account_id, &armored_key)?;
+    credentials::store_pgp_private_key(&account_id, armored_key.as_str())?;
 
     // Update the account row so the AccountSettings UI sees the
     // fingerprint on its next reload without having to crack open
@@ -13050,8 +13058,12 @@ fn pgp_enable_unlock_automatically(
     account_id: String,
     passphrase: String,
 ) -> Result<(), UnkaiError> {
-    let armored = credentials::get_pgp_private_key(&account_id)?;
-    let parsed = unkai_crypto::parse_private_key(armored.as_bytes(), Some(&passphrase))
+    // Both the passphrase the user typed and the armored private key we
+    // pull back from the keychain are cleartext secrets — scrub them on
+    // drop (#370).
+    let passphrase = Zeroizing::new(passphrase);
+    let armored = Zeroizing::new(credentials::get_pgp_private_key(&account_id)?);
+    let parsed = unkai_crypto::parse_private_key(armored.as_bytes(), Some(passphrase.as_str()))
         .map_err(|e| UnkaiError::Crypto(format!("PGP key parse failed: {e}")))?;
     // `parse_private_key` deliberately does NOT check the
     // passphrase — rpgp defers secret-packet decryption until the
@@ -13064,7 +13076,7 @@ fn pgp_enable_unlock_automatically(
     // are thrown away; we only care about the unlock side effect.
     unkai_crypto::sign_detached(b"unkai-passphrase-validation", &parsed)
         .map_err(|e| UnkaiError::Crypto(format!("Wrong encryption passphrase: {e}")))?;
-    credentials::store_pgp_passphrase(&account_id, &passphrase)?;
+    credentials::store_pgp_passphrase(&account_id, passphrase.as_str())?;
     Ok(())
 }
 
@@ -13289,6 +13301,8 @@ fn smime_import_pkcs12(
     notify: State<'_, SettingsSyncNotify>,
 ) -> Result<String, UnkaiError> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+    // Scrub the cleartext `.p12` passphrase on drop (#370).
+    let passphrase = Zeroizing::new(passphrase);
     let p12_bytes = STANDARD
         .decode(pkcs12_base64.trim().as_bytes())
         .map_err(|e| UnkaiError::Crypto(format!("Invalid PKCS#12 upload encoding: {e}")))?;
@@ -13297,7 +13311,7 @@ fn smime_import_pkcs12(
     // store it — a wrong passphrase fails fast here with the
     // "Wrong PKCS#12 passphrase" sentinel rather than being saved and
     // breaking every later operation on the account.
-    let parsed = unkai_crypto::parse_pkcs12(&p12_bytes, &passphrase)?;
+    let parsed = unkai_crypto::parse_pkcs12(&p12_bytes, passphrase.as_str())?;
     let fingerprint = parsed.fingerprint();
     drop(parsed);
 
@@ -13352,10 +13366,12 @@ fn smime_enable_unlock_automatically(
     account_id: String,
     passphrase: String,
 ) -> Result<(), UnkaiError> {
+    // Scrub the cleartext passphrase on drop (#370).
+    let passphrase = Zeroizing::new(passphrase);
     let p12_bytes = credentials::get_smime_private_cert(&account_id)?;
-    let parsed = unkai_crypto::parse_pkcs12(&p12_bytes, &passphrase)?;
+    let parsed = unkai_crypto::parse_pkcs12(&p12_bytes, passphrase.as_str())?;
     drop(parsed);
-    credentials::store_smime_passphrase(&account_id, &passphrase)?;
+    credentials::store_smime_passphrase(&account_id, passphrase.as_str())?;
     Ok(())
 }
 

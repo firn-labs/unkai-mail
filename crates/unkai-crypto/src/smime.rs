@@ -608,6 +608,31 @@ mod tests {
         assert_eq!(status, SignatureStatus::UnknownSigner);
     }
 
+    /// Regression guard (#370): the manual `Debug` impl on
+    /// `CertificateWithKey` must never render the private key.  The leaf
+    /// fingerprint (public) is fine to show; the key material must be
+    /// redacted so it can't leak into a `tracing::debug!("{:?}")` call.
+    #[test]
+    fn certificate_with_key_debug_redacts_private_key() {
+        let alice = make_test_cert("Alice Example", "alice@example.com");
+        let rendered = format!("{alice:?}");
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected redaction marker in Debug output: {rendered}"
+        );
+        // The private key's PEM (or any PKCS#8 wrapper) must never appear.
+        assert!(
+            !rendered.contains("PRIVATE KEY"),
+            "private key material leaked into Debug output: {rendered}"
+        );
+        // The public leaf fingerprint is fine — and proves we still
+        // render something useful for debugging.
+        assert!(
+            rendered.contains(&alice.fingerprint()),
+            "expected leaf fingerprint in Debug output: {rendered}"
+        );
+    }
+
     #[test]
     fn certificate_fingerprint_is_sha256_with_colons() {
         let alice = make_test_cert("Alice Example", "alice@example.com");

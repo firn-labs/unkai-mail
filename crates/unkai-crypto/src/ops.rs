@@ -401,8 +401,28 @@ mod tests {
             .expect("test: generate keypair");
         PrivateKey {
             inner: signed,
-            password_bytes: Vec::new(),
+            password_bytes: zeroize::Zeroizing::new(Vec::new()),
         }
+    }
+
+    /// Regression guard (#370): the manual `Debug` impl on `PrivateKey`
+    /// must never render the passphrase.  If someone replaces it with a
+    /// `#[derive(Debug)]`, `rpgp`'s `SignedSecretKey` and the password
+    /// bytes would start leaking into any `tracing::debug!("{key:?}")`
+    /// call — this test fails loudly before that can ship.
+    #[test]
+    fn private_key_debug_redacts_passphrase() {
+        let mut key = make_test_keypair("alex@example.com");
+        key.password_bytes = zeroize::Zeroizing::new(b"SENTINEL-PASSPHRASE-9f2a".to_vec());
+        let rendered = format!("{key:?}");
+        assert!(
+            !rendered.contains("SENTINEL-PASSPHRASE-9f2a"),
+            "passphrase leaked into Debug output: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected redaction marker in Debug output: {rendered}"
+        );
     }
 
     /// Generate a cert with a certify-only RSA primary plus a sign-flagged
@@ -433,7 +453,7 @@ mod tests {
             .expect("test: generate keypair");
         PrivateKey {
             inner: signed,
-            password_bytes: Vec::new(),
+            password_bytes: zeroize::Zeroizing::new(Vec::new()),
         }
     }
 

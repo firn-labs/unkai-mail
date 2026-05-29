@@ -25,6 +25,7 @@
 use rpgp::composed::{Deserializable, SignedPublicKey, SignedSecretKey};
 use rpgp::types::{KeyDetails, Password};
 use unkai_core::UnkaiError;
+use zeroize::Zeroizing;
 
 /// A recipient's (or our own) public key, parsed and self-signature-verified.
 ///
@@ -56,7 +57,11 @@ pub struct PrivateKey {
     /// Raw passphrase bytes.  We materialise a fresh `Password` per op
     /// via [`Self::password`] because `rpgp`'s `Password` enum doesn't
     /// implement `Clone` and several call sites consume it by value.
-    pub(crate) password_bytes: Vec<u8>,
+    ///
+    /// Wrapped in [`Zeroizing`] so the cleartext is scrubbed from memory
+    /// when this `PrivateKey` drops, rather than lingering in freed heap
+    /// (and potentially swap) until the allocator happens to reuse it.
+    pub(crate) password_bytes: Zeroizing<Vec<u8>>,
 }
 
 impl std::fmt::Debug for PrivateKey {
@@ -127,9 +132,11 @@ pub fn parse_private_key(bytes: &[u8], passphrase: Option<&str>) -> Result<Priva
         .verify_bindings()
         .map_err(|e| UnkaiError::Crypto(format!("Secret key self-signature invalid: {e}")))?;
 
-    let password_bytes = passphrase
-        .map(|s| s.as_bytes().to_vec())
-        .unwrap_or_default();
+    let password_bytes = Zeroizing::new(
+        passphrase
+            .map(|s| s.as_bytes().to_vec())
+            .unwrap_or_default(),
+    );
 
     Ok(PrivateKey {
         inner: parsed,

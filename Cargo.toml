@@ -166,6 +166,12 @@ openssl = { version = "0.10", features = ["vendored"] }
 # release re-exports in its public API to avoid two `rand`s
 # in the dep graph.
 rand = "0.8"
+# Scrubs cleartext secret buffers (passphrases) from memory on
+# drop (#370).  Already in the tree transitively via `pgp`/`rpgp`;
+# promoting it to a direct dep so `unkai-crypto` can wrap its own
+# passphrase buffers in `Zeroizing` rather than leaving them as
+# plain `Vec<u8>` that linger in freed heap until reuse.
+zeroize = "1.8"
 # Internal crates
 unkai-core = { path = "crates/unkai-core" }
 unkai-imap = { path = "crates/unkai-imap" }
