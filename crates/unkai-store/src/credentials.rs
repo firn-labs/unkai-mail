@@ -10,6 +10,7 @@
 //! means the keychain entry is stable even if the user changes their email
 //! address, and avoids collisions when two accounts share an email.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use keyring::Entry;
 use tracing::{debug, info};
 use unkai_core::UnkaiError;
@@ -36,6 +37,26 @@ const PGP_KEY_SERVICE: &str = "unkai-mail-pgp-private-key";
 /// so a future "remember passphrase for session" flow can flip a
 /// single keychain entry without touching the key blob.
 const PGP_PASSPHRASE_SERVICE: &str = "unkai-mail-pgp-passphrase";
+
+/// Keychain service name for the user's own S/MIME identity (#338) —
+/// the PKCS#12 (`.p12`) bundle carrying the leaf certificate, private
+/// key, and any intermediate CA chain.  X.509 counterpart to
+/// `PGP_KEY_SERVICE`; kept on its own service so revoking an S/MIME
+/// identity can't touch the OpenPGP key or the IMAP password.
+///
+/// The `.p12` is binary, but the keychain backends store strings, so we
+/// base64-encode the bytes on the way in and decode them on the way out
+/// — the encoding is an implementation detail of these helpers and
+/// never leaks to callers, which deal in raw `&[u8]` / `Vec<u8>`.
+const SMIME_CERT_SERVICE: &str = "unkai-mail-smime-private-cert";
+
+/// Keychain service name for the passphrase that unlocks the S/MIME
+/// `.p12` (#338).  X.509 counterpart to `PGP_PASSPHRASE_SERVICE`,
+/// stored separately from the bundle for the same reasons: the `.p12`
+/// can be backed up without leaking the passphrase, and the
+/// per-account "Unlock automatically" toggle can flip this single
+/// entry without touching the cert blob.
+const SMIME_PASSPHRASE_SERVICE: &str = "unkai-mail-smime-passphrase";
 
 fn entry(account_id: &str) -> Result<Entry, UnkaiError> {
     Entry::new(IMAP_SERVICE, account_id)
@@ -248,6 +269,137 @@ pub fn delete_pgp_passphrase(account_id: &str) -> Result<(), UnkaiError> {
         }
         Err(e) => Err(UnkaiError::Storage(format!(
             "failed to delete PGP passphrase: {e}"
+        ))),
+    }
+}
+
+// ── S/MIME identity (.p12 bundle) + passphrase (#338) ──────────
+//
+// X.509 counterpart to the OpenPGP private-key / passphrase APIs
+// above.  Two distinct keychain entries per account: one for the
+// PKCS#12 bundle (leaf cert + private key + optional chain, often a
+// few KiB, base64-encoded because `.p12` is binary and the keychain
+// holds strings), one for the passphrase that unlocks it.
+//
+// Keying by `account_id` so a user with two accounts (work / personal)
+// can hold a separate S/MIME identity per account — matching how the
+// IMAP password and OpenPGP key already work.  The keychain is the
+// only place the private-key material ever lives; the SQLCipher cache
+// only carries the *fingerprint* (a public identifier) for UI display.
+
+fn smime_cert_entry(account_id: &str) -> Result<Entry, UnkaiError> {
+    Entry::new(SMIME_CERT_SERVICE, account_id)
+        .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))
+}
+
+fn smime_pw_entry(account_id: &str) -> Result<Entry, UnkaiError> {
+    Entry::new(SMIME_PASSPHRASE_SERVICE, account_id)
+        .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))
+}
+
+/// Store (or overwrite) the user's S/MIME PKCS#12 bundle for an
+/// account.  `p12_der` is the raw binary `.p12` as the user imported
+/// it; we base64-encode it for the (string-only) keychain backend.
+///
+/// Callers should validate the bundle parses (via
+/// `unkai_crypto::parse_pkcs12`) with the supplied passphrase *before*
+/// storing — we don't re-validate here because the keychain backend
+/// treats the value as an opaque string.
+pub fn store_smime_private_cert(account_id: &str, p12_der: &[u8]) -> Result<(), UnkaiError> {
+    let encoded = B64.encode(p12_der);
+    smime_cert_entry(account_id)?
+        .set_password(&encoded)
+        .map_err(|e| UnkaiError::Storage(format!("failed to store S/MIME identity: {e}")))?;
+    info!("Stored S/MIME identity for account '{account_id}' in OS keychain");
+    Ok(())
+}
+
+/// Retrieve the user's S/MIME PKCS#12 bundle for an account, decoded
+/// back to raw `.p12` bytes.  Returns `UnkaiError::Auth` when the entry
+/// doesn't exist — same shape as the PGP private-key getter so the IPC
+/// layer can route the missing case to a "set up encryption" prompt.
+pub fn get_smime_private_cert(account_id: &str) -> Result<Vec<u8>, UnkaiError> {
+    let encoded = smime_cert_entry(account_id)?.get_password().map_err(|e| {
+        UnkaiError::Auth(format!(
+            "no S/MIME identity found for account '{account_id}': {e}"
+        ))
+    })?;
+    B64.decode(encoded.as_bytes())
+        .map_err(|e| UnkaiError::Storage(format!("failed to decode stored S/MIME identity: {e}")))
+}
+
+/// Remove the S/MIME identity for an account; no-op if missing.  Always
+/// called from the account-removal path so revoking the identity
+/// doesn't leave orphaned credentials in the OS keychain.
+pub fn delete_smime_private_cert(account_id: &str) -> Result<(), UnkaiError> {
+    match smime_cert_entry(account_id)?.delete_credential() {
+        Ok(()) => {
+            info!("Deleted S/MIME identity for account '{account_id}'");
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            debug!("No S/MIME identity to delete for account '{account_id}' (ok)");
+            Ok(())
+        }
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to delete S/MIME identity: {e}"
+        ))),
+    }
+}
+
+/// Store (or overwrite) the passphrase that unlocks the S/MIME `.p12`
+/// for an account.  Pass an empty string for an unprotected bundle.
+///
+/// As with PGP, the passphrase is *not* automatically replayed on
+/// every send / decrypt — the IPC layer reads it at use time so a leak
+/// of the cache doesn't also expose the unlocking secret.  Only the
+/// per-account "Unlock automatically" opt-in writes it here.
+pub fn store_smime_passphrase(account_id: &str, passphrase: &str) -> Result<(), UnkaiError> {
+    smime_pw_entry(account_id)?
+        .set_password(passphrase)
+        .map_err(|e| UnkaiError::Storage(format!("failed to store S/MIME passphrase: {e}")))?;
+    info!("Stored S/MIME passphrase for account '{account_id}' in OS keychain");
+    Ok(())
+}
+
+/// Retrieve the S/MIME passphrase for an account.
+pub fn get_smime_passphrase(account_id: &str) -> Result<String, UnkaiError> {
+    smime_pw_entry(account_id)?.get_password().map_err(|e| {
+        UnkaiError::Auth(format!(
+            "no S/MIME passphrase found for account '{account_id}': {e}"
+        ))
+    })
+}
+
+/// Non-erroring sibling of [`get_smime_passphrase`] — `Ok(true)` when a
+/// passphrase is stored for the account, `Ok(false)` when it isn't, and
+/// `Err` only when the keychain itself is misbehaving.  Drives the
+/// per-account "Unlock automatically" toggle in the S/MIME settings so
+/// the renderer can render the on/off state without treating a
+/// missing-entry error as the no-op it really is.
+pub fn has_smime_passphrase(account_id: &str) -> Result<bool, UnkaiError> {
+    match smime_pw_entry(account_id)?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to query S/MIME passphrase: {e}"
+        ))),
+    }
+}
+
+/// Remove the S/MIME passphrase for an account; no-op if missing.
+pub fn delete_smime_passphrase(account_id: &str) -> Result<(), UnkaiError> {
+    match smime_pw_entry(account_id)?.delete_credential() {
+        Ok(()) => {
+            info!("Deleted S/MIME passphrase for account '{account_id}'");
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            debug!("No S/MIME passphrase to delete for account '{account_id}' (ok)");
+            Ok(())
+        }
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to delete S/MIME passphrase: {e}"
         ))),
     }
 }

@@ -417,6 +417,18 @@ pub struct Account {
     /// when the user hasn't imported a key for this account yet.
     #[serde(default)]
     pub pgp_key_fingerprint: Option<String>,
+    /// SHA-256 fingerprint of the S/MIME (X.509) certificate stored for
+    /// this account (#338) — colon-separated uppercase hex, the
+    /// `openssl x509 -fingerprint -sha256` form.  Display-only hint that
+    /// an identity exists; the `.p12` bundle (leaf cert + private key +
+    /// chain) lives in the OS keychain under the service
+    /// `unkai-mail-smime-private-cert`, keyed by `account_id`, with the
+    /// passphrase under `unkai-mail-smime-passphrase`.  Surfaced in the
+    /// S/MIME settings panel so the user can confirm the right
+    /// certificate is active without unlocking the keychain.  `None`
+    /// when the user hasn't imported a certificate for this account yet.
+    #[serde(default)]
+    pub smime_cert_fingerprint: Option<String>,
 }
 
 /// One TLS leaf certificate the user has chosen to trust for an

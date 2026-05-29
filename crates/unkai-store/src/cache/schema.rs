@@ -1287,6 +1287,53 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE task_lists
         ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v38 → v39: S/MIME (X.509) certificate storage (#338, chunk 2).
+    //
+    // The X.509 counterpart to the v32 → v33 PGP storage above.  Two
+    // parts, mirroring the PGP migration's shape:
+    //
+    // 1. `accounts.smime_cert_fingerprint` — SHA-256 fingerprint of
+    //    the user's own S/MIME certificate (colon-separated uppercase
+    //    hex, the `openssl x509 -fingerprint -sha256` form).  Display-
+    //    only hint that an identity exists for the account; the actual
+    //    `.p12` (cert + private key) lives in the OS keychain under the
+    //    `unkai-mail-smime-private-cert` service, keyed by account id.
+    //    Caching the fingerprint here means the "do I have an S/MIME
+    //    identity?" status read never has to crack open the keychain —
+    //    exactly the trick `pgp_key_fingerprint` plays for OpenPGP.
+    //
+    // 2. `smime_certs` — local cache of *recipients'* (and inbound
+    //    signers') X.509 leaf certificates.  Sibling table to
+    //    `pgp_public_keys` rather than an extension of it, because the
+    //    two key formats share no columns worth unifying: PGP stores an
+    //    armored ASCII block, X.509 stores binary DER.  Keyed by
+    //    `fingerprint` (the canonical X.509 identifier) with a secondary
+    //    index on `email` so the Compose / receive layers can answer
+    //    "do we have a cert for bob@example.com?" in one indexed lookup,
+    //    the same question the PGP table answers for keys.  `der_cert` is
+    //    a BLOB (not TEXT) because DER is binary — storing the canonical
+    //    wire form means round-tripping through the database can't drift
+    //    the fingerprint.  `source` records provenance (`'vcard'` /
+    //    `'manual'` / `'inbound-message'`) identically to the PGP table.
+    //    No FK to anything — the trust model is "cert fingerprint,
+    //    period"; the email column is a lookup hint, not a constraint.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE accounts
+        ADD COLUMN smime_cert_fingerprint TEXT;
+
+    CREATE TABLE smime_certs (
+        fingerprint   TEXT NOT NULL PRIMARY KEY,
+        email         TEXT,
+        der_cert      BLOB NOT NULL,
+        source        TEXT NOT NULL,
+        added_at      INTEGER NOT NULL
+    );
+
+    CREATE INDEX smime_certs_by_email
+        ON smime_certs (email);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

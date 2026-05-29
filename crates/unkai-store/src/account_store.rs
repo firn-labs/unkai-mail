@@ -28,7 +28,7 @@ fn read_all(cache: &Cache) -> Result<Vec<Account>, UnkaiError> {
                     folder_icons_json, trusted_certs_json,
                     folder_icon_overrides_json,
                     emoji, sort_order, person_name,
-                    pgp_key_fingerprint
+                    pgp_key_fingerprint, smime_cert_fingerprint
              FROM accounts
              ORDER BY rowid",
         )
@@ -72,6 +72,7 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         sort_order: r.get::<_, i64>(14)? as i32,
         person_name: r.get(15)?,
         pgp_key_fingerprint: r.get(16)?,
+        smime_cert_fingerprint: r.get(17)?,
     })
 }
 
@@ -108,9 +109,9 @@ fn insert_one(cache: &Cache, account: &Account) -> Result<(), UnkaiError> {
              folder_icons_json, trusted_certs_json,
              folder_icon_overrides_json, created_at,
              emoji, sort_order, person_name,
-             pgp_key_fingerprint)
+             pgp_key_fingerprint, smime_cert_fingerprint)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                 ?15, ?16, ?17, ?18)",
+                 ?15, ?16, ?17, ?18, ?19)",
         params![
             account.id,
             account.display_name,
@@ -130,6 +131,7 @@ fn insert_one(cache: &Cache, account: &Account) -> Result<(), UnkaiError> {
             account.sort_order as i64,
             account.person_name,
             account.pgp_key_fingerprint,
+            account.smime_cert_fingerprint,
         ],
     )
     .map_err(|e| UnkaiError::Storage(format!("insert account: {e}")))?;
@@ -180,7 +182,8 @@ pub fn update_account(cache: &Cache, updated: Account) -> Result<(), UnkaiError>
                  emoji                      = ?14,
                  sort_order                 = ?15,
                  person_name                = ?16,
-                 pgp_key_fingerprint        = ?17
+                 pgp_key_fingerprint        = ?17,
+                 smime_cert_fingerprint     = ?18
              WHERE id = ?1",
             params![
                 updated.id,
@@ -200,6 +203,7 @@ pub fn update_account(cache: &Cache, updated: Account) -> Result<(), UnkaiError>
                 updated.sort_order as i64,
                 updated.person_name,
                 updated.pgp_key_fingerprint,
+                updated.smime_cert_fingerprint,
             ],
         )
         .map_err(|e| UnkaiError::Storage(format!("update account: {e}")))?;
@@ -260,6 +264,7 @@ mod tests {
             sort_order: 0,
             person_name: None,
             pgp_key_fingerprint: None,
+            smime_cert_fingerprint: None,
         }
     }
 
