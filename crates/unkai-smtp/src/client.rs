@@ -1452,6 +1452,9 @@ mod tests {
         fn decrypt(&self, _: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
             unreachable!()
         }
+        fn decrypt_smime(&self, _: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
+            unreachable!()
+        }
         fn verify(&self, _: &[u8], _: &[u8]) -> Result<VerifyOutcome, UnkaiError> {
             unreachable!()
         }
@@ -1649,6 +1652,9 @@ mod tests {
     }
     impl CryptoBridge for RecordingEncryptBridge {
         fn decrypt(&self, _: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
+            unreachable!()
+        }
+        fn decrypt_smime(&self, _: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
             unreachable!()
         }
         fn verify(&self, _: &[u8], _: &[u8]) -> Result<VerifyOutcome, UnkaiError> {

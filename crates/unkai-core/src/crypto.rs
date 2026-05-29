@@ -87,6 +87,29 @@ pub trait CryptoBridge: Send + Sync {
     /// upward unchanged.
     fn decrypt(&self, ciphertext_armor: &[u8]) -> Result<DecryptedPayload, crate::UnkaiError>;
 
+    /// Decrypt a CMS `EnvelopedData` blob (S/MIME, #338).  `cms_der` is
+    /// the raw DER bytes the IMAP receive path lifted out of the
+    /// `application/pkcs7-mime; smime-type=enveloped-data` part —
+    /// mail-parser has already undone the base64 Content-Transfer-Encoding,
+    /// so this is the binary CMS message, not its base64 text.
+    ///
+    /// Returns the same [`DecryptedPayload`] shape as [`Self::decrypt`]
+    /// deliberately: the recovered inner MIME bytes plus optional
+    /// signature metadata.  The two stacks funnel through one struct so
+    /// the receive path, the cache rows, and the IPC payload never have
+    /// to know which wire format produced the plaintext (the protocol
+    /// distinction lives in the detect/apply code, not the data model).
+    /// `signature_status` is `None` today — the nested
+    /// `SignedData`-inside-`EnvelopedData` form (RFC 8551 §3.6) is a
+    /// later sub-chunk — so an S/MIME enveloped message stamps
+    /// `protection = "encrypted"` for now.
+    ///
+    /// Errors propagate the underlying `UnkaiError::Crypto` (e.g. the
+    /// "wasn't encrypted to your certificate" sentinel from
+    /// `unkai_crypto::smime_decrypt`) so the protocol crate surfaces it
+    /// unchanged.
+    fn decrypt_smime(&self, cms_der: &[u8]) -> Result<DecryptedPayload, crate::UnkaiError>;
+
     /// Verify a detached OpenPGP signature over a signed MIME body.
     /// `signed_payload` is the canonical form of the body part as it
     /// appeared between the multipart boundaries; `signature_armor`
