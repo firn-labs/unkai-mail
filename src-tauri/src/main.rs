@@ -48,7 +48,8 @@ use unkai_nextcloud::{
 use unkai_smtp::{SmtpClient, build_outgoing_message};
 use unkai_store::cache::{
     CalendarEventRow, CalendarEventServerHandle, CalendarRow, ContactRow, ContactServerHandle,
-    PgpKeySource, PgpPublicKeyRow, SearchFilters, SearchHit, SearchScope, SyncState,
+    PgpKeySource, PgpPublicKeyRow, SearchFilters, SearchHit, SearchScope, SmimeCertRow,
+    SmimeCertSource, SyncState,
 };
 use unkai_store::{
     Cache, account_store, app_settings, credentials, link_check, nextcloud_store, settings_bundle,
@@ -13181,6 +13182,272 @@ impl From<PgpPublicKeyRow> for PgpPublicKeyDto {
     }
 }
 
+// ── S/MIME (X.509) certificate management (#338) ───────────────
+//
+// X.509 counterpart to the OpenPGP key-management commands above.
+// Same split: the user's own identity (a passphrase-protected `.p12`
+// in the OS keychain, with the fingerprint cached on the account row)
+// vs. cached recipient certificates (the `smime_certs` table).  The
+// IPC shapes deliberately mirror the PGP DTOs so the settings UI can
+// drive both stacks through parallel calls.
+
+/// What the S/MIME settings panel displays for an account's identity
+/// state.  `has_cert` is the cheap signal (import button vs.
+/// fingerprint + remove button); `fingerprint` is the human-readable
+/// identifier when present.  Mirrors `PgpKeyStatus`.
+#[derive(Debug, Clone, serde::Serialize)]
+struct SmimeCertStatus {
+    has_cert: bool,
+    fingerprint: Option<String>,
+}
+
+/// IPC-shaped projection of `SmimeCertRow`.  As with `PgpPublicKeyDto`
+/// the DER blob itself is omitted (the UI only renders identifiers),
+/// but we add the subject / issuer distinguished names: for X.509 the
+/// subject DN is the human identity (more telling than the email), and
+/// the issuer DN is what the later trust-model chunk will surface.
+/// Both are derived from the stored DER through the `unkai-crypto`
+/// façade so the cache schema stays minimal and DN formatting has a
+/// single source of truth.
+#[derive(Debug, Clone, serde::Serialize)]
+struct SmimeCertDto {
+    fingerprint: String,
+    email: Option<String>,
+    subject_dn: String,
+    issuer_dn: String,
+    source: String,
+    added_at: i64,
+}
+
+/// Build the IPC DTO for one cached cert, deriving the subject / issuer
+/// DNs by re-parsing the stored DER.  A stored cert should always
+/// re-parse (we only ever persist bytes that parsed on the way in), but
+/// if OpenSSL ever refuses we fall back to `"unknown"` DNs rather than
+/// dropping the row — the fingerprint + email are still useful and the
+/// user can remove a cert the app can no longer read.
+fn smime_cert_dto(row: SmimeCertRow) -> SmimeCertDto {
+    let (subject_dn, issuer_dn) = match unkai_crypto::parse_der_cert(&row.der_cert) {
+        Ok(cert) => (cert.subject_dn(), cert.issuer_dn()),
+        Err(_) => ("unknown".to_string(), "unknown".to_string()),
+    };
+    SmimeCertDto {
+        fingerprint: row.fingerprint,
+        email: row.email,
+        subject_dn,
+        issuer_dn,
+        source: row.source.as_str().to_string(),
+        added_at: row.added_at,
+    }
+}
+
+/// Parse a recipient certificate from whatever the UI hands us: a
+/// pasted PEM block, base64-encoded DER (the `.cer` file-picker path),
+/// or base64-encoded PEM.  Tries the cheapest interpretation first so
+/// the common paste case never pays for a base64 decode.
+fn parse_smime_cert_flexible(input: &str) -> Result<unkai_crypto::Certificate, UnkaiError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    // 1. Raw PEM paste — the common case.  PEM's `-----` delimiters
+    //    aren't valid base64, so this can't false-match a base64 blob.
+    if let Ok(cert) = unkai_crypto::parse_pem_cert(input.as_bytes()) {
+        return Ok(cert);
+    }
+    // 2. base64 of either DER or PEM (a file picker reads raw bytes and
+    //    base64-encodes them for the IPC string boundary).
+    if let Ok(decoded) = STANDARD.decode(input.trim().as_bytes()) {
+        if let Ok(cert) = unkai_crypto::parse_der_cert(&decoded) {
+            return Ok(cert);
+        }
+        if let Ok(cert) = unkai_crypto::parse_pem_cert(&decoded) {
+            return Ok(cert);
+        }
+    }
+    Err(UnkaiError::Crypto(
+        "Could not parse certificate — expected X.509 PEM or DER".into(),
+    ))
+}
+
+/// Import + persist the user's own S/MIME identity for an account from
+/// a PKCS#12 (`.p12`) upload.
+///
+/// `pkcs12_base64` is the binary `.p12` base64-encoded for the IPC
+/// string boundary.  The `passphrase` validates the bundle parses
+/// (proving the user typed the right one before we accept the import);
+/// after that it's dropped.  Per the "re-prompt per operation" decision
+/// carried over from #57, the passphrase is **not** stashed in the
+/// keychain here — the UI prompts for it again every time signing or
+/// decryption fires, unless the user opts into "Unlock automatically".
+///
+/// Side effects: the raw `.p12` is written to the OS keychain, and the
+/// fingerprint is cached on the `accounts` row so the settings UI can
+/// render "Certificate AB:CD:…" without unlocking the keychain.
+#[tauri::command]
+fn smime_import_pkcs12(
+    account_id: String,
+    pkcs12_base64: String,
+    passphrase: String,
+    cache: State<'_, Cache>,
+    notify: State<'_, SettingsSyncNotify>,
+) -> Result<String, UnkaiError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let p12_bytes = STANDARD
+        .decode(pkcs12_base64.trim().as_bytes())
+        .map_err(|e| UnkaiError::Crypto(format!("Invalid PKCS#12 upload encoding: {e}")))?;
+    // `parse_pkcs12` both verifies the passphrase (PKCS#12 MAC check)
+    // and proves the bundle carries a leaf cert + private key before we
+    // store it — a wrong passphrase fails fast here with the
+    // "Wrong PKCS#12 passphrase" sentinel rather than being saved and
+    // breaking every later operation on the account.
+    let parsed = unkai_crypto::parse_pkcs12(&p12_bytes, &passphrase)?;
+    let fingerprint = parsed.fingerprint();
+    drop(parsed);
+
+    credentials::store_smime_private_cert(&account_id, &p12_bytes)?;
+
+    // Cache the fingerprint on the account row so the status read stays
+    // cheap.  Load + save preserves every other field, matching the
+    // PGP import path.
+    let accounts = account_store::load_accounts(&cache)?;
+    if let Some(mut acc) = accounts.into_iter().find(|a| a.id == account_id) {
+        acc.smime_cert_fingerprint = Some(fingerprint.clone());
+        account_store::update_account(&cache, acc)?;
+        notify.0.notify_one();
+    }
+
+    Ok(fingerprint)
+}
+
+/// Remove the S/MIME identity for an account.  Mirrors the PGP
+/// private-key removal: clears the keychain entries (bundle +
+/// passphrase) and drops the fingerprint hint from the account row.
+#[tauri::command]
+fn smime_remove_private_cert(
+    account_id: String,
+    cache: State<'_, Cache>,
+    notify: State<'_, SettingsSyncNotify>,
+) -> Result<(), UnkaiError> {
+    credentials::delete_smime_private_cert(&account_id)?;
+    credentials::delete_smime_passphrase(&account_id)?;
+
+    let accounts = account_store::load_accounts(&cache)?;
+    if let Some(mut acc) = accounts.into_iter().find(|a| a.id == account_id) {
+        if acc.smime_cert_fingerprint.is_some() {
+            acc.smime_cert_fingerprint = None;
+            account_store::update_account(&cache, acc)?;
+            notify.0.notify_one();
+        }
+    }
+    Ok(())
+}
+
+/// Enable "Unlock automatically" for an account's S/MIME identity.
+///
+/// Validates that the supplied passphrase actually unlocks the stored
+/// `.p12`, then writes it to the OS keychain under the
+/// `unkai-mail-smime-passphrase` slot.  Unlike the OpenPGP path —
+/// where parsing defers passphrase checking and we have to test-sign a
+/// payload — PKCS#12 verifies the passphrase at parse time via its MAC,
+/// so re-parsing the stored bundle is enough to prove the passphrase.
+#[tauri::command]
+fn smime_enable_unlock_automatically(
+    account_id: String,
+    passphrase: String,
+) -> Result<(), UnkaiError> {
+    let p12_bytes = credentials::get_smime_private_cert(&account_id)?;
+    let parsed = unkai_crypto::parse_pkcs12(&p12_bytes, &passphrase)?;
+    drop(parsed);
+    credentials::store_smime_passphrase(&account_id, &passphrase)?;
+    Ok(())
+}
+
+/// Disable "Unlock automatically" — drops the keychain passphrase entry
+/// so future operations re-prompt.  Idempotent (missing entry is
+/// treated as already-disabled).
+#[tauri::command]
+fn smime_disable_unlock_automatically(account_id: String) -> Result<(), UnkaiError> {
+    credentials::delete_smime_passphrase(&account_id)
+}
+
+/// `true` when the account has a stored S/MIME passphrase (opt-in is
+/// on).  Drives the toggle state without forcing the renderer to read a
+/// missing-entry `Auth` error as falsy.
+#[tauri::command]
+fn smime_has_unlock_automatically(account_id: String) -> Result<bool, UnkaiError> {
+    credentials::has_smime_passphrase(&account_id)
+}
+
+/// What does the account look like, S/MIME-identity-wise?  Cheap read
+/// from the SQLCipher row — doesn't touch the keychain.
+#[tauri::command]
+fn smime_get_account_cert_status(
+    account_id: String,
+    cache: State<'_, Cache>,
+) -> Result<SmimeCertStatus, UnkaiError> {
+    let fingerprint = account_store::load_accounts(&cache)?
+        .into_iter()
+        .find(|a| a.id == account_id)
+        .and_then(|a| a.smime_cert_fingerprint);
+    Ok(SmimeCertStatus {
+        has_cert: fingerprint.is_some(),
+        fingerprint,
+    })
+}
+
+/// Import a recipient's S/MIME certificate by paste or file upload.
+/// The `email_hint` is what the user typed (or the contact card they
+/// were viewing); we prefer it for the `email` column but fall back to
+/// the cert's own SAN rfc822Name.  The fingerprint always comes from
+/// the certificate itself.
+#[tauri::command]
+fn smime_import_public_cert(
+    cert_data: String,
+    email_hint: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<String, UnkaiError> {
+    let cert = parse_smime_cert_flexible(&cert_data)?;
+    let fingerprint = cert.fingerprint();
+    let row = SmimeCertRow {
+        fingerprint: fingerprint.clone(),
+        email: email_hint.or_else(|| cert.email()),
+        der_cert: cert.to_der()?,
+        source: SmimeCertSource::Manual,
+        added_at: chrono::Utc::now().timestamp(),
+    };
+    cache.upsert_smime_cert(&row)?;
+    Ok(fingerprint)
+}
+
+/// Remove one cached certificate by fingerprint.
+#[tauri::command]
+fn smime_remove_public_cert(
+    fingerprint: String,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    cache
+        .delete_smime_cert(&fingerprint)
+        .map_err(UnkaiError::from)
+}
+
+/// List every cached certificate, newest first, for the S/MIME
+/// settings "Known recipient certificates" panel.
+#[tauri::command]
+fn smime_list_public_certs(cache: State<'_, Cache>) -> Result<Vec<SmimeCertDto>, UnkaiError> {
+    let rows = cache.list_smime_certs().map_err(UnkaiError::from)?;
+    Ok(rows.into_iter().map(smime_cert_dto).collect())
+}
+
+/// Look up every cached certificate claiming a given email address —
+/// powers the per-recipient "has cert" indicator chips in Compose.
+#[tauri::command]
+fn smime_get_certs_for_email(
+    email: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<SmimeCertDto>, UnkaiError> {
+    let rows = cache
+        .get_smime_certs_for_email(&email)
+        .map_err(UnkaiError::from)?;
+    Ok(rows.into_iter().map(smime_cert_dto).collect())
+}
+
 /// Concrete `CryptoBridge` implementation used at the Tauri-command
 /// boundary.  Holds the account's signing key (the user just unlocked
 /// it via the passphrase prompt) plus a `Cache` handle for recipient
@@ -14132,6 +14399,17 @@ fn main() {
             pgp_enable_unlock_automatically,
             pgp_disable_unlock_automatically,
             pgp_has_unlock_automatically,
+            // #338 — S/MIME (X.509) certificate storage + identity
+            smime_import_pkcs12,
+            smime_remove_private_cert,
+            smime_get_account_cert_status,
+            smime_enable_unlock_automatically,
+            smime_disable_unlock_automatically,
+            smime_has_unlock_automatically,
+            smime_import_public_cert,
+            smime_remove_public_cert,
+            smime_list_public_certs,
+            smime_get_certs_for_email,
             // #57 — on-demand decrypt for inbound PGP/MIME messages
             decrypt_message,
             try_auto_decrypt_message,
