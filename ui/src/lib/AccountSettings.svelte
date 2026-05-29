@@ -17,6 +17,7 @@
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
   import EncryptionSettings from './EncryptionSettings.svelte'
+  import SmimeSettings from './SmimeSettings.svelte'
   import {
     openSignatureEditorInStandaloneWindow,
     SIGNATURE_POPOUT_CLOSED_EVENT,
@@ -2291,6 +2292,12 @@
 
             <!-- End-to-end mail encryption (#57). -->
             <EncryptionSettings
+              account={{ id: account.id, email: account.email }}
+              oncrypto_changed={() => { void loadAccounts() }}
+            />
+
+            <!-- S/MIME (X.509) mail encryption (#338). -->
+            <SmimeSettings
               account={{ id: account.id, email: account.email }}
               oncrypto_changed={() => { void loadAccounts() }}
             />
