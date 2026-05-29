@@ -103,27 +103,37 @@ impl SmtpClient {
         self.send_with_crypto(email, None).await
     }
 
-    /// Send an email with optional OpenPGP wrapping.
+    /// Send an email with optional OpenPGP or S/MIME wrapping.
     ///
-    /// Mode is picked from `email`:
-    /// - `encryption_mode == Some("pgp")` → RFC 3156 §4
-    ///   `multipart/encrypted` (encrypt + sign-inside-encrypt).
-    ///   Requires `bridge` and at least one cached recipient key per
-    ///   address.  BCC is handled by splitting the send: a single
-    ///   ciphertext to TO + CC keys, plus one separate ciphertext per
-    ///   BCC recipient encrypted to that recipient's key alone, so
-    ///   the OpenPGP ESK packets in one recipient's copy never name
-    ///   another.  See [`plan_pgp_encrypted_envelopes`] for the plan.
-    /// - `signing_enabled == true` (and not encrypted) → RFC 3156 §5
-    ///   `multipart/signed` sign-only.  Requires `bridge`.  Body is
-    ///   sent in cleartext + a detached OpenPGP signature; BCC is
-    ///   allowed because the same wire bytes go to every recipient.
-    /// - neither flag → historical plaintext path, no MIME wrapping.
+    /// Mode is picked from `email.encryption_mode` (with the historical
+    /// `signing_enabled` flag still driving PGP sign-only):
+    /// - `Some("pgp")` → RFC 3156 §4 `multipart/encrypted` (encrypt +
+    ///   sign-inside-encrypt).  Requires `bridge` and at least one cached
+    ///   recipient key per address.  BCC is handled by splitting the
+    ///   send: a single ciphertext to TO + CC keys, plus one separate
+    ///   ciphertext per BCC recipient encrypted to that recipient's key
+    ///   alone, so the OpenPGP ESK packets in one recipient's copy never
+    ///   name another.  See [`plan_pgp_encrypted_envelopes`].
+    /// - `Some("smime")` → RFC 8551 §3.2 `application/pkcs7-mime;
+    ///   smime-type=enveloped-data` (CMS `EnvelopedData`, encrypt-only;
+    ///   nested sign-then-encrypt is a later sub-chunk).  Requires
+    ///   `bridge` and a cached X.509 cert per recipient.  Same BCC
+    ///   split as PGP — CMS `RecipientInfos` leak the recipient set
+    ///   (RFC 5652 §6.2.1) just as ESK packets do.  See
+    ///   [`plan_smime_enveloped_envelopes`].
+    /// - `Some("smime-sign")` → RFC 8551 §3.4 `multipart/signed;
+    ///   protocol="application/pkcs7-signature"` sign-only.  Body in
+    ///   cleartext + a detached CMS signature; BCC rides the same
+    ///   envelope.
+    /// - `signing_enabled == true` (and no encryption mode) → RFC 3156
+    ///   §5 `multipart/signed` PGP sign-only.  Body cleartext + a
+    ///   detached OpenPGP signature; BCC rides the same envelope.
+    /// - none of the above → historical plaintext path, no MIME wrapping.
     ///
-    /// In both PGP modes the wire bytes are constructed locally and
+    /// In every crypto mode the wire bytes are constructed locally and
     /// handed to the transport via [`AsyncTransport::send_raw`] so
-    /// lettre's outer MIME builder doesn't strip / rewrite headers
-    /// the recipient's PGP/MIME parser is keyed on.
+    /// lettre's outer MIME builder doesn't strip / rewrite headers the
+    /// recipient's PGP/MIME or S/MIME parser is keyed on.
     pub async fn send_with_crypto(
         &self,
         email: &OutgoingEmail,
@@ -138,10 +148,21 @@ impl SmtpClient {
             "Sending email"
         );
 
-        let wants_encryption = email.encryption_mode.as_deref() == Some("pgp");
-        let wants_sign_only = email.signing_enabled && !wants_encryption;
+        let mode = email.encryption_mode.as_deref();
+        let wants_pgp_encrypt = mode == Some("pgp");
+        let wants_smime_encrypt = mode == Some("smime");
+        let wants_smime_sign = mode == Some("smime-sign");
+        // PGP sign-only keeps its historical trigger (`signing_enabled`
+        // with no encryption mode), but must not fire when an explicit
+        // S/MIME mode is selected — those carry their own stack.
+        let wants_pgp_sign = email.signing_enabled
+            && !wants_pgp_encrypt
+            && !wants_smime_encrypt
+            && !wants_smime_sign;
 
-        if !wants_encryption && !wants_sign_only {
+        let any_crypto =
+            wants_pgp_encrypt || wants_smime_encrypt || wants_smime_sign || wants_pgp_sign;
+        if !any_crypto {
             // Plaintext path — historical behaviour, no MIME wrapping.
             let message = build_outgoing_message(email)?;
             self.transport
@@ -154,13 +175,13 @@ impl SmtpClient {
 
         let bridge = bridge.ok_or_else(|| {
             UnkaiError::Crypto(
-                "PGP send requested (encryption_mode='pgp' or signing_enabled=true) \
+                "Encrypted/signed send requested (encryption_mode or signing_enabled set) \
                  but no CryptoBridge supplied — the Tauri command layer must compose one"
                     .into(),
             )
         })?;
 
-        if wants_sign_only {
+        if wants_pgp_sign {
             // RFC 3156 §5 `multipart/signed`.  The body is sent in
             // cleartext — the signature only attests origin and
             // integrity — so BCC is fine here (no per-recipient
@@ -176,19 +197,40 @@ impl SmtpClient {
             return Ok(());
         }
 
-        // Per-recipient envelope planning (RFC 4880 §5.1 — each
-        // ciphertext carries one ESK packet per recipient public
-        // key, so co-locating BCC keys with TO + CC keys would
-        // leak the BCC list). One envelope for the visible TO + CC
-        // copy, plus one envelope per BCC recipient — each BCC
-        // copy is encrypted only to that BCC's key so no other
-        // recipient ever appears in their ESK packets.
-        let planned = plan_pgp_encrypted_envelopes(email, bridge)?;
+        if wants_smime_sign {
+            // RFC 8551 §3.4 `multipart/signed; protocol="application/
+            // pkcs7-signature"`.  Same cleartext-body model as the PGP
+            // sign-only path, so BCC rides the same envelope.
+            let outer_bytes = wrap_as_smime_signed(email, bridge)?;
+            let envelope = envelope_from_email_include_bcc(email)?;
+            self.transport
+                .send_raw(&envelope, &outer_bytes)
+                .await
+                .map_err(|e| {
+                    UnkaiError::Protocol(format!("Failed to send S/MIME signed email: {e}"))
+                })?;
+            info!("S/MIME signed email sent successfully to {:?}", email.to);
+            return Ok(());
+        }
+
+        // Encrypted paths (PGP or S/MIME) both fan out into one-or-more
+        // per-recipient envelopes and share the same send loop.
+        //
+        // The BCC split applies to BOTH stacks.  OpenPGP leaks the
+        // recipient set via per-recipient ESK packets (RFC 4880 §5.1);
+        // CMS `EnvelopedData` leaks it via each recipient's
+        // `KeyTransRecipientInfo.rid` (issuer+serial or SKI, RFC 5652
+        // §6.2.1).  So in both cases we emit one envelope for the visible
+        // TO + CC copy plus one envelope per BCC recipient, each
+        // encrypted only to that recipient's key/cert.
+        let planned = if wants_smime_encrypt {
+            plan_smime_enveloped_envelopes(email, bridge)?
+        } else {
+            plan_pgp_encrypted_envelopes(email, bridge)?
+        };
         if planned.is_empty() {
             return Err(UnkaiError::Protocol(
-                "PGP encrypted send has no recipients — \
-                 To, Cc, and Bcc are all empty"
-                    .into(),
+                "Encrypted send has no recipients — To, Cc, and Bcc are all empty".into(),
             ));
         }
         let envelope_count = planned.len();
@@ -507,11 +549,65 @@ fn plan_pgp_encrypted_envelopes(
     email: &OutgoingEmail,
     bridge: &dyn CryptoBridge,
 ) -> Result<Vec<PlannedEnvelope>, UnkaiError> {
+    plan_encrypted_envelopes(email, |header_email, recipients| {
+        wrap_as_pgp_mime_for_recipients(header_email, bridge, recipients)
+    })
+}
+
+/// Plan one or more S/MIME `application/pkcs7-mime; smime-type=
+/// enveloped-data` envelopes for `email`.  S/MIME sibling of
+/// [`plan_pgp_encrypted_envelopes`] — same BCC split-send shape, just a
+/// different wire wrapper.
+///
+/// The split protects the BCC list for the same reason it does on the
+/// OpenPGP path: a CMS `EnvelopedData` carries one
+/// `KeyTransRecipientInfo` per recipient, each holding a
+/// `RecipientIdentifier` (issuer + serial number, or subjectKeyIdentifier
+/// — RFC 5652 §6.2.1) that pins down whose certificate the copy was
+/// encrypted to.  Bundling TO + CC + BCC into a single `EnvelopedData`
+/// would let any recipient enumerate the others' cert identities, so we
+/// fan out exactly as the OpenPGP path does.
+fn plan_smime_enveloped_envelopes(
+    email: &OutgoingEmail,
+    bridge: &dyn CryptoBridge,
+) -> Result<Vec<PlannedEnvelope>, UnkaiError> {
+    plan_encrypted_envelopes(email, |header_email, recipients| {
+        wrap_as_smime_enveloped_for_recipients(header_email, bridge, recipients)
+    })
+}
+
+/// Shared BCC split-send planner for both encrypted stacks.  `build_wire`
+/// turns one envelope's recipient list (already reduced to bare
+/// `addr@host` form) into the wire bytes for that copy — PGP passes
+/// [`wrap_as_pgp_mime_for_recipients`], S/MIME passes
+/// [`wrap_as_smime_enveloped_for_recipients`].
+///
+/// When `email.bcc` is empty, returns a single envelope addressed to
+/// TO + CC.  When BCC is non-empty, returns one envelope for the visible
+/// TO + CC recipients (skipped if both are empty — a BCC-only send),
+/// plus one envelope per BCC recipient.  Each per-BCC envelope's
+/// ciphertext is encrypted **only** to that recipient's key/cert, so no
+/// two copies ever share a recipient set and a BCC recipient never sees
+/// another recipient's key/cert identity.  All copies share the same
+/// inner MIME body (built from `email` with `bcc` stripped), so what
+/// each recipient *reads* is identical — the differences are confined to
+/// the per-copy cryptographic wrappers and the SMTP envelope routing.
+///
+/// Keeping the recipient-isolation logic in one place is deliberate: a
+/// drift between the two stacks here would be a silent BCC-disclosure
+/// bug, so PGP and S/MIME route through the exact same code.
+fn plan_encrypted_envelopes<F>(
+    email: &OutgoingEmail,
+    build_wire: F,
+) -> Result<Vec<PlannedEnvelope>, UnkaiError>
+where
+    F: Fn(&OutgoingEmail, &[String]) -> Result<Vec<u8>, UnkaiError>,
+{
     // BCC is cleared from the clone we hand to the body / outer
-    // builders so the BCC list cannot land in either copy's
-    // headers via lettre's `Bcc:` header on the inner MIME.  The
-    // outer wrapper already omits BCC; this belt-and-braces step
-    // keeps the inner clean too.
+    // builders so the BCC list cannot land in any copy's headers via
+    // lettre's `Bcc:` header on the inner MIME.  The outer wrapper
+    // already omits BCC; this belt-and-braces step keeps the inner
+    // clean too.
     let mut header_email = email.clone();
     header_email.bcc.clear();
 
@@ -528,7 +624,7 @@ fn plan_pgp_encrypted_envelopes(
         .map(|a| address_only(a))
         .collect();
     if !to_cc_recipients.is_empty() {
-        let wire = wrap_as_pgp_mime_for_recipients(&header_email, bridge, &to_cc_recipients)?;
+        let wire = build_wire(&header_email, &to_cc_recipients)?;
         let envelope = envelope_from_email(&header_email)?;
         planned.push(PlannedEnvelope {
             envelope,
@@ -545,7 +641,7 @@ fn plan_pgp_encrypted_envelopes(
     // never see any sign that BCC was used.
     for bcc_addr in &email.bcc {
         let bcc_key = address_only(bcc_addr);
-        let wire = wrap_as_pgp_mime_for_recipients(&header_email, bridge, &[bcc_key])?;
+        let wire = build_wire(&header_email, &[bcc_key])?;
         let envelope = envelope_for_single_recipient(&header_email, bcc_addr)?;
         planned.push(PlannedEnvelope {
             envelope,
@@ -745,6 +841,157 @@ fn build_outer_pgp_mime_signed_bytes(
     }
 
     out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    out
+}
+
+// ── S/MIME send path (#338) ─────────────────────────────────────────
+
+/// Build the S/MIME `application/pkcs7-mime; smime-type=enveloped-data`
+/// wire bytes for one envelope's worth of recipients.  S/MIME sibling of
+/// [`wrap_as_pgp_mime_for_recipients`]: same "encrypt the full inner MIME
+/// message, then wrap routing headers around it" shape, but the output is
+/// a single `application/pkcs7-mime` part (RFC 8551 §3.2) rather than the
+/// OpenPGP two-part `multipart/encrypted`.
+///
+/// `encrypt_to` is the explicit recipient list handed to the bridge,
+/// decoupled from `email.to / email.cc` so the BCC fan-out in
+/// [`plan_smime_enveloped_envelopes`] can encrypt each per-BCC copy to a
+/// single cert.  As on the PGP path, `email.bcc` must be empty on these
+/// calls — the planner strips it on the clone it hands in.
+fn wrap_as_smime_enveloped_for_recipients(
+    email: &OutgoingEmail,
+    bridge: &dyn CryptoBridge,
+    encrypt_to: &[String],
+) -> Result<Vec<u8>, UnkaiError> {
+    let inner_message = build_outgoing_message(email)?;
+    let inner_bytes = inner_message.formatted();
+    let cms_der = bridge.encrypt_smime(&inner_bytes, encrypt_to)?;
+    Ok(build_outer_smime_enveloped_bytes(email, &cms_der))
+}
+
+/// Pure-function MIME builder for the S/MIME enveloped-data outer.
+/// Unlike the OpenPGP `multipart/encrypted` form (a two-part wrapper with
+/// a version-identification part), RFC 8551 §3.2 puts the CMS
+/// `EnvelopedData` directly into a single `application/pkcs7-mime` part,
+/// base64-encoded.  The emitted Content-Type / Content-Disposition match
+/// what our own receive path's `detect_smime_envelope` keys on, so a
+/// message we send round-trips back through our decrypt path.
+fn build_outer_smime_enveloped_bytes(email: &OutgoingEmail, cms_der: &[u8]) -> Vec<u8> {
+    let mut headers = write_outer_routing_headers(email);
+    headers.push_str(
+        "Content-Type: application/pkcs7-mime; smime-type=enveloped-data; name=\"smime.p7m\"\r\n",
+    );
+    headers.push_str("Content-Transfer-Encoding: base64\r\n");
+    headers.push_str("Content-Disposition: attachment; filename=\"smime.p7m\"\r\n");
+
+    let mut out = headers.into_bytes();
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(base64_mime_body(cms_der).as_bytes());
+    out
+}
+
+/// Wrap a plaintext `OutgoingEmail` as an RFC 8551 §3.4 `multipart/
+/// signed; protocol="application/pkcs7-signature"; micalg="sha-256"`
+/// S/MIME message and return the raw RFC 822 byte form ready for
+/// `transport.send_raw`.
+///
+/// S/MIME sibling of [`wrap_as_pgp_mime_signed`] — the flow is identical:
+/// build the inner MIME body, extract just the body MIME entity, then
+/// canonicalise it, detached-sign the canonical bytes, and emit a
+/// two-part `multipart/signed` whose first part is the *exact* canonical
+/// bytes and whose second part is the detached signature.  The
+/// byte-for-byte parity between the signed bytes and the wire bytes
+/// matters for the same reason it does on the PGP path: a verifier
+/// re-hashes whatever sits between the boundary delimiters.
+///
+/// RFC 8551 §3.1.1's canonical S/MIME form (CRLF line endings, no
+/// trailing whitespace) coincides with RFC 3156 §5's, so we reuse
+/// [`canonicalize_for_pgp_signing`].  `unkai_crypto::smime_sign` signs
+/// with the `BINARY` flag precisely so OpenSSL does not re-canonicalise
+/// on top of the bytes we already normalised here.
+fn wrap_as_smime_signed(
+    email: &OutgoingEmail,
+    bridge: &dyn CryptoBridge,
+) -> Result<Vec<u8>, UnkaiError> {
+    let inner_message = build_outgoing_message(email)?;
+    let inner_full = inner_message.formatted();
+    let inner_entity = extract_inner_body_mime_entity(&inner_full)?;
+    let canonical = canonicalize_for_pgp_signing(&inner_entity);
+    let signature_der = bridge.sign_smime(&canonical)?;
+    Ok(build_outer_smime_signed_bytes(
+        email,
+        &canonical,
+        &signature_der,
+    ))
+}
+
+/// Pure-function MIME builder for the S/MIME `multipart/signed` outer.
+/// Mirrors [`build_outer_pgp_mime_signed_bytes`] but emits the
+/// `application/pkcs7-signature` second part carrying the base64 DER of
+/// the detached CMS `SignedData`.
+///
+/// `inner_canonical` MUST be the same bytes passed to
+/// `bridge.sign_smime()` — see [`wrap_as_smime_signed`] for why.
+fn build_outer_smime_signed_bytes(
+    email: &OutgoingEmail,
+    inner_canonical: &[u8],
+    signature_der: &[u8],
+) -> Vec<u8> {
+    let boundary = format!("unkai-smime-signed-{}", uuid::Uuid::new_v4().simple());
+
+    let mut headers = write_outer_routing_headers(email);
+    // RFC 5751 §3.4.3.2: the micalg parameter value for SHA-256 in
+    // S/MIME is the bare `sha-256` — NOT the OpenPGP `pgp-sha256`
+    // spelling the PGP builder emits.  `unkai_crypto::smime_sign` uses a
+    // SHA-256 digest, matching this advertised value.
+    headers.push_str(&format!(
+        "Content-Type: multipart/signed; \
+         protocol=\"application/pkcs7-signature\"; \
+         micalg=\"sha-256\"; \
+         boundary=\"{boundary}\"\r\n"
+    ));
+
+    let mut out = headers.into_bytes();
+    out.extend_from_slice(b"\r\n");
+
+    // First body part: the signed MIME entity, byte-for-byte as it was
+    // handed to `bridge.sign_smime()`.
+    out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    out.extend_from_slice(inner_canonical);
+    if !inner_canonical.ends_with(b"\r\n") {
+        out.extend_from_slice(b"\r\n");
+    }
+
+    // Second body part: the base64-encoded detached CMS signature.
+    // `name`/`filename="smime.p7s"` is the conventional shape every
+    // S/MIME-aware mail client emits and recognises.
+    out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    out.extend_from_slice(b"Content-Type: application/pkcs7-signature; name=\"smime.p7s\"\r\n");
+    out.extend_from_slice(b"Content-Transfer-Encoding: base64\r\n");
+    out.extend_from_slice(b"Content-Description: S/MIME Cryptographic Signature\r\n");
+    out.extend_from_slice(b"Content-Disposition: attachment; filename=\"smime.p7s\"\r\n");
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(base64_mime_body(signature_der).as_bytes());
+
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    out
+}
+
+/// Base64-encode `data` and lay it out as a MIME `Content-Transfer-
+/// Encoding: base64` body: 76-character lines (the RFC 2045 §6.8 limit),
+/// CRLF terminators, including a final CRLF after the last line so the
+/// closing multipart boundary that follows is correctly delimited.  Used
+/// by both S/MIME parts (the enveloped-data `.p7m` and the detached
+/// signature `.p7s`).
+fn base64_mime_body(data: &[u8]) -> String {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+    let mut out = String::with_capacity(encoded.len() + encoded.len() / 76 * 2 + 2);
+    for chunk in encoded.as_bytes().chunks(76) {
+        // `chunk` is always valid ASCII — base64's alphabet is a subset.
+        out.push_str(std::str::from_utf8(chunk).expect("base64 output is ASCII"));
+        out.push_str("\r\n");
+    }
     out
 }
 
@@ -1465,6 +1712,15 @@ mod tests {
             *self.last_signed.lock().expect("mutex") = Some(signed_payload.to_vec());
             Ok(self.signature.clone())
         }
+        fn encrypt_smime(&self, _: &[u8], _: &[String]) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!()
+        }
+        fn sign_smime(&self, signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+            // Same recording shape as `sign`, but returns a DER-ish marker
+            // (the S/MIME wrap base64-encodes it) instead of PGP armor.
+            *self.last_signed.lock().expect("mutex") = Some(signed_payload.to_vec());
+            Ok(b"FAKE-CMS-SIGNED-DATA-DER".to_vec())
+        }
     }
 
     #[test]
@@ -1679,6 +1935,19 @@ mod tests {
         fn sign(&self, _: &[u8]) -> Result<Vec<u8>, UnkaiError> {
             unreachable!()
         }
+        fn encrypt_smime(&self, _: &[u8], recipients: &[String]) -> Result<Vec<u8>, UnkaiError> {
+            // Mirror `encrypt`'s recording so the shared BCC planner's
+            // recipient-isolation property can be asserted on the S/MIME
+            // path too.  Returns a DER-ish marker tagged with the call
+            // index (the wrap layer base64-encodes it).
+            let mut guard = self.calls.lock().expect("mutex");
+            let idx = guard.len();
+            guard.push(recipients.to_vec());
+            Ok(format!("UNKAI-TEST-CMS-ENVELOPED-{idx}").into_bytes())
+        }
+        fn sign_smime(&self, _: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!()
+        }
     }
 
     #[test]
@@ -1847,5 +2116,171 @@ mod tests {
         // TO copy keyed on the bare alex@…, BCC copy on the bare sam@….
         assert_eq!(recipients[0], vec!["alex@example.com".to_string()]);
         assert_eq!(recipients[1], vec!["sam@example.com".to_string()]);
+    }
+
+    // ── S/MIME send path (#338) ─────────────────────────────────
+
+    use super::{
+        base64_mime_body, build_outer_smime_enveloped_bytes, plan_smime_enveloped_envelopes,
+        wrap_as_smime_signed,
+    };
+
+    /// A chunk of bytes long enough to force `base64_mime_body` to wrap
+    /// onto more than one 76-char line (encodes to ~272 base64 chars).
+    fn fake_cms_der() -> Vec<u8> {
+        (0u8..=200).cycle().take(204).collect()
+    }
+
+    #[test]
+    fn base64_mime_body_wraps_at_76_and_round_trips() {
+        use base64::Engine;
+        let der = fake_cms_der();
+        let body = base64_mime_body(&der);
+
+        // Every line ends with CRLF and is at most 76 base64 chars wide.
+        for line in body.split("\r\n").filter(|l| !l.is_empty()) {
+            assert!(
+                line.len() <= 76,
+                "line exceeds 76 chars: {} chars",
+                line.len()
+            );
+        }
+        assert!(body.ends_with("\r\n"), "body must end with a CRLF");
+
+        // Stripping the CRLFs and decoding recovers the original bytes.
+        let joined: String = body.split("\r\n").collect();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(joined)
+            .expect("valid base64");
+        assert_eq!(decoded, der);
+    }
+
+    #[test]
+    fn smime_enveloped_outer_is_single_pkcs7_mime_enveloped_data_part() {
+        // The S/MIME enveloped outer is a SINGLE `application/pkcs7-mime`
+        // part (RFC 8551 §3.2), unlike the OpenPGP two-part
+        // `multipart/encrypted`.  The Content-Type attributes are exactly
+        // what our own receive path's `detect_smime_envelope` keys on, so
+        // a message we send round-trips back through our decrypt path.
+        let email = outgoing("secret memo", &["bob@example.com"]);
+        let der = fake_cms_der();
+        let wire = build_outer_smime_enveloped_bytes(&email, &der);
+
+        let parsed = MessageParser::default().parse(&wire).expect("parse outer");
+        let ct = parsed.content_type().expect("Content-Type");
+        assert!(ct.ctype().eq_ignore_ascii_case("application"));
+        assert_eq!(ct.subtype().unwrap_or(""), "pkcs7-mime");
+        assert_eq!(ct.attribute("smime-type").unwrap_or(""), "enveloped-data");
+        assert_eq!(parsed.subject().unwrap_or(""), "secret memo");
+
+        // The base64 body decodes back to the raw CMS DER we handed in —
+        // mail-parser undoes the `Content-Transfer-Encoding: base64` for
+        // us, exactly as the receive path relies on.
+        let body_part = (0..)
+            .map_while(|i| parsed.part(i))
+            .find(|p| {
+                p.content_type().is_some_and(|c| {
+                    c.ctype().eq_ignore_ascii_case("application")
+                        && c.subtype()
+                            .is_some_and(|s| s.eq_ignore_ascii_case("pkcs7-mime"))
+                })
+            })
+            .expect("application/pkcs7-mime part must exist");
+        assert_eq!(body_part.contents(), der.as_slice());
+    }
+
+    #[test]
+    fn smime_enveloped_plan_isolates_each_bcc_in_its_own_envelope() {
+        // Same BCC split-send property as the OpenPGP path: CMS
+        // `RecipientInfos` leak the recipient set (RFC 5652 §6.2.1), so we
+        // emit one envelope for the visible TO + CC and one per BCC, each
+        // encrypted only to that BCC's cert.  The S/MIME planner routes
+        // through the SAME `plan_encrypted_envelopes` as PGP, so this test
+        // guards the shared isolation logic from drifting.
+        let mut email = outgoing("split-send", &["to1@example.com"]);
+        email.cc = vec!["cc1@example.com".into()];
+        email.bcc = vec!["bcc1@example.com".into(), "bcc2@example.com".into()];
+
+        let bridge = RecordingEncryptBridge::new();
+        let planned = plan_smime_enveloped_envelopes(&email, &bridge).expect("plan");
+        assert_eq!(planned.len(), 3, "1 TO+CC envelope + 2 per-BCC envelopes");
+
+        let recipients = bridge.recorded();
+        assert_eq!(
+            recipients[0],
+            vec!["to1@example.com".to_string(), "cc1@example.com".to_string()]
+        );
+        assert_eq!(recipients[1], vec!["bcc1@example.com".to_string()]);
+        assert_eq!(recipients[2], vec!["bcc2@example.com".to_string()]);
+
+        // The visible TO+CC envelope must not route to (or name) any BCC.
+        let env0_rcpts: Vec<String> = planned[0]
+            .envelope
+            .to()
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert!(!env0_rcpts.contains(&"bcc1@example.com".into()));
+        assert!(!env0_rcpts.contains(&"bcc2@example.com".into()));
+    }
+
+    #[test]
+    fn smime_signed_outer_advertises_pkcs7_signature_protocol_and_sha256_micalg() {
+        let email = outgoing("audit-able update", &["bob@example.com"]);
+        let bridge = RecordingSignBridge::new();
+        let wire = wrap_as_smime_signed(&email, &bridge).expect("wrap");
+
+        let parsed = MessageParser::default().parse(&wire).expect("parse outer");
+        let ct = parsed.content_type().expect("Content-Type");
+        assert!(ct.ctype().eq_ignore_ascii_case("multipart"));
+        assert_eq!(ct.subtype().unwrap_or(""), "signed");
+        assert_eq!(
+            ct.attribute("protocol").unwrap_or(""),
+            "application/pkcs7-signature"
+        );
+        // RFC 5751 §3.4.3.2: bare `sha-256`, NOT the OpenPGP `pgp-sha256`.
+        assert_eq!(ct.attribute("micalg").unwrap_or(""), "sha-256");
+        assert_eq!(parsed.subject().unwrap_or(""), "audit-able update");
+    }
+
+    #[test]
+    fn smime_signed_outer_carries_signature_in_pkcs7_signature_part() {
+        let email = outgoing("notice", &["bob@example.com"]);
+        let bridge = RecordingSignBridge::new();
+        let wire = wrap_as_smime_signed(&email, &bridge).expect("wrap");
+
+        let parsed = MessageParser::default().parse(&wire).expect("parse outer");
+        let sig_part = (0..)
+            .map_while(|i| parsed.part(i))
+            .find(|p| {
+                p.content_type().is_some_and(|c| {
+                    c.ctype().eq_ignore_ascii_case("application")
+                        && c.subtype()
+                            .is_some_and(|s| s.eq_ignore_ascii_case("pkcs7-signature"))
+                })
+            })
+            .expect("application/pkcs7-signature part must exist");
+        // mail-parser base64-decodes the part → the raw DER the stub
+        // "signed with" (the wrap layer base64-wrapped it on the way out).
+        assert_eq!(sig_part.contents(), b"FAKE-CMS-SIGNED-DATA-DER");
+    }
+
+    #[test]
+    fn smime_signed_signed_bytes_match_wire_first_part() {
+        // RFC 8551 §3.4 / RFC 1847 §2.1: a verifier re-hashes the bytes it
+        // pulls from between the boundary delimiters.  The bytes we signed
+        // and the bytes we wrote into the first body part MUST be
+        // byte-identical, asserted on raw bytes (not via mail-parser,
+        // which would decode transfer encodings and mask any drift).
+        let email = outgoing("byte parity", &["bob@example.com"]);
+        let bridge = RecordingSignBridge::new();
+        let wire = wrap_as_smime_signed(&email, &bridge).expect("wrap");
+        let signed = bridge.take_last();
+
+        let signed_in_wire = wire.windows(signed.len()).any(|w| w == signed.as_slice());
+        assert!(
+            signed_in_wire,
+            "signed payload must appear byte-for-byte in the outer envelope wire bytes"
+        );
     }
 }

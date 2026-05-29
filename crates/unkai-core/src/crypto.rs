@@ -160,4 +160,40 @@ pub trait CryptoBridge: Send + Sync {
     /// the SMTP layer drops into the `application/pgp-signature` body
     /// part of the outer `multipart/signed` wrapper.
     fn sign(&self, signed_payload: &[u8]) -> Result<Vec<u8>, crate::UnkaiError>;
+
+    /// Encrypt an outbound mail body to one or more recipients as a CMS
+    /// `EnvelopedData` blob (S/MIME, #338).  `inner_mime` is the
+    /// RFC-822-formatted body the SMTP layer would otherwise send in
+    /// plaintext; the bridge looks up each recipient's X.509 certificate
+    /// from its `smime_certs` cache and returns the raw DER bytes the SMTP
+    /// layer base64-wraps into the `application/pkcs7-mime;
+    /// smime-type=enveloped-data` body (RFC 8551 §3.2).
+    ///
+    /// No `sign` flag, unlike [`Self::encrypt`]: the nested
+    /// sign-then-encrypt form (RFC 8551 §3.6 — a `SignedData` wrapped
+    /// inside the `EnvelopedData`) is deferred to a later sub-chunk, so
+    /// this is encrypt-only for now.  Implementations surface
+    /// `UnkaiError::CryptoKeyNotFound` for the first recipient whose cert
+    /// isn't cached, so the Compose layer can prompt the user to import
+    /// one — same contract as [`Self::encrypt`].
+    fn encrypt_smime(
+        &self,
+        inner_mime: &[u8],
+        recipient_emails: &[String],
+    ) -> Result<Vec<u8>, crate::UnkaiError>;
+
+    /// Produce a CMS `SignedData` *detached signature* for an RFC 8551
+    /// §3.4 `multipart/signed; protocol="application/pkcs7-signature"`
+    /// outbound envelope (S/MIME, #338).  `signed_payload` is the
+    /// already-canonicalised body MIME entity — the SMTP layer owns
+    /// canonicalisation for the same reason it does on the OpenPGP
+    /// sign-only path (see [`Self::sign`]), and `unkai_crypto::smime_sign`
+    /// signs with the `BINARY` flag so OpenSSL doesn't re-canonicalise.
+    ///
+    /// Returns the raw DER bytes the SMTP layer base64-wraps into the
+    /// `application/pkcs7-signature` body part of the outer
+    /// `multipart/signed` wrapper.  The signer's leaf cert (and any
+    /// intermediates) ride along inside the `SignedData` so a recipient
+    /// can identify us without an out-of-band cert fetch.
+    fn sign_smime(&self, signed_payload: &[u8]) -> Result<Vec<u8>, crate::UnkaiError>;
 }

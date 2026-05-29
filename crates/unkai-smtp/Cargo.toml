@@ -24,6 +24,11 @@ uuid.workspace = true
 # builder on the PGP/MIME path because lettre 0.11 doesn't ship a
 # canned multipart/encrypted shape.
 chrono.workspace = true
+# Base64-encode the raw CMS DER (EnvelopedData / detached SignedData)
+# into the `application/pkcs7-mime` / `application/pkcs7-signature`
+# body parts on the S/MIME send path (#338).  unkai-crypto returns
+# binary DER by design; the SMTP layer owns the MIME transfer encoding.
+base64.workspace = true
 
 [dev-dependencies]
 # The unit tests for the PGP/MIME outer wrapper round-trip the
