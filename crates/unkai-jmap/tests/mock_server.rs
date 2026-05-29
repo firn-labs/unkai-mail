@@ -122,8 +122,8 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
                 "Email/query",
                 {
                     "accountId": "acc1",
-                    "ids": ["email-001", "email-002", "email-pgp"],
-                    "total": 3,
+                    "ids": ["email-001", "email-002", "email-pgp", "email-smime-enc", "email-smime-sig", "email-pgp-sig"],
+                    "total": 6,
                     "position": 0,
                 },
                 call_id
@@ -167,6 +167,8 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
                     let blob_id = match id.as_str() {
                         "email-002" => "blob-charlie",
                         "email-pgp" => "blob-pgp",
+                        "email-smime-enc" => "blob-smime-enc",
+                        "email-smime-sig" => "blob-smime-sig",
                         _ => "blob-alice",
                     };
                     json!([
@@ -186,7 +188,7 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
                     // Full message fetch.  The encrypted test seeds
                     // a separate id ("email-pgp") with armored
                     // ciphertext as the text-body part — mirrors
-                    // what Fastmail returns for `multipart/encrypted`
+                    // what some servers return for `multipart/encrypted`
                     // under `fetchAllBodyValues=true`.
                     let id = requested_ids
                         .first()
@@ -218,6 +220,116 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
                                     "textBody": [{ "partId": "1", "type": "text/plain" }],
                                     "htmlBody": [],
                                     "attachments": [],
+                                }],
+                                "notFound": [],
+                            },
+                            call_id
+                        ])
+                    } else if id == "email-smime-enc" {
+                        // S/MIME enveloped-data (#338): the encrypted CMS
+                        // blob arrives as a binary `application/pkcs7-mime`
+                        // attachment — there's no text body, so the sniff
+                        // keys on the part's content type, not body text.
+                        json!([
+                            "Email/get",
+                            {
+                                "accountId": "acc1",
+                                "state": "state1",
+                                "list": [{
+                                    "id": "email-smime-enc",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "to": [{ "email": "bob@example.com" }],
+                                    "cc": [],
+                                    "subject": "S/MIME encrypted JMAP message",
+                                    "receivedAt": "2025-01-12T07:00:00Z",
+                                    "keywords": {},
+                                    "hasAttachment": true,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                    "bodyValues": {},
+                                    "textBody": [],
+                                    "htmlBody": [],
+                                    "attachments": [{
+                                        "partId": "1",
+                                        "blobId": "blob-smime-enc",
+                                        "name": "smime.p7m",
+                                        "type": "application/pkcs7-mime",
+                                        "size": 1234,
+                                    }],
+                                }],
+                                "notFound": [],
+                            },
+                            call_id
+                        ])
+                    } else if id == "email-smime-sig" {
+                        // S/MIME detached `multipart/signed` (#338): the
+                        // server surfaces the clear-signed text as the body
+                        // and the `.p7s` signature as a sibling
+                        // `application/pkcs7-signature` attachment.
+                        json!([
+                            "Email/get",
+                            {
+                                "accountId": "acc1",
+                                "state": "state1",
+                                "list": [{
+                                    "id": "email-smime-sig",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "to": [{ "email": "bob@example.com" }],
+                                    "cc": [],
+                                    "subject": "S/MIME signed JMAP message",
+                                    "receivedAt": "2025-01-11T06:00:00Z",
+                                    "keywords": {},
+                                    "hasAttachment": true,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                    "bodyValues": {
+                                        "1": { "value": "This message is signed.\n", "isEncodingProblem": false, "isTruncated": false },
+                                    },
+                                    "textBody": [{ "partId": "1", "type": "text/plain" }],
+                                    "htmlBody": [],
+                                    "attachments": [{
+                                        "partId": "2",
+                                        "blobId": "blob-smime-sig",
+                                        "name": "smime.p7s",
+                                        "type": "application/pkcs7-signature",
+                                        "size": 567,
+                                    }],
+                                }],
+                                "notFound": [],
+                            },
+                            call_id
+                        ])
+                    } else if id == "email-pgp-sig" {
+                        // PGP detached `multipart/signed` (#57 / RFC 3156):
+                        // the server surfaces the clear-signed text as the
+                        // body and the armored signature as a sibling
+                        // `application/pgp-signature` attachment.  Detected
+                        // the same way as the S/MIME signed fixture.
+                        json!([
+                            "Email/get",
+                            {
+                                "accountId": "acc1",
+                                "state": "state1",
+                                "list": [{
+                                    "id": "email-pgp-sig",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "to": [{ "email": "bob@example.com" }],
+                                    "cc": [],
+                                    "subject": "PGP signed JMAP message",
+                                    "receivedAt": "2025-01-10T05:00:00Z",
+                                    "keywords": {},
+                                    "hasAttachment": true,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                    "bodyValues": {
+                                        "1": { "value": "This message is signed with PGP.\n", "isEncodingProblem": false, "isTruncated": false },
+                                    },
+                                    "textBody": [{ "partId": "1", "type": "text/plain" }],
+                                    "htmlBody": [],
+                                    "attachments": [{
+                                        "partId": "2",
+                                        "blobId": "blob-pgp-sig",
+                                        "name": "signature.asc",
+                                        "type": "application/pgp-signature",
+                                        "size": 489,
+                                    }],
                                 }],
                                 "notFound": [],
                             },
@@ -284,6 +396,33 @@ async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
                                     "receivedAt": "2025-01-13T08:00:00Z",
                                     "keywords": {},
                                     "hasAttachment": false,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                },
+                                {
+                                    "id": "email-smime-enc",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "subject": "S/MIME encrypted JMAP message",
+                                    "receivedAt": "2025-01-12T07:00:00Z",
+                                    "keywords": {},
+                                    "hasAttachment": true,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                },
+                                {
+                                    "id": "email-smime-sig",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "subject": "S/MIME signed JMAP message",
+                                    "receivedAt": "2025-01-11T06:00:00Z",
+                                    "keywords": {},
+                                    "hasAttachment": true,
+                                    "mailboxIds": { "mbox-inbox": true },
+                                },
+                                {
+                                    "id": "email-pgp-sig",
+                                    "from": [{ "name": "Alice", "email": "alice@example.com" }],
+                                    "subject": "PGP signed JMAP message",
+                                    "receivedAt": "2025-01-10T05:00:00Z",
+                                    "keywords": {},
+                                    "hasAttachment": true,
                                     "mailboxIds": { "mbox-inbox": true },
                                 },
                             ],
@@ -374,6 +513,15 @@ async fn download_handler(
         // ciphertext is a placeholder (real OpenPGP decryption is
         // covered in unit tests in the unkai-imap crate).
         "blob-pgp" => b"MIME-Version: 1.0\r\nFrom: alice@example.com\r\nTo: bob@example.com\r\nSubject: Encrypted JMAP message\r\nContent-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=\"PGP\"\r\n\r\n--PGP\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n\r\n--PGP\r\nContent-Type: application/octet-stream\r\n\r\n-----BEGIN PGP MESSAGE-----\r\n\r\nwV4D...\r\n-----END PGP MESSAGE-----\r\n--PGP--\r\n",
+        // S/MIME enveloped-data envelope shape (#338) — a bare
+        // `application/pkcs7-mime` single part, matching what
+        // `detect_smime_envelope` keys on.  The base64 body is a
+        // placeholder (real CMS decryption is covered in unkai-imap
+        // unit tests); this only proves the Blob/get path is
+        // content-agnostic, exactly like the PGP fixture above.
+        "blob-smime-enc" => b"MIME-Version: 1.0\r\nFrom: alice@example.com\r\nTo: bob@example.com\r\nSubject: S/MIME encrypted JMAP message\r\nContent-Type: application/pkcs7-mime; smime-type=enveloped-data; name=\"smime.p7m\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"smime.p7m\"\r\n\r\nMIIBExampleEnvelopedDataPlaceholderBase64==\r\n",
+        // S/MIME detached `multipart/signed` envelope shape (#338).
+        "blob-smime-sig" => b"MIME-Version: 1.0\r\nFrom: alice@example.com\r\nTo: bob@example.com\r\nSubject: S/MIME signed JMAP message\r\nContent-Type: multipart/signed; protocol=\"application/pkcs7-signature\"; micalg=\"sha-256\"; boundary=\"smime-boundary\"\r\n\r\n--smime-boundary\r\nContent-Type: text/plain\r\n\r\nThis message is signed.\r\n--smime-boundary\r\nContent-Type: application/pkcs7-signature; name=\"smime.p7s\"\r\nContent-Transfer-Encoding: base64\r\n\r\nMIIBExampleSignaturePlaceholderBase64==\r\n--smime-boundary--\r\n",
         _ => return Err(StatusCode::NOT_FOUND),
     };
 
@@ -465,7 +613,7 @@ async fn test_fetch_envelopes() {
         .await
         .expect("fetch_envelopes should succeed");
 
-    assert_eq!(envelopes.len(), 3);
+    assert_eq!(envelopes.len(), 6);
 
     // First email (Alice)
     assert_eq!(envelopes[0].subject, "Hello from JMAP!");
@@ -483,6 +631,22 @@ async fn test_fetch_envelopes() {
     // `test_fetch_message_pgp_stamps_encrypted`.
     assert_eq!(envelopes[2].subject, "Encrypted JMAP message");
     assert!(envelopes[2].protection.is_none());
+
+    // Fourth / fifth — the S/MIME fixtures (#338).  Same as PGP: the
+    // envelope carries no encryption metadata; the chip lights up only
+    // after `fetch_message` sniffs the body-part content types.  Verified
+    // in `test_fetch_message_smime_stamps_encrypted` /
+    // `test_fetch_message_smime_signed_stamps_signed`.
+    assert_eq!(envelopes[3].subject, "S/MIME encrypted JMAP message");
+    assert!(envelopes[3].protection.is_none());
+    assert_eq!(envelopes[4].subject, "S/MIME signed JMAP message");
+    assert!(envelopes[4].protection.is_none());
+
+    // Sixth — the PGP detached-signed fixture (#57).  Same deal: no chip
+    // until `fetch_message` sniffs the `application/pgp-signature` part.
+    // Verified in `test_fetch_message_pgp_signed_stamps_signed`.
+    assert_eq!(envelopes[5].subject, "PGP signed JMAP message");
+    assert!(envelopes[5].protection.is_none());
 }
 
 #[tokio::test]
@@ -626,4 +790,121 @@ async fn test_fetch_raw_message_returns_blob_bytes() {
     assert!(text.contains("multipart/encrypted"));
     assert!(text.contains("application/pgp-encrypted"));
     assert!(text.contains("-----BEGIN PGP MESSAGE-----"));
+}
+
+// ── #338 — S/MIME JMAP receive sniff ───────────────────────────
+
+/// `fetch_message` on an S/MIME `enveloped-data` JMAP message stamps
+/// `protection = "encrypted"` and nulls the body so MailView shows the
+/// Decrypt button.  Unlike PGP (ASCII armor in the text body), the
+/// ciphertext is a binary `application/pkcs7-mime` part, so the sniff
+/// keys on the part's content type — JMAP doesn't expose the
+/// `smime-type` parameter, so any `pkcs7-mime` part is treated as
+/// encrypted and the precise label is re-stamped at decrypt time.
+#[tokio::test]
+async fn test_fetch_message_smime_stamps_encrypted() {
+    let client = connect_mock().await;
+
+    let envelopes = client.fetch_envelopes("Inbox", 50, None).await.unwrap();
+    let env = envelopes
+        .iter()
+        .find(|e| e.subject == "S/MIME encrypted JMAP message")
+        .expect("seeded S/MIME enveloped fixture missing");
+
+    let email = client
+        .fetch_message("Inbox", env.uid, "test-account")
+        .await
+        .expect("fetch_message should succeed for the S/MIME enveloped fixture");
+
+    assert_eq!(email.protection.as_deref(), Some("encrypted"));
+    assert_eq!(email.body_text, None);
+    assert_eq!(email.body_html, None);
+}
+
+/// `fetch_message` on an S/MIME detached `multipart/signed` JMAP
+/// message stamps `protection = "signed"` but keeps the clear-signed
+/// body readable (detection-only — CMS verification is deferred, same
+/// as the IMAP receive path).  Detected via the sibling
+/// `application/pkcs7-signature` part.
+#[tokio::test]
+async fn test_fetch_message_smime_signed_stamps_signed() {
+    let client = connect_mock().await;
+
+    let envelopes = client.fetch_envelopes("Inbox", 50, None).await.unwrap();
+    let env = envelopes
+        .iter()
+        .find(|e| e.subject == "S/MIME signed JMAP message")
+        .expect("seeded S/MIME signed fixture missing");
+
+    let email = client
+        .fetch_message("Inbox", env.uid, "test-account")
+        .await
+        .expect("fetch_message should succeed for the S/MIME signed fixture");
+
+    assert_eq!(email.protection.as_deref(), Some("signed"));
+    // Clear-signed body stays readable — only the chip is added.
+    assert!(
+        email
+            .body_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("This message is signed.")
+    );
+}
+
+/// `fetch_message` on a PGP detached `multipart/signed` JMAP message
+/// stamps `protection = "signed"` and keeps the clear-signed body — the
+/// PGP counterpart to `test_fetch_message_smime_signed_stamps_signed`.
+/// Closes the parity gap where the JMAP sniff previously recognised PGP
+/// encrypted armor but not PGP signed-only mail (IMAP already stamped
+/// both).  Detected via the sibling `application/pgp-signature` part.
+#[tokio::test]
+async fn test_fetch_message_pgp_signed_stamps_signed() {
+    let client = connect_mock().await;
+
+    let envelopes = client.fetch_envelopes("Inbox", 50, None).await.unwrap();
+    let env = envelopes
+        .iter()
+        .find(|e| e.subject == "PGP signed JMAP message")
+        .expect("seeded PGP signed fixture missing");
+
+    let email = client
+        .fetch_message("Inbox", env.uid, "test-account")
+        .await
+        .expect("fetch_message should succeed for the PGP signed fixture");
+
+    assert_eq!(email.protection.as_deref(), Some("signed"));
+    // Clear-signed body stays readable — only the chip is added.
+    assert!(
+        email
+            .body_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("This message is signed with PGP.")
+    );
+}
+
+/// `fetch_raw_message` round-trips the S/MIME envelope bytes verbatim
+/// through `Email/get` + the session `downloadUrl` — the same
+/// protocol-agnostic Blob/get path PGP uses.  This is the bytes source
+/// `decrypt_message` feeds to `parse_eml_bytes_with_crypto` on JMAP
+/// accounts, where the parameter-aware `detect_smime_envelope` runs.
+#[tokio::test]
+async fn test_fetch_raw_message_returns_smime_blob_bytes() {
+    let client = connect_mock().await;
+
+    let envelopes = client.fetch_envelopes("Inbox", 50, None).await.unwrap();
+    let env = envelopes
+        .iter()
+        .find(|e| e.subject == "S/MIME encrypted JMAP message")
+        .expect("seeded S/MIME enveloped fixture missing");
+
+    let raw = client
+        .fetch_raw_message("Inbox", env.uid)
+        .await
+        .expect("fetch_raw_message should succeed");
+
+    let text = std::str::from_utf8(&raw).expect("blob is utf-8 in this fixture");
+    assert!(text.contains("application/pkcs7-mime"));
+    assert!(text.contains("smime-type=enveloped-data"));
 }
