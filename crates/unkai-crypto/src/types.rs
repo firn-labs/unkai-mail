@@ -49,15 +49,31 @@ impl Protection {
 ///
 /// Distinct from `Protection` because a message can carry a signature
 /// (so `Protection::Signed`) and yet that signature can be cryptographically
-/// invalid, or be from a key we don't trust.  The UI renders different
-/// chip colours per status: green for `Valid`, amber for `UnknownSigner`,
-/// red for `Invalid`.
+/// invalid, from a key we don't trust, or made with an expired certificate.
 ///
-/// String forms: `"valid" | "invalid" | "unknown-signer"`.
+/// The UI renders a **tri-tone** chip from these variants:
+/// - **green** — `Valid` (math sound *and* the signer is trusted)
+/// - **amber** — `ValidUntrustedIssuer`, `ValidExpiredCert`, `UnknownSigner`
+///   (math sound, but the trust story is incomplete)
+/// - **red** — `Invalid` (math fails — tampered or wrong key)
+///
+/// The two `Valid…` amber variants exist so the chip tooltip can name
+/// *why* a cryptographically sound signature still isn't fully trusted.
+/// They are produced only by the S/MIME path (X.509 has a CA-chain and
+/// certificate-expiry notion); the OpenPGP path has no CA concept and
+/// only ever emits `Valid` / `Invalid` / `UnknownSigner`.  Keeping the
+/// trust nuance *inside* this enum (rather than a parallel field) means
+/// it rides the existing single kebab-case string end-to-end — no new
+/// IPC field and no cache migration.
+///
+/// String forms: `"valid" | "invalid" | "unknown-signer" |
+/// "valid-untrusted-issuer" | "valid-expired-cert"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SignatureStatus {
-    /// Signature verified against a public key we hold and trust.
+    /// Signature math is sound *and* the signer is trusted — either the
+    /// signing certificate chains to a bundled public CA root, or the
+    /// signer's key/cert is one we already hold on file (TOFU).
     Valid,
     /// Signature payload didn't match — message tampered with, or the
     /// signer used a different key than the one we have on file.
@@ -66,4 +82,14 @@ pub enum SignatureStatus {
     /// key locally.  The user can still read the message; we just can't
     /// attribute it.  Common on a first contact before keys are exchanged.
     UnknownSigner,
+    /// (S/MIME) Signature math is sound, but the signing certificate
+    /// neither chains to a trusted CA root nor is one we already hold —
+    /// e.g. a self-signed or unknown-issuer cert.  Amber: readable and
+    /// internally consistent, but unattested.
+    ValidUntrustedIssuer,
+    /// (S/MIME) Signature math is sound, but the signing certificate is
+    /// outside its validity window (expired or not-yet-valid).  Amber:
+    /// the signature was likely fine when made, but the cert can no
+    /// longer be relied on.
+    ValidExpiredCert,
 }

@@ -85,21 +85,43 @@
     {/if}
     {#if protection === 'signed' || protection === 'signed-and-encrypted'}
       {#if signatureStatus === 'valid'}
+        <!-- Green: math sound AND signer trusted (CA chain or TOFU). -->
         <span
           class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-success-100 text-success-800 dark:bg-success-900/40 dark:text-success-200"
           title={signerFingerprint ?? ''}
         >
           <Icon name="verified" size={14} />
-          {m.mail_view_chip_signed_valid({
-            fp: signerFingerprint ? shortFingerprint(signerFingerprint) : '',
-          })}
+          {#if signerFingerprint}
+            {m.mail_view_chip_signed_valid({ fp: shortFingerprint(signerFingerprint) })}
+          {:else}
+            {m.mail_view_chip_signed_trusted()}
+          {/if}
         </span>
       {:else if signatureStatus === 'invalid'}
+        <!-- Red: signature does not verify (tampered / wrong key). -->
         <span
           class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-error-100 text-error-800 dark:bg-error-900/40 dark:text-error-200"
         >
           <Icon name="warning" size={14} />
           {m.mail_view_chip_signed_invalid()}
+        </span>
+      {:else if signatureStatus === 'valid-expired-cert'}
+        <!-- Amber: math sound but the signing certificate has expired. -->
+        <span
+          class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-warning-100 text-warning-800 dark:bg-warning-900/40 dark:text-warning-200"
+          title={m.mail_view_chip_signed_expired_tooltip()}
+        >
+          <Icon name="signed" size={14} />
+          {m.mail_view_chip_signed_expired()}
+        </span>
+      {:else if signatureStatus === 'valid-untrusted-issuer'}
+        <!-- Amber: math sound but the issuer isn't trusted / self-signed. -->
+        <span
+          class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-warning-100 text-warning-800 dark:bg-warning-900/40 dark:text-warning-200"
+          title={m.mail_view_chip_signed_untrusted_tooltip()}
+        >
+          <Icon name="signed" size={14} />
+          {m.mail_view_chip_signed_untrusted()}
         </span>
       {:else}
         <!-- unknown-signer or any other non-valid status -->

@@ -17,11 +17,11 @@
 //!   wrapper belongs with the SMTP send path and the IMAP receive
 //!   parser, which already own MIME assembly.  This module hands
 //!   back **raw DER CMS bytes**; the protocol crates wrap them.
-//! - **CA chain validation.**  The first integration chunk only
-//!   verifies the cryptographic signature against a caller-supplied
-//!   list of trusted certificates (the same TOFU shape we use for
-//!   PGP fingerprints).  Real CA / `webpki-roots` integration is a
-//!   later #338 sub-chunk.
+//! - **MIME canonicalisation.**  The receive path hands [`smime_verify`]
+//!   the exact on-the-wire bytes of the signed part and we verify them
+//!   with the `BINARY` flag (no OpenSSL re-canonicalisation), so this
+//!   module never reasons about CRLF normalisation — that's the protocol
+//!   crates' concern on both the send and receive sides.
 //! - **`.p7s` vs `.p7m` distinction at this layer.**  Detached vs
 //!   opaque signing is the MIME wrapper's concern.  We always emit
 //!   detached signatures from [`smime_sign`] (matching the
@@ -46,12 +46,14 @@
 //!
 //! See [issue #338](https://github.com/firn-labs/unkai-mail/issues/338).
 
+use openssl::asn1::Asn1Time;
 use openssl::cms::{CMSOptions, CmsContentInfo};
 use openssl::hash::MessageDigest;
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::{PKey, Private};
-use openssl::stack::Stack;
+use openssl::stack::{Stack, StackRef};
 use openssl::symm::Cipher;
+use openssl::x509::store::{X509Store, X509StoreBuilder, X509StoreRef};
 use openssl::x509::{X509, X509NameRef};
 use unkai_core::UnkaiError;
 
@@ -154,6 +156,32 @@ impl Certificate {
         self.inner
             .to_der()
             .map_err(|e| UnkaiError::Crypto(format!("Failed to serialize cert to DER: {e}")))
+    }
+
+    /// `true` when the cert is outside its validity window — expired
+    /// (`notAfter` in the past) *or* not yet valid (`notBefore` in the
+    /// future).  Used by [`smime_verify`]'s trust model to downgrade an
+    /// otherwise-sound signature to [`SignatureStatus::ValidExpiredCert`]
+    /// (amber) — anchor 1 keeps the OpenSSL `X509` behind this façade so
+    /// the protocol crates never reach for `not_after()` themselves.
+    ///
+    /// A clock we can't read (OpenSSL failing to produce "now", which
+    /// should never happen) conservatively reports *not* expired — we'd
+    /// rather not flag a good signature on a transient error.
+    pub fn is_expired(&self) -> bool {
+        let now = match Asn1Time::days_from_now(0) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        let expired = matches!(
+            self.inner.not_after().compare(&now),
+            Ok(std::cmp::Ordering::Less)
+        );
+        let not_yet_valid = matches!(
+            self.inner.not_before().compare(&now),
+            Ok(std::cmp::Ordering::Greater)
+        );
+        expired || not_yet_valid
     }
 }
 
@@ -360,50 +388,214 @@ pub fn smime_decrypt(
     })
 }
 
-/// Verify a CMS `SignedData` detached signature over `payload` against
-/// a list of trusted certificates.  Returns:
+/// Build an OpenSSL [`X509Store`] from the bundled Mozilla root CAs
+/// (`webpki-root-certs`).  This is the trust anchor set [`smime_verify`]
+/// checks a signing certificate's chain against.
 ///
-/// - [`SignatureStatus::Valid`] — the signature is cryptographically
-///   sound *and* the signer's cert matches one in `trusted_certs` by
-///   SHA-256 fingerprint (`NOINTERN` flag forces OpenSSL to only
-///   consider the certs we hand it, ignoring the cert embedded in the
-///   SignedData itself).
-/// - [`SignatureStatus::UnknownSigner`] — signature is well-formed but
-///   either the math doesn't match any supplied trusted cert or no
-///   matching cert was in the list.  We can't currently distinguish
-///   "wrong cert" from "tampered data" through OpenSSL's binding, so
-///   both collapse to this status — same conservative behaviour as
-///   [`crate::ops::verify_detached`] for OpenPGP.
+/// We use the *bundled* Mozilla list rather than the OS trust store for
+/// the same reason the TLS layer does (see the workspace `Cargo.toml`
+/// note on `webpki-roots`): behaviour is then identical across
+/// Win/Mac/Linux, and the vendored OpenSSL has no system trust directory
+/// on Windows to fall back on anyway.
 ///
-/// We pair `NOINTERN` (only trust certs the caller hands us, never the
-/// embedded one) with `NO_SIGNER_CERT_VERIFY` (skip CA chain
-/// validation — the trust-model chunk later will replace this with
-/// real chain checking against an `X509Store`).
+/// A root that fails to parse is skipped rather than aborting the whole
+/// store — a single malformed entry shouldn't blind us to every other
+/// CA.  Building costs ~150 DER parses; callers should build once per
+/// receive batch rather than per message where practical.
+pub fn build_mozilla_trust_store() -> Result<X509Store, UnkaiError> {
+    let mut builder = X509StoreBuilder::new()
+        .map_err(|e| UnkaiError::Crypto(format!("Failed to create X509 trust store: {e}")))?;
+    for der in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+        if let Ok(cert) = X509::from_der(der.as_ref()) {
+            // Ignore a per-cert add failure for the same reason we skip a
+            // parse failure: one bad root shouldn't sink the store.
+            let _ = builder.add_cert(cert);
+        }
+    }
+    Ok(builder.build())
+}
+
+/// Outcome of verifying an S/MIME detached signature, carrying both the
+/// trust-graded [`SignatureStatus`] and — when we could attribute the
+/// signature to a certificate we already hold — that cert's fingerprint
+/// for display.
+///
+/// `signer_fingerprint` is `Some` only for the TOFU path (the signature
+/// matched a cert in `candidate_certs`); for a chain-only-trusted
+/// signature it is `None`, because OpenSSL's Rust binding gives us no
+/// way to read the signer certificate embedded in the `SignedData` back
+/// out to fingerprint it.
+#[derive(Debug, Clone)]
+pub struct SmimeVerifyOutcome {
+    pub status: SignatureStatus,
+    pub signer_fingerprint: Option<String>,
+}
+
+/// Verify a CMS `SignedData` detached signature over `payload` and grade
+/// the result against our trust model.  `candidate_certs` are the certs
+/// we already hold for the claimed sender (their `smime_certs` rows);
+/// `trust_store` is the bundled CA set from [`build_mozilla_trust_store`].
+///
+/// Returns a [`SmimeVerifyOutcome`] whose [`SignatureStatus`] drives the
+/// UI's tri-tone chip:
+/// - [`SignatureStatus::Valid`] (green) — math is sound *and* the signer
+///   is trusted: either the signature matches a cert we already hold
+///   (TOFU, with the fingerprint attributed) or the embedded signing
+///   cert chains to a bundled CA root.
+/// - [`SignatureStatus::ValidExpiredCert`] (amber) — math is sound but a
+///   matching cert we hold is outside its validity window.
+/// - [`SignatureStatus::ValidUntrustedIssuer`] (amber) — math is sound
+///   but the signer is neither held nor chains to a trusted CA
+///   (self-signed / unknown issuer).
+/// - [`SignatureStatus::Invalid`] (red) — the signature does not verify.
+/// - [`SignatureStatus::UnknownSigner`] (amber) — the message carried no
+///   usable signer certificate to check against (conservative fallback,
+///   mirroring [`crate::ops::verify_detached`]'s behaviour for OpenPGP).
+///
+/// ## Why three OpenSSL passes
+///
+/// openssl 0.10's `CmsContentInfo` exposes no accessor for the signer
+/// certificate embedded in the `SignedData`, so we can't read it out to
+/// inspect issuer / expiry directly.  Instead we determine trust by
+/// *which combination of inputs makes `verify` succeed*:
+/// 1. **TOFU** — per held cert, `NOINTERN` so OpenSSL only considers
+///    that cert as the signer; success ⇒ the signature was made by a
+///    cert we already trust (and we know its fingerprint + expiry).
+/// 2. **CA chain** — drop `NOINTERN` so OpenSSL uses the embedded cert,
+///    and hand it `trust_store`; success ⇒ chains to a public root.
+/// 3. **Math only** — `NO_SIGNER_CERT_VERIFY`, no store; success ⇒ the
+///    signature is internally sound but untrusted (amber); failure ⇒
+///    tampered/`Invalid` (or no signer cert ⇒ `UnknownSigner`).
+///
+/// All passes use `DETACHED | BINARY`: the caller hands us the exact
+/// on-the-wire signed bytes (see the receive path's signed-part
+/// extraction), and `BINARY` tells OpenSSL not to re-canonicalise them —
+/// we verify precisely what the signer hashed.
 pub fn smime_verify(
     payload: &[u8],
     signature: &[u8],
-    trusted_certs: &[&Certificate],
-) -> Result<SignatureStatus, UnkaiError> {
-    let mut cms = CmsContentInfo::from_der(signature)
+    candidate_certs: &[&Certificate],
+    trust_store: &X509Store,
+) -> Result<SmimeVerifyOutcome, UnkaiError> {
+    // Validate the signature DER up front so a genuinely malformed blob
+    // surfaces as a protocol error rather than masquerading as a verify
+    // failure (which we'd grade as Invalid).
+    CmsContentInfo::from_der(signature)
         .map_err(|e| UnkaiError::Crypto(format!("Failed to parse CMS signature: {e}")))?;
 
-    let mut trust_stack: Stack<X509> = Stack::new()
-        .map_err(|e| UnkaiError::Crypto(format!("Failed to create trust stack: {e}")))?;
-    for cert in trusted_certs {
-        trust_stack
+    let detached = CMSOptions::DETACHED | CMSOptions::BINARY;
+
+    // ── Pass 1: TOFU, per held cert ──────────────────────────────────
+    // NOINTERN forces OpenSSL to take the signer only from the single
+    // cert we provide, so a match attributes the signature to *that*
+    // cert (giving us its fingerprint) and lets us check its expiry.
+    let tofu_flags = detached | CMSOptions::NOINTERN | CMSOptions::NO_SIGNER_CERT_VERIFY;
+    for cert in candidate_certs {
+        let mut single: Stack<X509> = Stack::new()
+            .map_err(|e| UnkaiError::Crypto(format!("Failed to create cert stack: {e}")))?;
+        single
             .push(cert.inner.clone())
-            .map_err(|e| UnkaiError::Crypto(format!("Failed to push trusted cert: {e}")))?;
+            .map_err(|e| UnkaiError::Crypto(format!("Failed to push candidate cert: {e}")))?;
+        if cms_verify_ok(signature, payload, Some(&single), None, tofu_flags)? {
+            let status = if cert.is_expired() {
+                SignatureStatus::ValidExpiredCert
+            } else {
+                SignatureStatus::Valid
+            };
+            return Ok(SmimeVerifyOutcome {
+                status,
+                signer_fingerprint: Some(cert.fingerprint()),
+            });
+        }
     }
 
-    let flags = CMSOptions::NOINTERN
-        | CMSOptions::NO_SIGNER_CERT_VERIFY
-        | CMSOptions::DETACHED
-        | CMSOptions::BINARY;
-
-    match cms.verify(Some(&trust_stack), None, Some(payload), None, flags) {
-        Ok(()) => Ok(SignatureStatus::Valid),
-        Err(_) => Ok(SignatureStatus::UnknownSigner),
+    // ── Pass 2: CA chain against the bundled Mozilla roots ───────────
+    // No NOINTERN ⇒ OpenSSL uses the cert embedded in the SignedData to
+    // find the signer, and validates its chain against `trust_store`.
+    if cms_verify_ok(signature, payload, None, Some(trust_store), detached)? {
+        return Ok(SmimeVerifyOutcome {
+            status: SignatureStatus::Valid,
+            signer_fingerprint: None,
+        });
     }
+
+    // ── Pass 3: math only — sound but untrusted, vs tampered ─────────
+    let math_flags = detached | CMSOptions::NO_SIGNER_CERT_VERIFY;
+    match cms_verify_result(signature, payload, None, None, math_flags)? {
+        Ok(()) => {
+            // Internally consistent but neither held nor chain-trusted.
+            // If any cert we hold for this sender is expired, that's the
+            // most useful explanation; otherwise it's an untrusted issuer.
+            let status = if candidate_certs.iter().any(|c| c.is_expired()) {
+                SignatureStatus::ValidExpiredCert
+            } else {
+                SignatureStatus::ValidUntrustedIssuer
+            };
+            Ok(SmimeVerifyOutcome {
+                status,
+                signer_fingerprint: None,
+            })
+        }
+        Err(msg) => {
+            // OpenSSL returns an `Err` for both "data tampered" and "no
+            // signer certificate present".  A conformant detached S/MIME
+            // signature always embeds its signer leaf, so a failure here
+            // is overwhelmingly tampering ⇒ Invalid.  Only when the error
+            // *specifically* blames a missing signer cert do we fall back
+            // to the conservative UnknownSigner.  We match precise phrases
+            // ("no signer", "unable to find …", "signer certificate not
+            // found") rather than a bare "signer", because a genuine
+            // digest mismatch surfaces as "signerInfo … verification
+            // failure" — which contains "signer" but is emphatically
+            // *tampering*, not a missing cert.
+            let lower = msg.to_lowercase();
+            let missing_signer = lower.contains("no signer")
+                || lower.contains("signer certificate not found")
+                || lower.contains("unable to find")
+                || lower.contains("no matching signer");
+            let status = if missing_signer {
+                SignatureStatus::UnknownSigner
+            } else {
+                SignatureStatus::Invalid
+            };
+            Ok(SmimeVerifyOutcome {
+                status,
+                signer_fingerprint: None,
+            })
+        }
+    }
+}
+
+/// Run one CMS verify attempt, re-parsing the signature DER fresh so
+/// repeated passes don't share mutable `CmsContentInfo` state.  Returns
+/// `Ok(true)` on a verified signature, `Ok(false)` on a verify failure,
+/// and `Err` only if the DER won't parse (already ruled out by the
+/// caller, but handled rather than panicking).
+fn cms_verify_ok(
+    signature: &[u8],
+    payload: &[u8],
+    certs: Option<&StackRef<X509>>,
+    store: Option<&X509StoreRef>,
+    flags: CMSOptions,
+) -> Result<bool, UnkaiError> {
+    Ok(cms_verify_result(signature, payload, certs, store, flags)?.is_ok())
+}
+
+/// Like [`cms_verify_ok`] but preserves the OpenSSL error message on a
+/// verify failure so the caller can distinguish "tampered" from "no
+/// signer certificate".
+fn cms_verify_result(
+    signature: &[u8],
+    payload: &[u8],
+    certs: Option<&StackRef<X509>>,
+    store: Option<&X509StoreRef>,
+    flags: CMSOptions,
+) -> Result<Result<(), String>, UnkaiError> {
+    let mut cms = CmsContentInfo::from_der(signature)
+        .map_err(|e| UnkaiError::Crypto(format!("Failed to parse CMS signature: {e}")))?;
+    Ok(cms
+        .verify(certs, store, Some(payload), None, flags)
+        .map_err(|e| e.to_string()))
 }
 
 /// Collect a slice of X.509 certificates into an OpenSSL `Stack<X509>`.
@@ -450,7 +642,7 @@ mod tests {
     use openssl::asn1::Asn1Time;
     use openssl::bn::BigNum;
     use openssl::rsa::Rsa;
-    use openssl::x509::extension::SubjectAlternativeName;
+    use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
     use openssl::x509::{X509Builder, X509NameBuilder};
 
     /// Generate a self-signed RSA-2048 cert with the supplied common name
@@ -537,6 +729,160 @@ mod tests {
         parse_der_cert(&der).expect("test: re-parse leaf cert")
     }
 
+    /// Build a self-signed test CA root: an RSA-2048 cert with
+    /// `basicConstraints: CA:TRUE` so OpenSSL will accept it as a chain
+    /// anchor when we drop it into an `X509Store`.  Exercises the real
+    /// chain-validation path in [`smime_verify`]'s Pass 2.
+    fn make_test_ca(common_name: &str) -> CertificateWithKey {
+        let rsa = Rsa::generate(2048).expect("test: generate CA RSA-2048");
+        let pkey = PKey::from_rsa(rsa).expect("test: wrap CA RSA as PKey");
+
+        let mut name_builder = X509NameBuilder::new().expect("test: CA name builder");
+        name_builder
+            .append_entry_by_text("CN", common_name)
+            .expect("test: set CA CN");
+        let name = name_builder.build();
+
+        let mut cert_builder = X509Builder::new().expect("test: CA cert builder");
+        cert_builder.set_version(2).expect("test: CA v3");
+        let serial = BigNum::from_u32(1)
+            .expect("test: CA serial bn")
+            .to_asn1_integer()
+            .expect("test: CA serial asn1");
+        cert_builder
+            .set_serial_number(&serial)
+            .expect("test: set CA serial");
+        cert_builder
+            .set_subject_name(&name)
+            .expect("test: CA subject");
+        cert_builder
+            .set_issuer_name(&name)
+            .expect("test: CA issuer (self-signed)");
+        cert_builder.set_pubkey(&pkey).expect("test: set CA pubkey");
+        cert_builder
+            .set_not_before(&Asn1Time::days_from_now(0).expect("test: CA not_before"))
+            .expect("test: set CA not_before");
+        cert_builder
+            .set_not_after(&Asn1Time::days_from_now(3650).expect("test: CA not_after"))
+            .expect("test: set CA not_after");
+        // CA:TRUE — without basicConstraints OpenSSL won't treat this as a
+        // CA and chain building against it fails.
+        cert_builder
+            .append_extension(
+                BasicConstraints::new()
+                    .critical()
+                    .ca()
+                    .build()
+                    .expect("test: build CA basicConstraints"),
+            )
+            .expect("test: append CA basicConstraints");
+        cert_builder
+            .sign(&pkey, MessageDigest::sha256())
+            .expect("test: self-sign CA");
+        let cert = cert_builder.build();
+
+        CertificateWithKey {
+            leaf: cert,
+            private_key: pkey,
+            chain: vec![],
+        }
+    }
+
+    /// Issue an end-entity leaf signed by `ca`, valid for `days_valid`
+    /// days from now (pass a negative number for an already-expired
+    /// cert).  The returned identity carries the CA in its `chain`, so
+    /// [`smime_sign`] embeds it in the `SignedData` and a verifier can
+    /// build the path leaf → CA.
+    fn issue_leaf(
+        ca: &CertificateWithKey,
+        common_name: &str,
+        email: &str,
+        days_valid: i64,
+    ) -> CertificateWithKey {
+        let rsa = Rsa::generate(2048).expect("test: generate leaf RSA-2048");
+        let pkey = PKey::from_rsa(rsa).expect("test: wrap leaf RSA as PKey");
+
+        let mut name_builder = X509NameBuilder::new().expect("test: leaf name builder");
+        name_builder
+            .append_entry_by_text("CN", common_name)
+            .expect("test: set leaf CN");
+        let name = name_builder.build();
+
+        let mut cert_builder = X509Builder::new().expect("test: leaf cert builder");
+        cert_builder.set_version(2).expect("test: leaf v3");
+        let serial = BigNum::from_u32(2)
+            .expect("test: leaf serial bn")
+            .to_asn1_integer()
+            .expect("test: leaf serial asn1");
+        cert_builder
+            .set_serial_number(&serial)
+            .expect("test: set leaf serial");
+        cert_builder
+            .set_subject_name(&name)
+            .expect("test: leaf subject");
+        // Issuer is the CA — this is what links the chain.
+        cert_builder
+            .set_issuer_name(ca.leaf.subject_name())
+            .expect("test: leaf issuer = CA subject");
+        cert_builder
+            .set_pubkey(&pkey)
+            .expect("test: set leaf pubkey");
+        // `notBefore` a day in the past so a freshly-issued leaf isn't
+        // tripped up by clock skew; `notAfter` per `days_valid`.
+        cert_builder
+            .set_not_before(&Asn1Time::days_from_now(0).expect("test: leaf not_before"))
+            .expect("test: set leaf not_before");
+        let not_after = if days_valid >= 0 {
+            Asn1Time::days_from_now(days_valid as u32).expect("test: leaf not_after")
+        } else {
+            // Already expired: notAfter in the past.
+            Asn1Time::from_unix(
+                (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("test: now")
+                    .as_secs() as i64)
+                    + days_valid * 86_400,
+            )
+            .expect("test: expired not_after")
+        };
+        cert_builder
+            .set_not_after(&not_after)
+            .expect("test: set leaf not_after");
+        let san = SubjectAlternativeName::new()
+            .email(email)
+            .build(&cert_builder.x509v3_context(Some(&ca.leaf), None))
+            .expect("test: build leaf SAN");
+        cert_builder
+            .append_extension(san)
+            .expect("test: append leaf SAN");
+        // Signed by the CA's private key — not self-signed.
+        cert_builder
+            .sign(&ca.private_key, MessageDigest::sha256())
+            .expect("test: CA-sign leaf");
+        let cert = cert_builder.build();
+
+        CertificateWithKey {
+            leaf: cert,
+            private_key: pkey,
+            chain: vec![ca.leaf.clone()],
+        }
+    }
+
+    /// An `X509Store` trusting exactly the given CA — stands in for the
+    /// bundled Mozilla roots in chain-validation tests.
+    fn trust_store_with(ca: &CertificateWithKey) -> X509Store {
+        let mut b = X509StoreBuilder::new().expect("test: store builder");
+        b.add_cert(ca.leaf.clone()).expect("test: add CA to store");
+        b.build()
+    }
+
+    /// An empty `X509Store` — nothing is chain-trusted.
+    fn empty_trust_store() -> X509Store {
+        X509StoreBuilder::new()
+            .expect("test: empty store builder")
+            .build()
+    }
+
     #[test]
     fn encrypt_then_decrypt_round_trip() {
         let alice = make_test_cert("Alice Example", "alice@example.com");
@@ -564,48 +910,123 @@ mod tests {
     }
 
     #[test]
-    fn sign_then_verify_round_trip() {
+    fn verify_tofu_fingerprint_is_valid_green() {
+        // A self-signed cert we already hold (passed as a candidate)
+        // verifies its own signature ⇒ trusted by TOFU, fingerprint
+        // attributed.
         let alice = make_test_cert("Alice Example", "alice@example.com");
         let alice_cert = public_view(&alice);
         let payload = b"hello, world";
 
         let sig = smime_sign(payload, &alice).expect("sign");
-        let status = smime_verify(payload, &sig, &[&alice_cert]).expect("verify");
+        let outcome =
+            smime_verify(payload, &sig, &[&alice_cert], &empty_trust_store()).expect("verify");
 
-        assert_eq!(status, SignatureStatus::Valid);
+        assert_eq!(outcome.status, SignatureStatus::Valid);
+        assert_eq!(
+            outcome.signer_fingerprint.as_deref(),
+            Some(alice_cert.fingerprint().as_str()),
+            "TOFU match should attribute the signer's fingerprint"
+        );
     }
 
     #[test]
-    fn verify_reports_unknown_signer_when_no_trusted_cert_matches() {
-        let alice = make_test_cert("Alice Example", "alice@example.com");
-        let bob = make_test_cert("Bob Example", "bob@example.com");
-        let bob_cert = public_view(&bob);
-        let payload = b"signed by alice";
+    fn verify_chain_trusted_is_valid_green() {
+        // A leaf issued by a CA we trust (in the store) ⇒ chain-trusted.
+        // The signer cert is not in our candidate list, so attribution is
+        // None (we can't read the embedded cert back out of the CMS).
+        let ca = make_test_ca("Test Root CA");
+        let alice = issue_leaf(&ca, "Alice Example", "alice@example.com", 365);
+        let payload = b"chain trusted message";
 
         let sig = smime_sign(payload, &alice).expect("sign");
-        // We hand the verifier only Bob's cert.  Alice's signature can't
-        // be attributed; status falls back to UnknownSigner — same
-        // semantics as the PGP `verify_detached` test.
-        let status = smime_verify(payload, &sig, &[&bob_cert]).expect("verify");
+        let outcome = smime_verify(payload, &sig, &[], &trust_store_with(&ca)).expect("verify");
 
-        assert_eq!(status, SignatureStatus::UnknownSigner);
+        assert_eq!(outcome.status, SignatureStatus::Valid);
+        assert_eq!(outcome.signer_fingerprint, None);
     }
 
     #[test]
-    fn verify_reports_unknown_signer_when_payload_is_tampered() {
+    fn verify_self_signed_unknown_issuer_is_amber() {
+        // Self-signed, not held, empty store ⇒ math is sound but the
+        // issuer is untrusted.
+        let alice = make_test_cert("Alice Example", "alice@example.com");
+        let payload = b"unattested but well-formed";
+
+        let sig = smime_sign(payload, &alice).expect("sign");
+        let outcome = smime_verify(payload, &sig, &[], &empty_trust_store()).expect("verify");
+
+        assert_eq!(outcome.status, SignatureStatus::ValidUntrustedIssuer);
+        assert_eq!(outcome.signer_fingerprint, None);
+    }
+
+    #[test]
+    fn verify_expired_signing_cert_is_amber() {
+        // A cert we hold but which has since expired ⇒ the signature is
+        // internally sound but the cert can no longer be relied on.
+        let ca = make_test_ca("Test Root CA");
+        let alice = issue_leaf(&ca, "Alice Example", "alice@example.com", -10);
+        let alice_cert = public_view(&alice);
+        let payload = b"signed with an expired cert";
+
+        let sig = smime_sign(payload, &alice).expect("sign");
+        // Pass the expired leaf as a held candidate: the TOFU pass matches
+        // it, and the expiry check downgrades green → amber.
+        let outcome =
+            smime_verify(payload, &sig, &[&alice_cert], &trust_store_with(&ca)).expect("verify");
+
+        assert_eq!(outcome.status, SignatureStatus::ValidExpiredCert);
+    }
+
+    #[test]
+    fn verify_tampered_payload_is_red() {
         let alice = make_test_cert("Alice Example", "alice@example.com");
         let alice_cert = public_view(&alice);
         let payload = b"original payload";
         let tampered = b"TAMPERED payload";
 
         let sig = smime_sign(payload, &alice).expect("sign");
-        // OpenSSL's verify returns Err for both "wrong signer" and
-        // "tampered data" without an easy way to distinguish — we
-        // collapse both to UnknownSigner, matching the conservative
-        // behaviour of the PGP verify helper.
-        let status = smime_verify(tampered, &sig, &[&alice_cert]).expect("verify");
+        // The signed bytes don't match the signature ⇒ the math fails on
+        // every pass ⇒ Invalid (red).
+        let outcome =
+            smime_verify(tampered, &sig, &[&alice_cert], &empty_trust_store()).expect("verify");
 
-        assert_eq!(status, SignatureStatus::UnknownSigner);
+        assert_eq!(outcome.status, SignatureStatus::Invalid);
+    }
+
+    #[test]
+    fn verify_wrong_held_cert_falls_through_to_untrusted() {
+        // We hold Bob's cert but Alice signed.  TOFU can't match (NOINTERN
+        // against Bob fails), there's no CA chain, but the embedded Alice
+        // cert lets the math-only pass succeed ⇒ amber untrusted-issuer.
+        let alice = make_test_cert("Alice Example", "alice@example.com");
+        let bob = make_test_cert("Bob Example", "bob@example.com");
+        let bob_cert = public_view(&bob);
+        let payload = b"signed by alice";
+
+        let sig = smime_sign(payload, &alice).expect("sign");
+        let outcome =
+            smime_verify(payload, &sig, &[&bob_cert], &empty_trust_store()).expect("verify");
+
+        assert_eq!(outcome.status, SignatureStatus::ValidUntrustedIssuer);
+        assert_eq!(outcome.signer_fingerprint, None);
+    }
+
+    #[test]
+    fn mozilla_trust_store_builds_non_empty() {
+        // Smoke: the bundled root set parses into a store without error.
+        // (We can't introspect the count through the OpenSSL binding, so
+        // this just proves the builder path doesn't choke on the bundle.)
+        build_mozilla_trust_store().expect("Mozilla trust store should build");
+    }
+
+    #[test]
+    fn certificate_is_expired_accessor() {
+        let ca = make_test_ca("Test Root CA");
+        let fresh = issue_leaf(&ca, "Fresh", "fresh@example.com", 365);
+        let stale = issue_leaf(&ca, "Stale", "stale@example.com", -5);
+        assert!(!public_view(&fresh).is_expired());
+        assert!(public_view(&stale).is_expired());
     }
 
     /// Regression guard (#370): the manual `Debug` impl on

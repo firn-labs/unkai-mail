@@ -7290,10 +7290,12 @@ dependencies = [
  "openssl",
  "pgp",
  "rand 0.8.5",
+ "rustls-pki-types",
  "serde",
  "thiserror 2.0.18",
  "tracing",
  "unkai-core",
+ "webpki-root-certs",
  "zeroize",
 ]
 
@@ -7730,6 +7732,15 @@ dependencies = [
  "pkg-config",
  "soup3-sys",
  "system-deps",
+]
+
+[[package]]
+name = "webpki-root-certs"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f31141ce3fc3e300ae89b78c0dd67f9708061d1d2eda54b8209346fd6be9a92c"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

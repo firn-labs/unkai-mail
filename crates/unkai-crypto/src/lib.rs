@@ -47,7 +47,8 @@ pub use ops::{
     DecryptedMessage, decrypt_and_verify, encrypt, sign_and_encrypt, sign_detached, verify_detached,
 };
 pub use smime::{
-    Certificate, CertificateWithKey, DecryptedSmimeMessage, parse_der_cert, parse_pem_cert,
-    parse_pkcs12, smime_decrypt, smime_encrypt, smime_sign, smime_verify,
+    Certificate, CertificateWithKey, DecryptedSmimeMessage, SmimeVerifyOutcome,
+    build_mozilla_trust_store, parse_der_cert, parse_pem_cert, parse_pkcs12, smime_decrypt,
+    smime_encrypt, smime_sign, smime_verify,
 };
 pub use types::{Protection, SignatureStatus};

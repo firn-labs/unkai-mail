@@ -4,7 +4,7 @@
 use async_imap::Session;
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
-use mail_parser::{MessageParser, MimeHeaders};
+use mail_parser::{MessageParser, MimeHeaders, PartType};
 use rustls_pki_types::ServerName;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -52,13 +52,13 @@ pub fn parse_eml_bytes(
 ///   `protection`, `signature_status`, `signer_fingerprint` from the
 ///   bridge's outcome.
 ///
-/// - `multipart/signed; protocol="application/pgp-signature"` —
-///   currently falls through to plaintext parsing.  Full canonical
-///   verification needs access to the on-the-wire signed-body bytes
-///   (RFC 3156 §5 canonicalisation) which mail-parser doesn't expose
-///   in v0.11; the wrapper-recognising path is in place so adding
-///   verification is a localised follow-up, not another receive-path
-///   refactor.  TODO(#57): wire detached-signature verification.
+/// - `multipart/signed; protocol="application/pgp-signature"` → render
+///   the signed body as plaintext, then verify the detached signature
+///   over the first part's exact on-the-wire bytes (sliced via
+///   [`extract_signed_part_and_signature`]) and stamp
+///   `signature_status` / `signer_fingerprint` from the bridge's
+///   outcome (#338 unblocked this — mail-parser's part offsets give us
+///   the canonical signed bytes RFC 3156 §5 requires).
 ///
 /// The same call also recognises the S/MIME (X.509 / CMS, #338)
 /// envelopes through [`detect_smime_envelope`] / [`apply_smime_envelope`]:
@@ -67,9 +67,10 @@ pub fn parse_eml_bytes(
 ///   `EnvelopedData` DER out of the part, call `bridge.decrypt_smime`,
 ///   re-parse the recovered plaintext, stamp `protection = "encrypted"`.
 ///
-/// - `multipart/signed; protocol="application/pkcs7-signature"` —
-///   detection-only, same canonicalisation-access limitation as the
-///   OpenPGP signed path above; stamps `protection = "signed"`.
+/// - `multipart/signed; protocol="application/pkcs7-signature"` → render
+///   the body as plaintext, then verify the detached CMS signature via
+///   `bridge.verify_smime` (chain- and TOFU-graded trust) and stamp the
+///   tri-tone `signature_status`; `protection = "signed"`.
 ///
 /// PGP is checked first because the two envelope shapes are mutually
 /// exclusive at the top level (a message is either `pgp-*` or `pkcs7-*`,
@@ -260,11 +261,10 @@ enum PgpMimeEnvelope {
     /// the `application/octet-stream` part (RFC 3156 §4).
     Encrypted { ciphertext_armor: Vec<u8> },
     /// `multipart/signed; protocol="application/pgp-signature"`.
-    /// Detection only — actual signature verification is a follow-up
-    /// (see TODO on [`parse_eml_bytes_with_crypto`]).  We carry no
-    /// payload because nothing downstream looks at it yet; treating
-    /// the variant as a marker lets us extend the receive path
-    /// without yet another enum reshuffle.
+    /// A marker variant — the signed body and detached signature are
+    /// re-extracted from the raw message in the apply step (via
+    /// [`extract_signed_part_and_signature`]) and handed to
+    /// `bridge.verify`, so nothing needs to ride on the variant itself.
     Signed,
 }
 
@@ -370,12 +370,23 @@ fn apply_pgp_envelope(
             Ok(email)
         }
         PgpMimeEnvelope::Signed => {
-            // TODO(#57): canonicalise the signed body part and call
-            // `bridge.verify`.  For now we render the message as
-            // plaintext and tag it `protection = "signed"` so the
-            // UI can still show a "signature detected, not verified
-            // yet" chip without crashing on the verify path.
+            // The signed body is already readable, so render it as
+            // plaintext, then verify the detached signature over the
+            // exact on-the-wire bytes of the first MIME part (#338
+            // unblocked this — see `extract_signed_part_and_signature`).
             let mut email = parse_plaintext_eml_bytes(raw, id, account_id, folder)?;
+            if let Some(parts) = extract_signed_part_and_signature(raw, is_pgp_signature_ct)? {
+                match bridge.verify(&parts.signed_bytes, &parts.signature) {
+                    Ok(outcome) => {
+                        email.signature_status = Some(outcome.status);
+                        email.signer_fingerprint = outcome.signer_fingerprint;
+                    }
+                    // A malformed signature shouldn't sink the whole
+                    // fetch — surface the message unverified (neutral
+                    // "signed" chip) rather than erroring the row out.
+                    Err(e) => warn!("PGP detached-signature verification failed: {e}"),
+                }
+            }
             email.protection = Some("signed".to_string());
             Ok(email)
         }
@@ -393,11 +404,10 @@ enum SmimeEnvelope {
     /// on the wire; `contents()` hands us the decoded binary).
     Enveloped { cms_der: Vec<u8> },
     /// `multipart/signed; protocol="application/pkcs7-signature"` — the
-    /// detached (clear-signed) form (RFC 8551 §3.4).  Detection only —
-    /// CMS signature verification needs the canonical on-the-wire signed
-    /// part bytes the same way the OpenPGP `multipart/signed` path does
-    /// (see the TODO on [`apply_pgp_envelope`]), so this carries no
-    /// payload and the apply step just stamps `protection = "signed"`.
+    /// detached (clear-signed) form (RFC 8551 §3.4).  A marker variant:
+    /// the apply step re-extracts the signed part + CMS signature from
+    /// the raw message (via [`extract_signed_part_and_signature`]) and
+    /// verifies them through `bridge.verify_smime`.
     Signed,
 }
 
@@ -524,16 +534,129 @@ fn apply_smime_envelope(
             Ok(email)
         }
         SmimeEnvelope::Signed => {
-            // Detection-only, mirroring the OpenPGP `multipart/signed`
-            // path: the clear-signed body is already readable, so we
-            // render it as plaintext and tag `protection = "signed"`.
-            // Actual CMS verification waits on the same canonical-bytes
-            // access the PGP verify path is blocked on.
+            // The clear-signed body is already readable, so render it as
+            // plaintext and then verify the detached CMS signature over
+            // the exact on-the-wire bytes of the first MIME part.  The
+            // bridge looks up the sender's cached certs (from `email.from`)
+            // for TOFU + chain-graded trust.
             let mut email = parse_plaintext_eml_bytes(raw, id, account_id, folder)?;
+            if let Some(parts) = extract_signed_part_and_signature(raw, is_smime_signature_ct)? {
+                match bridge.verify_smime(&parts.signed_bytes, &parts.signature, &email.from) {
+                    Ok(outcome) => {
+                        email.signature_status = Some(outcome.status);
+                        email.signer_fingerprint = outcome.signer_fingerprint;
+                    }
+                    Err(e) => warn!("S/MIME detached-signature verification failed: {e}"),
+                }
+            }
             email.protection = Some("signed".to_string());
             Ok(email)
         }
     }
+}
+
+/// The two body parts of an RFC 1847 `multipart/signed` message: the
+/// signed content in its exact on-the-wire form, plus the detached
+/// signature bytes.  Shared by the OpenPGP and S/MIME verify paths —
+/// the only difference between the stacks is which Content-Type marks
+/// the signature part.
+struct SignedParts {
+    /// The first MIME part's headers+body, sliced verbatim from the raw
+    /// message between the multipart boundaries.  This is exactly what
+    /// the sender signed: RFC 1847 §2.1 attaches the CRLF preceding the
+    /// boundary to the delimiter, and mail-parser's `offset_end` already
+    /// excludes it, so we hand the verifier the bytes it must re-hash
+    /// without re-canonicalising (which could drift on legitimate
+    /// trailing whitespace inside the signed content).
+    signed_bytes: Vec<u8>,
+    /// The detached signature: an armored OpenPGP signature, or binary
+    /// CMS `SignedData` DER — mail-parser has already undone the part's
+    /// Content-Transfer-Encoding via `contents()`.
+    signature: Vec<u8>,
+}
+
+/// `true` for the OpenPGP detached-signature part Content-Type.
+fn is_pgp_signature_ct(ctype: &str, subtype: &str) -> bool {
+    ctype.eq_ignore_ascii_case("application") && subtype.eq_ignore_ascii_case("pgp-signature")
+}
+
+/// `true` for the S/MIME detached-signature part Content-Type, accepting
+/// the legacy `x-pkcs7-signature` spelling alongside the RFC 5751 form.
+fn is_smime_signature_ct(ctype: &str, subtype: &str) -> bool {
+    ctype.eq_ignore_ascii_case("application")
+        && (subtype.eq_ignore_ascii_case("pkcs7-signature")
+            || subtype.eq_ignore_ascii_case("x-pkcs7-signature"))
+}
+
+/// Pull the signed body part (exact wire bytes) and the detached
+/// signature out of a `multipart/signed` message.  `is_signature_part`
+/// identifies which of the two children is the signature, so the same
+/// extractor serves both the OpenPGP and S/MIME stacks.
+///
+/// Returns `Ok(None)` when the message isn't the expected two-child
+/// `multipart/signed` shape (so callers fall back to a detection-only
+/// "signed" chip rather than erroring).
+fn extract_signed_part_and_signature(
+    raw: &[u8],
+    is_signature_part: impl Fn(&str, &str) -> bool,
+) -> Result<Option<SignedParts>, UnkaiError> {
+    let parsed = MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| UnkaiError::Protocol("Failed to parse message headers".into()))?;
+
+    // The top-level part is the multipart container; its direct children
+    // are the signed body and the detached signature (RFC 1847 §2.1
+    // mandates exactly these two, in that order).
+    let root = match parsed.parts.first() {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let child_ids = match &root.body {
+        PartType::Multipart(ids) => ids.clone(),
+        _ => return Ok(None),
+    };
+
+    let mut signed_id: Option<u32> = None;
+    let mut signature: Option<Vec<u8>> = None;
+    for id in child_ids {
+        let part = match parsed.part(id) {
+            Some(p) => p,
+            None => continue,
+        };
+        let (ctype, subtype) = part
+            .content_type()
+            .map(|ct| {
+                (
+                    ct.ctype().to_string(),
+                    ct.subtype().unwrap_or("").to_string(),
+                )
+            })
+            .unwrap_or_default();
+        if is_signature_part(&ctype, &subtype) {
+            signature = Some(part.contents().to_vec());
+        } else if signed_id.is_none() {
+            signed_id = Some(id);
+        }
+    }
+
+    let (Some(signed_id), Some(signature)) = (signed_id, signature) else {
+        return Ok(None);
+    };
+    let signed = match parsed.part(signed_id) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let start = signed.offset_header as usize;
+    let end = signed.offset_end as usize;
+    let signed_bytes = match parsed.raw_message.get(start..end) {
+        Some(bytes) => bytes.to_vec(),
+        None => return Ok(None),
+    };
+
+    Ok(Some(SignedParts {
+        signed_bytes,
+        signature,
+    }))
 }
 
 /// #341 follow-up to #57 — pull the bytes of a single attachment out
@@ -2902,7 +3025,10 @@ mod tests {
 
     // ── PGP/MIME receive interceptor (#57) ─────────────────────
 
-    use super::{parse_eml_bytes, parse_eml_bytes_with_crypto};
+    use super::{
+        extract_signed_part_and_signature, is_pgp_signature_ct, parse_eml_bytes,
+        parse_eml_bytes_with_crypto,
+    };
     use unkai_core::UnkaiError;
     use unkai_core::crypto::{CryptoBridge, DecryptedPayload, EncryptedOutput, VerifyOutcome};
 
@@ -2942,6 +3068,14 @@ mod tests {
             _signature_armor: &[u8],
         ) -> Result<VerifyOutcome, UnkaiError> {
             unreachable!("encryption tests never hit the verify path")
+        }
+        fn verify_smime(
+            &self,
+            _signed_payload: &[u8],
+            _signature_der: &[u8],
+            _sender_from: &str,
+        ) -> Result<VerifyOutcome, UnkaiError> {
+            unreachable!("encryption tests never hit the S/MIME verify path")
         }
         fn encrypt(
             &self,
@@ -3192,49 +3326,218 @@ mod tests {
         assert_eq!(plain.protection, email.protection);
     }
 
+    /// A bridge that records the bytes handed to `verify` / `verify_smime`
+    /// and returns a canned [`VerifyOutcome`].  Lets the signed-path tests
+    /// assert both that the right signed bytes were extracted *and* that
+    /// the bridge's verdict reaches the `Email` — without a real key/cert.
+    #[allow(clippy::type_complexity)] // test-only capture tuples; a named struct would add more noise than it removes
+    struct RecordingVerifyBridge {
+        status: String,
+        signer_fingerprint: Option<String>,
+        pgp_seen: std::sync::Mutex<Option<(Vec<u8>, Vec<u8>)>>,
+        smime_seen: std::sync::Mutex<Option<(Vec<u8>, Vec<u8>, String)>>,
+    }
+
+    impl RecordingVerifyBridge {
+        fn new(status: &str, fp: Option<&str>) -> Self {
+            RecordingVerifyBridge {
+                status: status.to_string(),
+                signer_fingerprint: fp.map(str::to_string),
+                pgp_seen: std::sync::Mutex::new(None),
+                smime_seen: std::sync::Mutex::new(None),
+            }
+        }
+        fn outcome(&self) -> VerifyOutcome {
+            VerifyOutcome {
+                status: self.status.clone(),
+                signer_fingerprint: self.signer_fingerprint.clone(),
+            }
+        }
+    }
+
+    impl CryptoBridge for RecordingVerifyBridge {
+        fn decrypt(&self, _: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
+            unreachable!("signed-path tests never decrypt")
+        }
+        fn decrypt_smime(&self, _: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
+            unreachable!("signed-path tests never decrypt")
+        }
+        fn verify(
+            &self,
+            signed_payload: &[u8],
+            signature: &[u8],
+        ) -> Result<VerifyOutcome, UnkaiError> {
+            *self.pgp_seen.lock().unwrap() = Some((signed_payload.to_vec(), signature.to_vec()));
+            Ok(self.outcome())
+        }
+        fn verify_smime(
+            &self,
+            signed_payload: &[u8],
+            signature_der: &[u8],
+            sender_from: &str,
+        ) -> Result<VerifyOutcome, UnkaiError> {
+            *self.smime_seen.lock().unwrap() = Some((
+                signed_payload.to_vec(),
+                signature_der.to_vec(),
+                sender_from.to_string(),
+            ));
+            Ok(self.outcome())
+        }
+        fn encrypt(&self, _: &[u8], _: &[String], _: bool) -> Result<EncryptedOutput, UnkaiError> {
+            unreachable!()
+        }
+        fn sign(&self, _: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!()
+        }
+        fn encrypt_smime(&self, _: &[u8], _: &[String]) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!()
+        }
+        fn sign_smime(&self, _: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!()
+        }
+    }
+
+    /// A PGP `multipart/signed` message: a `text/plain` first part and a
+    /// detached `application/pgp-signature` second part.
+    fn pgp_mime_signed() -> Vec<u8> {
+        b"From: alice@example.com\r\n\
+          To: bob@example.com\r\n\
+          Subject: signed note\r\n\
+          MIME-Version: 1.0\r\n\
+          Content-Type: multipart/signed; \
+              protocol=\"application/pgp-signature\"; \
+              micalg=\"pgp-sha256\"; boundary=\"sig-boundary\"\r\n\
+          \r\n\
+          --sig-boundary\r\n\
+          Content-Type: text/plain; charset=\"utf-8\"\r\n\
+          \r\n\
+          the eagle has landed\r\n\
+          --sig-boundary\r\n\
+          Content-Type: application/pgp-signature; name=\"signature.asc\"\r\n\
+          \r\n\
+          -----BEGIN PGP SIGNATURE-----\r\n\
+          FAKE-PGP-SIG\r\n\
+          -----END PGP SIGNATURE-----\r\n\
+          --sig-boundary--\r\n"
+            .to_vec()
+    }
+
+    /// An S/MIME `multipart/signed` message.  The signature part carries a
+    /// base64 CTE so `contents()` round-trips to the binary CMS bytes the
+    /// bridge expects (here `b"FAKECMS"` ⇒ base64 `RkFLRUNNUw==`).
+    fn smime_mime_signed() -> Vec<u8> {
+        b"From: Alice <alice@example.com>\r\n\
+          To: bob@example.com\r\n\
+          Subject: signed memo\r\n\
+          MIME-Version: 1.0\r\n\
+          Content-Type: multipart/signed; \
+              protocol=\"application/pkcs7-signature\"; \
+              micalg=\"sha-256\"; boundary=\"smime-boundary\"\r\n\
+          \r\n\
+          --smime-boundary\r\n\
+          Content-Type: text/plain; charset=\"utf-8\"\r\n\
+          \r\n\
+          the package is in transit\r\n\
+          --smime-boundary\r\n\
+          Content-Type: application/pkcs7-signature; name=\"smime.p7s\"\r\n\
+          Content-Transfer-Encoding: base64\r\n\
+          \r\n\
+          RkFLRUNNUw==\r\n\
+          --smime-boundary--\r\n"
+            .to_vec()
+    }
+
     #[test]
-    fn smime_multipart_signed_is_detected_but_not_verified() {
-        // Clear-signed: the body part is readable, the detached signature
-        // sits in a second `application/pkcs7-signature` part.  We stamp
-        // "signed" without verifying (same deferral as the PGP path) and
-        // the cleartext body must still come through.
-        let raw = b"From: alice@example.com\r\n\
-                    To: bob@example.com\r\n\
-                    Subject: signed memo\r\n\
-                    MIME-Version: 1.0\r\n\
-                    Content-Type: multipart/signed; \
-                        protocol=\"application/pkcs7-signature\"; \
-                        micalg=\"sha-256\"; boundary=\"smime-boundary\"\r\n\
-                    \r\n\
-                    --smime-boundary\r\n\
-                    Content-Type: text/plain; charset=\"utf-8\"\r\n\
-                    \r\n\
-                    the package is in transit\r\n\
-                    --smime-boundary\r\n\
-                    Content-Type: application/pkcs7-signature; name=\"smime.p7s\"\r\n\
-                    Content-Transfer-Encoding: base64\r\n\
-                    \r\n\
-                    SGVsbG8gc2lnbmF0dXJl\r\n\
-                    --smime-boundary--\r\n";
-        let bridge = StubBridge {
-            plaintext: b"WOULD-NEVER-BE-CALLED".to_vec(),
-            signature_status: None,
-            signer_fingerprint: None,
-        };
+    fn extract_signed_part_yields_canonical_first_part_bytes() {
+        let raw = pgp_mime_signed();
+        let parts = extract_signed_part_and_signature(&raw, is_pgp_signature_ct)
+            .expect("extract should not error")
+            .expect("a multipart/signed message yields parts");
+
+        // The signed bytes are the first part's headers+body verbatim, with
+        // NO trailing CRLF (that CRLF belongs to the boundary delimiter,
+        // RFC 1847 §2.1) — exactly what the signer hashed.
+        assert_eq!(
+            parts.signed_bytes,
+            b"Content-Type: text/plain; charset=\"utf-8\"\r\n\r\nthe eagle has landed".to_vec(),
+        );
+        assert!(
+            String::from_utf8_lossy(&parts.signature).contains("BEGIN PGP SIGNATURE"),
+            "signature part should carry the armored detached signature"
+        );
+    }
+
+    #[test]
+    fn pgp_multipart_signed_is_verified() {
+        let raw = pgp_mime_signed();
+        let bridge = RecordingVerifyBridge::new("valid", Some("9F2AAAAA"));
 
         let email =
-            parse_eml_bytes_with_crypto(raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+            parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+
+        assert_eq!(email.protection.as_deref(), Some("signed"));
+        assert_eq!(email.signature_status.as_deref(), Some("valid"));
+        assert_eq!(email.signer_fingerprint.as_deref(), Some("9F2AAAAA"));
+        // The clear-signed body is still readable.
+        assert_eq!(email.body_text.as_deref(), Some("the eagle has landed"));
+        // The bridge received the canonical first-part bytes.
+        let (seen_payload, _sig) = bridge
+            .pgp_seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("verify called");
+        assert_eq!(
+            seen_payload,
+            b"Content-Type: text/plain; charset=\"utf-8\"\r\n\r\nthe eagle has landed".to_vec(),
+        );
+    }
+
+    #[test]
+    fn smime_multipart_signed_is_verified() {
+        let raw = smime_mime_signed();
+        let bridge = RecordingVerifyBridge::new("valid", Some("AB:CD:EF"));
+
+        let email =
+            parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
 
         assert_eq!(email.subject, "signed memo");
-        // No trailing newline: the CRLF before the `--smime-boundary`
-        // delimiter is part of the MIME boundary, not the body content.
         assert_eq!(
             email.body_text.as_deref(),
-            Some("the package is in transit"),
-            "clear-signed body must be readable"
+            Some("the package is in transit")
         );
         assert_eq!(email.protection.as_deref(), Some("signed"));
-        assert_eq!(email.signature_status, None);
+        assert_eq!(email.signature_status.as_deref(), Some("valid"));
+        assert_eq!(email.signer_fingerprint.as_deref(), Some("AB:CD:EF"));
+
+        let (seen_payload, seen_sig, sender_from) = bridge
+            .smime_seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("verify_smime called");
+        // The bridge gets the sender's From (for cert lookup) and the
+        // base64-decoded CMS signature bytes.
+        assert_eq!(sender_from, "Alice <alice@example.com>");
+        assert_eq!(seen_sig, b"FAKECMS".to_vec());
+        assert_eq!(
+            seen_payload,
+            b"Content-Type: text/plain; charset=\"utf-8\"\r\n\r\nthe package is in transit"
+                .to_vec(),
+        );
+    }
+
+    #[test]
+    fn signed_invalid_outcome_surfaces_red() {
+        let raw = smime_mime_signed();
+        let bridge = RecordingVerifyBridge::new("invalid", None);
+
+        let email =
+            parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+
+        assert_eq!(email.protection.as_deref(), Some("signed"));
+        assert_eq!(email.signature_status.as_deref(), Some("invalid"));
+        assert_eq!(email.signer_fingerprint, None);
     }
 
     #[test]

@@ -326,8 +326,13 @@
   "mail_view_chip_decrypted": "Decrypted",
   "mail_view_chip_encrypted": "Encrypted",
   "mail_view_chip_signed_valid": "Signed by {fp}",
+  "mail_view_chip_signed_trusted": "Signed (trusted)",
   "mail_view_chip_signed_invalid": "Signature invalid",
   "mail_view_chip_signed_unknown": "Signed (signer unknown)",
+  "mail_view_chip_signed_untrusted": "Signed (untrusted issuer)",
+  "mail_view_chip_signed_untrusted_tooltip": "The signature is valid, but the signing certificate isn't issued by a trusted authority and isn't one you've saved.",
+  "mail_view_chip_signed_expired": "Signed (certificate expired)",
+  "mail_view_chip_signed_expired_tooltip": "The signature is valid, but the signing certificate is outside its validity period.",
 
   "contact_form_section_encryption": "Encryption",
   "contact_form_label_pgp_keys": "OpenPGP keys",
