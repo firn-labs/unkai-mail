@@ -59,6 +59,22 @@ pub fn parse_eml_bytes(
 ///   in v0.11; the wrapper-recognising path is in place so adding
 ///   verification is a localised follow-up, not another receive-path
 ///   refactor.  TODO(#57): wire detached-signature verification.
+///
+/// The same call also recognises the S/MIME (X.509 / CMS, #338)
+/// envelopes through [`detect_smime_envelope`] / [`apply_smime_envelope`]:
+///
+/// - `application/pkcs7-mime; smime-type=enveloped-data` → lift the CMS
+///   `EnvelopedData` DER out of the part, call `bridge.decrypt_smime`,
+///   re-parse the recovered plaintext, stamp `protection = "encrypted"`.
+///
+/// - `multipart/signed; protocol="application/pkcs7-signature"` —
+///   detection-only, same canonicalisation-access limitation as the
+///   OpenPGP signed path above; stamps `protection = "signed"`.
+///
+/// PGP is checked first because the two envelope shapes are mutually
+/// exclusive at the top level (a message is either `pgp-*` or `pkcs7-*`,
+/// never both), so the order only decides which detector runs the
+/// no-op pass on plain mail.
 pub fn parse_eml_bytes_with_crypto(
     raw: &[u8],
     id: &str,
@@ -66,10 +82,13 @@ pub fn parse_eml_bytes_with_crypto(
     folder: &str,
     bridge: Option<&dyn CryptoBridge>,
 ) -> Result<Email, UnkaiError> {
-    if let Some(b) = bridge
-        && let Some(envelope) = detect_pgp_mime_envelope(raw)?
-    {
-        return apply_pgp_envelope(envelope, b, id, account_id, folder, raw);
+    if let Some(b) = bridge {
+        if let Some(envelope) = detect_pgp_mime_envelope(raw)? {
+            return apply_pgp_envelope(envelope, b, id, account_id, folder, raw);
+        }
+        if let Some(envelope) = detect_smime_envelope(raw)? {
+            return apply_smime_envelope(envelope, b, id, account_id, folder, raw);
+        }
     }
     parse_plaintext_eml_bytes(raw, id, account_id, folder)
 }
@@ -363,6 +382,160 @@ fn apply_pgp_envelope(
     }
 }
 
+/// The S/MIME (X.509 / CMS, #338) counterpart to [`PgpMimeEnvelope`].
+/// What we found at the top level of an inbound message when we went
+/// looking for one of the two RFC 8551 wire shapes.
+enum SmimeEnvelope {
+    /// `application/pkcs7-mime; smime-type=enveloped-data` — the opaque
+    /// encrypted form (RFC 8551 §3.2).  The wrapped `Vec<u8>` is the
+    /// raw CMS `EnvelopedData` DER, transfer-decoded out of the part by
+    /// mail-parser (the part carries `Content-Transfer-Encoding: base64`
+    /// on the wire; `contents()` hands us the decoded binary).
+    Enveloped { cms_der: Vec<u8> },
+    /// `multipart/signed; protocol="application/pkcs7-signature"` — the
+    /// detached (clear-signed) form (RFC 8551 §3.4).  Detection only —
+    /// CMS signature verification needs the canonical on-the-wire signed
+    /// part bytes the same way the OpenPGP `multipart/signed` path does
+    /// (see the TODO on [`apply_pgp_envelope`]), so this carries no
+    /// payload and the apply step just stamps `protection = "signed"`.
+    Signed,
+}
+
+/// Look at the top-level Content-Type of `raw` and tell the caller
+/// whether they're holding one of the two S/MIME envelope shapes we
+/// recognise.  Sibling to [`detect_pgp_mime_envelope`] — kept separate
+/// rather than folded into one detector because the wire stacks share
+/// no MIME structure (PGP is always `multipart/*`; S/MIME's encrypted
+/// form is a bare `application/pkcs7-mime` single part) and keeping the
+/// two detectors independent stops one stack's quirks leaking into the
+/// other.
+///
+/// Returns `Ok(None)` for plain mail and for the S/MIME shapes this
+/// chunk doesn't handle yet — notably the *opaque* signed form
+/// (`application/pkcs7-mime; smime-type=signed-data`), where the body
+/// is wrapped inside the CMS `SignedData` and can't be read without
+/// unwrapping it (a follow-up once the verify path lands).  We only
+/// claim a message we can actually act on, so an unrecognised
+/// `smime-type` falls through to plaintext parsing rather than being
+/// mislabelled.
+///
+/// The legacy `x-pkcs7-*` content/protocol spellings (RFC 2633-era
+/// senders) are accepted alongside the modern RFC 5751 forms — some
+/// MUAs still emit the `x-` variants.
+fn detect_smime_envelope(raw: &[u8]) -> Result<Option<SmimeEnvelope>, UnkaiError> {
+    let parsed = MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| UnkaiError::Protocol("Failed to parse message headers".into()))?;
+
+    let top_ct = match parsed.content_type() {
+        Some(ct) => ct,
+        None => return Ok(None),
+    };
+    let ctype = top_ct.ctype();
+    let subtype = top_ct.subtype().unwrap_or("");
+
+    // Encrypted form: `application/pkcs7-mime; smime-type=enveloped-data`.
+    // The top-level part is (usually) a bare single part, but some MUAs
+    // nest it inside an outer `multipart/mixed` (e.g. to staple a
+    // plaintext "this is an encrypted message" note), so we scan every
+    // part for the pkcs7-mime body rather than assuming it's at the root
+    // — exactly the flattening tolerance the PGP detector applies.
+    if is_pkcs7_mime(ctype, subtype) {
+        let smime_type = top_ct.attribute("smime-type").unwrap_or("");
+        if smime_type.eq_ignore_ascii_case("enveloped-data") {
+            let cms_der = (0..).map_while(|i| parsed.part(i)).find_map(|p| {
+                let ct = p.content_type()?;
+                if is_pkcs7_mime(ct.ctype(), ct.subtype().unwrap_or("")) {
+                    Some(p.contents().to_vec())
+                } else {
+                    None
+                }
+            });
+            return match cms_der {
+                Some(der) => Ok(Some(SmimeEnvelope::Enveloped { cms_der: der })),
+                None => Err(UnkaiError::Protocol(
+                    "application/pkcs7-mime enveloped-data envelope carried no CMS body".into(),
+                )),
+            };
+        }
+        // signed-data / certs-only / compressed-data — not handled in
+        // this chunk; fall through so the message still renders (as an
+        // attachment, the historical behaviour) rather than being
+        // mislabelled as something we can decrypt.
+        return Ok(None);
+    }
+
+    // Detached signed form: `multipart/signed; protocol="application/pkcs7-signature"`.
+    if ctype.eq_ignore_ascii_case("multipart") && subtype.eq_ignore_ascii_case("signed") {
+        let protocol = top_ct.attribute("protocol").unwrap_or("");
+        if protocol.eq_ignore_ascii_case("application/pkcs7-signature")
+            || protocol.eq_ignore_ascii_case("application/x-pkcs7-signature")
+        {
+            return Ok(Some(SmimeEnvelope::Signed));
+        }
+    }
+
+    Ok(None)
+}
+
+/// `true` for both the modern `application/pkcs7-mime` and the legacy
+/// `application/x-pkcs7-mime` content type.  Factored out because the
+/// enveloped-data detection checks it twice (top-level header, then
+/// each part during the flatten scan).
+fn is_pkcs7_mime(ctype: &str, subtype: &str) -> bool {
+    ctype.eq_ignore_ascii_case("application")
+        && (subtype.eq_ignore_ascii_case("pkcs7-mime")
+            || subtype.eq_ignore_ascii_case("x-pkcs7-mime"))
+}
+
+/// Apply a detected S/MIME envelope.  Counterpart to
+/// [`apply_pgp_envelope`]: the encrypted form goes through the bridge's
+/// `decrypt_smime`, the inner plaintext is re-parsed as a full MIME
+/// message, and the `protection` / `signature_status` / `signer_fingerprint`
+/// fields carry the bridge's outcome so MailView renders the same status
+/// chip it does for the OpenPGP stack.
+fn apply_smime_envelope(
+    envelope: SmimeEnvelope,
+    bridge: &dyn CryptoBridge,
+    id: &str,
+    account_id: &str,
+    folder: &str,
+    raw: &[u8],
+) -> Result<Email, UnkaiError> {
+    match envelope {
+        SmimeEnvelope::Enveloped { cms_der } => {
+            let payload = bridge.decrypt_smime(&cms_der)?;
+            let mut email = parse_plaintext_eml_bytes(&payload.plaintext, id, account_id, folder)?;
+            // `signature_status` is `Some` only once the nested
+            // sign-then-encrypt form (RFC 8551 §3.6) is wired through
+            // `decrypt_smime`; until then this is always `"encrypted"`.
+            // Sharing the exact label set with the PGP path means the UI
+            // chip code stays protocol-agnostic.
+            email.protection = Some(
+                if payload.signature_status.is_some() {
+                    "signed-and-encrypted"
+                } else {
+                    "encrypted"
+                }
+                .to_string(),
+            );
+            email.signature_status = payload.signature_status;
+            email.signer_fingerprint = payload.signer_fingerprint;
+            Ok(email)
+        }
+        SmimeEnvelope::Signed => {
+            // Detection-only, mirroring the OpenPGP `multipart/signed`
+            // path: the clear-signed body is already readable, so we
+            // render it as plaintext and tag `protection = "signed"`.
+            // Actual CMS verification waits on the same canonical-bytes
+            // access the PGP verify path is blocked on.
+            let mut email = parse_plaintext_eml_bytes(raw, id, account_id, folder)?;
+            email.protection = Some("signed".to_string());
+            Ok(email)
+        }
+    }
+}
+
 /// #341 follow-up to #57 — pull the bytes of a single attachment out
 /// of a PGP/MIME encrypted message, decrypting through the supplied
 /// bridge so the part_id indexes into the *decrypted inner MIME tree*
@@ -380,30 +553,45 @@ fn apply_pgp_envelope(
 /// by decrypting first and walking the inner tree with the same
 /// `attachments()` / `parts` fallback `fetch_attachment` uses.
 ///
-/// Returns `Ok(None)` if `raw` isn't a PGP/MIME envelope at all so
-/// the caller can fall back to the plaintext path.  Returns
-/// `Err(Protocol)` when the inner tree doesn't carry the requested
-/// `part_id` — typically a sign the caller is mixing inner / outer
-/// indices and should be routed through `fetch_attachment` instead.
+/// Handles both the OpenPGP `multipart/encrypted` and the S/MIME
+/// `application/pkcs7-mime; smime-type=enveloped-data` shapes — the
+/// inner-tree walk is identical once the bridge has handed back the
+/// decrypted plaintext, so the only stack-specific step is which
+/// detector + bridge call produces those bytes.
+///
+/// Returns `Ok(None)` if `raw` isn't an encrypted envelope of either
+/// stack (including a `multipart/signed` clear-signed message, whose
+/// parts are already in the clear) so the caller can fall back to the
+/// plaintext path.  Returns `Err(Protocol)` when the inner tree doesn't
+/// carry the requested `part_id` — typically a sign the caller is mixing
+/// inner / outer indices and should be routed through `fetch_attachment`
+/// instead.
 pub fn extract_decrypted_attachment(
     raw: &[u8],
     bridge: &dyn CryptoBridge,
     part_id: u32,
 ) -> Result<Option<(EmailAttachment, Vec<u8>)>, UnkaiError> {
-    let envelope = match detect_pgp_mime_envelope(raw)? {
-        Some(e) => e,
-        None => return Ok(None),
+    // Resolve the decrypted inner MIME bytes from whichever encrypted
+    // stack this message uses.  `multipart/signed` (either stack) and
+    // plain mail return `Ok(None)` so the caller drops to the regular
+    // attachment path.
+    let plaintext = if let Some(envelope) = detect_pgp_mime_envelope(raw)? {
+        match envelope {
+            PgpMimeEnvelope::Encrypted { ciphertext_armor } => {
+                bridge.decrypt(&ciphertext_armor)?.plaintext
+            }
+            PgpMimeEnvelope::Signed => return Ok(None),
+        }
+    } else if let Some(envelope) = detect_smime_envelope(raw)? {
+        match envelope {
+            SmimeEnvelope::Enveloped { cms_der } => bridge.decrypt_smime(&cms_der)?.plaintext,
+            SmimeEnvelope::Signed => return Ok(None),
+        }
+    } else {
+        return Ok(None);
     };
-    let ciphertext_armor = match envelope {
-        PgpMimeEnvelope::Encrypted { ciphertext_armor } => ciphertext_armor,
-        // `multipart/signed` carries its parts in cleartext already,
-        // so an attachment fetch against a signed-only envelope is
-        // the regular IMAP path — tell the caller to fall back.
-        PgpMimeEnvelope::Signed => return Ok(None),
-    };
-    let payload = bridge.decrypt(&ciphertext_armor)?;
     let parsed = MessageParser::default()
-        .parse(payload.plaintext.as_slice())
+        .parse(plaintext.as_slice())
         .ok_or_else(|| UnkaiError::Protocol("Failed to parse decrypted message".into()))?;
 
     // Same primary-then-fallback lookup `fetch_attachment` uses so
@@ -2533,10 +2721,26 @@ fn extract_envelope_protection(fetch: &async_imap::types::Fetch) -> Option<Strin
     // unfolding rules here.
     let parsed = MessageParser::default().parse(raw)?;
     let ct = parsed.content_type()?;
-    if !ct.ctype().eq_ignore_ascii_case("multipart") {
+    let ctype = ct.ctype();
+    let subtype = ct.subtype()?;
+
+    // S/MIME encrypted form is a bare `application/pkcs7-mime` single
+    // part (no `multipart` wrapper), so check it before the multipart
+    // gate that the PGP shapes sit behind.  `smime-type=enveloped-data`
+    // is the encrypted form; the opaque signed form and certs-only are
+    // left to the body parser (we only stamp what the chip can mean).
+    if is_pkcs7_mime(ctype, subtype) {
+        let smime_type = ct.attribute("smime-type").unwrap_or("");
+        return if smime_type.eq_ignore_ascii_case("enveloped-data") {
+            Some("encrypted".to_string())
+        } else {
+            None
+        };
+    }
+
+    if !ctype.eq_ignore_ascii_case("multipart") {
         return None;
     }
-    let subtype = ct.subtype()?;
     let protocol = ct.attribute("protocol").unwrap_or("");
     if subtype.eq_ignore_ascii_case("encrypted")
         && protocol.eq_ignore_ascii_case("application/pgp-encrypted")
@@ -2545,6 +2749,13 @@ fn extract_envelope_protection(fetch: &async_imap::types::Fetch) -> Option<Strin
     } else if subtype.eq_ignore_ascii_case("signed")
         && protocol.eq_ignore_ascii_case("application/pgp-signature")
     {
+        Some("signed".to_string())
+    } else if subtype.eq_ignore_ascii_case("signed")
+        && (protocol.eq_ignore_ascii_case("application/pkcs7-signature")
+            || protocol.eq_ignore_ascii_case("application/x-pkcs7-signature"))
+    {
+        // S/MIME detached (clear-signed) form — same "signed" chip the
+        // PGP `multipart/signed` shape stamps.
         Some("signed".to_string())
     } else {
         None
@@ -2714,6 +2925,17 @@ mod tests {
                 signer_fingerprint: self.signer_fingerprint.clone(),
             })
         }
+        fn decrypt_smime(&self, _cms_der: &[u8]) -> Result<DecryptedPayload, UnkaiError> {
+            // Same pre-baked plaintext as the PGP path — the receive-path
+            // tests only care that the right bytes were lifted out of the
+            // S/MIME envelope and handed to the bridge, not how the CMS
+            // is actually decrypted.
+            Ok(DecryptedPayload {
+                plaintext: self.plaintext.clone(),
+                signature_status: self.signature_status.clone(),
+                signer_fingerprint: self.signer_fingerprint.clone(),
+            })
+        }
         fn verify(
             &self,
             _signed_payload: &[u8],
@@ -2861,5 +3083,180 @@ mod tests {
         assert_eq!(with_bridge.subject, without_bridge.subject);
         assert_eq!(with_bridge.body_text, without_bridge.body_text);
         assert_eq!(with_bridge.protection, without_bridge.protection);
+    }
+
+    // ── S/MIME receive interceptor (#338) ──────────────────────
+
+    /// Build an S/MIME `application/pkcs7-mime; smime-type=enveloped-data`
+    /// message.  As with the PGP fixture the bridge stub doesn't really
+    /// decrypt, so the body only needs to be parseable — base64 of an
+    /// arbitrary byte string stands in for the CMS `EnvelopedData` DER.
+    fn smime_enveloped(cms_body_b64: &str) -> Vec<u8> {
+        format!(
+            "From: alice@example.com\r\n\
+             To: bob@example.com\r\n\
+             Subject: secret memo\r\n\
+             MIME-Version: 1.0\r\n\
+             Content-Type: application/pkcs7-mime; smime-type=enveloped-data; \
+                 name=\"smime.p7m\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\
+             Content-Disposition: attachment; filename=\"smime.p7m\"\r\n\
+             \r\n\
+             {cms_body_b64}\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// The plaintext the bridge stub "recovers" — a full inner MIME
+    /// message, headers included, exactly like the OpenPGP fixture.
+    fn smime_inner_plaintext() -> Vec<u8> {
+        b"From: alice@example.com\r\n\
+          To: bob@example.com\r\n\
+          Subject: secret memo\r\n\
+          MIME-Version: 1.0\r\n\
+          Content-Type: text/plain; charset=\"utf-8\"\r\n\
+          \r\n\
+          the package is in transit\r\n"
+            .to_vec()
+    }
+
+    #[test]
+    fn smime_enveloped_is_unwrapped_when_bridge_present() {
+        // "SGVsbG8=" is just valid base64 ("Hello") — the stub bridge
+        // ignores the bytes and returns the pre-baked plaintext.
+        let raw = smime_enveloped("SGVsbG8gU01JTUUgY2lwaGVydGV4dA==");
+        let bridge = StubBridge {
+            plaintext: smime_inner_plaintext(),
+            signature_status: None,
+            signer_fingerprint: None,
+        };
+
+        let email =
+            parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+
+        assert_eq!(email.subject, "secret memo");
+        assert_eq!(
+            email.body_text.as_deref(),
+            Some("the package is in transit\n"),
+            "decrypted plaintext body must reach the Email struct"
+        );
+        assert_eq!(email.protection.as_deref(), Some("encrypted"));
+        assert_eq!(email.signature_status, None);
+        assert_eq!(email.signer_fingerprint, None);
+    }
+
+    #[test]
+    fn smime_enveloped_with_inner_signature_marks_signed_and_encrypted() {
+        // Forward-looking: once the nested sign-then-encrypt form is wired
+        // through `decrypt_smime`, a non-None signature_status must bump
+        // the label to "signed-and-encrypted" — same as the PGP path.
+        let raw = smime_enveloped("SGVsbG8gU01JTUU=");
+        let bridge = StubBridge {
+            plaintext: smime_inner_plaintext(),
+            signature_status: Some("valid".into()),
+            signer_fingerprint: Some("AB:CD:EF".into()),
+        };
+
+        let email =
+            parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+
+        assert_eq!(email.protection.as_deref(), Some("signed-and-encrypted"));
+        assert_eq!(email.signature_status.as_deref(), Some("valid"));
+        assert_eq!(email.signer_fingerprint.as_deref(), Some("AB:CD:EF"));
+    }
+
+    #[test]
+    fn smime_enveloped_without_bridge_falls_back_to_plaintext() {
+        // No bridge → still parseable as plain MIME (the p7m surfaces as
+        // an attachment), `protection = None`.  Matches the PGP "no key
+        // imported yet" behaviour: don't break the UI, just can't show
+        // the contents.
+        let raw = smime_enveloped("SGVsbG8gU01JTUU=");
+
+        let email = parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", None).unwrap();
+
+        assert_eq!(email.subject, "secret memo");
+        assert_eq!(email.protection, None);
+        let plain = parse_eml_bytes(&raw, "INBOX:1", "acc", "INBOX").unwrap();
+        assert_eq!(plain.subject, email.subject);
+        assert_eq!(plain.protection, email.protection);
+    }
+
+    #[test]
+    fn smime_multipart_signed_is_detected_but_not_verified() {
+        // Clear-signed: the body part is readable, the detached signature
+        // sits in a second `application/pkcs7-signature` part.  We stamp
+        // "signed" without verifying (same deferral as the PGP path) and
+        // the cleartext body must still come through.
+        let raw = b"From: alice@example.com\r\n\
+                    To: bob@example.com\r\n\
+                    Subject: signed memo\r\n\
+                    MIME-Version: 1.0\r\n\
+                    Content-Type: multipart/signed; \
+                        protocol=\"application/pkcs7-signature\"; \
+                        micalg=\"sha-256\"; boundary=\"smime-boundary\"\r\n\
+                    \r\n\
+                    --smime-boundary\r\n\
+                    Content-Type: text/plain; charset=\"utf-8\"\r\n\
+                    \r\n\
+                    the package is in transit\r\n\
+                    --smime-boundary\r\n\
+                    Content-Type: application/pkcs7-signature; name=\"smime.p7s\"\r\n\
+                    Content-Transfer-Encoding: base64\r\n\
+                    \r\n\
+                    SGVsbG8gc2lnbmF0dXJl\r\n\
+                    --smime-boundary--\r\n";
+        let bridge = StubBridge {
+            plaintext: b"WOULD-NEVER-BE-CALLED".to_vec(),
+            signature_status: None,
+            signer_fingerprint: None,
+        };
+
+        let email =
+            parse_eml_bytes_with_crypto(raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+
+        assert_eq!(email.subject, "signed memo");
+        // No trailing newline: the CRLF before the `--smime-boundary`
+        // delimiter is part of the MIME boundary, not the body content.
+        assert_eq!(
+            email.body_text.as_deref(),
+            Some("the package is in transit"),
+            "clear-signed body must be readable"
+        );
+        assert_eq!(email.protection.as_deref(), Some("signed"));
+        assert_eq!(email.signature_status, None);
+    }
+
+    #[test]
+    fn smime_opaque_signed_data_is_not_claimed() {
+        // `smime-type=signed-data` is the opaque form — the content is
+        // wrapped inside the CMS SignedData and we can't read it without
+        // unwrapping (a follow-up).  The detector must NOT claim it as
+        // something it can decrypt; it falls through to plaintext parsing
+        // with `protection = None`.
+        let raw = format!(
+            "From: alice@example.com\r\n\
+             To: bob@example.com\r\n\
+             Subject: opaque signed\r\n\
+             MIME-Version: 1.0\r\n\
+             Content-Type: application/pkcs7-mime; smime-type=signed-data; \
+                 name=\"smime.p7m\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\
+             \r\n\
+             {}\r\n",
+            "SGVsbG8gb3BhcXVl"
+        )
+        .into_bytes();
+        let bridge = StubBridge {
+            plaintext: b"WOULD-NEVER-BE-CALLED".to_vec(),
+            signature_status: None,
+            signer_fingerprint: None,
+        };
+
+        let email =
+            parse_eml_bytes_with_crypto(&raw, "INBOX:1", "acc", "INBOX", Some(&bridge)).unwrap();
+
+        assert_eq!(email.subject, "opaque signed");
+        assert_eq!(email.protection, None);
     }
 }

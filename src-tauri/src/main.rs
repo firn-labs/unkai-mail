@@ -7413,25 +7413,21 @@ async fn background_decrypt_new(
     new_encrypted: &[&EmailEnvelope],
     cache: &Cache,
 ) -> Vec<Email> {
-    let passphrase = match resolve_pgp_passphrase(account_id, "") {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(
-                "background-decrypt: keychain passphrase resolve for '{account_id}' failed: {e}"
-            );
-            return Vec::new();
-        }
-    };
-    let bridge = match TauriCryptoBridge::for_account(account_id, &passphrase, (*cache).clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(
-                "background-decrypt: bridge build for '{account_id}' failed (keychain \
-                 passphrase + stored key mismatch?): {e}"
-            );
-            return Vec::new();
-        }
-    };
+    // The background path has no user to prompt, so it relies entirely
+    // on the per-account "Unlock automatically" keychain passphrases.
+    // We build a receive bridge with an empty supplied passphrase
+    // (forcing the keychain fallback for both stacks) and bail only when
+    // *neither* a PGP key nor an S/MIME identity could be unlocked —
+    // there's nothing to decrypt with, so the per-message fetch loop
+    // would just churn.
+    let bridge = TauriCryptoBridge::for_account_receive(account_id, "", (*cache).clone());
+    if !bridge.can_decrypt() {
+        tracing::debug!(
+            "background-decrypt: no auto-unlockable PGP or S/MIME identity for '{account_id}'; \
+             skipping (messages stay marked encrypted for on-demand decrypt)"
+        );
+        return Vec::new();
+    }
 
     let mut out = Vec::with_capacity(new_encrypted.len());
     for env in new_encrypted {
@@ -7515,6 +7511,20 @@ fn resolve_pgp_passphrase(account_id: &str, supplied: &str) -> Result<String, Un
     credentials::get_pgp_passphrase(account_id)
 }
 
+/// S/MIME counterpart to [`resolve_pgp_passphrase`] (#338).  Same
+/// precedence: a non-empty caller-supplied value (what the user typed
+/// into the Decrypt prompt) wins; otherwise fall back to the keychain
+/// entry written by the per-account "Unlock automatically" opt-in.  A
+/// missing entry surfaces as `UnkaiError::Auth` so the receive bridge's
+/// best-effort loader treats it as "no S/MIME passphrase available" and
+/// leaves the identity unloaded.
+fn resolve_smime_passphrase(account_id: &str, supplied: &str) -> Result<String, UnkaiError> {
+    if !supplied.is_empty() {
+        return Ok(supplied.to_string());
+    }
+    credentials::get_smime_passphrase(account_id)
+}
+
 /// Decrypt an encrypted message on demand (#57).
 ///
 /// Called by MailView when the user clicks "Decrypt" on a message
@@ -7548,13 +7558,16 @@ async fn decrypt_message(
 ) -> Result<Email, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
 
-    // #341 — empty passphrase means "use the keychain entry stored
-    // by the per-account Unlock-automatically opt-in."  When neither
-    // a typed value nor a stored one exists we surface a clear Auth
-    // error so the UI can route the user back to the Decrypt input
-    // or to the Encryption Settings opt-in.
-    let resolved = resolve_pgp_passphrase(&account_id, &pgp_passphrase)?;
-    let bridge = TauriCryptoBridge::for_account(&account_id, &resolved, (*cache).clone())?;
+    // #338 — the message could be PGP or S/MIME and we don't know which
+    // until we parse the envelope, so build a receive bridge that loads
+    // whichever stacks the account has.  The typed passphrase (empty →
+    // keychain "Unlock automatically" entry, per stack) is tried against
+    // both; if the stack the message actually needs couldn't be unlocked
+    // the per-stack decrypt surfaces a clean `Auth` error below, routing
+    // the user back to the Decrypt input or the Encryption Settings
+    // opt-in just as the pre-resolve check used to.
+    let bridge =
+        TauriCryptoBridge::for_account_receive(&account_id, &pgp_passphrase, (*cache).clone());
 
     let id = format!("{folder}:{uid}");
 
@@ -7750,11 +7763,13 @@ async fn download_decrypted_attachment(
     cache: State<'_, Cache>,
 ) -> Result<Vec<u8>, UnkaiError> {
     let account = load_account(&cache, &account_id)?;
-    // #341 — empty passphrase falls back to the keychain entry from
-    // the per-account Unlock-automatically opt-in (see
-    // `resolve_pgp_passphrase`).
-    let resolved = resolve_pgp_passphrase(&account_id, &pgp_passphrase)?;
-    let bridge = TauriCryptoBridge::for_account(&account_id, &resolved, (*cache).clone())?;
+    // #338 — same dual-stack receive bridge as `decrypt_message`: the
+    // attachment may live inside a PGP/MIME or an S/MIME enveloped
+    // message, and `extract_decrypted_attachment` picks the right stack.
+    // Empty passphrase falls back to each stack's keychain
+    // "Unlock automatically" entry.
+    let bridge =
+        TauriCryptoBridge::for_account_receive(&account_id, &pgp_passphrase, (*cache).clone());
 
     // #341 ciphertext cache — try the local copy first so a second
     // attachment open / Forward of the same encrypted message
@@ -7769,7 +7784,7 @@ async fn download_decrypted_attachment(
             // encryption-aware routing stays consistent.
             Ok(None) => {
                 return Err(UnkaiError::Protocol(
-                    "Message is not PGP-encrypted; use download_email_attachment".into(),
+                    "Message is not encrypted; use download_email_attachment".into(),
                 ));
             }
             Err(e) => {
@@ -7806,7 +7821,7 @@ async fn download_decrypted_attachment(
         // as a typed error rather than silently falling through
         // keeps the UI's encryption-aware routing honest.
         None => Err(UnkaiError::Protocol(
-            "Message is not PGP-encrypted; use download_email_attachment".into(),
+            "Message is not encrypted; use download_email_attachment".into(),
         )),
     }
 }
@@ -13470,10 +13485,18 @@ fn smime_get_certs_for_email(
 /// public-key lookups.  Short-lived: rebuilt per send / per fetch
 /// because the passphrase shouldn't outlive one operation.
 struct TauriCryptoBridge {
-    /// Pre-parsed and (logically) unlocked private key.  rpgp doesn't
-    /// actually unlock until it needs the secret material, so this
-    /// wrapper carries the passphrase too.
-    private_key: unkai_crypto::PrivateKey,
+    /// Pre-parsed and (logically) unlocked OpenPGP private key.  rpgp
+    /// doesn't actually unlock until it needs the secret material, so
+    /// this wrapper carries the passphrase too.  `None` on the receive
+    /// path when the account has no PGP key configured (e.g. an
+    /// S/MIME-only account) — the PGP trait methods then surface a clean
+    /// `Auth` error rather than the bridge refusing to build.
+    private_key: Option<unkai_crypto::PrivateKey>,
+    /// The account's S/MIME identity (leaf cert + private key), parsed
+    /// from the stored `.p12` (#338).  `None` for the PGP-only send path
+    /// and whenever the account hasn't imported an S/MIME cert; the
+    /// `decrypt_smime` method errors cleanly when it's missing.
+    smime_identity: Option<unkai_crypto::CertificateWithKey>,
     /// Used to look up recipient public keys by email at encrypt
     /// time and trusted-signer keys at verify time.  Cheap to clone
     /// because `Cache` is an `Arc` internally.
@@ -13481,18 +13504,107 @@ struct TauriCryptoBridge {
 }
 
 impl TauriCryptoBridge {
-    /// Build a bridge from the account's stored armored key plus a
+    /// Build a PGP bridge from the account's stored armored key plus a
     /// freshly-prompted passphrase.  The caller is responsible for
     /// asking the user — we never read the passphrase from the
     /// keychain (the "re-prompt per operation" decision in #57).
     /// Returns `UnkaiError::Auth` when the keychain has no key entry
     /// for this account, so the IPC layer routes the user to the
     /// "set up encryption" flow rather than surfacing a raw error.
+    ///
+    /// This is the **send-side** constructor — it requires a PGP key
+    /// because the only caller (the SMTP send path) is already gated on
+    /// `encryption_mode == "pgp"`.  The receive path uses
+    /// [`Self::for_account_receive`] instead, which loads whichever
+    /// stacks the account has and tolerates either being absent.
     fn for_account(account_id: &str, passphrase: &str, cache: Cache) -> Result<Self, UnkaiError> {
         let armored = credentials::get_pgp_private_key(account_id)?;
         let private_key = unkai_crypto::parse_private_key(armored.as_bytes(), Some(passphrase))
             .map_err(|e| UnkaiError::Crypto(format!("Stored PGP key won't parse: {e}")))?;
-        Ok(Self { private_key, cache })
+        Ok(Self {
+            private_key: Some(private_key),
+            smime_identity: None,
+            cache,
+        })
+    }
+
+    /// Build a bridge for the **receive** path, loading every encryption
+    /// stack the account has configured (#338).  Unlike
+    /// [`Self::for_account`] this never fails on a missing identity — the
+    /// receive path can't know whether an inbound message is PGP or
+    /// S/MIME until it parses the envelope, so we load both best-effort
+    /// and let the per-stack decrypt method surface a clean error if the
+    /// message turns out to need a stack we couldn't load.
+    ///
+    /// `supplied_passphrase` is whatever the user typed into the Decrypt
+    /// prompt (empty on the background-decrypt path).  It's tried against
+    /// *both* stacks:
+    /// - PGP: rpgp defers passphrase checking, so a wrong/empty value
+    ///   parses fine here and only fails if a PGP message actually needs
+    ///   decrypting with it.
+    /// - S/MIME: PKCS#12 verifies the passphrase at parse time (MAC), so
+    ///   a value that doesn't match the `.p12` simply leaves
+    ///   `smime_identity = None`; that's correct, because a non-matching
+    ///   passphrase means this typed value was for the other stack.
+    ///
+    /// Each stack falls back to its keychain "Unlock automatically"
+    /// passphrase when `supplied_passphrase` is empty, via
+    /// [`resolve_pgp_passphrase`] / [`resolve_smime_passphrase`].
+    fn for_account_receive(account_id: &str, supplied_passphrase: &str, cache: Cache) -> Self {
+        let private_key = (|| {
+            let armored = credentials::get_pgp_private_key(account_id).ok()?;
+            let passphrase = resolve_pgp_passphrase(account_id, supplied_passphrase).ok()?;
+            match unkai_crypto::parse_private_key(armored.as_bytes(), Some(&passphrase)) {
+                Ok(k) => Some(k),
+                Err(e) => {
+                    tracing::debug!(
+                        "receive bridge: stored PGP key won't parse for '{account_id}': {e}"
+                    );
+                    None
+                }
+            }
+        })();
+
+        let smime_identity = (|| {
+            let p12 = credentials::get_smime_private_cert(account_id).ok()?;
+            let passphrase = resolve_smime_passphrase(account_id, supplied_passphrase).ok()?;
+            match unkai_crypto::parse_pkcs12(&p12, &passphrase) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    tracing::debug!(
+                        "receive bridge: stored S/MIME cert won't unlock for '{account_id}': {e}"
+                    );
+                    None
+                }
+            }
+        })();
+
+        Self {
+            private_key,
+            smime_identity,
+            cache,
+        }
+    }
+
+    /// `true` when at least one encryption stack loaded — used by the
+    /// background-decrypt path to skip the per-message fetch loop
+    /// entirely when neither a PGP key nor an S/MIME identity is
+    /// available (e.g. the user hasn't enabled "Unlock automatically"
+    /// for either stack), exactly as the old PGP-only path bailed when
+    /// the keychain passphrase didn't resolve.
+    fn can_decrypt(&self) -> bool {
+        self.private_key.is_some() || self.smime_identity.is_some()
+    }
+
+    /// The unlocked PGP key, or a clean `Auth` error when the account
+    /// has none configured.  Centralised so the four PGP trait methods
+    /// don't each repeat the `Option` unwrap, and so the error the IPC
+    /// layer sees ("no PGP key") routes to the same "set up encryption"
+    /// prompt as the missing-keychain-entry case.
+    fn pgp_key(&self) -> Result<&unkai_crypto::PrivateKey, UnkaiError> {
+        self.private_key
+            .as_ref()
+            .ok_or_else(|| UnkaiError::Auth("No PGP key is configured for this account".into()))
     }
 
     /// Resolve `recipient_emails` to the cached public keys we hold for
@@ -13619,11 +13731,33 @@ impl unkai_core::crypto::CryptoBridge for TauriCryptoBridge {
         let trusted = self.collect_all_trusted_keys()?;
         let trusted_refs: Vec<&unkai_crypto::PublicKey> = trusted.iter().collect();
         let result =
-            unkai_crypto::decrypt_and_verify(ciphertext_armor, &self.private_key, &trusted_refs)?;
+            unkai_crypto::decrypt_and_verify(ciphertext_armor, self.pgp_key()?, &trusted_refs)?;
         Ok(unkai_core::crypto::DecryptedPayload {
             plaintext: result.plaintext,
             signature_status: result.signature_status.map(serialize_signature_status),
             signer_fingerprint: result.signer_fingerprint,
+        })
+    }
+
+    fn decrypt_smime(
+        &self,
+        cms_der: &[u8],
+    ) -> Result<unkai_core::crypto::DecryptedPayload, UnkaiError> {
+        let identity = self.smime_identity.as_ref().ok_or_else(|| {
+            UnkaiError::Auth("No S/MIME certificate is configured for this account".into())
+        })?;
+        let result = unkai_crypto::smime_decrypt(cms_der, identity)?;
+        Ok(unkai_core::crypto::DecryptedPayload {
+            plaintext: result.plaintext,
+            // `signature_status` is always `None` from `smime_decrypt`
+            // today (the nested sign-then-encrypt form is a follow-up);
+            // map it through the same serializer the PGP path uses so the
+            // two stacks stay wire-identical the moment it lands.
+            signature_status: result.signature_status.map(serialize_signature_status),
+            // S/MIME attributes the signer by subject DN rather than a
+            // fingerprint; until the nested-signature path is wired there
+            // is nothing to surface here.
+            signer_fingerprint: None,
         })
     }
 
@@ -13650,7 +13784,7 @@ impl unkai_core::crypto::CryptoBridge for TauriCryptoBridge {
         let recipient_keys = self.collect_recipient_keys(recipient_emails)?;
         let recipient_refs: Vec<&unkai_crypto::PublicKey> = recipient_keys.iter().collect();
         let armored = if sign {
-            unkai_crypto::sign_and_encrypt(inner_mime, &self.private_key, &recipient_refs)?
+            unkai_crypto::sign_and_encrypt(inner_mime, self.pgp_key()?, &recipient_refs)?
         } else {
             unkai_crypto::encrypt(inner_mime, &recipient_refs)?
         };
@@ -13660,7 +13794,7 @@ impl unkai_core::crypto::CryptoBridge for TauriCryptoBridge {
     }
 
     fn sign(&self, signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
-        unkai_crypto::sign_detached(signed_payload, &self.private_key)
+        unkai_crypto::sign_detached(signed_payload, self.pgp_key()?)
     }
 }
 
