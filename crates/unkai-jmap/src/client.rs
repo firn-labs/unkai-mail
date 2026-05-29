@@ -490,51 +490,56 @@ impl JmapClient {
         let is_starred = email.keywords.contains_key("$flagged");
         let has_attachments = email.has_attachment;
 
-        // PGP/MIME detection on JMAP (#57, #341): the server has
-        // already parsed the message into `bodyValues`, so we can't
-        // get at the raw `multipart/encrypted` MIME structure
-        // cheaply.  Instead we sniff for the OpenPGP armor headers
-        // in the body text — if the server returned the application/
-        // octet-stream content as a body part (which Fastmail and
-        // others do), the value starts with `-----BEGIN PGP MESSAGE-----`.
+        // Crypto detection on JMAP (#57 PGP, #341, #338 S/MIME): the
+        // server has already parsed the message into `bodyValues`, so we
+        // can't see the raw `multipart/encrypted` / `application/pkcs7-mime`
+        // envelope cheaply.  `detect_jmap_crypto` sniffs the flattened
+        // body armor + per-part content types instead (see its docs for
+        // the per-stack signals it keys on).
         //
-        // When we recognise the signature, stamp `protection =
-        // "encrypted"` to mirror the IMAP receive path.  MailView's
-        // Decrypt button will fire `decrypt_message`, which now
-        // pulls the raw RFC 5322 bytes via `fetch_raw_message`
-        // (JMAP `Blob/get` via the session's download URL) and
-        // runs them through `unkai_imap::parse_eml_bytes_with_crypto`
-        // — the actual MIME envelope re-stamps `protection` to
-        // `encrypted` / `signed-and-encrypted` at decrypt time, so
-        // the coarse sniff here is just the "show a Decrypt
-        // affordance" trigger.  The deprecated
-        // `encrypted-cannot-decrypt` marker is no longer produced
-        // by the receive path; CryptoChips.svelte still handles
+        // The coarse stamp here is just the "show a Decrypt affordance"
+        // (encrypted) / "show a signed chip" (signed) trigger.  When the
+        // user decrypts, `decrypt_message` pulls the raw RFC 5322 bytes
+        // via `fetch_raw_message` (JMAP `Blob/get` via the session's
+        // download URL) and runs them through
+        // `unkai_imap::parse_eml_bytes_with_crypto`, whose parameter-aware
+        // `detect_pgp_mime_envelope` / `detect_smime_envelope` re-stamp
+        // `protection` precisely (`encrypted` / `signed-and-encrypted`).
+        // The deprecated `encrypted-cannot-decrypt` marker is no longer
+        // produced by the receive path; CryptoChips.svelte still handles
         // it defensively for any external entry point that might
         // legitimately emit it.
-        let looks_pgp_encrypted = body_text
-            .as_deref()
-            .map(|s| s.trim_start().starts_with("-----BEGIN PGP MESSAGE-----"))
-            .unwrap_or(false)
-            || body_html
-                .as_deref()
-                .map(|s| s.contains("-----BEGIN PGP MESSAGE-----"))
-                .unwrap_or(false);
+        let crypto_kind = detect_jmap_crypto(&email, body_text.as_deref(), body_html.as_deref());
 
-        let (protection, body_text, body_html) = if looks_pgp_encrypted {
-            tracing::info!(
-                "JMAP: message '{}' appears to be PGP-encrypted; \
-                 stamping `encrypted` so MailView shows the Decrypt button",
-                email.id
-            );
-            // Null the body so the user sees the Decrypt affordance
-            // instead of the armored ciphertext.  Same shape as the
-            // IMAP receive path, which leaves `body_text` /
-            // `body_html` as `None` for `multipart/encrypted` until
-            // `decrypt_message` unlocks the inner MIME tree.
-            (Some("encrypted".to_string()), None, None)
-        } else {
-            (None, body_text, body_html)
+        let (protection, body_text, body_html) = match crypto_kind {
+            Some(JmapCryptoKind::Encrypted) => {
+                tracing::info!(
+                    "JMAP: message '{}' looks encrypted (PGP armor or S/MIME \
+                     pkcs7-mime); stamping `encrypted` so MailView shows the \
+                     Decrypt button",
+                    email.id
+                );
+                // Null the body so the user sees the Decrypt affordance
+                // instead of the raw ciphertext.  Same shape as the IMAP
+                // receive path, which leaves `body_text` / `body_html` as
+                // `None` for an encrypted envelope until `decrypt_message`
+                // unlocks the inner MIME tree.
+                (Some("encrypted".to_string()), None, None)
+            }
+            Some(JmapCryptoKind::Signed) => {
+                tracing::info!(
+                    "JMAP: message '{}' is a detached multipart/signed (PGP or \
+                     S/MIME); stamping `signed`",
+                    email.id
+                );
+                // Clear-signed: the body is already readable, so keep it and
+                // just tag the chip.  Mirrors the IMAP receive path's
+                // `Signed` arms for both stacks (detection-only; OpenPGP /
+                // CMS signature verification is deferred on the same
+                // canonical-bytes blocker).
+                (Some("signed".to_string()), body_text, body_html)
+            }
+            None => (None, body_text, body_html),
         };
 
         info!("JMAP: fetched message '{}'", email.id);
@@ -1157,6 +1162,94 @@ impl JmapClient {
 }
 
 // ── Free-standing helpers ──────────────────────────────────────
+
+/// What a coarse JMAP crypto sniff found in a fetched message (#57 PGP,
+/// #338 S/MIME).
+///
+/// The JMAP server flattens the MIME tree before we see it, so this only
+/// distinguishes "needs decryption" from "clear-signed" — it deliberately
+/// does *not* name the stack (PGP vs S/MIME) or the precise label.  Both
+/// are re-derived at decrypt time from the raw bytes (via
+/// `fetch_raw_message` and `parse_eml_bytes_with_crypto`), which run the
+/// parameter-aware `detect_pgp_mime_envelope` / `detect_smime_envelope`.
+enum JmapCryptoKind {
+    /// PGP `multipart/encrypted` armor or S/MIME `enveloped-data`.  Null
+    /// the body so MailView shows the Decrypt button.
+    Encrypted,
+    /// A detached `multipart/signed` message (either stack).  The body is
+    /// already readable, so keep it and just tag the chip.
+    Signed,
+}
+
+/// Coarse crypto sniff for the JMAP receive path (#57, #341, #338).
+///
+/// Unlike the IMAP path — which runs the real
+/// `detect_pgp_mime_envelope` / `detect_smime_envelope` over the raw MIME
+/// bytes — JMAP hands us an already-parsed message: flattened body values
+/// plus per-part content types, with all Content-Type *parameters*
+/// stripped (RFC 8621 §4.1.4).  So we can't read `protocol=` or
+/// `smime-type=`; the sniff keys only on what survives:
+///
+/// - PGP `multipart/encrypted`: the server exposes the inner
+///   `application/octet-stream` armor as body text starting with
+///   `-----BEGIN PGP MESSAGE-----` ⇒ [`JmapCryptoKind::Encrypted`];
+/// - S/MIME `enveloped-data`: a binary `application/pkcs7-mime` (or legacy
+///   `x-pkcs7-mime`) part ⇒ [`JmapCryptoKind::Encrypted`];
+/// - detached `multipart/signed` (either stack): a sibling
+///   `application/pgp-signature` or `application/pkcs7-signature` (or
+///   `x-`) part ⇒ [`JmapCryptoKind::Signed`].
+///
+/// This only drives the affordance; the precise `protection` label
+/// (`encrypted` / `signed-and-encrypted`) is re-stamped at decrypt time.
+/// The legacy `x-pkcs7-*` spellings are accepted to match the IMAP
+/// detector.  The two stacks are mutually exclusive at the top level, and
+/// encrypted signals are checked before signed, so a single message only
+/// ever resolves to one kind.
+fn detect_jmap_crypto(
+    email: &JmapEmail,
+    body_text: Option<&str>,
+    body_html: Option<&str>,
+) -> Option<JmapCryptoKind> {
+    let has_media_type = |needles: &[&str]| {
+        email
+            .attachments
+            .iter()
+            .chain(email.text_body.iter())
+            .chain(email.html_body.iter())
+            .filter_map(|part| part.content_type.as_deref())
+            .any(|ct| {
+                // JMAP normalises `type` to lowercase and drops params, but
+                // be defensive: split off any stray params and compare
+                // case-insensitively.
+                let bare = ct.split(';').next().unwrap_or(ct).trim();
+                needles.iter().any(|n| bare.eq_ignore_ascii_case(n))
+            })
+    };
+
+    // ── Encrypted ──
+    // PGP `multipart/encrypted`: the inner octet-stream armor surfaces as
+    // body text (leading marker on text, anywhere in HTML).
+    let pgp_encrypted = body_text
+        .map(|s| s.trim_start().starts_with("-----BEGIN PGP MESSAGE-----"))
+        .unwrap_or(false)
+        || body_html
+            .map(|s| s.contains("-----BEGIN PGP MESSAGE-----"))
+            .unwrap_or(false);
+    if pgp_encrypted || has_media_type(&["application/pkcs7-mime", "application/x-pkcs7-mime"]) {
+        return Some(JmapCryptoKind::Encrypted);
+    }
+
+    // ── Signed (detached, either stack) ──
+    if has_media_type(&[
+        "application/pgp-signature",
+        "application/pkcs7-signature",
+        "application/x-pkcs7-signature",
+    ]) {
+        return Some(JmapCryptoKind::Signed);
+    }
+
+    None
+}
 
 /// Build a full hierarchical folder name by walking up parent_id links.
 ///
