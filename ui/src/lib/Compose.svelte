@@ -1019,10 +1019,27 @@
   // The two toggles share the passphrase prompt and the keychain
   // auto-unlock path: both unlock the same account private key.
   let signOnlyEnabled = $state(false)
-  /** Either toggle being on means the SMTP layer routes through the
-   *  PGP/MIME path (encrypt → `multipart/encrypted`; sign-only →
-   *  `multipart/signed`) and a passphrase has to be available. */
-  const pgpActive = $derived(encryptEnabled || signOnlyEnabled)
+  // #338 — which crypto stack the Encrypt / Sign toggles drive.  The
+  // toggles themselves are stack-neutral ("encrypt" / "sign"); this
+  // picks PGP vs S/MIME.  Defaults to 'pgp'; the per-account effect
+  // below flips it to 'smime' for an account that only has an S/MIME
+  // certificate, so a single-stack account never sees the switch.
+  let cryptoStack = $state<'pgp' | 'smime'>('pgp')
+  /** Whether the From account has a usable private identity in each
+   *  stack — drives both the default `cryptoStack` and whether the
+   *  PGP | S/MIME switch is offered at all. */
+  let pgpKeyAvailable = $state(false)
+  let smimeCertAvailable = $state(false)
+  /** Only offer the stack switch when the account could plausibly use
+   *  either stack; otherwise the toggles silently drive the one that
+   *  is configured (back-compat with the PGP-only UX). */
+  const bothStacksAvailable = $derived(pgpKeyAvailable && smimeCertAvailable)
+  /** A passphrase (to unlock our own private key) is needed for any
+   *  PGP mode and for S/MIME sign-only.  S/MIME *encrypt* uses only
+   *  the recipients' public certs, so it needs no passphrase. */
+  const needsPassphrase = $derived(
+    cryptoStack === 'smime' ? signOnlyEnabled : encryptEnabled || signOnlyEnabled,
+  )
   // Inline passphrase entry shown when the user clicks Send with
   // encryption on.  Cleared on submit and on cancel so a freshly-
   // opened Compose never inherits a stale passphrase.
@@ -1037,21 +1054,70 @@
   // the right UI.  Defaults to `false` so the historic "type your
   // passphrase" path stays visible until we know otherwise.
   let autoUnlockForCompose = $state(false)
+
+  // #338 — probe which crypto stacks the From account has configured
+  // so we can offer the PGP | S/MIME switch (and default to the one
+  // that's set up).  Both probes are best-effort; a failure just
+  // leaves that stack marked unavailable.  Guarded against the From
+  // dropdown changing mid-flight by re-checking `fromAccountId`.
   $effect(() => {
     const id = fromAccountId
+    if (!id) {
+      pgpKeyAvailable = false
+      smimeCertAvailable = false
+      return
+    }
+    void (async () => {
+      let hasPgp = false
+      let hasSmime = false
+      try {
+        const s = await invoke<{ has_key: boolean }>('pgp_get_account_key_status', {
+          accountId: id,
+        })
+        hasPgp = s?.has_key === true
+      } catch (e) {
+        console.warn('pgp_get_account_key_status failed', e)
+      }
+      try {
+        const s = await invoke<{ has_cert: boolean }>('smime_get_account_cert_status', {
+          accountId: id,
+        })
+        hasSmime = s?.has_cert === true
+      } catch (e) {
+        console.warn('smime_get_account_cert_status failed', e)
+      }
+      if (fromAccountId !== id) return
+      pgpKeyAvailable = hasPgp
+      smimeCertAvailable = hasSmime
+      // Default to whichever single stack is configured so a one-stack
+      // account never has to touch the (hidden) switch.  Both-or-
+      // neither leaves the current choice / the 'pgp' default intact.
+      if (hasSmime && !hasPgp) cryptoStack = 'smime'
+      else if (hasPgp && !hasSmime) cryptoStack = 'pgp'
+    })()
+  })
+
+  // #341 / #338 — reflect the per-account "Unlock automatically"
+  // opt-in for the *currently selected stack*: PGP and S/MIME each
+  // have their own keychain entry, so the affordance has to re-probe
+  // when either the account or the stack changes.  Guard the
+  // assignment behind the same id + stack check so a late response
+  // can't overwrite the freshly-fetched state.
+  $effect(() => {
+    const id = fromAccountId
+    const stack = cryptoStack
     if (!id) {
       autoUnlockForCompose = false
       return
     }
-    void invoke<boolean>('pgp_has_unlock_automatically', { accountId: id })
+    const cmd =
+      stack === 'smime' ? 'smime_has_unlock_automatically' : 'pgp_has_unlock_automatically'
+    void invoke<boolean>(cmd, { accountId: id })
       .then((on) => {
-        // Guard the assignment behind the same id check so a
-        // late-arriving response from the previous account can't
-        // overwrite the freshly-fetched state of the new one.
-        if (fromAccountId === id) autoUnlockForCompose = on
+        if (fromAccountId === id && cryptoStack === stack) autoUnlockForCompose = on
       })
       .catch(() => {
-        if (fromAccountId === id) autoUnlockForCompose = false
+        if (fromAccountId === id && cryptoStack === stack) autoUnlockForCompose = false
       })
   })
   /** `true` once the user has clicked Send with encryption on but
@@ -1099,7 +1165,10 @@
    *  effect below debounces the actual IPC calls so the user
    *  doesn't pay a roundtrip per character. */
   const encryptionRecipients = $derived.by<string[]>(() => {
-    if (!encryptEnabled) return []
+    // PGP-only: the cached-key probe and its warning are about the
+    // `pgp_public_keys` table.  S/MIME recipient certs land in Chunk 8,
+    // so the check stays dark for the S/MIME stack for now.
+    if (!encryptEnabled || cryptoStack !== 'pgp') return []
     const seen = new Set<string>()
     for (const piece of [...splitAddrs(to), ...splitAddrs(cc), ...splitAddrs(bcc)]) {
       const bare = bareAddr(piece).toLowerCase()
@@ -1109,7 +1178,7 @@
   })
 
   $effect(() => {
-    if (!encryptEnabled) {
+    if (!encryptEnabled || cryptoStack !== 'pgp') {
       recipientKeyStatus = new Map()
       return
     }
@@ -2169,15 +2238,26 @@
           attachments: snap.attachments,
           in_reply_to: parentMessageId,
           references: newReferences,
-          // #57 / #341: encryption_mode='pgp' triggers the SMTP
-          // layer's `multipart/encrypted` path (always
-          // sign-inside-encrypt).  signing_enabled alone triggers
-          // the RFC 3156 §5 `multipart/signed` sign-only path —
-          // body in cleartext, integrity + origin attested via a
-          // detached OpenPGP signature.  Both off → historical
-          // plaintext send.
-          encryption_mode: encryptEnabled ? 'pgp' : null,
-          signing_enabled: encryptEnabled || signOnlyEnabled,
+          // #57 / #341 / #338: the (mode, signing_enabled) pair the
+          // SMTP layer dispatches on.
+          //   PGP encrypt    → 'pgp'        + signing_enabled (multipart/encrypted)
+          //   PGP sign-only  → null         + signing_enabled (RFC 3156 multipart/signed)
+          //   S/MIME encrypt → 'smime'      (pkcs7-mime enveloped-data)
+          //   S/MIME sign    → 'smime-sign' (multipart/signed, pkcs7-signature)
+          //   nothing on     → null + false (historical plaintext send)
+          // `signing_enabled` stays PGP-implied; the S/MIME modes
+          // carry their own stack via the explicit mode string.
+          encryption_mode:
+            cryptoStack === 'smime'
+              ? encryptEnabled
+                ? 'smime'
+                : signOnlyEnabled
+                  ? 'smime-sign'
+                  : null
+              : encryptEnabled
+                ? 'pgp'
+                : null,
+          signing_enabled: cryptoStack === 'pgp' && (encryptEnabled || signOnlyEnabled),
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list
@@ -2191,13 +2271,15 @@
         // path doesn't reach this invoke, so cancelling leaves
         // the source row alone — what the user expects.
         outboxSource: snap.initialAtSend?.outboxSource ?? null,
-        // #57: passphrase that unlocks the account's PGP private
-        // key — captured from the inline prompt below.  Only
-        // meaningful when the SMTP path is PGP/MIME (encrypt or
-        // sign-only); the backend ignores it for plaintext sends.
-        // Cleared the moment the IPC resolves so it doesn't linger
-        // across re-renders.
-        pgpPassphrase: pgpActive ? pgpPassphrase : null,
+        // #57 / #338: passphrase that unlocks the account's private
+        // key — captured from the inline prompt below.  The single
+        // IPC arg is reused for both stacks (the backend routes it to
+        // the PGP or S/MIME keychain by `encryption_mode`).  Only
+        // sent when a mode actually needs the private key (any PGP
+        // mode, or S/MIME sign-only); S/MIME encrypt and plaintext
+        // sends pass null.  Cleared the moment the IPC resolves so it
+        // doesn't linger across re-renders.
+        pgpPassphrase: needsPassphrase ? pgpPassphrase : null,
       })
       // Wipe the in-memory passphrase before yielding back to the
       // outer flow so a successful send doesn't leave it sitting
@@ -2584,27 +2666,29 @@
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-2">
       <div class="flex items-center gap-2 min-w-0">
         <h2 class="text-base font-semibold whitespace-nowrap">New message</h2>
-        <!-- #57 / #341 — PGP-mode indicator promoted out of the
-             ribbon so the user sees the state from anywhere in the
+        <!-- #57 / #341 / #338 — crypto-mode indicator promoted out of
+             the ribbon so the user sees the state from anywhere in the
              window, not just from the send-actions row.  Encrypt
              takes precedence over sign-only because picking both
              toggles is mutually exclusive (encrypt already implies
-             a signature inside the envelope). -->
+             a signature inside the envelope).  Stack-neutral: the
+             label reads the same whether the selected stack is PGP or
+             S/MIME. -->
         {#if encryptEnabled}
           <span
             class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
-            title="This message will be sent as PGP/MIME (encrypt + sign)"
+            title={m.compose_crypto_encrypt_title()}
           >
             <Icon name="encrypted" size={14} />
-            <span>Encrypted</span>
+            <span>{m.compose_crypto_encrypt_active()}</span>
           </span>
         {:else if signOnlyEnabled}
           <span
             class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200"
-            title="This message will be sent as PGP/MIME multipart/signed (body in cleartext, digital signature attached)"
+            title={m.compose_crypto_sign_title()}
           >
             <Icon name="lock" size={14} />
-            <span>Signed</span>
+            <span>{m.compose_crypto_sign_active()}</span>
           </span>
         {/if}
       </div>
@@ -2734,7 +2818,7 @@
            keeps the chip diagnostic when a multi-recipient reply
            has only one missing key.  Hidden whenever every
            recipient has a key, or encryption is off. -->
-      {#if encryptEnabled && recipientsWithoutKey.length > 0}
+      {#if cryptoStack === 'pgp' && encryptEnabled && recipientsWithoutKey.length > 0}
         <div
           class="flex items-start gap-3 px-3 py-2 rounded-md border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
           role="alert"
@@ -2908,10 +2992,10 @@
   <button
     type="button"
     class="ctb-send"
-    disabled={sending || (pgpActive && !pgpPassphrase && !autoUnlockForCompose)}
-    title={pgpActive && !pgpPassphrase && !autoUnlockForCompose
-      ? 'Open the Encryption tab and enter your PGP passphrase to send'
-      : 'Send the message'}
+    disabled={sending || (needsPassphrase && !pgpPassphrase && !autoUnlockForCompose)}
+    title={needsPassphrase && !pgpPassphrase && !autoUnlockForCompose
+      ? m.compose_crypto_send_needs_passphrase()
+      : m.compose_send_tooltip()}
     onclick={send}
   >
     <span>{sending ? 'Sending…' : 'Send'}</span>
@@ -2926,16 +3010,60 @@
      passphrase field isn't crowded into the Send actions row where
      it doesn't fit. -->
 {#snippet encryptionTabContent()}
+  <!-- #338 — crypto-stack switch.  Only shown when the From account
+       has BOTH a PGP key and an S/MIME certificate; a single-stack
+       account never sees it (the Encrypt / Sign toggles silently
+       drive whichever one is configured).  Switching stacks clears
+       any typed passphrase since the two stacks unlock different
+       private keys. -->
+  {#if bothStacksAvailable}
+    <div class="flex items-center gap-2 px-2" role="group" aria-label={m.compose_crypto_stack_label()}>
+      <span class="text-xs text-surface-500 whitespace-nowrap">{m.compose_crypto_stack_label()}</span>
+      <div class="inline-flex rounded-md border border-surface-300 dark:border-surface-600 overflow-hidden text-xs">
+        <button
+          type="button"
+          class="px-2.5 py-1 transition-colors {cryptoStack === 'pgp'
+            ? 'bg-primary-500 text-white'
+            : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+          aria-pressed={cryptoStack === 'pgp'}
+          onclick={() => {
+            if (cryptoStack !== 'pgp') {
+              cryptoStack = 'pgp'
+              pgpPassphrase = ''
+            }
+          }}
+        >
+          {m.compose_crypto_stack_pgp()}
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 transition-colors {cryptoStack === 'smime'
+            ? 'bg-primary-500 text-white'
+            : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+          aria-pressed={cryptoStack === 'smime'}
+          onclick={() => {
+            if (cryptoStack !== 'smime') {
+              cryptoStack = 'smime'
+              pgpPassphrase = ''
+            }
+          }}
+        >
+          {m.compose_crypto_stack_smime()}
+        </button>
+      </div>
+    </div>
+  {/if}
   <!-- Primary toggle: a `rt-btn` so the encrypt toggle is visually
        a sibling to the Attach / NC Files / Talk / Event buttons
-       in the other panels. -->
+       in the other panels.  Stack-neutral — drives PGP or S/MIME
+       depending on `cryptoStack`. -->
   <button
     type="button"
     class="rt-btn"
     class:active={encryptEnabled}
     title={encryptEnabled
-      ? 'Encryption on — click to switch back to plaintext'
-      : 'Encrypt + sign this message with your account PGP key'}
+      ? m.compose_crypto_encrypt_title_active()
+      : m.compose_crypto_encrypt_title()}
     aria-pressed={encryptEnabled}
     onclick={() => {
       encryptEnabled = !encryptEnabled
@@ -2954,20 +3082,22 @@
     <span class="rt-btn-icon">
       <Icon name={encryptEnabled ? 'encrypted' : 'lock'} size={20} />
     </span>
-    <span class="rt-btn-label">{encryptEnabled ? 'Encrypted' : 'Encrypt'}</span>
+    <span class="rt-btn-label">
+      {encryptEnabled ? m.compose_crypto_encrypt_active() : m.compose_crypto_encrypt()}
+    </span>
   </button>
   <!-- #341 — sign-only sibling toggle.  Same `rt-btn` shape so it
        reads as a peer of the Encrypt toggle; mutually exclusive
        with Encrypt (see the onclick comment above for why).  The
        body stays in cleartext; the recipient verifies origin via
-       the detached OpenPGP signature in the second body part. -->
+       the detached signature in the second body part. -->
   <button
     type="button"
     class="rt-btn"
     class:active={signOnlyEnabled}
     title={signOnlyEnabled
-      ? 'Sign-only on — click to switch back to plaintext'
-      : 'Sign this message with your account PGP key (body stays in cleartext)'}
+      ? m.compose_crypto_sign_title_active()
+      : m.compose_crypto_sign_title()}
     aria-pressed={signOnlyEnabled}
     onclick={() => {
       signOnlyEnabled = !signOnlyEnabled
@@ -2981,30 +3111,39 @@
     <span class="rt-btn-icon">
       <Icon name="lock" size={20} />
     </span>
-    <span class="rt-btn-label">{signOnlyEnabled ? 'Signed' : 'Sign'}</span>
+    <span class="rt-btn-label">
+      {signOnlyEnabled ? m.compose_crypto_sign_active() : m.compose_crypto_sign()}
+    </span>
   </button>
-  <!-- Passphrase entry only when a PGP mode is on AND the account
-       hasn't opted into "Unlock automatically" (#341).  When the
-       opt-in is on the passphrase ships from the OS keychain at
-       send time, so we render a small "auto-unlock" affordance
-       in place of the input — the user gets visible confirmation
-       without having to retype on every signed / encrypted send. -->
-  {#if pgpActive}
+  <!-- Passphrase entry only when the selected mode needs our private
+       key (any PGP mode, or S/MIME sign-only) AND the account hasn't
+       opted into "Unlock automatically" (#341).  S/MIME *encrypt*
+       needs no passphrase (recipient certs only), so the row stays
+       hidden there.  When the opt-in is on the passphrase ships from
+       the OS keychain at send time, so we render a small "auto-unlock"
+       affordance in place of the input. -->
+  {#if needsPassphrase}
     {#if autoUnlockForCompose}
       <div class="flex items-center gap-2 px-2 text-xs text-surface-500">
         <Icon name="lock" size={16} />
-        <span>{m.compose_pgp_auto_unlock_active()}</span>
+        <span>
+          {cryptoStack === 'smime'
+            ? m.compose_smime_auto_unlock_active()
+            : m.compose_pgp_auto_unlock_active()}
+        </span>
       </div>
     {:else}
       <div class="flex items-center gap-2 px-2">
         <label for="pgp-passphrase-input" class="text-xs text-surface-500 whitespace-nowrap">
-          PGP passphrase
+          {cryptoStack === 'smime'
+            ? m.compose_crypto_passphrase_label_smime()
+            : m.compose_crypto_passphrase_label_pgp()}
         </label>
         <input
           id="pgp-passphrase-input"
           type="password"
           class="input text-xs px-2 py-1 rounded-md w-56"
-          placeholder="Unlocks your account key"
+          placeholder={m.compose_crypto_passphrase_placeholder()}
           bind:value={pgpPassphrase}
           disabled={sending}
           autocomplete="off"
