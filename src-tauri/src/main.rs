@@ -8950,15 +8950,20 @@ async fn run_send_pipeline(
     pgp_passphrase: Option<&str>,
 ) -> Result<(), UnkaiError> {
     if uses_jmap(account) {
-        if email.encryption_mode.as_deref() == Some("pgp") || email.signing_enabled {
+        let mode = email.encryption_mode.as_deref();
+        if mode == Some("pgp")
+            || mode == Some("smime")
+            || mode == Some("smime-sign")
+            || email.signing_enabled
+        {
             // We don't yet wrap the JMAP submission path in
-            // `multipart/encrypted` or `multipart/signed` (the SMTP
-            // submission method on JMAP servers tends to want a
+            // `multipart/encrypted` / `multipart/signed` / `pkcs7-mime`
+            // (the SMTP submission method on JMAP servers tends to want a
             // fully-built MIME and the server-side relay handles
             // transport).  Surface that mismatch loudly so the user
             // sends via SMTP instead.
             return Err(UnkaiError::Protocol(
-                "PGP send over the JMAP submission path is not yet wired — \
+                "Encrypted/signed send over the JMAP submission path is not yet wired — \
                  switch the account to IMAP/SMTP for encrypted or signed sends"
                     .into(),
             ));
@@ -8988,7 +8993,13 @@ async fn run_send_pipeline(
         &account.trusted_certs,
     )
     .await?;
-    let pgp_active = email.encryption_mode.as_deref() == Some("pgp") || email.signing_enabled;
+    let mode = email.encryption_mode.as_deref();
+    let smime_active = mode == Some("smime") || mode == Some("smime-sign");
+    // PGP keeps its historical trigger (`encryption_mode == "pgp"` or the
+    // bare `signing_enabled` sign-only flag) but must not fire when an
+    // explicit S/MIME mode is selected — those carry their own stack.
+    let pgp_active = !smime_active && (mode == Some("pgp") || email.signing_enabled);
+
     if pgp_active {
         // #341 — caller passphrase wins; empty / missing falls back
         // to the keychain entry from the per-account Unlock-
@@ -9007,6 +9018,28 @@ async fn run_send_pipeline(
             })?,
         };
         let bridge = TauriCryptoBridge::for_account(&account.id, &resolved, cache.clone())?;
+        smtp.send_with_crypto(email, Some(&bridge)).await?;
+    } else if smime_active {
+        // S/MIME send (#338).  The encrypt-only path (`smime`) needs only
+        // the recipients' public certs, so we build the bridge without a
+        // private identity.  The sign-only path (`smime-sign`) must unlock
+        // our own `.p12` to produce the detached CMS signature, so it
+        // resolves a passphrase with the same precedence as the PGP path.
+        let bridge = if mode == Some("smime-sign") {
+            let resolved = match pgp_passphrase {
+                Some(p) if !p.is_empty() => p.to_string(),
+                _ => credentials::get_smime_passphrase(&account.id).map_err(|_| {
+                    UnkaiError::Auth(
+                        "S/MIME signing requested but no passphrase supplied — \
+                         retry from Compose so we can prompt"
+                            .into(),
+                    )
+                })?,
+            };
+            TauriCryptoBridge::for_account_smime_send(&account.id, Some(&resolved), cache.clone())?
+        } else {
+            TauriCryptoBridge::for_account_smime_send(&account.id, None, cache.clone())?
+        };
         smtp.send_with_crypto(email, Some(&bridge)).await?;
     } else {
         smtp.send(email).await?;
@@ -13528,6 +13561,38 @@ impl TauriCryptoBridge {
         })
     }
 
+    /// Build an **S/MIME send-side** bridge (#338).  Sibling of
+    /// [`Self::for_account`] for the S/MIME stack.
+    ///
+    /// `passphrase` is `Some` only when the send mode needs our own
+    /// private identity (the `multipart/signed` sign-only path, and a
+    /// future nested sign-then-encrypt): the `.p12` is loaded from the
+    /// keychain and unlocked, with a wrong/missing passphrase surfacing
+    /// as the usual `parse_pkcs12` error so the IPC layer can re-prompt.
+    /// `None` is the **encrypt-only** case (`encryption_mode == "smime"`),
+    /// which needs only the recipients' public certs — we don't load (or
+    /// require) the account's own identity at all, so an account can
+    /// encrypt to others before it has imported its own cert.
+    fn for_account_smime_send(
+        account_id: &str,
+        passphrase: Option<&str>,
+        cache: Cache,
+    ) -> Result<Self, UnkaiError> {
+        let smime_identity = match passphrase {
+            Some(supplied) => {
+                let p12 = credentials::get_smime_private_cert(account_id)?;
+                let resolved = resolve_smime_passphrase(account_id, supplied)?;
+                Some(unkai_crypto::parse_pkcs12(&p12, &resolved)?)
+            }
+            None => None,
+        };
+        Ok(Self {
+            private_key: None,
+            smime_identity,
+            cache,
+        })
+    }
+
     /// Build a bridge for the **receive** path, loading every encryption
     /// stack the account has configured (#338).  Unlike
     /// [`Self::for_account`] this never fails on a missing identity — the
@@ -13698,6 +13763,36 @@ impl TauriCryptoBridge {
         Ok(out)
     }
 
+    /// Resolve `recipient_emails` to the cached X.509 certificates we
+    /// hold for each address (S/MIME counterpart to
+    /// [`Self::collect_recipient_keys`], #338).  Looks each address up in
+    /// the dedicated `smime_certs` cache (populated by the
+    /// `smime_import_public_cert` paste/file flow from Chunk 2); the most
+    /// recently added cert for the address wins, matching how the PGP
+    /// fast path takes the first cached key.
+    ///
+    /// There is no vCard fallback yet — the S/MIME vCard `KEY:` auto-import
+    /// is a later chunk; until then a recipient without a cached cert
+    /// surfaces as `CryptoKeyNotFound` so Compose can prompt the user to
+    /// import one.
+    fn collect_recipient_smime_certs(
+        &self,
+        recipient_emails: &[String],
+    ) -> Result<Vec<unkai_crypto::Certificate>, UnkaiError> {
+        let mut out = Vec::with_capacity(recipient_emails.len());
+        for email in recipient_emails {
+            let rows = self
+                .cache
+                .get_smime_certs_for_email(email)
+                .map_err(UnkaiError::from)?;
+            match rows.into_iter().next() {
+                Some(row) => out.push(unkai_crypto::parse_der_cert(&row.der_cert)?),
+                None => return Err(UnkaiError::CryptoKeyNotFound(email.clone())),
+            }
+        }
+        Ok(out)
+    }
+
     /// Materialise every cached public key as a trust set for
     /// `decrypt_and_verify`.  Cheap because the cache returns plain
     /// armored strings — rpgp does the parse work.  Errors on
@@ -13795,6 +13890,23 @@ impl unkai_core::crypto::CryptoBridge for TauriCryptoBridge {
 
     fn sign(&self, signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
         unkai_crypto::sign_detached(signed_payload, self.pgp_key()?)
+    }
+
+    fn encrypt_smime(
+        &self,
+        inner_mime: &[u8],
+        recipient_emails: &[String],
+    ) -> Result<Vec<u8>, UnkaiError> {
+        let certs = self.collect_recipient_smime_certs(recipient_emails)?;
+        let cert_refs: Vec<&unkai_crypto::Certificate> = certs.iter().collect();
+        unkai_crypto::smime_encrypt(inner_mime, &cert_refs)
+    }
+
+    fn sign_smime(&self, signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+        let identity = self.smime_identity.as_ref().ok_or_else(|| {
+            UnkaiError::Auth("No S/MIME certificate is configured for this account".into())
+        })?;
+        unkai_crypto::smime_sign(signed_payload, identity)
     }
 }
 

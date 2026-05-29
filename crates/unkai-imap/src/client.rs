@@ -2954,6 +2954,16 @@ mod tests {
         fn sign(&self, _signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
             unreachable!("receive-path tests never hit the sign path")
         }
+        fn encrypt_smime(
+            &self,
+            _inner_mime: &[u8],
+            _recipient_emails: &[String],
+        ) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!("receive-path tests never hit the S/MIME encrypt path")
+        }
+        fn sign_smime(&self, _signed_payload: &[u8]) -> Result<Vec<u8>, UnkaiError> {
+            unreachable!("receive-path tests never hit the S/MIME sign path")
+        }
     }
 
     /// Build a PGP/MIME `multipart/encrypted` message with a placeholder
