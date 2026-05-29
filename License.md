@@ -42,7 +42,7 @@ The following packages are distributed under the MIT License:
 `open`, `hex`, `async-imap`, `futures`, `tokio-rustls`,
 `rustls-pki-types`, `tokio-util`, `sha2`, `lettre`, `mail-parser`,
 `quick-xml`, `ical`, `base64`, `aes-gcm`, `pbkdf2`, `hmac`, `uuid`,
-`hickory-resolver`, `font-kit`, `pgp` (rpgp), `rand`, `tauri`,
+`hickory-resolver`, `font-kit`, `pgp` (rpgp), `rand`, `zeroize`, `tauri`,
 `tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
 `tauri-plugin-single-instance`, `notify-rust`, `windows`.
@@ -105,7 +105,7 @@ with downstream consumers who require it):
 `open`, `hex`, `async-imap`, `futures`, `rustls`, `tokio-rustls`,
 `rustls-pki-types`, `mail-parser`, `ical`, `base64`, `aes-gcm`,
 `pbkdf2`, `hmac`, `uuid`, `hickory-resolver`, `font-kit`,
-`pgp` (rpgp), `rand`, `openssl`, `tauri`, `tauri-build`,
+`pgp` (rpgp), `rand`, `openssl`, `zeroize`, `tauri`, `tauri-build`,
 `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
 `tauri-plugin-single-instance`, `notify-rust`, `windows`.

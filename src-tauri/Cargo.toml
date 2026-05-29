@@ -31,6 +31,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+# Scrubs cleartext passphrase / private-key buffers from memory on
+# drop at the IPC boundary (#370).
+zeroize.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 # Desktop notifications (Issue #16). The plugin is registered on the
 # Rust side so JS can `sendNotification` through the capability-gated

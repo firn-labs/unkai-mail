@@ -19,3 +19,5 @@ thiserror = { workspace = true }
 # S/MIME implementation rather than assembling RFC 5652 ASN.1
 # from RustCrypto primitives ourselves.
 openssl = { workspace = true }
+# Zeroize our own cleartext passphrase buffers on drop (#370).
+zeroize = { workspace = true }
