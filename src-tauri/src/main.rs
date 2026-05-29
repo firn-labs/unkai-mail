@@ -13793,6 +13793,39 @@ impl TauriCryptoBridge {
         Ok(out)
     }
 
+    /// Gather the X.509 certs we already hold for an inbound message's
+    /// sender — the TOFU candidate set for [`unkai_crypto::smime_verify`]
+    /// (#338 trust model).  `sender_from` is the raw `From` value
+    /// (`"Name <addr>"` or a bare address); we extract the address and
+    /// look it up in the `smime_certs` cache.
+    ///
+    /// Unlike [`Self::collect_recipient_smime_certs`], a sender with no
+    /// cached cert is **not** an error — it just means we can't establish
+    /// TOFU trust, and the verifier falls back to CA-chain or amber
+    /// "untrusted issuer".  Unparseable cached rows are skipped rather
+    /// than failing the whole verify.
+    fn collect_sender_smime_certs(
+        &self,
+        sender_from: &str,
+    ) -> Result<Vec<unkai_crypto::Certificate>, UnkaiError> {
+        let address = extract_bare_address(sender_from);
+        let rows = self
+            .cache
+            .get_smime_certs_for_email(&address)
+            .map_err(UnkaiError::from)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            match unkai_crypto::parse_der_cert(&row.der_cert) {
+                Ok(cert) => out.push(cert),
+                Err(e) => tracing::warn!(
+                    "Skipping unparseable cached S/MIME cert fp={} for sender verify: {e}",
+                    row.fingerprint
+                ),
+            }
+        }
+        Ok(out)
+    }
+
     /// Materialise every cached public key as a trust set for
     /// `decrypt_and_verify`.  Cheap because the cache returns plain
     /// armored strings — rpgp does the parse work.  Errors on
@@ -13863,10 +13896,36 @@ impl unkai_core::crypto::CryptoBridge for TauriCryptoBridge {
     ) -> Result<unkai_core::crypto::VerifyOutcome, UnkaiError> {
         let trusted = self.collect_all_trusted_keys()?;
         let trusted_refs: Vec<&unkai_crypto::PublicKey> = trusted.iter().collect();
-        let status = unkai_crypto::verify_detached(signed_payload, signature_armor, &trusted_refs)?;
+        let (status, signer_fingerprint) =
+            unkai_crypto::verify_detached(signed_payload, signature_armor, &trusted_refs)?;
         Ok(unkai_core::crypto::VerifyOutcome {
             status: serialize_signature_status(status),
-            signer_fingerprint: None,
+            signer_fingerprint,
+        })
+    }
+
+    fn verify_smime(
+        &self,
+        signed_payload: &[u8],
+        signature_der: &[u8],
+        sender_from: &str,
+    ) -> Result<unkai_core::crypto::VerifyOutcome, UnkaiError> {
+        // The bundled Mozilla roots are the chain-trust anchors.  Built
+        // per call to sidestep stashing a (non-`Clone`) `X509Store` on the
+        // bridge; the ~150 DER parses are cheap next to fetching the mail,
+        // and verification only runs on the signed-message minority.
+        let trust_store = unkai_crypto::build_mozilla_trust_store()?;
+        let candidates = self.collect_sender_smime_certs(sender_from)?;
+        let candidate_refs: Vec<&unkai_crypto::Certificate> = candidates.iter().collect();
+        let outcome = unkai_crypto::smime_verify(
+            signed_payload,
+            signature_der,
+            &candidate_refs,
+            &trust_store,
+        )?;
+        Ok(unkai_core::crypto::VerifyOutcome {
+            status: serialize_signature_status(outcome.status),
+            signer_fingerprint: outcome.signer_fingerprint,
         })
     }
 
@@ -13910,6 +13969,17 @@ impl unkai_core::crypto::CryptoBridge for TauriCryptoBridge {
     }
 }
 
+/// Pull the bare address out of a `From`-style value: `"Name <a@b>"`
+/// → `"a@b"`, a bare `"a@b"` unchanged.  Keyed verbatim (no case
+/// folding) into the `smime_certs` lookup, matching how the recipient
+/// path passes addresses straight through.
+fn extract_bare_address(from: &str) -> String {
+    match (from.rfind('<'), from.rfind('>')) {
+        (Some(start), Some(end)) if start < end => from[start + 1..end].trim().to_string(),
+        _ => from.trim().to_string(),
+    }
+}
+
 /// Convert the typed `unkai_crypto::SignatureStatus` enum to the
 /// kebab-case string the rest of the workspace (cache columns, JSON
 /// IPC payload, Svelte UI) consumes.  Single source of truth so the
@@ -13919,6 +13989,8 @@ fn serialize_signature_status(status: unkai_crypto::SignatureStatus) -> String {
         unkai_crypto::SignatureStatus::Valid => "valid".into(),
         unkai_crypto::SignatureStatus::Invalid => "invalid".into(),
         unkai_crypto::SignatureStatus::UnknownSigner => "unknown-signer".into(),
+        unkai_crypto::SignatureStatus::ValidUntrustedIssuer => "valid-untrusted-issuer".into(),
+        unkai_crypto::SignatureStatus::ValidExpiredCert => "valid-expired-cert".into(),
     }
 }
 

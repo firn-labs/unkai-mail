@@ -90,6 +90,14 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"
 # the OS native trust stores would each give us slightly different
 # answers.
 webpki-roots = "1.0"
+# Sibling of `webpki-roots` from the same rustls project and the same
+# Mozilla / CCADB source data, but ships the *full self-signed DER*
+# certificate for each root rather than the trust-anchor SPKI form.
+# `webpki-roots` is perfect for rustls (it only needs the anchor's
+# public key + name constraints), but S/MIME chain validation runs
+# through OpenSSL's `X509Store`, which needs whole `X509` certs — so
+# we pull the full-cert variant here for #338's trust model.
+webpki-root-certs = "1.0"
 rustls-pki-types = "1"
 # Adapters between tokio I/O traits and futures-io traits. async-imap
 # is generic over `futures-io::AsyncRead + AsyncWrite`, but our TLS

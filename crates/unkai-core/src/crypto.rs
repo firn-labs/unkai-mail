@@ -42,10 +42,16 @@ pub struct DecryptedPayload {
 /// signature against a trusted set of public keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyOutcome {
-    /// Kebab-case `unkai_crypto::SignatureStatus`:
-    /// `"valid" | "invalid" | "unknown-signer"`.
+    /// Kebab-case `unkai_crypto::SignatureStatus`.  OpenPGP emits
+    /// `"valid" | "invalid" | "unknown-signer"`; S/MIME can additionally
+    /// emit the amber trust-nuance values `"valid-untrusted-issuer"` and
+    /// `"valid-expired-cert"`.
     pub status: String,
-    /// Hex fingerprint of the signer when status is `"valid"`.
+    /// Identifier of the signer when we could attribute the signature:
+    /// the key's hex fingerprint (OpenPGP) or the matched certificate's
+    /// colon-hex SHA-256 fingerprint (S/MIME TOFU).  `None` when the
+    /// signer couldn't be attributed (e.g. an S/MIME signature trusted
+    /// only via its CA chain, whose embedded cert we can't read back).
     pub signer_fingerprint: Option<String>,
 }
 
@@ -125,6 +131,29 @@ pub trait CryptoBridge: Send + Sync {
         &self,
         signed_payload: &[u8],
         signature_armor: &[u8],
+    ) -> Result<VerifyOutcome, crate::UnkaiError>;
+
+    /// Verify a detached S/MIME (CMS) signature over a signed MIME body
+    /// (#338).  `signed_payload` is the exact on-the-wire bytes of the
+    /// signed part as they sat between the `multipart/signed` boundaries
+    /// (the receive path slices them straight out of the raw message —
+    /// no re-canonicalisation, so what we verify is what the sender
+    /// hashed); `signature_der` is the binary CMS `SignedData` from the
+    /// `application/pkcs7-signature` part (mail-parser has already undone
+    /// the base64 Content-Transfer-Encoding).
+    ///
+    /// `sender_from` is the message's `From` value — the implementation
+    /// uses it to pull the sender's cached X.509 certs as TOFU candidates
+    /// and to attribute the signature.  The returned [`VerifyOutcome`]
+    /// carries the trust-graded status (`"valid"` / `"valid-untrusted-issuer"`
+    /// / `"valid-expired-cert"` / `"invalid"` / `"unknown-signer"`) that
+    /// drives the tri-tone signature chip; an `Err` means verification
+    /// couldn't be attempted at all (e.g. an unparseable signature).
+    fn verify_smime(
+        &self,
+        signed_payload: &[u8],
+        signature_der: &[u8],
+        sender_from: &str,
     ) -> Result<VerifyOutcome, crate::UnkaiError>;
 
     /// Encrypt an outbound mail body to one or more recipients,

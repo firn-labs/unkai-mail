@@ -19,5 +19,12 @@ thiserror = { workspace = true }
 # S/MIME implementation rather than assembling RFC 5652 ASN.1
 # from RustCrypto primitives ourselves.
 openssl = { workspace = true }
+# Bundled Mozilla root CAs in full self-signed DER form, fed into an
+# OpenSSL `X509Store` for S/MIME signature chain validation (#338
+# Chunk 7).  `rustls-pki-types` is the `CertificateDer` wrapper the
+# bundle exposes; we only borrow its bytes via `as_ref()` into
+# `X509::from_der`.
+webpki-root-certs = { workspace = true }
+rustls-pki-types = { workspace = true }
 # Zeroize our own cleartext passphrase buffers on drop (#370).
 zeroize = { workspace = true }

@@ -192,13 +192,19 @@ pub fn sign_detached(plaintext: &[u8], signer: &PrivateKey) -> Result<Vec<u8>, U
     Ok(armored.into_bytes())
 }
 
-/// Verify a detached signature.  Returns:
+/// Verify a detached signature.  Returns a `(status, signer_fingerprint)`
+/// pair:
 ///
-/// - [`SignatureStatus::Valid`] — signature verifies against one of the
-///   supplied trusted keys.
-/// - [`SignatureStatus::UnknownSigner`] — signature is well-formed but
-///   none of `trusted_keys` was able to verify it.  The caller can still
-///   display the message, just without attribution.
+/// - [`SignatureStatus::Valid`] + `Some(fingerprint)` — signature
+///   verifies against one of the supplied trusted keys; the fingerprint
+///   is that key's primary fingerprint, for the "Signed by …" chip.
+/// - [`SignatureStatus::UnknownSigner`] + `None` — signature is
+///   well-formed but none of `trusted_keys` was able to verify it.  The
+///   caller can still display the message, just without attribution.
+///
+/// The fingerprint mirrors [`decrypt_and_verify`]'s attribution so the
+/// `multipart/signed` receive path can show the same "Signed by 9F2A…"
+/// chip the signed-and-encrypted path already does.
 ///
 /// **Note**: we don't currently produce `Invalid` here because `rpgp`'s
 /// `verify` returns `Err` for both "wrong key" and "tampered" without an
@@ -210,7 +216,7 @@ pub fn verify_detached(
     plaintext: &[u8],
     signature: &[u8],
     trusted_keys: &[&PublicKey],
-) -> Result<SignatureStatus, UnkaiError> {
+) -> Result<(SignatureStatus, Option<String>), UnkaiError> {
     let sig = if looks_armored(signature) {
         DetachedSignature::from_armor_single(std::io::Cursor::new(signature))
             .map_err(|e| UnkaiError::Crypto(format!("Failed to parse armored signature: {e}")))?
@@ -225,19 +231,21 @@ pub fn verify_detached(
         // only checks the surface we hand it, so a signature emitted by
         // a sign-capable subkey wouldn't authenticate against the cert's
         // primary alone — we'd misclassify it as `UnknownSigner` even
-        // though we hold the right cert.
-        if sig.verify(&k.inner, plaintext).is_ok() {
-            return Ok(SignatureStatus::Valid);
-        }
-        if k.inner
-            .public_subkeys
-            .iter()
-            .any(|sk| sig.verify(sk, plaintext).is_ok())
-        {
-            return Ok(SignatureStatus::Valid);
+        // though we hold the right cert.  Attribution stays on the
+        // primary fingerprint either way — one identity per sender.
+        let verified = sig.verify(&k.inner, plaintext).is_ok()
+            || k.inner
+                .public_subkeys
+                .iter()
+                .any(|sk| sig.verify(sk, plaintext).is_ok());
+        if verified {
+            return Ok((
+                SignatureStatus::Valid,
+                Some(format!("{:X}", k.inner.fingerprint())),
+            ));
         }
     }
-    Ok(SignatureStatus::UnknownSigner)
+    Ok((SignatureStatus::UnknownSigner, None))
 }
 
 /// Decrypt an armored OpenPGP message and, if it carries an inner
@@ -501,9 +509,14 @@ mod tests {
         let payload = b"hello, world";
 
         let sig = sign_detached(payload, &alice).expect("sign");
-        let status = verify_detached(payload, &sig, &[&alice_pub]).expect("verify");
+        let (status, fingerprint) = verify_detached(payload, &sig, &[&alice_pub]).expect("verify");
 
         assert_eq!(status, SignatureStatus::Valid);
+        assert_eq!(
+            fingerprint,
+            Some(alice_pub.fingerprint()),
+            "a valid signature should attribute the signer's fingerprint"
+        );
     }
 
     #[test]
@@ -516,9 +529,10 @@ mod tests {
         let sig = sign_detached(payload, &alice).expect("sign");
         // We hand the verifier only Bob's key.  Alice's signature can't
         // be attributed; status falls back to UnknownSigner.
-        let status = verify_detached(payload, &sig, &[&bob_pub]).expect("verify");
+        let (status, fingerprint) = verify_detached(payload, &sig, &[&bob_pub]).expect("verify");
 
         assert_eq!(status, SignatureStatus::UnknownSigner);
+        assert_eq!(fingerprint, None);
     }
 
     #[test]
@@ -570,7 +584,7 @@ mod tests {
         // sign-side picking the subkey *and* the verify-side walking the
         // cert's subkeys — strip either and this test fails.
         let sig = sign_detached(payload, &alice).expect("sign");
-        let status = verify_detached(payload, &sig, &[&alice_pub]).expect("verify");
+        let (status, _fingerprint) = verify_detached(payload, &sig, &[&alice_pub]).expect("verify");
 
         assert_eq!(status, SignatureStatus::Valid);
     }

@@ -327,8 +327,13 @@
   "mail_view_chip_decrypted": "Entschlüsselt",
   "mail_view_chip_encrypted": "Verschlüsselt",
   "mail_view_chip_signed_valid": "Signiert von {fp}",
+  "mail_view_chip_signed_trusted": "Signiert (vertrauenswürdig)",
   "mail_view_chip_signed_invalid": "Signatur ungültig",
   "mail_view_chip_signed_unknown": "Signiert (Unterzeichner unbekannt)",
+  "mail_view_chip_signed_untrusted": "Signiert (Aussteller nicht vertrauenswürdig)",
+  "mail_view_chip_signed_untrusted_tooltip": "Die Signatur ist gültig, aber das Signaturzertifikat wurde nicht von einer vertrauenswürdigen Stelle ausgestellt und ist keines, das du gespeichert hast.",
+  "mail_view_chip_signed_expired": "Signiert (Zertifikat abgelaufen)",
+  "mail_view_chip_signed_expired_tooltip": "Die Signatur ist gültig, aber das Signaturzertifikat liegt außerhalb seines Gültigkeitszeitraums.",
 
   "contact_form_section_encryption": "Verschlüsselung",
   "contact_form_label_pgp_keys": "OpenPGP-Schlüssel",

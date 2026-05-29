@@ -1705,6 +1705,9 @@ mod tests {
         fn verify(&self, _: &[u8], _: &[u8]) -> Result<VerifyOutcome, UnkaiError> {
             unreachable!()
         }
+        fn verify_smime(&self, _: &[u8], _: &[u8], _: &str) -> Result<VerifyOutcome, UnkaiError> {
+            unreachable!()
+        }
         fn encrypt(&self, _: &[u8], _: &[String], _: bool) -> Result<EncryptedOutput, UnkaiError> {
             unreachable!()
         }
@@ -1914,6 +1917,9 @@ mod tests {
             unreachable!()
         }
         fn verify(&self, _: &[u8], _: &[u8]) -> Result<VerifyOutcome, UnkaiError> {
+            unreachable!()
+        }
+        fn verify_smime(&self, _: &[u8], _: &[u8], _: &str) -> Result<VerifyOutcome, UnkaiError> {
             unreachable!()
         }
         fn encrypt(

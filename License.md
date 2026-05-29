@@ -25,7 +25,7 @@ applies to every package listed underneath it.
 | [Apache-2.0](#apache-license-20) | dual-licensed Rust crates, OpenSSL (vendored), TypeScript |
 | [BSD-3-Clause](#bsd-3-clause-license) | SQLCipher (vendored) |
 | [ISC](#isc-license) | rustls, ring (parts) |
-| [MPL-2.0](#mozilla-public-license-20) | webpki-roots, dompurify |
+| [MPL-2.0](#mozilla-public-license-20) | webpki-roots, webpki-root-certs, dompurify |
 | [GPL-3.0](#gnu-general-public-license-v3) | rrule (and Unkai itself) |
 | [CC0-1.0](#cc0-10-runtime-data-feeds) (data only) | URLhaus malicious-URL feed (#165) |
 | Multi-licence components | [ring](#ring-tls-crypto-provider) (ISC + MIT + OpenSSL) |
@@ -210,6 +210,10 @@ The following are governed by MPL-2.0:
 - **`webpki-roots`** (Rust crate) — Mozilla's curated list of trusted
   root CAs, bundled into the rustls trust store. Source:
   <https://github.com/rustls/webpki-roots>
+- **`webpki-root-certs`** (Rust crate) — the same Mozilla root CA list
+  as `webpki-roots`, but as full self-signed DER certificates, fed into
+  an OpenSSL `X509Store` for S/MIME signature chain validation (#338).
+  Source: <https://github.com/rustls/webpki-roots>
 - **`dompurify`** (npm package) — HTML sanitiser used by the mail
   reader. Available as `MPL-2.0 OR Apache-2.0`; we honour the MPL-2.0
   obligations as the more conservative choice. Source:
@@ -217,7 +221,7 @@ The following are governed by MPL-2.0:
 
 MPL-2.0 is **file-level weak copyleft**. Modifications to MPL-licensed
 *files* must be released under MPL, but new files we add ourselves
-stay under our own licence. We do not modify either of these
+stay under our own licence. We do not modify any of these
 dependencies — we consume them as published — so we do not generate
 any source obligations beyond preserving the original licence headers,
 which Cargo / npm already do at install time.
