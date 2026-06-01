@@ -1420,24 +1420,39 @@
     return (c.keys?.length ?? 0) > 0
   }
 
-  /** Best-effort upsert of every newly-pasted public key into the
-   *  pgp_public_keys cache (#57).  We do this *after* a successful
-   *  contact save so Compose can find the key without waiting for
-   *  a CardDAV sync round-trip.  Failures are logged and ignored
-   *  per-key — a malformed paste shouldn't roll back the contact
-   *  edit, since the vCard write already succeeded.  The
-   *  `email_hint` ties the key to the contact's primary email so
+  /** Best-effort upsert of every newly-pasted `KEY:` value into the
+   *  recipient-crypto caches so Compose can find it without waiting
+   *  for a CardDAV sync round-trip.
+   *
+   *  One vCard `KEY:` field carries either an OpenPGP key (#57) or an
+   *  X.509 certificate (#338), so we try *both* importers per value
+   *  and let each reject what isn't its format: `pgp_import_public_key`
+   *  parses armored OpenPGP and errors on a PEM cert;
+   *  `smime_import_public_cert` parses X.509 PEM/DER and errors on an
+   *  OpenPGP block.  Whichever matches lands the value in its cache;
+   *  the other's error is logged and ignored.  All failures are
+   *  per-value and non-fatal — a malformed paste shouldn't roll back
+   *  the contact edit, since the vCard write already succeeded.  The
+   *  `email_hint` ties each entry to the contact's primary email so
    *  the Compose recipient lookup resolves it. */
   async function pushKeysToCryptoCache(contact: Contact) {
     const primaryEmail = contact.email[0]?.value ?? null
-    for (const armored of contact.keys ?? []) {
+    for (const value of contact.keys ?? []) {
       try {
         await invoke<string>('pgp_import_public_key', {
-          armoredKey: armored,
+          armoredKey: value,
           emailHint: primaryEmail,
         })
       } catch (e) {
         console.warn('pgp_import_public_key failed for contact key', e)
+      }
+      try {
+        await invoke<string>('smime_import_public_cert', {
+          certData: value,
+          emailHint: primaryEmail,
+        })
+      } catch (e) {
+        console.warn('smime_import_public_cert failed for contact key', e)
       }
     }
   }

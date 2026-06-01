@@ -2461,6 +2461,11 @@ async fn sync_nextcloud_contacts(
         // Best-effort — a malformed key on one contact shouldn't fail the
         // whole sync; we log and continue per-contact.
         auto_import_pgp_keys(&cache, &delta.upserts);
+        // Same pass for X.509 certs on those `KEY:` properties → the
+        // S/MIME recipient-cert cache (#338).  The two importers split
+        // the same `KEY:` values by media type, so a contact carrying
+        // both a PGP key and an S/MIME cert lands in both caches.
+        auto_import_smime_certs(&cache, &delta.upserts);
 
         report.books_synced += 1;
         report.upserted += upserts.len() as u32;
@@ -2534,51 +2539,203 @@ fn auto_import_pgp_keys(cache: &Cache, raw_contacts: &[RawContact]) {
     }
 }
 
-/// Decode a vCard `KEY:` property value into a byte blob that
-/// `unkai_crypto::parse_public_key` can ingest.  Returns `None` for
-/// forms we don't handle (HTTP/HTTPS URLs that would require a
-/// keyserver fetch, malformed data URIs, etc.) so the caller skips
-/// them cleanly rather than emitting a hard error.
+/// Walk freshly-synced vCards, pull out any X.509 certificates carried
+/// by `KEY:` properties, and upsert them into the recipient-cert cache
+/// (#338 — the S/MIME counterpart to [`auto_import_pgp_keys`]).
 ///
-/// The vCard writer in `unkai_carddav` unconditionally runs `KEY:`
-/// values through the RFC 6350 §3.4 text-escape pass (`\\` for
-/// backslash, `\n` for newline, `\,`, `\;`).  The upstream ical
-/// parser surfaces the *escaped* form unchanged, so the first
-/// thing we do here is unescape — without it, an inline armored
-/// block round-trips as `…\\n\\n<base64>\\n…` and rpgp's armor
-/// parser fails on the `\n` literal where it expects an actual
-/// CRLF.  Same story for `data:` URIs whose `;base64,` separators
-/// get escaped on the way out.
-fn decode_vcard_key_value(value: &str) -> Option<Vec<u8>> {
+/// The same `KEY:` property holds both stacks' material;
+/// [`decode_vcard_smime_cert_value`] selects only the X.509 entries by
+/// their data-URI media type (`application/x-x509-user-cert`,
+/// `application/pkcs7-mime`, …) so an OpenPGP key on the same contact
+/// is left for [`auto_import_pgp_keys`] and vice versa.
+///
+/// **Email binding:** the cert's own Subject Alternative Name
+/// `rfc822Name` is the authoritative S/MIME address binding (RFC 8551
+/// §3, anchor 6), so we prefer it for the `email` column and only fall
+/// back to the contact's primary email when the cert carries no SAN
+/// email (a non-conformant cert — better findable under the contact's
+/// address than orphaned).  This is the reverse priority from the
+/// manual `smime_import_public_cert` paste flow, where the user-typed
+/// hint wins; here there's no hint, just the contact card.
+///
+/// Best-effort — a malformed cert on one contact is logged and skipped
+/// rather than failing the whole sync, exactly like the PGP path.
+fn auto_import_smime_certs(cache: &Cache, raw_contacts: &[RawContact]) {
+    for contact in raw_contacts {
+        if contact.keys.is_empty() {
+            continue;
+        }
+        let primary_email = contact.emails.first().map(|e| e.value.clone());
+        for raw_key in &contact.keys {
+            let der_or_pem = match decode_vcard_smime_cert_value(raw_key) {
+                Some(bytes) => bytes,
+                None => continue,
+            };
+            // `parse_smime_cert_flexible` takes a string (PEM text or
+            // base64) but the vCard payload is already raw DER/PEM
+            // bytes, so go straight through the byte-level parsers:
+            // DER first (the common data-URI form), then PEM (inline
+            // `-----BEGIN CERTIFICATE-----`).
+            let cert = match unkai_crypto::parse_der_cert(&der_or_pem)
+                .or_else(|_| unkai_crypto::parse_pem_cert(&der_or_pem))
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping unparseable S/MIME cert on vCard {}: {e}",
+                        contact.vcard_uid
+                    );
+                    continue;
+                }
+            };
+            let der_cert = match cert.to_der() {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping S/MIME cert on vCard {} — re-encode failed: {e}",
+                        contact.vcard_uid
+                    );
+                    continue;
+                }
+            };
+            let row = SmimeCertRow {
+                fingerprint: cert.fingerprint(),
+                email: cert.email().or_else(|| primary_email.clone()),
+                der_cert,
+                source: SmimeCertSource::Vcard,
+                added_at: chrono::Utc::now().timestamp(),
+            };
+            if let Err(e) = cache.upsert_smime_cert(&row) {
+                tracing::warn!(
+                    "Failed to cache S/MIME cert fp={} for vCard {}: {e}",
+                    row.fingerprint,
+                    contact.vcard_uid
+                );
+            }
+        }
+    }
+}
+
+/// What kind of cryptographic material a vCard `KEY:` value carries,
+/// after we've stripped its data-URI / inline-armor wrapper.
+///
+/// A single `KEY:` property can hold either an OpenPGP public key
+/// (#57) or an X.509 certificate (#338) — RFC 6350 §6.8.1 reuses the
+/// one property for both, distinguishing them by the data-URI media
+/// type.  Classifying once and routing to the right cache keeps the
+/// PGP and S/MIME auto-import paths from each having to parse-and-fail
+/// on the other stack's material on every contact sync.
+enum VcardKeyMaterial {
+    /// OpenPGP public-key packets — armored ASCII or binary octet
+    /// stream, ready for `unkai_crypto::parse_public_key`.
+    Pgp(Vec<u8>),
+    /// X.509 certificate — DER or PEM bytes, ready for the S/MIME cert
+    /// parser (`parse_der_cert` / `parse_pem_cert`).
+    Smime(Vec<u8>),
+}
+
+/// Classify a vCard `KEY:` property value and decode its payload.
+///
+/// vCard `KEY:` material arrives in a handful of shapes:
+///   - **Inline armor** — `-----BEGIN PGP PUBLIC KEY BLOCK-----…`
+///     (PGP) or `-----BEGIN CERTIFICATE-----…` (X.509 PEM).
+///   - **`data:` URI** — `data:<media-type>;base64,<payload>`.  The
+///     media type routes the stack:
+///       * `application/pgp-keys` (Autocrypt) or *no type* → PGP.  The
+///         untyped default stays PGP for backward-compat with the #57
+///         import, which predates any X.509 support.
+///       * `application/x-x509-user-cert` / `application/x-x509-ca-cert`
+///         / `application/pkix-cert` / `application/pkcs7-mime` → X.509.
+///         These are the media types CardDAV servers emit for S/MIME
+///         certs.
+///
+/// Returns `None` for forms we don't ingest inline — bare HTTP/HTTPS
+/// URLs (which would need an out-of-band keyserver/directory fetch,
+/// a future follow-up) and malformed data URIs — so callers skip them
+/// cleanly rather than emitting a hard error.
+///
+/// The vCard writer in `unkai_carddav` runs `KEY:` values through the
+/// RFC 6350 §3.4 text-escape pass (`\\`, `\n`, `\,`, `\;`).  The
+/// upstream ical parser surfaces the *escaped* form unchanged, so the
+/// first thing we do is unescape — without it an inline armored block
+/// round-trips as `…\\n\\n<base64>\\n…` and the armor parser fails on
+/// the `\n` literal where it expects a real CRLF; same story for a
+/// `data:` URI whose `;base64,` separators got escaped on the way out.
+fn classify_vcard_key_value(value: &str) -> Option<VcardKeyMaterial> {
     use base64::Engine;
 
     let unescaped = unescape_vcard_text(value);
     let trimmed = unescaped.trim();
 
-    // Inline armored ASCII — pass through unchanged.
+    // Inline armored ASCII — pass through unchanged, routed by the
+    // armor header.
     if trimmed.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----") {
-        return Some(trimmed.as_bytes().to_vec());
+        return Some(VcardKeyMaterial::Pgp(trimmed.as_bytes().to_vec()));
+    }
+    if trimmed.starts_with("-----BEGIN CERTIFICATE-----") {
+        return Some(VcardKeyMaterial::Smime(trimmed.as_bytes().to_vec()));
     }
 
-    // `data:` URI form.  The MIME type may be `application/pgp-keys`
-    // (Autocrypt) or omitted; either way we treat the trailing
-    // base64 payload as a binary OpenPGP packet stream.
+    // `data:` URI form.  Split the media-type header from the payload
+    // and route by media type.
     if let Some(rest) = trimmed.strip_prefix("data:") {
         let comma = rest.find(',')?;
         let header = &rest[..comma];
         let payload = &rest[comma + 1..];
-        if header.contains("base64") {
-            return base64::engine::general_purpose::STANDARD
+
+        // Decode the payload to raw bytes.  `;base64,` is the
+        // overwhelmingly common encoding; `data:,…` without base64 is
+        // rare for key material and we pass it through verbatim
+        // (without decoding %xx escapes).
+        let bytes = if header.contains("base64") {
+            base64::engine::general_purpose::STANDARD
                 .decode(payload.as_bytes())
-                .ok();
+                .ok()?
+        } else {
+            payload.as_bytes().to_vec()
+        };
+
+        // X.509 media types → S/MIME.  Matched case-insensitively
+        // because CardDAV servers aren't consistent about casing.
+        let header_lower = header.to_ascii_lowercase();
+        if header_lower.contains("x509")
+            || header_lower.contains("pkix-cert")
+            || header_lower.contains("pkcs7")
+        {
+            return Some(VcardKeyMaterial::Smime(bytes));
         }
-        // `data:,...` without base64 — URL-decoded raw bytes.  Rare
-        // for keys; we don't bother decoding %xx escapes.
-        return Some(payload.as_bytes().to_vec());
+
+        // `application/pgp-keys` or an untyped data URI → PGP (the
+        // historical #57 default).
+        return Some(VcardKeyMaterial::Pgp(bytes));
     }
 
     // HTTP/HTTPS reference — out-of-band fetch is a follow-up.
     None
+}
+
+/// Decode a vCard `KEY:` value into the OpenPGP byte blob that
+/// `unkai_crypto::parse_public_key` can ingest, or `None` if the value
+/// isn't OpenPGP material (an X.509 cert, an unfetchable URL, or a
+/// malformed data URI).  Thin PGP-only view over
+/// [`classify_vcard_key_value`].
+fn decode_vcard_key_value(value: &str) -> Option<Vec<u8>> {
+    match classify_vcard_key_value(value) {
+        Some(VcardKeyMaterial::Pgp(bytes)) => Some(bytes),
+        _ => None,
+    }
+}
+
+/// Decode a vCard `KEY:` value into the X.509 certificate byte blob
+/// (DER or PEM) that the S/MIME cert parser can ingest, or `None` if
+/// the value isn't X.509 material (an OpenPGP key, an unfetchable URL,
+/// or a malformed data URI).  S/MIME counterpart to
+/// [`decode_vcard_key_value`] (#338).
+fn decode_vcard_smime_cert_value(value: &str) -> Option<Vec<u8>> {
+    match classify_vcard_key_value(value) {
+        Some(VcardKeyMaterial::Smime(bytes)) => Some(bytes),
+        _ => None,
+    }
 }
 
 /// Unescape RFC 6350 §3.4 vCard text-value escape sequences:
@@ -2616,7 +2773,7 @@ fn unescape_vcard_text(s: &str) -> String {
 
 #[cfg(test)]
 mod vcard_key_decode_tests {
-    use super::{decode_vcard_key_value, unescape_vcard_text};
+    use super::{decode_vcard_key_value, decode_vcard_smime_cert_value, unescape_vcard_text};
 
     #[test]
     fn unescape_round_trips_armored_newlines() {
@@ -2685,6 +2842,64 @@ mod vcard_key_decode_tests {
         let escaped = "data:application/pgp-keys\\;base64\\,aGVsbG8=";
         let bytes = decode_vcard_key_value(escaped).expect("must decode");
         assert_eq!(bytes, b"hello");
+    }
+
+    // --- S/MIME (X.509) routing (#338) -----------------------------------
+
+    #[test]
+    fn smime_decoder_takes_x509_user_cert_data_uri() {
+        // `application/x-x509-user-cert` is the media type CardDAV
+        // servers emit for an S/MIME cert.  Base64 of `cert!` is
+        // `Y2VydCE=`.
+        let escaped = "data:application/x-x509-user-cert\\;base64\\,Y2VydCE=";
+        let bytes = decode_vcard_smime_cert_value(escaped).expect("must decode as S/MIME");
+        assert_eq!(bytes, b"cert!");
+    }
+
+    #[test]
+    fn smime_decoder_takes_pkcs7_and_pkix_cert_data_uris() {
+        // The other two X.509 media types we accept.  Base64 of `x` is
+        // `eA==`.
+        for header in ["application/pkcs7-mime", "application/pkix-cert"] {
+            let uri = format!("data:{header};base64,eA==");
+            let bytes = decode_vcard_smime_cert_value(&uri)
+                .unwrap_or_else(|| panic!("{header} must route to S/MIME"));
+            assert_eq!(bytes, b"x");
+        }
+    }
+
+    #[test]
+    fn smime_decoder_takes_inline_certificate_pem() {
+        // Inline PEM cert routes to the S/MIME decoder, not the PGP one.
+        let pem = "-----BEGIN CERTIFICATE-----\\nQUJDRA==\\n-----END CERTIFICATE-----\\n";
+        let bytes = decode_vcard_smime_cert_value(pem).expect("must decode inline PEM cert");
+        let s = std::str::from_utf8(&bytes).unwrap();
+        assert!(s.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(s.contains('\n'), "escaped newlines must be restored");
+    }
+
+    #[test]
+    fn the_two_decoders_are_mutually_exclusive() {
+        // A PGP key value yields PGP bytes but NOT S/MIME bytes, and an
+        // X.509 cert value yields S/MIME bytes but NOT PGP bytes — so
+        // the two auto-import passes never double-process one `KEY:`.
+        let pgp = "data:application/pgp-keys;base64,aGVsbG8=";
+        assert!(decode_vcard_key_value(pgp).is_some());
+        assert!(decode_vcard_smime_cert_value(pgp).is_none());
+
+        let smime = "data:application/x-x509-user-cert;base64,Y2VydCE=";
+        assert!(decode_vcard_smime_cert_value(smime).is_some());
+        assert!(decode_vcard_key_value(smime).is_none());
+    }
+
+    #[test]
+    fn untyped_data_uri_stays_pgp_for_backcompat() {
+        // An untyped `data:;base64,…` predates X.509 support and must
+        // keep routing to PGP (the #57 default) — not silently divert
+        // existing recipient keys into the cert cache.
+        let untyped = "data:;base64,aGVsbG8=";
+        assert!(decode_vcard_key_value(untyped).is_some());
+        assert!(decode_vcard_smime_cert_value(untyped).is_none());
     }
 }
 
@@ -13765,28 +13980,86 @@ impl TauriCryptoBridge {
 
     /// Resolve `recipient_emails` to the cached X.509 certificates we
     /// hold for each address (S/MIME counterpart to
-    /// [`Self::collect_recipient_keys`], #338).  Looks each address up in
-    /// the dedicated `smime_certs` cache (populated by the
-    /// `smime_import_public_cert` paste/file flow from Chunk 2); the most
-    /// recently added cert for the address wins, matching how the PGP
-    /// fast path takes the first cached key.
+    /// [`Self::collect_recipient_keys`], #338).  Two-stage lookup that
+    /// mirrors the PGP path:
     ///
-    /// There is no vCard fallback yet — the S/MIME vCard `KEY:` auto-import
-    /// is a later chunk; until then a recipient without a cached cert
-    /// surfaces as `CryptoKeyNotFound` so Compose can prompt the user to
-    /// import one.
+    ///   1. **Fast path** — the dedicated `smime_certs` cache (populated
+    ///      by the `smime_import_public_cert` paste/file flow from
+    ///      Chunk 2 and the vCard auto-import from Chunk 8).  The most
+    ///      recently added cert for the address wins, matching how the
+    ///      PGP fast path takes the first cached key.
+    ///   2. **Fallback** — scan the `contacts` table for a vCard that
+    ///      lists this recipient *and* carries an X.509 `KEY:` value.
+    ///      Covers the window between adding a contact and the next
+    ///      CardDAV sync's auto-import, and the case where that import
+    ///      upsert failed silently.  On success the cert is best-effort
+    ///      warmed into `smime_certs` so the next send hits stage 1.
+    ///
+    /// Returns `CryptoKeyNotFound` only when *both* stages come up empty,
+    /// so Compose can prompt the user to import a cert.
     fn collect_recipient_smime_certs(
         &self,
         recipient_emails: &[String],
     ) -> Result<Vec<unkai_crypto::Certificate>, UnkaiError> {
         let mut out = Vec::with_capacity(recipient_emails.len());
         for email in recipient_emails {
+            // Stage 1 — fast path against smime_certs.
             let rows = self
                 .cache
                 .get_smime_certs_for_email(email)
                 .map_err(UnkaiError::from)?;
-            match rows.into_iter().next() {
-                Some(row) => out.push(unkai_crypto::parse_der_cert(&row.der_cert)?),
+            if let Some(row) = rows.into_iter().next() {
+                out.push(unkai_crypto::parse_der_cert(&row.der_cert)?);
+                continue;
+            }
+
+            // Stage 2 — scan vCards whose email list contains this
+            // recipient for an X.509 `KEY:` value.
+            let vcards = self
+                .cache
+                .find_contact_vcards_with_email(email)
+                .map_err(UnkaiError::from)?;
+            let mut found: Option<unkai_crypto::Certificate> = None;
+            'vcards: for vcard_raw in vcards {
+                let parsed = match unkai_carddav::parse_vcard(&vcard_raw) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                for raw_key in parsed.keys {
+                    let der_or_pem = match decode_vcard_smime_cert_value(&raw_key) {
+                        Some(b) => b,
+                        None => continue,
+                    };
+                    let cert = match unkai_crypto::parse_der_cert(&der_or_pem)
+                        .or_else(|_| unkai_crypto::parse_pem_cert(&der_or_pem))
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Skipping unparseable S/MIME cert on vCard for {email}: {e}"
+                            );
+                            continue;
+                        }
+                    };
+                    // Best-effort warm the dedicated cache so the next
+                    // send for this recipient hits stage 1.  Bind under
+                    // the address we were asked for so the lookup keys
+                    // line up even if the cert's SAN differs.
+                    if let Ok(der_cert) = cert.to_der() {
+                        let _ = self.cache.upsert_smime_cert(&SmimeCertRow {
+                            fingerprint: cert.fingerprint(),
+                            email: Some(email.clone()),
+                            der_cert,
+                            source: SmimeCertSource::Vcard,
+                            added_at: chrono::Utc::now().timestamp(),
+                        });
+                    }
+                    found = Some(cert);
+                    break 'vcards;
+                }
+            }
+            match found {
+                Some(cert) => out.push(cert),
                 None => return Err(UnkaiError::CryptoKeyNotFound(email.clone())),
             }
         }
