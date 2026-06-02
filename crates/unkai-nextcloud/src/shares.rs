@@ -136,6 +136,7 @@ struct ShareData {
 ///   user's scope). The OCS message is included where available so
 ///   the UI can show something specific.
 /// - `UnkaiError::Protocol` — JSON didn't match the expected shape.
+#[allow(clippy::too_many_arguments)] // mirrors the OCS Share API's field set
 pub async fn create_public_share(
     server_url: &str,
     username: &str,
@@ -735,6 +736,7 @@ fn parse_list_response(body: &str) -> Result<Vec<PublicShareInfo>, UnkaiError> {
 ///
 /// Permission updates pass the raw bitmask Nextcloud uses
 /// (1 read, 2 update, 4 create, 8 delete, 16 share).
+#[allow(clippy::too_many_arguments)] // mirrors the OCS Share API's field set
 pub async fn update_public_share(
     server_url: &str,
     username: &str,

@@ -180,7 +180,7 @@ pub struct AppSettings {
     #[serde(default = "default_true")]
     pub link_check_enabled: bool,
     /// Master toggle for the EventEditor's location autocomplete
-    /// + inline map preview (#280).  Default **off** — the
+    /// and inline map preview (#280).  Default **off** — the
     /// feature sends each typed query to Nominatim
     /// (`nominatim.openstreetmap.org`) and the map preview iframe
     /// loads tiles from `openstreetmap.org`, both third-party

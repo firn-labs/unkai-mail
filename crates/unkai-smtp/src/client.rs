@@ -424,9 +424,9 @@ fn address_only(addr: &str) -> String {
 /// because the body is cleartext — the SMTP server fans out one
 /// identical envelope per recipient with the BCC list scrubbed from the
 /// visible headers, just like a plaintext mail.  Not safe for
-/// `multipart/encrypted` because a single ciphertext encrypted to TO + CC
-/// + BCC keys leaks the BCC list via the OpenPGP ESK packets, which is
-/// why the encrypted path keeps the BCC-exclusion version.
+/// `multipart/encrypted` because a single ciphertext encrypted to the
+/// combined TO, CC, and BCC keys leaks the BCC list via the OpenPGP ESK
+/// packets, which is why the encrypted path keeps the BCC-exclusion version.
 fn envelope_from_email_include_bcc(email: &OutgoingEmail) -> Result<Envelope, UnkaiError> {
     envelope_from_email_inner(email, true)
 }
