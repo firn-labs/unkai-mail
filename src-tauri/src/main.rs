@@ -13081,6 +13081,10 @@ fn buffer_mailto_url(url: &str) {
 /// passes any `--flag` style argv too and we don't want to
 /// accidentally treat those as paths.
 fn capture_launch_file_arg() {
+    // argv is read only to discover a file to *open*, never for an
+    // access-control decision — and the candidate is re-validated as
+    // an existing `.ics`/`.eml` file below before we act on it.
+    // nosemgrep: rust.lang.security.args.args
     let Some(arg) = std::env::args().nth(1) else {
         return;
     };
@@ -13108,6 +13112,10 @@ fn capture_launch_file_arg() {
 /// argv (not just argv[1]) handles the edge case where a wrapper
 /// or shell prepends flags.
 fn capture_launch_mailto_arg() {
+    // Same rationale as `capture_launch_file_arg`: argv is scanned
+    // only to find a `mailto:` URL to act on, not for any security
+    // decision.  The value is parsed as a URL, never trusted as auth.
+    // nosemgrep: rust.lang.security.args.args
     for arg in std::env::args().skip(1) {
         if arg.to_lowercase().starts_with("mailto:") {
             buffer_mailto_url(&arg);

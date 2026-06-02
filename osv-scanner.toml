@@ -71,3 +71,8 @@ reason = "proc-macro-error unmaintained — transitive build-time"
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0097"
 reason = "rand 0.7 / 0.8 unsoundness — transitive only, not exposed in our API"
+
+# ── rsa Marvin timing side-channel (transitive via pgp) ──────────
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = "rsa Marvin attack (CVE-2023-49092) — no patched release exists upstream; pulled in via pgp → unkai-crypto. The attack needs an adaptive decryption-timing oracle, which our offline local PGP decryption does not expose to a remote attacker."
