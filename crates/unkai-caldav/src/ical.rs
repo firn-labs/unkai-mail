@@ -155,11 +155,11 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
             // hasn't already set the coordinates, so a server
             // emitting both forms keeps the canonical one.
             "X-APPLE-STRUCTURED-LOCATION" => {
-                if latitude.is_none() {
-                    if let Some((lat, lon)) = parse_apple_geo_uri(value) {
-                        latitude = Some(lat);
-                        longitude = Some(lon);
-                    }
+                if latitude.is_none()
+                    && let Some((lat, lon)) = parse_apple_geo_uri(value)
+                {
+                    latitude = Some(lat);
+                    longitude = Some(lon);
                 }
             }
             _ => {}
@@ -1008,7 +1008,7 @@ fn parse_apple_geo_uri(value: &str) -> Option<(f64, f64)> {
         .or_else(|| raw.strip_prefix("GEO:"))?;
     // Drop URI params (`;u=…`) / queries (`?q=…`) so they don't
     // break the float parse.
-    let core = body.split(|c: char| c == ';' || c == '?').next()?;
+    let core = body.split([';', '?']).next()?;
     let (lhs, rhs) = core.split_once(',')?;
     let lat: f64 = lhs.trim().parse().ok()?;
     let lon: f64 = rhs.trim().parse().ok()?;

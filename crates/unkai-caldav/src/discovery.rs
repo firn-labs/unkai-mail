@@ -346,11 +346,11 @@ mod tests {
         assert_eq!(cals.len(), 3);
         let by_name: std::collections::HashMap<&str, &Calendar> =
             cals.iter().map(|c| (c.name.as_str(), c)).collect();
-        assert_eq!(by_name["shared-rw"].read_only, false);
-        assert_eq!(by_name["shared-ro"].read_only, true);
+        assert!(!by_name["shared-rw"].read_only);
+        assert!(by_name["shared-ro"].read_only);
         // No privilege-set advertised → preserve pre-#236
         // happy path: assume writable.
-        assert_eq!(by_name["no-priv-set"].read_only, false);
+        assert!(!by_name["no-priv-set"].read_only);
     }
 
     #[test]

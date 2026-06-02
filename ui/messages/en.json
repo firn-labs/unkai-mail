@@ -335,10 +335,10 @@
   "mail_view_chip_signed_expired_tooltip": "The signature is valid, but the signing certificate is outside its validity period.",
 
   "contact_form_section_encryption": "Encryption",
-  "contact_form_label_pgp_keys": "OpenPGP keys",
-  "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
-  "contact_form_button_add_pgp_key": "Add a key",
-  "contact_form_hint_pgp_keys": "Paste an ASCII-armored OpenPGP public key. Round-trips through the contact's vCard and is also cached locally so Compose can encrypt to this address.",
+  "contact_form_label_pgp_keys": "Public keys & certificates",
+  "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK----- or -----BEGIN CERTIFICATE-----",
+  "contact_form_button_add_pgp_key": "Add a key or certificate",
+  "contact_form_hint_pgp_keys": "Paste an ASCII-armored OpenPGP public key or an X.509 (S/MIME) certificate in PEM form. Round-trips through the contact's vCard and is also cached locally so Compose can encrypt to this address.",
 
   "encryption_unlock_auto_label": "Unlock automatically",
   "encryption_unlock_auto_hint_off": "Off — Compose asks for your PGP passphrase on every encrypted send, and encrypted mail shows a Decrypt button you have to click.",
