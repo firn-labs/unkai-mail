@@ -2936,17 +2936,17 @@ fn parse_references_header(raw: &str) -> Vec<String> {
     let bytes = joined.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if let Some(end) = bytes[i + 1..].iter().position(|&b| b == b'>') {
-                if let Ok(id) = std::str::from_utf8(&bytes[i + 1..i + 1 + end]) {
-                    let trimmed = id.trim();
-                    if !trimmed.is_empty() {
-                        out.push(trimmed.to_string());
-                    }
+        if bytes[i] == b'<'
+            && let Some(end) = bytes[i + 1..].iter().position(|&b| b == b'>')
+        {
+            if let Ok(id) = std::str::from_utf8(&bytes[i + 1..i + 1 + end]) {
+                let trimmed = id.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_string());
                 }
-                i += 1 + end + 1;
-                continue;
             }
+            i += 1 + end + 1;
+            continue;
         }
         i += 1;
     }
