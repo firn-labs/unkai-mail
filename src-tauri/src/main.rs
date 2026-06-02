@@ -1919,6 +1919,7 @@ async fn create_nextcloud_note(
 /// Cache-write-through: the server is authoritative on etag /
 /// modified; we persist what it returns.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
 async fn update_nextcloud_note(
     nc_id: String,
     note_id: u64,
@@ -2087,6 +2088,7 @@ async fn sync_nextcloud_tasks(
 /// VTODO body, PUTs with `If-None-Match: *`, and on success persists
 /// the row to the local cache.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
 async fn create_nextcloud_task(
     nc_id: String,
     list_id: String,
@@ -2149,6 +2151,7 @@ async fn create_nextcloud_task(
 /// `status` and `completed` in lockstep so a CalDAV client reading
 /// only one column still sees the right answer.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
 async fn update_nextcloud_task(
     nc_id: String,
     list_id: String,
@@ -2260,6 +2263,7 @@ async fn delete_nextcloud_task(
 /// understands that scheme, so the TasksView "Source mail" chip
 /// and a Notes mail-ref click route through the same handler.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
 async fn create_nextcloud_task_from_mail(
     nc_id: String,
     list_id: String,
@@ -4945,6 +4949,7 @@ fn get_tasks_sync_status(nc_id: String, cache: State<'_, Cache>) -> Result<SyncS
 ///    has — so matching an override to its series is O(1).
 /// 3. `unkai_caldav::expand_event` does the RFC 5545 work: RRULE
 ///    enumeration, EXDATE removal, RDATE insertion, override swap-in.
+///
 /// Pull events out of the local cache for `calendar_ids` over
 /// `[range_start, range_end)`, recurrence-expanded.  Shared by
 /// `get_cached_events` (the calendar grid) and
@@ -7194,10 +7199,10 @@ async fn fetch_unified_special_envelopes(
     for (account_id, folder) in &pairs {
         // Re-locate the matching account for the poll — `pairs` only
         // carries ids so we don't have to clone heavy structs.
-        if let Some(account) = accounts.iter().find(|a| a.id == *account_id) {
-            if let Err(e) = poll_folder(account, folder, limit, &cache).await {
-                tracing::warn!("unified special poll failed for '{account_id}'/'{folder}': {e}");
-            }
+        if let Some(account) = accounts.iter().find(|a| a.id == *account_id)
+            && let Err(e) = poll_folder(account, folder, limit, &cache).await
+        {
+            tracing::warn!("unified special poll failed for '{account_id}'/'{folder}': {e}");
         }
     }
     cache
@@ -7678,13 +7683,12 @@ async fn background_decrypt_new(
                 if matches!(
                     email.protection.as_deref(),
                     Some("encrypted" | "signed-and-encrypted")
-                ) {
-                    if let Err(e) = cache.put_encrypted_raw_eml(account_id, folder, uid, &raw) {
-                        tracing::debug!(
-                            "background-decrypt: put_encrypted_raw_eml UID {uid} \
+                ) && let Err(e) = cache.put_encrypted_raw_eml(account_id, folder, uid, &raw)
+                {
+                    tracing::debug!(
+                        "background-decrypt: put_encrypted_raw_eml UID {uid} \
                              in '{account_id}'/'{folder}' failed: {e}"
-                        );
-                    }
+                    );
                 }
                 out.push(email);
             }
@@ -7868,10 +7872,9 @@ async fn decrypt_message(
     if matches!(
         decrypted.protection.as_deref(),
         Some("encrypted" | "signed-and-encrypted")
-    ) {
-        if let Err(e) = cache.put_encrypted_raw_eml(&account_id, &folder, uid, &raw) {
-            tracing::warn!("cache.put_encrypted_raw_eml after decrypt failed: {e}");
-        }
+    ) && let Err(e) = cache.put_encrypted_raw_eml(&account_id, &folder, uid, &raw)
+    {
+        tracing::warn!("cache.put_encrypted_raw_eml after decrypt failed: {e}");
     }
     Ok(decrypted)
 }
@@ -8921,10 +8924,10 @@ async fn send_email(
     // already drained / been deleted is a no-op (zero rows
     // affected, no error).  Done before the new INSERT so a
     // failure in this branch can't leak a duplicate.
-    if let Some(src) = outbox_source.as_ref() {
-        if let Err(e) = cache.remove_outbox(src.id) {
-            tracing::warn!("remove source outbox row {} failed: {e}", src.id);
-        }
+    if let Some(src) = outbox_source.as_ref()
+        && let Err(e) = cache.remove_outbox(src.id)
+    {
+        tracing::warn!("remove source outbox row {} failed: {e}", src.id);
     }
 
     let entry_id = cache.enqueue_outbox(&unkai_store::OutboxEnqueue {
@@ -12751,10 +12754,8 @@ async fn urlhaus_refresh_worker(cache: Cache, settings: SharedSettings) {
     };
     if stale {
         let enabled = settings.read().await.link_check_enabled;
-        if enabled {
-            if let Err(e) = refresh_urlhaus_inner(&cache).await {
-                tracing::warn!("URLhaus initial refresh failed: {e}");
-            }
+        if enabled && let Err(e) = refresh_urlhaus_inner(&cache).await {
+            tracing::warn!("URLhaus initial refresh failed: {e}");
         }
     }
 
@@ -13055,9 +13056,10 @@ fn pending_file_slot() -> &'static Mutex<Option<String>> {
 ///     very first URL that fires before the webview mounts;
 ///   - the single-instance plugin when a second launch beats the
 ///     deep-link path on slower OSes.
+///
 /// Always a `Vec`, never a single slot, because on a cold start
 /// it's plausible (though unusual) for multiple paths to deliver
-/// the same URL — the frontend dedups by drainging the whole list
+/// the same URL — the frontend dedups by draining the whole list
 /// and parsing each one fresh.
 static PENDING_MAILTO_URLS: std::sync::OnceLock<Mutex<Vec<String>>> = std::sync::OnceLock::new();
 
@@ -13183,7 +13185,7 @@ fn open_default_apps_settings() -> Result<(), UnkaiError> {
             .args(["/C", "start", "", "ms-settings:defaultapps"])
             .spawn()
             .map_err(|e| UnkaiError::Other(format!("open defaults panel: {e}")))?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(target_os = "macos")]
     {
@@ -13290,12 +13292,12 @@ fn pgp_remove_private_key(
     credentials::delete_pgp_passphrase(&account_id)?;
 
     let accounts = account_store::load_accounts(&cache)?;
-    if let Some(mut acc) = accounts.into_iter().find(|a| a.id == account_id) {
-        if acc.pgp_key_fingerprint.is_some() {
-            acc.pgp_key_fingerprint = None;
-            account_store::update_account(&cache, acc)?;
-            notify.0.notify_one();
-        }
+    if let Some(mut acc) = accounts.into_iter().find(|a| a.id == account_id)
+        && acc.pgp_key_fingerprint.is_some()
+    {
+        acc.pgp_key_fingerprint = None;
+        account_store::update_account(&cache, acc)?;
+        notify.0.notify_one();
     }
     Ok(())
 }
@@ -13606,12 +13608,12 @@ fn smime_remove_private_cert(
     credentials::delete_smime_passphrase(&account_id)?;
 
     let accounts = account_store::load_accounts(&cache)?;
-    if let Some(mut acc) = accounts.into_iter().find(|a| a.id == account_id) {
-        if acc.smime_cert_fingerprint.is_some() {
-            acc.smime_cert_fingerprint = None;
-            account_store::update_account(&cache, acc)?;
-            notify.0.notify_one();
-        }
+    if let Some(mut acc) = accounts.into_iter().find(|a| a.id == account_id)
+        && acc.smime_cert_fingerprint.is_some()
+    {
+        acc.smime_cert_fingerprint = None;
+        account_store::update_account(&cache, acc)?;
+        notify.0.notify_one();
     }
     Ok(())
 }

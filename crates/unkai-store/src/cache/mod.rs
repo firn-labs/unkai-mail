@@ -2470,7 +2470,7 @@ mod tests {
         // Per-account map: acc-a present with 1, acc-other omitted.
         let by_acc = cache.count_outbox_by_account().unwrap();
         assert_eq!(by_acc.get("acc-a").copied(), Some(1));
-        assert!(by_acc.get("acc-other").is_none());
+        assert!(!by_acc.contains_key("acc-other"));
 
         let rows = cache.list_outbox("acc-a").unwrap();
         assert_eq!(rows.len(), 1);
