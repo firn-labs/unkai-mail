@@ -45,6 +45,9 @@ ignore = [
   "RUSTSEC-2025-0052", # async-std
   "RUSTSEC-2024-0370", # proc-macro-error
   "RUSTSEC-2026-0097", # rand 0.7 / 0.8
+  # rsa Marvin timing attack (CVE-2023-49092) via pgp — no upstream
+  # fix; not exploitable without a remote decryption-timing oracle.
+  "RUSTSEC-2023-0071", # rsa (Marvin)
 ]
 
 # ── Licences ────────────────────────────────────────────────────

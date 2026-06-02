@@ -243,10 +243,10 @@ fn extract_param_value_bytes(header_bytes: &[u8], param: &[u8]) -> Option<Vec<u8
         if !suffix.starts_with(b"*") {
             continue;
         }
-        if let Ok(idx_str) = std::str::from_utf8(&suffix[1..]) {
-            if let Ok(idx) = idx_str.parse::<u32>() {
-                continuations.push((idx, value));
-            }
+        if let Ok(idx_str) = std::str::from_utf8(&suffix[1..])
+            && let Ok(idx) = idx_str.parse::<u32>()
+        {
+            continuations.push((idx, value));
         }
     }
 

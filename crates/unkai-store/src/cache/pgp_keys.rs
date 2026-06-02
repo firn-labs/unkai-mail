@@ -50,7 +50,7 @@ impl PgpKeySource {
     /// a conservative fallback — the row exists, so somebody put it
     /// there deliberately; treating it as "manual" preserves the row
     /// without claiming a stronger provenance than we can prove.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_db_str(s: &str) -> Self {
         match s {
             "vcard" => Self::Vcard,
             "inbound-message" => Self::InboundMessage,
@@ -199,7 +199,7 @@ fn row_from_columns(r: &rusqlite::Row<'_>) -> rusqlite::Result<PgpPublicKeyRow> 
         fingerprint: r.get(0)?,
         email: r.get(1)?,
         armored_key: r.get(2)?,
-        source: PgpKeySource::from_str(&source),
+        source: PgpKeySource::from_db_str(&source),
         added_at: r.get(4)?,
     })
 }
@@ -314,13 +314,13 @@ mod tests {
         assert_eq!(PgpKeySource::Manual.as_str(), "manual");
         assert_eq!(PgpKeySource::InboundMessage.as_str(), "inbound-message");
 
-        assert_eq!(PgpKeySource::from_str("vcard"), PgpKeySource::Vcard);
-        assert_eq!(PgpKeySource::from_str("manual"), PgpKeySource::Manual);
+        assert_eq!(PgpKeySource::from_db_str("vcard"), PgpKeySource::Vcard);
+        assert_eq!(PgpKeySource::from_db_str("manual"), PgpKeySource::Manual);
         assert_eq!(
-            PgpKeySource::from_str("inbound-message"),
+            PgpKeySource::from_db_str("inbound-message"),
             PgpKeySource::InboundMessage
         );
         // Unknown values fall back to Manual rather than erroring.
-        assert_eq!(PgpKeySource::from_str("garbage"), PgpKeySource::Manual);
+        assert_eq!(PgpKeySource::from_db_str("garbage"), PgpKeySource::Manual);
     }
 }

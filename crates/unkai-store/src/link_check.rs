@@ -262,7 +262,7 @@ fn extract_host(url: &str) -> Option<String> {
         return None;
     }
     let end = after_scheme
-        .find(|c: char| c == '/' || c == '?' || c == '#' || c == ':')
+        .find(['/', '?', '#', ':'])
         .unwrap_or(after_scheme.len());
     let host = &after_scheme[..end];
     if host.is_empty() {
