@@ -43,7 +43,7 @@ pub fn read_text_until(
     let mut buf = String::new();
     loop {
         match reader.read_event() {
-            Ok(Event::Text(t)) => buf.push_str(&t.unescape().unwrap_or_default()),
+            Ok(Event::Text(t)) => buf.push_str(&t.xml_content().unwrap_or_default()),
             Ok(Event::CData(c)) => buf.push_str(&String::from_utf8_lossy(&c)),
             Ok(Event::End(end)) => {
                 let bytes = end.name();

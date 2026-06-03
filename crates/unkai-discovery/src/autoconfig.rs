@@ -140,7 +140,7 @@ fn parse(xml: &str, source: DiscoverySource) -> Result<DiscoveredAccount, Discov
                     && let Some(curr) = current.as_mut()
                 {
                     let text = t
-                        .unescape()
+                        .xml_content()
                         .map_err(|e| DiscoveryError::Parse(format!("unescape text: {e}")))?
                         .to_string();
                     match target {
