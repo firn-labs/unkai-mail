@@ -45,6 +45,9 @@ ignore = [
   "RUSTSEC-2025-0052", # async-std
   "RUSTSEC-2024-0370", # proc-macro-error
   "RUSTSEC-2026-0097", # rand 0.7 / 0.8
+  # rsa Marvin timing attack (CVE-2023-49092) via pgp — no upstream
+  # fix; not exploitable without a remote decryption-timing oracle.
+  "RUSTSEC-2023-0071", # rsa (Marvin)
 ]
 
 # ── Licences ────────────────────────────────────────────────────
@@ -73,6 +76,12 @@ allow = [
   "ISC",
   "Zlib",
   "0BSD",
+  # bzip2/libbzip2 license — a permissive BSD-style licence (4-clause
+  # BSD shape: attribution + no-misrepresentation + no-endorsement).
+  # Reached transitively via `libbz2-rs-sys` → `bzip2` → `pgp`, which
+  # gained a pure-Rust bzip2 compression backend. No copyleft pressure;
+  # see SBOM.md / License.md for the attribution obligation.
+  "bzip2-1.0.6",
   "BSL-1.0",
   "Unlicense",
   "WTFPL",

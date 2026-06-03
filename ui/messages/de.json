@@ -336,10 +336,10 @@
   "mail_view_chip_signed_expired_tooltip": "Die Signatur ist gültig, aber das Signaturzertifikat liegt außerhalb seines Gültigkeitszeitraums.",
 
   "contact_form_section_encryption": "Verschlüsselung",
-  "contact_form_label_pgp_keys": "OpenPGP-Schlüssel",
-  "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
-  "contact_form_button_add_pgp_key": "Schlüssel hinzufügen",
-  "contact_form_hint_pgp_keys": "Füge einen ASCII-armierten öffentlichen OpenPGP-Schlüssel ein. Wird über die vCard des Kontakts synchronisiert und lokal zwischengespeichert, damit Compose verschlüsselt an diese Adresse senden kann.",
+  "contact_form_label_pgp_keys": "Öffentliche Schlüssel & Zertifikate",
+  "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK----- oder -----BEGIN CERTIFICATE-----",
+  "contact_form_button_add_pgp_key": "Schlüssel oder Zertifikat hinzufügen",
+  "contact_form_hint_pgp_keys": "Füge einen ASCII-armierten öffentlichen OpenPGP-Schlüssel oder ein X.509-Zertifikat (S/MIME) im PEM-Format ein. Wird über die vCard des Kontakts synchronisiert und lokal zwischengespeichert, damit Compose verschlüsselt an diese Adresse senden kann.",
 
   "encryption_unlock_auto_label": "Automatisch entsperren",
   "encryption_unlock_auto_hint_off": "Aus — Compose fragt die PGP-Passphrase bei jeder verschlüsselten Sendung neu ab, und verschlüsselte Nachrichten zeigen eine Entschlüsseln-Schaltfläche, die du klicken musst.",

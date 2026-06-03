@@ -222,14 +222,14 @@ fn parse_iso_duration(s: &str) -> Option<Duration> {
     if !s.starts_with('P') {
         return None;
     }
-    let mut chars = s[1..].chars().peekable();
+    let chars = s[1..].chars().peekable();
     let mut days = 0i64;
     let mut hours = 0i64;
     let mut minutes = 0i64;
     let mut seconds = 0i64;
     let mut in_time = false;
     let mut buf = String::new();
-    while let Some(c) = chars.next() {
+    for c in chars {
         if c == 'T' {
             in_time = true;
             continue;

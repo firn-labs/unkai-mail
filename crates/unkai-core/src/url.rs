@@ -37,10 +37,7 @@ pub fn ensure_https(url: &str) -> Result<(), UnkaiError> {
         // Cheap host extraction — everything up to the first `/`,
         // `?`, `#`, or end of string.  Strip an `userinfo@` prefix
         // and a `:port` suffix on the way through.
-        let host_with_port = rest
-            .split(|c| c == '/' || c == '?' || c == '#')
-            .next()
-            .unwrap_or("");
+        let host_with_port = rest.split(['/', '?', '#']).next().unwrap_or("");
         let host_with_port = host_with_port.rsplit('@').next().unwrap_or(host_with_port);
         // IPv6 literals come bracketed: `[::1]:8080`.
         let host = if let Some(end) = host_with_port.strip_prefix('[') {
