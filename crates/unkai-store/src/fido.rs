@@ -88,7 +88,7 @@ use aes_gcm::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use chrono::Utc;
-use getrandom::getrandom;
+use getrandom::fill;
 use hmac::Hmac;
 use pbkdf2::pbkdf2;
 use serde::{Deserialize, Serialize};
@@ -313,7 +313,7 @@ pub fn wrap_master_key(
         )));
     }
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    getrandom(&mut nonce_bytes).map_err(|e| UnkaiError::Storage(format!("wrap nonce RNG: {e}")))?;
+    fill(&mut nonce_bytes).map_err(|e| UnkaiError::Storage(format!("wrap nonce RNG: {e}")))?;
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aes_key));
     let ct = cipher
         .encrypt(
@@ -360,7 +360,7 @@ pub fn derive_passphrase_key(passphrase: &str, salt: &[u8]) -> Result<[u8; PRF_L
 /// bytes — collisions are not a concern.
 pub fn generate_passphrase_id() -> Result<[u8; 16], UnkaiError> {
     let mut buf = [0u8; 16];
-    getrandom(&mut buf).map_err(|e| UnkaiError::Storage(format!("synth id RNG: {e}")))?;
+    fill(&mut buf).map_err(|e| UnkaiError::Storage(format!("synth id RNG: {e}")))?;
     Ok(buf)
 }
 
@@ -411,7 +411,7 @@ pub fn unwrap_master_key(wrap: &WrappedKey, prf_output: &[u8]) -> Result<Vec<u8>
 /// this back into WebAuthn's `prf.eval.first` at unlock time.
 pub fn generate_salt() -> Result<[u8; SALT_LEN], UnkaiError> {
     let mut buf = [0u8; SALT_LEN];
-    getrandom(&mut buf).map_err(|e| UnkaiError::Storage(format!("salt RNG: {e}")))?;
+    fill(&mut buf).map_err(|e| UnkaiError::Storage(format!("salt RNG: {e}")))?;
     Ok(buf)
 }
 
