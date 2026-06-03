@@ -24,6 +24,7 @@ applies to every package listed underneath it.
 | [MIT](#mit-license) | most Rust crates, all UI runtime / dev deps |
 | [Apache-2.0](#apache-license-20) | dual-licensed Rust crates, OpenSSL (vendored), TypeScript |
 | [BSD-3-Clause](#bsd-3-clause-license) | SQLCipher (vendored) |
+| [bzip2-1.0.6](#bzip2-license) | libbz2-rs-sys (via pgp) |
 | [ISC](#isc-license) | rustls, ring (parts) |
 | [MPL-2.0](#mozilla-public-license-20) | webpki-roots, webpki-root-certs, dompurify |
 | [GPL-3.0](#gnu-general-public-license-v3) | rrule (and Unkai itself) |
@@ -174,6 +175,60 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 The Unkai Mail project is not affiliated with or endorsed by Zetetic
 LLC. Per clause 3 of the BSD-3-Clause licence, we do not use Zetetic's
 name to promote Unkai.
+
+---
+
+## bzip2 License
+
+**Rust crates**: `libbz2-rs-sys` (the pure-Rust bzip2 implementation
+reached transitively via `bzip2` → `pgp`, which uses it for OpenPGP
+compressed-data packets).
+
+A permissive BSD-style licence (`bzip2-1.0.6` on SPDX) — same shape as
+the 4-clause BSD with attribution, no-misrepresentation, and
+no-endorsement clauses. No copyleft, no commercial restriction; we just
+preserve the notice below.
+
+```
+This program, the associated library "libbzip2", and all documentation,
+are Copyright (C) 1996-2021 Julian R Seward, Copyright (C) 2019-2020
+Federico Mena Quintero, and Copyright (C) 2021 Micah Snyder. The Rust
+translation "libbzip2-rs" is Copyright (C) 2024-2025 Trifecta Tech
+Foundation and contributors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. The origin of this software must not be misrepresented; you must
+   not claim that you wrote the original software. If you use this
+   software in a product, an acknowledgment in the product
+   documentation would be appreciated but is not required.
+
+3. Altered source versions must be plainly marked as such, and must
+   not be misrepresented as being the original software.
+
+4. The name of the author may not be used to endorse or promote
+   products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+Julian Seward, jseward@acm.org
+```
 
 ---
 
