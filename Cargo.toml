@@ -68,7 +68,7 @@ rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl",
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 # Cryptographically secure random bytes for generating the DB master key.
-getrandom = "0.2"
+getrandom = "0.4"
 # Cross-platform "open this URL in the user's default browser" — used
 # by the Nextcloud Login Flow v2 command to bounce the user out to
 # their NC login page.

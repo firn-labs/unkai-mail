@@ -40,4 +40,11 @@ ignore = [
   "RUSTSEC-2025-0052", # async-std (transitive build dep)
   "RUSTSEC-2024-0370", # proc-macro-error (transitive build-time)
   "RUSTSEC-2026-0097", # rand 0.7 + 0.8 — unsound; transitive only
+
+  # ── rsa Marvin timing side-channel (transitive via pgp) ─────────
+  # `rsa` (CVE-2023-49092 / RUSTSEC-2023-0071) has no patched release
+  # upstream.  Pulled in transitively by `pgp` → `unkai-crypto`.  The
+  # Marvin attack requires an adaptive decryption-timing oracle; our
+  # local offline PGP decryption never exposes one to a remote party.
+  "RUSTSEC-2023-0071", # rsa (Marvin)
 ]

@@ -64,7 +64,7 @@ impl SmimeCertSource {
     /// a conservative fallback — the row exists, so somebody put it
     /// there deliberately; treating it as "manual" preserves the row
     /// without claiming a stronger provenance than we can prove.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_db_str(s: &str) -> Self {
         match s {
             "vcard" => Self::Vcard,
             "inbound-message" => Self::InboundMessage,
@@ -213,7 +213,7 @@ fn row_from_columns(r: &rusqlite::Row<'_>) -> rusqlite::Result<SmimeCertRow> {
         fingerprint: r.get(0)?,
         email: r.get(1)?,
         der_cert: r.get(2)?,
-        source: SmimeCertSource::from_str(&source),
+        source: SmimeCertSource::from_db_str(&source),
         added_at: r.get(4)?,
     })
 }
@@ -334,15 +334,21 @@ mod tests {
         assert_eq!(SmimeCertSource::Manual.as_str(), "manual");
         assert_eq!(SmimeCertSource::InboundMessage.as_str(), "inbound-message");
 
-        assert_eq!(SmimeCertSource::from_str("vcard"), SmimeCertSource::Vcard);
-        assert_eq!(SmimeCertSource::from_str("manual"), SmimeCertSource::Manual);
         assert_eq!(
-            SmimeCertSource::from_str("inbound-message"),
+            SmimeCertSource::from_db_str("vcard"),
+            SmimeCertSource::Vcard
+        );
+        assert_eq!(
+            SmimeCertSource::from_db_str("manual"),
+            SmimeCertSource::Manual
+        );
+        assert_eq!(
+            SmimeCertSource::from_db_str("inbound-message"),
             SmimeCertSource::InboundMessage
         );
         // Unknown values fall back to Manual rather than erroring.
         assert_eq!(
-            SmimeCertSource::from_str("garbage"),
+            SmimeCertSource::from_db_str("garbage"),
             SmimeCertSource::Manual
         );
     }
