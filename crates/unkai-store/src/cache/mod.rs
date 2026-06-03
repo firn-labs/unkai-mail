@@ -2308,7 +2308,7 @@ fn secure_overwrite(path: &Path) -> Result<(), CacheError> {
     while written < len {
         let remaining = len - written;
         let n = (remaining as usize).min(CHUNK);
-        getrandom::getrandom(&mut buf[..n])
+        getrandom::fill(&mut buf[..n])
             .map_err(|e| CacheError::Open(format!("RNG for secure overwrite: {e}")))?;
         f.write_all(&buf[..n])
             .map_err(|e| CacheError::Open(format!("write {}: {e}", path.display())))?;

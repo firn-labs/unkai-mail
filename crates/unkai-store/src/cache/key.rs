@@ -33,7 +33,7 @@
 //! skips PBKDF2 derivation, which is both faster and — since we already
 //! have cryptographic randomness — just as secure as a derived key.
 
-use getrandom::getrandom;
+use getrandom::fill;
 use keyring::Entry;
 use tracing::{debug, info};
 use unkai_core::UnkaiError;
@@ -185,6 +185,6 @@ pub fn remove_wrap(credential_id_b64: &str) -> Result<bool, UnkaiError> {
 
 fn generate_hex_key() -> Result<String, UnkaiError> {
     let mut buf = [0u8; KEY_LEN];
-    getrandom(&mut buf).map_err(|e| UnkaiError::Storage(format!("RNG failed: {e}")))?;
+    fill(&mut buf).map_err(|e| UnkaiError::Storage(format!("RNG failed: {e}")))?;
     Ok(hex::encode(buf))
 }
