@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/Videothek/unkai-mail/main/logos/unkai-logo/png/storm/unkai-256.png" alt="Unkai Mail" width="160" />
+<img src="https://raw.githubusercontent.com/firn-labs/unkai-mail/main/logos/unkai-logo/png/storm/unkai-256.png" alt="Unkai Mail" width="160" />
 
 # Unkai Mail
 
@@ -13,11 +13,12 @@
 
 </div>
 
-> ⚠️ **Project status — early development.** Mail (IMAP / SMTP) works
-> end-to-end with an encrypted local cache and Nextcloud authentication
-> is in place, but Unkai is not yet feature-complete or suitable as a
-> daily driver. See the [Roadmap](#roadmap) and the
-> [issue tracker](https://github.com/Videothek/unkai-mail/issues).
+> ⚠️ **Project status — early development.** Mail (IMAP / SMTP / JMAP)
+> works end-to-end with an encrypted local cache, end-to-end mail
+> encryption (OpenPGP + S/MIME), and a deep Nextcloud integration (Talk,
+> Files, Calendar, Contacts, Notes, Tasks). It's increasingly capable but
+> not yet hardened for daily-driver use. See the [Roadmap](#roadmap) and
+> the [issue tracker](https://github.com/firn-labs/unkai-mail/issues).
 
 ---
 
@@ -50,7 +51,10 @@ and designed to feel like one app rather than five.
 Real protocols, real native rendering. The compose window is a full
 rich-text editor (lists, tables, images, signatures, @-mentions). The
 reading pane sandboxes HTML mail through DOMPurify, blocks remote images
-by default, and renders attachments inline where it makes sense.
+by default with per-sender trust, and renders attachments inline where
+it makes sense. Move messages between folders, and an offline outbox
+queues sends when you're disconnected with per-message retry (including
+re-prompting for encryption passphrases).
 
 <!--
   SCREENSHOT: compose
@@ -77,7 +81,11 @@ by default, and renders attachments inline where it makes sense.
   vCards, and Nextcloud Teams / Circles.
 - **Calendar** (CalDAV) — RSVP to meeting invites inline. The "Respond
   with meeting" action drops a styled invite card into your reply with
-  the time, location, notes, and an optional Talk room.
+  the time, location, notes, and an optional Talk room. Event reminders
+  fire as native notifications with snooze.
+- **Tasks** (CalDAV `VTODO`) — full sync with the Nextcloud Tasks app.
+  Multiple task lists, per-list visibility toggles, due/reminder dates
+  with a time picker, and done/not-done toggling from the editor.
 - **Notes** — full sync with the Nextcloud Notes app. Real markdown
   end-to-end (no HTML serializer in the middle) with a side-by-side
   preview pane. Two cross-feature autocomplete triggers live in the
@@ -107,13 +115,34 @@ by default, and renders attachments inline where it makes sense.
   <em>🎬 Animated demo placeholder — "Respond with meeting" + Talk room creation</em>
 </p>
 
+### 🔐 End-to-end mail encryption
+
+Both **OpenPGP** (RFC 3156 PGP/MIME) and **S/MIME** (RFC 8551, X.509 /
+CMS) are wired end-to-end — send, receive, decrypt, and signature
+verification across IMAP, SMTP, and JMAP:
+
+- **Send** — encrypt and/or sign from Compose. When an account has both
+  stacks configured, a `PGP | S/MIME` switch appears; single-stack
+  accounts keep a plain Encrypt / Sign toggle. BCC recipients get
+  per-recipient envelopes so the recipient set never leaks.
+- **Receive** — inbound encrypted mail decrypts inline (with an offline
+  ciphertext cache), and signatures verify against a TOFU
+  fingerprint store *and* the Mozilla CA root set. A tri-tone chip shows
+  green (trusted), amber (valid but untrusted issuer / expired), or red
+  (tampered).
+- **Keys & certs** — import your own key (`.p12` for S/MIME) into the OS
+  keychain with an optional "unlock automatically" toggle. Recipient
+  public keys and certs auto-import from Nextcloud Contacts vCards
+  (`KEY:` property) or paste-in per contact.
+
 ### 🔒 Security-first by default
 
 - TLS everywhere, with a per-account "trust this self-signed cert"
   flow that captures the full chain so renewals stay invisible.
-- All passwords (mail, Nextcloud) live in the OS keychain
-  (Credential Manager / macOS Keychain / Secret Service) — never
-  on disk.
+- All secrets (mail / Nextcloud passwords, PGP & S/MIME private keys and
+  passphrases) live in the OS keychain (Credential Manager / macOS
+  Keychain / Secret Service) — never on disk. In-memory secret buffers
+  are zeroized after use.
 - The local mail cache is encrypted at rest with **SQLCipher** (AES-256).
   The master key lives in the same OS keychain, optionally protected
   by FIDO2 PRF for hardware-backed unlock.
@@ -167,6 +196,8 @@ results.
 | UI components | [Skeleton UI v3](https://www.skeleton.dev) on Tailwind |
 | Editor | [Tiptap](https://tiptap.dev) (ProseMirror) |
 | At-rest encryption | SQLCipher (AES-256) with vendored OpenSSL |
+| E2E mail encryption | OpenPGP via [rPGP](https://github.com/rpgp/rpgp) + S/MIME (X.509 / CMS) via OpenSSL |
+| Localization | [Paraglide JS](https://inlang.com/m/gerre34r) (English + German) |
 | Platforms | Windows, macOS, Linux |
 
 ### Project structure
@@ -179,7 +210,8 @@ unkai-mail/
 │   ├── unkai-imap/        # IMAP mail retrieval
 │   ├── unkai-smtp/        # SMTP mail sending
 │   ├── unkai-jmap/        # JMAP modern mail access
-│   ├── unkai-caldav/      # CalDAV calendar sync
+│   ├── unkai-crypto/      # OpenPGP + S/MIME sign/verify/encrypt/decrypt
+│   ├── unkai-caldav/      # CalDAV calendar + tasks sync
 │   ├── unkai-carddav/     # CardDAV contact sync
 │   ├── unkai-discovery/   # Mozilla autoconfig + DNS SRV discovery
 │   ├── unkai-nextcloud/   # Nextcloud OCS API (Talk, Files, …)
@@ -317,33 +349,39 @@ titlebar, and Windows taskbar entry update immediately.
 
 ## Roadmap
 
-Tracked in [GitHub Issues](https://github.com/Videothek/unkai-mail/issues).
+Tracked in [GitHub Issues](https://github.com/firn-labs/unkai-mail/issues).
 
 **Done**
 - IMAP: connect, list folders, fetch envelopes + full messages
 - SMTP: send messages with rich-text + attachments
-- Encrypted local cache via SQLCipher, OS-keychain master key
+- JMAP: modern mail access (fetch, raw blob, encryption sniff)
+- Move messages between folders + offline outbox with per-message retry
+- End-to-end mail encryption — **OpenPGP** and **S/MIME**: encrypt, sign,
+  decrypt, signature verification (TOFU + CA-chain trust), per-recipient
+  BCC envelopes, recipient key/cert auto-import from vCards
+- Encrypted local cache via SQLCipher, OS-keychain secrets, FIDO2 unlock
 - Account setup wizard with IMAP/SMTP probe + autodiscovery
 - Nextcloud: browser-based login (Login Flow v2) + capability detection
 - Nextcloud Files: attach, share with password, embedded Office viewer
 - Nextcloud Talk: room creation from compose, auto-attach join link
-- CalDAV: full calendar view, event creation, iMIP RSVP
+- Nextcloud Notes: markdown sync with `@`-contact and `/mail` autocomplete
+- Nextcloud Tasks: multi-list `VTODO` sync, due/reminder dates, done toggle
+- CalDAV: full calendar view, event creation, iMIP RSVP, reminders + snooze
 - CardDAV: contact view, mailing lists, @-mentions in compose
+- HTML body renderer with per-sender remote-image trust
 - Full-text search over the encrypted cache (operator syntax + filters)
 - Infinite scroll for older mails / search results
 - System tray + desktop notifications
+- Localization (English + German) via Paraglide
 - Skeleton theme picker + custom theme import
 - App-icon picker (14 styles) with hot-swap
 
 **Next up**
-- End-to-end mail encryption (S/MIME + OpenPGP)
-- Calendar invites + RSVP polish
-- AI-assisted reply drafting + RAG over mail
-- Drag-and-drop messages between folders
-- HTML body renderer with per-sender remote-image trust
+- AI-assisted reply drafting + RAG over mail ([#59](https://github.com/firn-labs/unkai-mail/issues/59))
+- RSVP polish — propose a new timeslot / additional response options
+- In-app updater ([#229](https://github.com/firn-labs/unkai-mail/issues/229))
 
 **Later**
-- JMAP support (the crate exists; runtime is partial)
 - Spam / phishing classification
 - Cross-client interop for `@`-mentions and `/`-attachment refs
 
