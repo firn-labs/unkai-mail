@@ -114,15 +114,15 @@ re-prompting for encryption passphrases).
 <p align="center">
   <img src="docs/screenshots/nextcloud-talk.gif" alt="Unkai Mail respond with meeting" width="800" />
 </p>
-
+---
 <p align="center">
   <img src="docs/screenshots/talk-room.gif" alt="Unkai Mail talk room" width="800" />
 </p>
-
+---
 <p align="center">
   <img src="docs/screenshots/mail-note.gif" alt="Unkai Mail mail to note" width="800" />
 </p>
-
+---
 ### 🔐 End-to-end mail encryption
 
 Both **OpenPGP** (RFC 3156 PGP/MIME) and **S/MIME** (RFC 8551, X.509 /
