@@ -39,7 +39,7 @@ and designed to feel like one app rather than five.
   Roughly 1600×1000, PNG, hosted in `docs/screenshots/`.
 -->
 <p align="center">
-  <em>📸 Screenshot placeholder — main three-pane inbox view</em>
+  <img src="docs/screenshots/hero.png" alt="Unkai Mail three-pane inbox" width="800" />
 </p>
 
 ---
@@ -64,7 +64,7 @@ re-prompting for encryption passphrases).
   1200×900.
 -->
 <p align="center">
-  <em>📸 Screenshot placeholder — compose window with rich-text + meeting invite card</em>
+  <img src="docs/screenshots/compose.png" alt="Unkai Mail compose" width="800" />
 </p>
 
 ### ☁️ Nextcloud, all the way down
@@ -112,7 +112,15 @@ re-prompting for encryption passphrases).
   pasted into the body. ~10 s, 800×600 webp/gif.
 -->
 <p align="center">
-  <em>🎬 Animated demo placeholder — "Respond with meeting" + Talk room creation</em>
+  <img src="docs/screenshots/nextcloud-talk.gif" alt="Unkai Mail respond with meeting" width="800" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/talk-room.gif" alt="Unkai Mail talk room" width="800" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/mail-note.gif" alt="Unkai Mail mail to note" width="800" />
 </p>
 
 ### 🔐 End-to-end mail encryption
@@ -162,7 +170,11 @@ verification across IMAP, SMTP, and JMAP:
   with the small "custom" tag), and the App-icon picker below it.
 -->
 <p align="center">
-  <em>📸 Screenshot placeholder — theme + app-icon picker</em>
+  <img src="docs/screenshots/theming.png" alt="Unkai Mail theme picker" width="800" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/theming-icon.png" alt="Unkai Mail icon picker" width="800" />
 </p>
 
 ### 🔍 Search that scales
@@ -181,7 +193,7 @@ results.
   too" CTA).
 -->
 <p align="center">
-  <em>📸 Screenshot placeholder — search results with operator syntax</em>
+  <img src="docs/screenshots/search.gif" alt="Unkai Mail searchbar" width="800" />
 </p>
 
 ---
