@@ -65,6 +65,8 @@ re-prompting for encryption passphrases).
 -->
 <p align="center">
   <img src="docs/screenshots/compose.png" alt="Unkai Mail compose" width="800" />
+  <br />
+  <em>Rich-text compose with a styled meeting-invite card in the body</em>
 </p>
 
 ### ☁️ Nextcloud, all the way down
@@ -72,6 +74,13 @@ re-prompting for encryption passphrases).
 - **Talk** — create a meeting room from a thread, attach the join link
   to the outbound mail, defer participant invites until you actually
   hit Send.
+
+<p align="center">
+  <img src="docs/screenshots/talk-room.gif" alt="Creating a Nextcloud Talk room from a thread" width="800" />
+  <br />
+  <em>Spin up a Talk room straight from a thread</em>
+</p>
+
 - **Files** — attach files straight from your Nextcloud, share via
   password-protected public links, save inbound attachments back into
   any Nextcloud folder.
@@ -83,6 +92,20 @@ re-prompting for encryption passphrases).
   with meeting" action drops a styled invite card into your reply with
   the time, location, notes, and an optional Talk room. Event reminders
   fire as native notifications with snooze.
+
+<!--
+  GIF: nextcloud-talk
+  Animated capture of the "Respond with meeting" flow: open a thread →
+  click Respond with meeting → fill the EventEditor (auto-create Talk
+  room toggled) → save → Compose opens pre-filled with the invite card
+  pasted into the body. ~10 s, 800×600 webp/gif.
+-->
+<p align="center">
+  <img src="docs/screenshots/nextcloud-talk.gif" alt="Unkai Mail respond with meeting" width="800" />
+  <br />
+  <em>"Respond with meeting" pastes a styled invite card into your reply</em>
+</p>
+
 - **Tasks** (CalDAV `VTODO`) — full sync with the Nextcloud Tasks app.
   Multiple task lists, per-list visibility toggles, due/reminder dates
   with a time picker, and done/not-done toggling from the editor.
@@ -104,25 +127,12 @@ re-prompting for encryption passphrases).
   mails in mail view"** in Settings → General if you'd rather the
   main view jump to the message instead.
 
-<!--
-  GIF: nextcloud-talk
-  Animated capture of the "Respond with meeting" flow: open a thread →
-  click Respond with meeting → fill the EventEditor (auto-create Talk
-  room toggled) → save → Compose opens pre-filled with the invite card
-  pasted into the body. ~10 s, 800×600 webp/gif.
--->
 <p align="center">
-  <img src="docs/screenshots/nextcloud-talk.gif" alt="Unkai Mail respond with meeting" width="800" />
+  <img src="docs/screenshots/mail-note.gif" alt="Inserting a mail reference into a Nextcloud note" width="800" />
+  <br />
+  <em>Type <code>/mail</code> in a note to insert a clickable message reference</em>
 </p>
----
-<p align="center">
-  <img src="docs/screenshots/talk-room.gif" alt="Unkai Mail talk room" width="800" />
-</p>
----
-<p align="center">
-  <img src="docs/screenshots/mail-note.gif" alt="Unkai Mail mail to note" width="800" />
-</p>
----
+
 ### 🔐 End-to-end mail encryption
 
 Both **OpenPGP** (RFC 3156 PGP/MIME) and **S/MIME** (RFC 8551, X.509 /
@@ -169,13 +179,22 @@ verification across IMAP, SMTP, and JMAP:
   several stock themes including Cerberus and a custom imported one
   with the small "custom" tag), and the App-icon picker below it.
 -->
-<p align="center">
-  <img src="docs/screenshots/theming.png" alt="Unkai Mail theme picker" width="800" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/theming-icon.png" alt="Unkai Mail icon picker" width="800" />
-</p>
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="50%">
+        <img src="docs/screenshots/theming.png" alt="Unkai Mail theme picker" width="400" />
+        <br />
+        <em>22 stock themes plus custom CSS imports</em>
+      </td>
+      <td align="center" width="50%">
+        <img src="docs/screenshots/theming-icon.png" alt="Unkai Mail app-icon picker" width="400" />
+        <br />
+        <em>Swap the app icon to match your desktop</em>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ### 🔍 Search that scales
 
@@ -194,6 +213,8 @@ results.
 -->
 <p align="center">
   <img src="docs/screenshots/search.gif" alt="Unkai Mail searchbar" width="800" />
+  <br />
+  <em>Operator-prefixed search over the local FTS5 index, with server fallback</em>
 </p>
 
 ---
