@@ -1199,9 +1199,13 @@
           description: saved.description ?? null,
           talkUrl: isUrl ? loc : null,
         }
-        const others = [...replyTo.to, ...replyTo.cc].filter(
-          (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
-        )
+        // Bare-address compare so a "Name" <addr> self entry is
+        // still excluded from Cc (see `onMeetingEditorSaved`).
+        const selfAddr = activeAccountEmail.toLowerCase()
+        const others = [...replyTo.to, ...replyTo.cc].filter((a) => {
+          const addr = bareEmail(a)
+          return addr && addr.toLowerCase() !== selfAddr
+        })
         const initial: ComposeInitial = {
           to: replyTo.from,
           cc: others.length > 0 ? others.join(', ') : undefined,
@@ -2096,9 +2100,14 @@
   }
 
   function buildReplyAllInitial(mail: ReplyableMail): ComposeInitial {
-    const others = [...mail.to, ...mail.cc].filter(
-      (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
-    )
+    // Bare-address compare: To/Cc pieces may carry display names,
+    // so a raw compare would fail to drop the user's own address
+    // and reply-all would CC them on their own reply.
+    const self = activeAccountEmail.toLowerCase()
+    const others = [...mail.to, ...mail.cc].filter((a) => {
+      const addr = bareEmail(a)
+      return addr && addr.toLowerCase() !== self
+    })
     return {
       to: mail.from,
       cc: others.join(', '),
@@ -2952,9 +2961,15 @@
     // reply ergonomics (To from From, Re: subject prefix, quoted
     // body) match what `onReply` already produces.
     const original = ctx.replyTo
-    const others = [...original.to, ...original.cc].filter(
-      (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
-    )
+    // Compare on the *bare* address — To/Cc pieces can be in
+    // "Name" <addr> form, so a raw string compare never matches
+    // the user's bare email and would leave them CC'd on their
+    // own invite (same idiom as `prepareMeetingDraft`).
+    const self = activeAccountEmail.toLowerCase()
+    const others = [...original.to, ...original.cc].filter((a) => {
+      const addr = bareEmail(a)
+      return addr && addr.toLowerCase() !== self
+    })
     openCompose({
       to: original.from,
       cc: others.length > 0 ? others.join(', ') : undefined,
