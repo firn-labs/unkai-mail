@@ -19,6 +19,8 @@
 > Files, Calendar, Contacts, Notes, Tasks). It's increasingly capable but
 > not yet hardened for daily-driver use. See the [Roadmap](#roadmap) and
 > the [issue tracker](https://github.com/firn-labs/unkai-mail/issues).
+> We are searching for developers that like the vision of the app and
+> want to contribute to it's future to make it bigger and better.
 
 ---
 
@@ -78,7 +80,7 @@ re-prompting for encryption passphrases).
 <p align="center">
   <img src="docs/screenshots/talk-room.gif" alt="Creating a Nextcloud Talk room from a thread" width="800" />
   <br />
-  <em>Spin up a Talk room straight from a thread</em>
+  <em>Create a Talk room from a seperate UI and send a link via mail</em>
 </p>
 
 - **Files** — attach files straight from your Nextcloud, share via
@@ -130,7 +132,7 @@ re-prompting for encryption passphrases).
 <p align="center">
   <img src="docs/screenshots/mail-note.gif" alt="Inserting a mail reference into a Nextcloud note" width="800" />
   <br />
-  <em>Type <code>/mail</code> in a note to insert a clickable message reference</em>
+  <em>Create a note out of a mail you sent or received</em>
 </p>
 
 ### 🔐 End-to-end mail encryption
