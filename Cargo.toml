@@ -105,7 +105,7 @@ rustls-pki-types = "1"
 tokio-util = { version = "0.7", features = ["compat"] }
 # SHA-256 for the displayable cert fingerprint shown in the
 # "trust this server?" prompt. Tiny crate, no surprises.
-sha2 = "0.10"
+sha2 = "0.11"
 # SMTP
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 # MIME / email parsing (headers, bodies, encodings)
@@ -133,7 +133,7 @@ aes-gcm = "0.10"
 # different way to produce the 32-byte unwrap key.  Doubles as
 # the Phase 1B recovery passphrase so a lost hardware key
 # doesn't permanently lock the cache.
-pbkdf2 = "0.12"
+pbkdf2 = "0.13"
 hmac = "0.13"
 # UUIDs for fresh vCard UIDs on contact create — we picked `urn:uuid:`
 # form to match what other CardDAV clients emit.
