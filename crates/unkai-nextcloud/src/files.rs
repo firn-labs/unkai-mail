@@ -880,7 +880,7 @@ fn read_text_until(
     let mut buf = String::new();
     loop {
         match reader.read_event()? {
-            Event::Text(t) => buf.push_str(&t.xml_content().unwrap_or_default()),
+            Event::Text(t) => buf.push_str(&t.xml10_content().unwrap_or_default()),
             Event::CData(c) => buf.push_str(&String::from_utf8_lossy(&c)),
             Event::End(e) if strip_prefix_lowercase(e.name().as_ref()) == start_local => {
                 return Ok(buf);
