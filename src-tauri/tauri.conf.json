@@ -27,6 +27,8 @@
     }
   },
   "bundle": {
+    "active": true,
+    "targets": "all",
     "fileAssociations": [
       {
         "ext": ["ics"],
