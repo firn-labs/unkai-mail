@@ -134,7 +134,7 @@ aes-gcm = "0.10"
 # the Phase 1B recovery passphrase so a lost hardware key
 # doesn't permanently lock the cache.
 pbkdf2 = "0.12"
-hmac = "0.12"
+hmac = "0.13"
 # UUIDs for fresh vCard UIDs on contact create — we picked `urn:uuid:`
 # form to match what other CardDAV clients emit.
 uuid = { version = "1", features = ["v4"] }
