@@ -19,6 +19,8 @@
 > Files, Calendar, Contacts, Notes, Tasks). It's increasingly capable but
 > not yet hardened for daily-driver use. See the [Roadmap](#roadmap) and
 > the [issue tracker](https://github.com/firn-labs/unkai-mail/issues).
+> We are searching for developers that like the vision of the app and
+> want to contribute to it's future to make it bigger and better.
 
 ---
 
@@ -39,7 +41,7 @@ and designed to feel like one app rather than five.
   Roughly 1600×1000, PNG, hosted in `docs/screenshots/`.
 -->
 <p align="center">
-  <em>📸 Screenshot placeholder — main three-pane inbox view</em>
+  <img src="docs/screenshots/hero.png" alt="Unkai Mail three-pane inbox" width="800" />
 </p>
 
 ---
@@ -64,7 +66,9 @@ re-prompting for encryption passphrases).
   1200×900.
 -->
 <p align="center">
-  <em>📸 Screenshot placeholder — compose window with rich-text + meeting invite card</em>
+  <img src="docs/screenshots/compose.png" alt="Unkai Mail compose" width="800" />
+  <br />
+  <em>Rich-text compose with a styled meeting-invite card in the body</em>
 </p>
 
 ### ☁️ Nextcloud, all the way down
@@ -72,6 +76,13 @@ re-prompting for encryption passphrases).
 - **Talk** — create a meeting room from a thread, attach the join link
   to the outbound mail, defer participant invites until you actually
   hit Send.
+
+<p align="center">
+  <img src="docs/screenshots/talk-room.gif" alt="Creating a Nextcloud Talk room from a thread" width="800" />
+  <br />
+  <em>Create a Talk room from a seperate UI and send a link via mail</em>
+</p>
+
 - **Files** — attach files straight from your Nextcloud, share via
   password-protected public links, save inbound attachments back into
   any Nextcloud folder.
@@ -83,6 +94,20 @@ re-prompting for encryption passphrases).
   with meeting" action drops a styled invite card into your reply with
   the time, location, notes, and an optional Talk room. Event reminders
   fire as native notifications with snooze.
+
+<!--
+  GIF: nextcloud-talk
+  Animated capture of the "Respond with meeting" flow: open a thread →
+  click Respond with meeting → fill the EventEditor (auto-create Talk
+  room toggled) → save → Compose opens pre-filled with the invite card
+  pasted into the body. ~10 s, 800×600 webp/gif.
+-->
+<p align="center">
+  <img src="docs/screenshots/nextcloud-talk.gif" alt="Unkai Mail respond with meeting" width="800" />
+  <br />
+  <em>"Respond with meeting" pastes a styled invite card into your reply</em>
+</p>
+
 - **Tasks** (CalDAV `VTODO`) — full sync with the Nextcloud Tasks app.
   Multiple task lists, per-list visibility toggles, due/reminder dates
   with a time picker, and done/not-done toggling from the editor.
@@ -104,15 +129,10 @@ re-prompting for encryption passphrases).
   mails in mail view"** in Settings → General if you'd rather the
   main view jump to the message instead.
 
-<!--
-  GIF: nextcloud-talk
-  Animated capture of the "Respond with meeting" flow: open a thread →
-  click Respond with meeting → fill the EventEditor (auto-create Talk
-  room toggled) → save → Compose opens pre-filled with the invite card
-  pasted into the body. ~10 s, 800×600 webp/gif.
--->
 <p align="center">
-  <em>🎬 Animated demo placeholder — "Respond with meeting" + Talk room creation</em>
+  <img src="docs/screenshots/mail-note.gif" alt="Inserting a mail reference into a Nextcloud note" width="800" />
+  <br />
+  <em>Create a note out of a mail you sent or received</em>
 </p>
 
 ### 🔐 End-to-end mail encryption
@@ -161,9 +181,22 @@ verification across IMAP, SMTP, and JMAP:
   several stock themes including Cerberus and a custom imported one
   with the small "custom" tag), and the App-icon picker below it.
 -->
-<p align="center">
-  <em>📸 Screenshot placeholder — theme + app-icon picker</em>
-</p>
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="50%">
+        <img src="docs/screenshots/theming.png" alt="Unkai Mail theme picker" width="400" />
+        <br />
+        <em>22 stock themes plus custom CSS imports</em>
+      </td>
+      <td align="center" width="50%">
+        <img src="docs/screenshots/theming-icon.png" alt="Unkai Mail app-icon picker" width="400" />
+        <br />
+        <em>Swap the app icon to match your desktop</em>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ### 🔍 Search that scales
 
@@ -181,7 +214,9 @@ results.
   too" CTA).
 -->
 <p align="center">
-  <em>📸 Screenshot placeholder — search results with operator syntax</em>
+  <img src="docs/screenshots/search.gif" alt="Unkai Mail searchbar" width="800" />
+  <br />
+  <em>Operator-prefixed search over the local FTS5 index, with server fallback</em>
 </p>
 
 ---
