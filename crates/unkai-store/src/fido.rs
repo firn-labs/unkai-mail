@@ -214,12 +214,12 @@ const ENVELOPE_MAC_KEY: &[u8; 32] = b"unkai-envelope-integrity-v1!!!!!";
 /// `integrity_mac` blanked out.  Stable across runs as long as
 /// the rest of the envelope content is byte-identical.
 pub fn compute_envelope_mac(env: &KeychainEnvelope) -> Result<String, UnkaiError> {
-    use hmac::Mac;
+    use hmac::{KeyInit, Mac};
     let mut probe = env.clone();
     probe.integrity_mac = None;
     let bytes = serde_json::to_vec(&probe)
         .map_err(|e| UnkaiError::Storage(format!("envelope MAC serialize: {e}")))?;
-    let mut mac = <Hmac<Sha256> as hmac::Mac>::new_from_slice(ENVELOPE_MAC_KEY)
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(ENVELOPE_MAC_KEY)
         .map_err(|e| UnkaiError::Storage(format!("envelope MAC init: {e}")))?;
     mac.update(&bytes);
     Ok(B64.encode(mac.finalize().into_bytes()))
