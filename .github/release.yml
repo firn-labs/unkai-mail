@@ -54,7 +54,6 @@ changelog:
     - title: 📦 Dependency updates
       labels:
         - dependencies
-        - "*"
       authors:
         - dependabot
         - dependabot[bot]

@@ -198,7 +198,7 @@ pub async fn nominatim_search(
         .user_agent(concat!(
             "UnkaiMail/",
             env!("CARGO_PKG_VERSION"),
-            " (+https://github.com/Videothek/unkai-mail)"
+            " (+https://github.com/firn-labs/unkai-mail)"
         ))
         .build()
         .map_err(|e| UnkaiError::Network(format!("geocode HTTP client: {e}")))?;

@@ -18,7 +18,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0"
-repository = "https://github.com/Videothek/unkai-mail"
+repository = "https://github.com/firn-labs/unkai-mail"
 # We never publish individual `unkai-*` crates to crates.io —
 # they're internal building blocks of the desktop app.  Marking
 # them `publish = false` lets cargo-deny treat them as private
