@@ -88,7 +88,7 @@ notify-rust = "4"
 # the launching process (PowerShell / cmd / Git Bash) — see
 # `set_app_user_model_id` in `main.rs`.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_UI_Shell"] }
+windows = { version = "0.62", features = ["Win32_UI_Shell"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
