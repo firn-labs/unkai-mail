@@ -244,7 +244,7 @@ We run a **two-tier CI model** so daily dev stays fast and the heavy security su
 3. **Preview the auto-generated changelog** (optional but recommended — saves an "oh no, that PR didn't get a label" moment after the tag is out):
 
    ```bash
-   gh api repos/Videothek/unkai-mail/releases/generate-notes \
+   gh api repos/firn-labs/unkai-mail/releases/generate-notes \
      -f tag_name=vX.Y.Z \
      -f previous_tag_name=vPREV.PREV.PREV \
      --jq .body
@@ -332,7 +332,7 @@ cargo clippy --workspace
 - Rust workspace with modular crates set up
 - Tauri 2 + Svelte 5 + Skeleton UI frontend in place
 - Basic mail client UI shell (sidebar, mail list, reading pane)
-- Repository: https://github.com/Videothek/unkai-mail
+- Repository: https://github.com/firn-labs/unkai-mail
 - Next: implement first protocol (IMAP), connect backend to frontend via Tauri commands
 
 ## Development Workflow

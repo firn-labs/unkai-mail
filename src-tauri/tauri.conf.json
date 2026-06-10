@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/packages/tauri-config-schema/schema.json",
-  "productName": "Unkai",
+  "productName": "Unkai-Mail",
   "version": "0.1.0",
   "identifier": "com.unkai.mail",
   "build": {

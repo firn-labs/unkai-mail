@@ -305,7 +305,7 @@ links to GPL-3.0 code requires:
 - Distributing the complete corresponding source, or making it
   available via a written offer that any recipient can act on for at
   least three years. Our public GitHub repository at
-  <https://github.com/Videothek/unkai-mail> serves as that
+  <https://github.com/firn-labs/unkai-mail> serves as that
   availability.
 - Preserving copyright notices.
 - Licensing any work that combines with GPL-3.0 code under GPL-3.0
