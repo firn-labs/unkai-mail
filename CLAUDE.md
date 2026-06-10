@@ -231,6 +231,13 @@ We run a **two-tier CI model** so daily dev stays fast and the heavy security su
 
 **How to cut a release — full recipe.** When the user says "push a new version" / "release vX.Y.Z" / "ship a new build", walk them through every step below. Do not improvise an abbreviated version of this.
 
+> ⚠️ **The dry-run proves the gate, not the build.** The `workflow_dispatch` dry-run (and the daily smoke) run clippy / tests / scanners but **never run `tauri build` bundling** — the build matrix is gated on `refs/tags/v*`, so it only executes on a real tag. That means any *bundling* problem (missing icons, a disabled bundler, an installer-target quirk) is structurally invisible until the first tag of a new bundle config, and surfaces ~20 min into the release run. The v0.1.0 first release flushed out three of these in sequence; if you ever touch `src-tauri/tauri.conf.json`'s `bundle` block, expect the first tag to be the real test. Known requirements that bit us, all in the `bundle` block:
+> - `"active": true` — Tauri 2 defaults `bundle.active` to **false**; without it `tauri build` emits only the bare binary and tauri-action fails with "No artifacts were found."
+> - `"icon": [...]` — the Windows (`.ico`) and AppImage (square PNG) bundlers **hard-require** an icon; `.deb`/`.rpm`/macOS are lenient and will silently build without one, masking the gap. Point it at the existing `src-tauri/icons/` set.
+> - `"targets": "all"` — emits every installer per platform (Windows `.exe`+`.msi`, macOS `.dmg`, Linux `.deb`+`.rpm`+`.AppImage`).
+>
+> If a tag's build fails, fix on `main` and re-tag the *same* version (the deleted tag shipped nothing) — see "If the tag pipeline fails" below.
+
 1. **Pick the new version** — semver:
    - **patch** (`0.1.0 → 0.1.1`): bug fixes, security bumps, internal refactors. No new user-visible behaviour.
    - **minor** (`0.1.0 → 0.2.0`): new features, additive UI, new settings. Backwards-compatible.
@@ -279,7 +286,11 @@ We run a **two-tier CI model** so daily dev stays fast and the heavy security su
 7. **Finalise the Release**:
    - Open the draft on the Releases page.
    - Paste the editorial sections from `RELEASE_NOTES_TEMPLATE.md` *above* the auto-generated changelog (the template comment block explains what goes where).
-   - Verify every expected installer is attached: `unkai-mail_X.Y.Z_x64-setup.exe`, `unkai-mail_X.Y.Z_x64_en-US.msi`, `unkai-mail_X.Y.Z_aarch64.dmg`, `unkai-mail_X.Y.Z_x64.dmg`, `unkai-mail_X.Y.Z_amd64.deb`, `unkai-mail_X.Y.Z_amd64.AppImage`.
+   - Verify every expected installer is attached. The `productName` is `Unkai-Mail`, so assets are named `Unkai-Mail_*` (note: the bundler builds the names from `productName`, not the crate name). The full set from a green build is:
+     - Windows: `Unkai-Mail_X.Y.Z_x64-setup.exe` (NSIS) + `Unkai-Mail_X.Y.Z_x64_en-US.msi` (WiX)
+     - macOS (Apple Silicon only — `macos-latest` runners are arm64): `Unkai-Mail_X.Y.Z_aarch64.dmg` + `Unkai-Mail_aarch64.app.tar.gz`. There is **no Intel (x64) `.dmg`** unless we add an x64 macOS matrix entry.
+     - Linux: `Unkai-Mail_X.Y.Z_amd64.deb` (Debian/Ubuntu) + `Unkai-Mail-X.Y.Z-1.x86_64.rpm` (Fedora/RHEL) + `Unkai-Mail_X.Y.Z_amd64.AppImage` (any distro).
+     - Note: tauri-action does **not** emit a `SHA256SUMS` file by default — don't promise one in the notes unless we add a hashing step.
    - Click **Publish release**.
 
 **If the tag pipeline fails** (gate red, build matrix red, etc.):

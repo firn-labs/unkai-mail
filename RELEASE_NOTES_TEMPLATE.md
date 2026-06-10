@@ -51,25 +51,15 @@
 
 | Platform | Download |
 |---|---|
-| Windows (10 / 11, x86_64) | `unkai-mail_X.Y.Z_x64-setup.exe` or `unkai-mail_X.Y.Z_x64_en-US.msi` |
-| macOS (Apple Silicon) | `unkai-mail_X.Y.Z_aarch64.dmg` |
-| macOS (Intel) | `unkai-mail_X.Y.Z_x64.dmg` |
-| Linux (Ubuntu/Debian, x86_64) | `unkai-mail_X.Y.Z_amd64.deb` |
-| Linux (any distro, x86_64) | `unkai-mail_X.Y.Z_amd64.AppImage` |
+| Windows (10 / 11, x86_64) | `Unkai-Mail_X.Y.Z_x64-setup.exe` or `Unkai-Mail_X.Y.Z_x64_en-US.msi` |
+| macOS (Apple Silicon) | `Unkai-Mail_X.Y.Z_aarch64.dmg` |
+| Linux (Fedora / RHEL, x86_64) | `Unkai-Mail-X.Y.Z-1.x86_64.rpm` |
+| Linux (Ubuntu / Debian, x86_64) | `Unkai-Mail_X.Y.Z_amd64.deb` |
+| Linux (any distro, x86_64) | `Unkai-Mail_X.Y.Z_amd64.AppImage` |
+
+> **No Intel Mac build yet:** releases ship Apple-Silicon (`aarch64`) macOS only — `macos-latest` CI runners are arm64. Intel-Mac users need an x64 build we don't yet produce. Delete this note once we add an x64 macOS matrix entry.
 
 > **Note on signing:** these builds are not yet signed. Windows SmartScreen and macOS Gatekeeper will warn the first time you run the installer. We will start shipping signed builds once we provision the certs (Apple Developer ID + Windows EV Code Signing).
-
-## 📦 Verify your download (optional)
-
-The release assets include a `SHA256SUMS` file. To verify:
-
-```sh
-# macOS / Linux
-shasum -a 256 -c SHA256SUMS
-
-# Windows (PowerShell)
-Get-FileHash <installer> -Algorithm SHA256
-```
 
 ---
 
