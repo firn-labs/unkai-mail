@@ -114,7 +114,7 @@ mail-parser = "0.11"
 # responses they return. We hand-roll the small XML we emit and parse
 # the responses with quick-xml's pull parser; no full DAV client crate
 # is needed.
-quick-xml = { version = "0.38", features = ["serialize"] }
+quick-xml = { version = "0.40", features = ["serialize"] }
 # vCard 3 / 4 + iCalendar parser. Backs unkai-carddav's contact import
 # (vcard feature) and unkai-caldav's event sync (ical feature). Default
 # features also pull in a generator we don't need, so we ask only for
