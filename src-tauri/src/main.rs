@@ -7582,7 +7582,7 @@ async fn fetch_message_inner(
 ) -> Result<Email, UnkaiError> {
     let account = load_account(cache, account_id)?;
 
-    let email = if uses_jmap(&account) {
+    let mut email = if uses_jmap(&account) {
         let client = connect_jmap(&account).await?;
         client.fetch_message(folder, uid, account_id).await?
     } else {
@@ -7591,6 +7591,17 @@ async fn fetch_message_inner(
         let _ = client.logout().await;
         email
     };
+
+    // #414: pin + priority-override are local-only cache state the
+    // wire fetch can't know — overlay from the cached envelope row
+    // so MailView reflects them even on a fresh network fetch.  (The
+    // upsert below leaves those columns alone either way.)
+    if let Ok(Some((is_pinned, priority_override))) =
+        cache.envelope_local_state(account_id, folder, uid)
+    {
+        email.is_pinned = is_pinned;
+        email.priority_override = priority_override;
+    }
 
     // Single transactional write-through: envelope + body together so the
     // two can never drift on a partial failure.
@@ -7816,6 +7827,9 @@ async fn decrypt_message(
                 if let Ok(Some(env)) = cache.get_message(&account_id, &folder, uid) {
                     decrypted.is_read = env.is_read;
                     decrypted.is_starred = env.is_starred;
+                    // #414: local-only state, same overlay reason.
+                    decrypted.is_pinned = env.is_pinned;
+                    decrypted.priority_override = env.priority_override;
                 }
                 if let Err(e) = cache.upsert_message(&decrypted) {
                     tracing::warn!("cache.upsert_message after offline decrypt failed: {e}");
@@ -7858,6 +7872,14 @@ async fn decrypt_message(
     // is_read=true when it has no IMAP / JMAP context.
     decrypted.is_read = envelope_email.is_read;
     decrypted.is_starred = envelope_email.is_starred;
+    // #414: pin + priority-override live only in the cache; the
+    // server-side envelope fetch above can't carry them.
+    if let Ok(Some((is_pinned, priority_override))) =
+        cache.envelope_local_state(&account_id, &folder, uid)
+    {
+        decrypted.is_pinned = is_pinned;
+        decrypted.priority_override = priority_override;
+    }
 
     if let Err(e) = cache.upsert_message(&decrypted) {
         tracing::warn!("cache.upsert_message after decrypt failed: {e}");
@@ -8207,6 +8229,80 @@ async fn set_message_read(
     };
     let _ = client.logout().await;
     result
+}
+
+/// Toggle the flag state of a message (#414) — the mail-triage
+/// "mark this as important / needs attention" gesture.
+///
+/// Same shape as [`set_message_read`]: optimistic cache write first
+/// so the UI flips instantly, then the server round-trip propagates
+/// IMAP `\Flagged` / JMAP `$flagged`.  The flag is the one state of
+/// the #414 trio that DOES sync to the server, so other clients see
+/// it; if the network call fails, the next flag-refresh reconcile
+/// pass pulls the cache back in line with the server.
+#[tauri::command]
+async fn set_message_flagged(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    flagged: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    if let Err(e) = cache.mark_envelope_starred(&account_id, &folder, uid, flagged) {
+        tracing::warn!("cache flag update failed: {e}");
+    }
+
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        return client.set_flagged(&folder, uid, flagged).await;
+    }
+
+    let mut client = connect_imap(&account).await?;
+    let result = client.set_flagged(&folder, uid, flagged).await;
+    let _ = client.logout().await;
+    result
+}
+
+/// Toggle the local-only pin state of a message (#414).  Pinned
+/// messages sort above everything else in the mail list.  No server
+/// half — pins have no IMAP/JMAP equivalent, so the cache write IS
+/// the whole operation and this command never touches the network.
+#[tauri::command]
+async fn set_message_pinned(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    pinned: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    cache
+        .mark_envelope_pinned(&account_id, &folder, uid, pinned)
+        .map_err(|e| UnkaiError::Other(format!("cache pin update failed: {e}")))
+}
+
+/// Set or clear the user's priority override on a message (#414).
+/// `priority` is `"high"` / `"normal"` / `"low"`, or `None` to drop
+/// the override and fall back to the sender-declared header value.
+/// Local-only, like the pin.
+#[tauri::command]
+async fn set_message_priority(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    priority: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    // Validate here rather than trusting the IPC payload — the value
+    // lands in a column the list UI renders from directly.
+    if let Some(p) = priority.as_deref()
+        && !matches!(p, "high" | "normal" | "low")
+    {
+        return Err(UnkaiError::Other(format!("invalid priority '{p}'")));
+    }
+    cache
+        .set_envelope_priority(&account_id, &folder, uid, priority.as_deref())
+        .map_err(|e| UnkaiError::Other(format!("cache priority update failed: {e}")))
 }
 
 /// Remove a message from a folder.
@@ -14825,6 +14921,9 @@ fn main() {
             rename_folder,
             mark_as_read,
             set_message_read,
+            set_message_flagged,
+            set_message_pinned,
+            set_message_priority,
             send_email,
             list_outbox,
             list_all_outbox,

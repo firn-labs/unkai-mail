@@ -472,6 +472,9 @@ mod tests {
             protection: None,
             signature_status: None,
             signer_fingerprint: None,
+            is_pinned: false,
+            priority: None,
+            priority_override: None,
         }
     }
 

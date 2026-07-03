@@ -196,6 +196,16 @@ pub struct JmapEmail {
     /// Attachment parts.
     #[serde(default)]
     pub attachments: Vec<BodyPart>,
+    /// Raw priority headers (#414), requested via RFC 8621 §4.1.3
+    /// header-form properties (`header:X-Priority:asText` etc.).
+    /// The wire key is the full property name, so these need
+    /// explicit renames rather than the struct's camelCase rule.
+    #[serde(default, rename = "header:X-Priority:asText")]
+    pub header_x_priority: Option<String>,
+    #[serde(default, rename = "header:Importance:asText")]
+    pub header_importance: Option<String>,
+    #[serde(default, rename = "header:X-MSMail-Priority:asText")]
+    pub header_msmail_priority: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

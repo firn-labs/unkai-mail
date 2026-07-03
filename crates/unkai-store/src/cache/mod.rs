@@ -598,6 +598,12 @@ impl Cache {
             // *is* refreshed because the IMAP `\Answered` flag is
             // authoritative for "did anyone (incl. another client)
             // answer this".
+            // Same reasoning keeps `is_pinned` and
+            // `priority_override` (#414) out of this statement
+            // entirely: both are local-only user state with no
+            // server-side source of truth, so the fetch path must
+            // never touch them.  The header-derived `priority` IS
+            // written, COALESCE-guarded like the threading headers.
             // `references_ids` is serialised to JSON before the
             // bind so SQLite stores a single TEXT cell (the same
             // shape we use for `attendees_json` etc.).  Empty
@@ -607,9 +613,10 @@ impl Cache {
                 "INSERT INTO messages
                    (account_id, folder, uid, from_addr, subject, internal_date,
                     is_read, is_starred, is_answered, cached_at,
-                    message_id, in_reply_to, references_ids, thread_id, protection)
+                    message_id, in_reply_to, references_ids, thread_id, protection,
+                    priority)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                         ?11, ?12, ?13, ?14, ?15)
+                         ?11, ?12, ?13, ?14, ?15, ?16)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
@@ -633,7 +640,11 @@ impl Cache {
                    -- post-decrypt label (\"signed-and-encrypted\") that a
                    -- later envelope re-fetch — which can only see the
                    -- top-level Content-Type — couldn't reproduce.
-                   protection    = COALESCE(excluded.protection, messages.protection)",
+                   protection    = COALESCE(excluded.protection, messages.protection),
+                   -- #414: header-derived priority.  COALESCE so a
+                   -- fetch path that didn't parse the priority
+                   -- headers can't wipe a value already extracted.
+                   priority      = COALESCE(excluded.priority, messages.priority)",
             )?;
             for env in envelopes {
                 let refs_json: Option<String> = if env.references_ids.is_empty() {
@@ -658,6 +669,7 @@ impl Cache {
                     refs_json,
                     thread_id,
                     env.protection,
+                    env.priority,
                 ])?;
             }
         }
@@ -707,11 +719,15 @@ impl Cache {
                        AND m2.folder = ?2
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    COALESCE(b.protection, m.protection)
+                    COALESCE(b.protection, m.protection),
+                    m.is_pinned, m.priority, m.priority_override
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1 AND m.folder = ?2 AND m.pending_action IS NULL
-             ORDER BY m.internal_date DESC
+             -- #414: pinned rows first so they can never age out of
+             -- the newest-N window; served by
+             -- messages_by_folder_pinned_date without a sort step.
+             ORDER BY m.is_pinned DESC, m.internal_date DESC
              LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
@@ -742,6 +758,9 @@ impl Cache {
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
                 protection,
+                is_pinned: r.get::<_, i64>(15)? != 0,
+                priority: r.get(16)?,
+                priority_override: r.get(17)?,
             })
         })?;
 
@@ -782,7 +801,8 @@ impl Cache {
                        AND m2.folder = ?2
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    COALESCE(b.protection, m.protection)
+                    COALESCE(b.protection, m.protection),
+                    m.is_pinned, m.priority, m.priority_override
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1
@@ -819,6 +839,9 @@ impl Cache {
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
                 protection,
+                is_pinned: r.get::<_, i64>(15)? != 0,
+                priority: r.get(16)?,
+                priority_override: r.get(17)?,
             })
         })?;
         let mut out = Vec::new();
@@ -906,11 +929,12 @@ impl Cache {
                        AND m2.folder = m.folder
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    COALESCE(b.protection, m.protection)
+                    COALESCE(b.protection, m.protection),
+                    m.is_pinned, m.priority, m.priority_override
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.folder = ?1 AND m.pending_action IS NULL
-             ORDER BY m.internal_date DESC
+             ORDER BY m.is_pinned DESC, m.internal_date DESC
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![folder, limit as i64], |r| {
@@ -941,6 +965,9 @@ impl Cache {
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
                 protection,
+                is_pinned: r.get::<_, i64>(16)? != 0,
+                priority: r.get(17)?,
+                priority_override: r.get(18)?,
             })
         })?;
 
@@ -996,11 +1023,12 @@ impl Cache {
                        AND m2.folder = m.folder
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    COALESCE(b.protection, m.protection)
+                    COALESCE(b.protection, m.protection),
+                    m.is_pinned, m.priority, m.priority_override
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE ({where_clause}) AND m.pending_action IS NULL
-             ORDER BY m.internal_date DESC
+             ORDER BY m.is_pinned DESC, m.internal_date DESC
              LIMIT ?{limit_param}"
         );
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 * pairs.len() + 1);
@@ -1040,6 +1068,9 @@ impl Cache {
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
                 protection,
+                is_pinned: r.get::<_, i64>(16)? != 0,
+                priority: r.get(17)?,
+                priority_override: r.get(18)?,
             })
         })?;
 
@@ -1500,6 +1531,93 @@ impl Cache {
         Ok(())
     }
 
+    /// Set or clear the cached `is_starred` flag (#414) — the local
+    /// half of the user's flag toggle.  The caller propagates the
+    /// same change to the server (IMAP `\Flagged` / JMAP `$flagged`)
+    /// after this optimistic write, mirroring the
+    /// `mark_envelope_read` pattern.  No folder-counter bookkeeping
+    /// is needed here — unlike read state, flags don't feed a badge.
+    pub fn mark_envelope_starred(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        starred: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET is_starred = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, starred as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Set or clear the local-only pin state (#414).  Nothing to
+    /// propagate — pins have no server-side equivalent, so this
+    /// write IS the whole operation.
+    pub fn mark_envelope_pinned(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        pinned: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET is_pinned = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, pinned as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Set or clear the user's priority override (#414).  `priority`
+    /// is `"high"` / `"normal"` / `"low"`, or `None` to drop the
+    /// override entirely (display falls back to the header-derived
+    /// `priority` column).  Local-only, like the pin.
+    pub fn set_envelope_priority(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        priority: Option<&str>,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET priority_override = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, priority],
+        )?;
+        Ok(())
+    }
+
+    /// Read the local-only organizational state for one cached
+    /// envelope (#414): `(is_pinned, priority_override)`.  Used by
+    /// the full-message fetch paths to overlay pin / override onto
+    /// an `Email` that came off the wire — the protocols can't know
+    /// local state, and without the overlay a fresh network fetch
+    /// would render the message unpinned in the UI even though the
+    /// cache row still says otherwise.  `Ok(None)` when the UID
+    /// isn't cached (nothing local to overlay).
+    pub fn envelope_local_state(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<(bool, Option<String>)>, CacheError> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT is_pinned, priority_override FROM messages
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![account_id, folder, uid as i64],
+                |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     /// Bump a folder's `unread_count` by `delta` (positive to add,
     /// negative to subtract). Treats a `NULL` stored count as `0`.
     /// Used by the poll path to credit newly-arrived unread mail
@@ -1588,15 +1706,19 @@ impl Cache {
         tx.execute(
             "INSERT INTO messages
                 (account_id, folder, uid, from_addr, subject, internal_date,
-                 is_read, is_starred, cached_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 is_read, is_starred, cached_at, priority)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                 from_addr     = excluded.from_addr,
                 subject       = excluded.subject,
                 internal_date = excluded.internal_date,
                 is_read       = excluded.is_read,
                 is_starred    = excluded.is_starred,
-                cached_at     = excluded.cached_at",
+                cached_at     = excluded.cached_at,
+                -- #414: full-message fetches parse the priority
+                -- headers too; COALESCE-guarded like the envelope
+                -- upsert so a path that didn't can't wipe the value.
+                priority      = COALESCE(excluded.priority, messages.priority)",
             params![
                 email.account_id,
                 email.folder,
@@ -1610,6 +1732,7 @@ impl Cache {
                 email.is_read as i64,
                 email.is_starred as i64,
                 now,
+                email.priority,
             ],
         )?;
 
@@ -1691,7 +1814,8 @@ impl Cache {
                         b.body_text, b.body_html, b.has_attachments,
                         b.to_addrs, b.cc_addrs, b.attachments,
                         m.message_id, m.in_reply_to, m.references_ids,
-                        b.protection, b.signature_status, b.signer_fingerprint
+                        b.protection, b.signature_status, b.signer_fingerprint,
+                        m.is_pinned, m.priority, m.priority_override
                  FROM messages m
                  INNER JOIN message_bodies b USING (account_id, folder, uid)
                  WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
@@ -1728,6 +1852,9 @@ impl Cache {
                         protection: r.get(14)?,
                         signature_status: r.get(15)?,
                         signer_fingerprint: r.get(16)?,
+                        is_pinned: r.get::<_, i64>(17)? != 0,
+                        priority: r.get(18)?,
+                        priority_override: r.get(19)?,
                     })
                 },
             )
@@ -2344,6 +2471,9 @@ mod tests {
             thread_id: None,
             thread_total_count: None,
             protection: None,
+            is_pinned: false,
+            priority: None,
+            priority_override: None,
         }
     }
 
@@ -2399,6 +2529,74 @@ mod tests {
         assert!(got[0].is_starred);
     }
 
+    /// #414: pinned envelopes sort above everything regardless of
+    /// date, and the local-only pin / priority-override state
+    /// survives an envelope re-fetch (which must never write those
+    /// columns).  The header-derived `priority` IS refreshed, but
+    /// COALESCE-guarded so a fetch that produced `None` can't wipe
+    /// an earlier value.
+    #[test]
+    fn pin_and_priority_roundtrip() {
+        let cache = open_test_cache();
+        let mut old_env = make_envelope(1, "INBOX", 60); // older
+        old_env.priority = Some("high".into());
+        let envs = vec![old_env, make_envelope(2, "INBOX", 5)];
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+
+        // Pin the *older* message and override its priority.
+        cache.mark_envelope_pinned("acc", "INBOX", 1, true).unwrap();
+        cache
+            .set_envelope_priority("acc", "INBOX", 1, Some("normal"))
+            .unwrap();
+
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        assert_eq!(got[0].uid, 1, "pinned row must sort first");
+        assert!(got[0].is_pinned);
+        assert_eq!(got[0].priority.as_deref(), Some("high"));
+        assert_eq!(got[0].priority_override.as_deref(), Some("normal"));
+
+        // A re-fetch without priority headers must clobber neither
+        // the pin, the override, nor the earlier header priority.
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        assert_eq!(got[0].uid, 1);
+        assert!(got[0].is_pinned);
+        assert_eq!(got[0].priority.as_deref(), Some("high"));
+        assert_eq!(got[0].priority_override.as_deref(), Some("normal"));
+
+        // Unpin + clear override → back to date order, no override.
+        cache
+            .mark_envelope_pinned("acc", "INBOX", 1, false)
+            .unwrap();
+        cache
+            .set_envelope_priority("acc", "INBOX", 1, None)
+            .unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        assert_eq!(got[0].uid, 2);
+        assert!(!got[1].is_pinned);
+        assert!(got[1].priority_override.is_none());
+    }
+
+    /// #414: the flag setter flips `is_starred` in place.
+    #[test]
+    fn starred_setter_roundtrip() {
+        let cache = open_test_cache();
+        let envs = vec![make_envelope(9, "INBOX", 1)];
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+
+        cache
+            .mark_envelope_starred("acc", "INBOX", 9, true)
+            .unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert!(got[0].is_starred);
+
+        cache
+            .mark_envelope_starred("acc", "INBOX", 9, false)
+            .unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert!(!got[0].is_starred);
+    }
+
     fn make_email(uid: u32, folder: &str) -> Email {
         Email {
             id: format!("{folder}:{uid}"),
@@ -2421,6 +2619,9 @@ mod tests {
             protection: None,
             signature_status: None,
             signer_fingerprint: None,
+            is_pinned: false,
+            priority: None,
+            priority_override: None,
         }
     }
 

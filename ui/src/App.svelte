@@ -403,6 +403,11 @@
     is_read: boolean
     is_starred: boolean
     account_id: string
+    /** #414 — pin + priority state, mirrored so MailView's
+     *  toggles can update the matching list row in place. */
+    is_pinned?: boolean
+    priority?: string | null
+    priority_override?: string | null
   }
   let mailListEnvelopes = $state<MailListEnvelope[]>([])
   /** Mirror of MailList's post-merge thread membership map (#289
@@ -1525,6 +1530,24 @@
     if (idx >= 0 && !mailListEnvelopes[idx].is_read) {
       mailListEnvelopes[idx].is_read = true
     }
+  }
+
+  // MailView's flag / pin / priority toggles (#414).  Same shape as
+  // `onMessageRead`: mutate the bound envelope in place — no
+  // refreshToken bump, so nothing races the user's next click.
+  // MailList re-derives its row order from the mutation, which is
+  // how a pin flip from the reading pane re-sorts the list.
+  function onMessageFlagChanged(uid: number, flagged: boolean) {
+    const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
+    if (idx >= 0) mailListEnvelopes[idx].is_starred = flagged
+  }
+  function onMessagePinChanged(uid: number, pinned: boolean) {
+    const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
+    if (idx >= 0) mailListEnvelopes[idx].is_pinned = pinned
+  }
+  function onMessagePriorityChanged(uid: number, priority: string) {
+    const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
+    if (idx >= 0) mailListEnvelopes[idx].priority_override = priority
   }
 
   /** The currently shown message has been archived or deleted on the
@@ -3592,6 +3615,9 @@
           linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
           threadMemberUids={currentThreadMemberUids}
           onread={onMessageRead}
+          onflagchanged={onMessageFlagChanged}
+          onpinchanged={onMessagePinChanged}
+          onprioritychanged={onMessagePriorityChanged}
           onreply={onReply}
           onreplyall={onReplyAll}
           onforward={onForward}

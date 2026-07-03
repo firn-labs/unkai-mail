@@ -572,6 +572,72 @@ pub struct EmailEnvelope {
     /// column on first full open) and for plain-text mail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protection: Option<String>,
+    /// Local-only "keep this at the top of the list" state (#414).
+    /// No IMAP/JMAP equivalent exists, so the flag never leaves the
+    /// cache: protocol clients always produce `false`, the cache
+    /// read paths fill in the stored value, and envelope re-fetches
+    /// can't clobber it (the upsert leaves the column alone).
+    /// `#[serde(default)]` keeps older cached payloads parsing
+    /// cleanly.
+    #[serde(default)]
+    pub is_pinned: bool,
+    /// Sender-declared message priority parsed from the
+    /// `X-Priority:` / `Importance:` headers at fetch time (#414):
+    /// `"high"` or `"low"`.  `None` = normal priority (the
+    /// overwhelmingly common case) — kept sparse so the cache
+    /// column stays NULL for ordinary mail.  See
+    /// [`priority_from_headers`] for the mapping rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    /// User-set priority for this message (#414): `"high"`,
+    /// `"normal"`, or `"low"`.  Local-only — like `is_pinned`,
+    /// there is no server-side equivalent, so it lives purely in
+    /// the cache and wins over the header-derived `priority` when
+    /// both are present (`"normal"` is a real value here precisely
+    /// so the user can downgrade a sender's "high" back to
+    /// nothing).  `None` = user never touched it; display falls
+    /// back to `priority`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_override: Option<String>,
+}
+
+/// Map the sender-declared priority headers to our two-value
+/// priority scale (#414).
+///
+/// Checked in order — first header that yields a value wins:
+///
+/// 1. `X-Priority:` — the de-facto numeric convention: `1`/`2` mean
+///    high, `4`/`5` mean low, `3` is normal.  Values often carry a
+///    trailing label (`"1 (Highest)"`), so only the leading digit is
+///    read.
+/// 2. `Importance:` (RFC 2156) and its `X-MSMail-Priority:` twin —
+///    the word forms `high` / `low` (`normal` maps to `None`).
+///
+/// Returns `"high"` / `"low"`, or `None` for normal / absent /
+/// unparseable — so ordinary mail stays out of the cache column
+/// entirely.
+pub fn priority_from_headers(
+    x_priority: Option<&str>,
+    importance: Option<&str>,
+    msmail_priority: Option<&str>,
+) -> Option<String> {
+    if let Some(v) = x_priority {
+        match v.trim().chars().next() {
+            Some('1') | Some('2') => return Some("high".into()),
+            Some('4') | Some('5') => return Some("low".into()),
+            _ => {}
+        }
+    }
+    for v in [importance, msmail_priority].into_iter().flatten() {
+        let v = v.trim();
+        if v.eq_ignore_ascii_case("high") || v.eq_ignore_ascii_case("urgent") {
+            return Some("high".into());
+        }
+        if v.eq_ignore_ascii_case("low") || v.eq_ignore_ascii_case("non-urgent") {
+            return Some("low".into());
+        }
+    }
+    None
 }
 
 /// Represents an email message.
@@ -638,6 +704,20 @@ pub struct Email {
     /// so the user can compare against the expected sender.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer_fingerprint: Option<String>,
+    /// Local-only pin state (#414).  Mirrors the field on
+    /// `EmailEnvelope`; protocol fetch paths always produce
+    /// `false` and the cache / IPC layer stamps the stored value.
+    #[serde(default)]
+    pub is_pinned: bool,
+    /// Sender-declared priority from the `X-Priority:` /
+    /// `Importance:` headers (#414): `"high"` / `"low"`, `None` =
+    /// normal.  Mirrors the field on `EmailEnvelope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    /// User-set priority override (#414).  Local-only; mirrors the
+    /// field on `EmailEnvelope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_override: Option<String>,
 }
 
 /// Metadata for one attachment on a received email.

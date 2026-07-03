@@ -82,6 +82,16 @@
     /** Hex fingerprint of the verified signer.  Only present when
      *  `signature_status === "valid"`. */
     signer_fingerprint?: string | null
+    /** Local-only pin state (#414), overlaid from the cache by the
+     *  fetch paths. */
+    is_pinned?: boolean
+    /** Sender-declared priority from the `X-Priority:` /
+     *  `Importance:` headers (#414): `'high'` / `'low'`, absent =
+     *  normal. */
+    priority?: string | null
+    /** User-set priority override (#414): `'high'` / `'normal'` /
+     *  `'low'`.  Wins over `priority` for the badge. */
+    priority_override?: string | null
   }
 
   interface Props {
@@ -89,6 +99,14 @@
     folder?: string
     uid: number | null
     onread?: (uid: number) => void
+    /** Fire after the flag / pin / priority toggles (#414) commit so
+        the parent can mutate the matching MailList envelope in place
+        — same plumbing as `onread`.  MailList re-derives its row
+        order from the mutation, so a pin flip re-sorts the list
+        without a refetch. */
+    onflagchanged?: (uid: number, flagged: boolean) => void
+    onpinchanged?: (uid: number, pinned: boolean) => void
+    onprioritychanged?: (uid: number, priority: string) => void
     onreply?: (mail: Email & { uid: number }) => void
     onreplyall?: (mail: Email & { uid: number }) => void
     onforward?: (mail: Email & { uid: number }) => void
@@ -179,6 +197,9 @@
     folder = 'INBOX',
     uid,
     onread,
+    onflagchanged,
+    onpinchanged,
+    onprioritychanged,
     onreply,
     onreplyall,
     onforward,
@@ -681,6 +702,74 @@
     } catch (e: any) {
       console.warn('set_message_read failed:', e)
       if (email) email.is_read = !next
+    }
+  }
+
+  // ── Flag / pin / priority (#414) ──────────────────────────────
+  // Same optimistic shape as toggleRead: flip the local state so
+  // the button/badge updates instantly, invoke the backend, revert
+  // on failure, and notify the parent so the MailList row follows.
+
+  async function toggleFlagged() {
+    if (!email || uid == null) return
+    const next = !email.is_starred
+    email.is_starred = next
+    try {
+      await invoke('set_message_flagged', { accountId, folder, uid, flagged: next })
+      onflagchanged?.(uid, next)
+    } catch (e: any) {
+      console.warn('set_message_flagged failed:', e)
+      if (email) email.is_starred = !next
+    }
+  }
+
+  async function togglePinned() {
+    if (!email || uid == null) return
+    const next = !email.is_pinned
+    email.is_pinned = next
+    try {
+      await invoke('set_message_pinned', { accountId, folder, uid, pinned: next })
+      onpinchanged?.(uid, next)
+    } catch (e: any) {
+      console.warn('set_message_pinned failed:', e)
+      if (email) email.is_pinned = !next
+    }
+  }
+
+  /** Popover for the priority picker.  Uses the project's standard
+   *  outside-click dismissal idiom: the document listener is
+   *  registered one tick after open so the click that opened the
+   *  menu doesn't immediately dismiss it. */
+  let priorityMenuOpen = $state(false)
+  $effect(() => {
+    if (!priorityMenuOpen) return
+    const close = () => (priorityMenuOpen = false)
+    const t = setTimeout(() => document.addEventListener('mousedown', close), 0)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('mousedown', close)
+    }
+  })
+
+  /** The priority the badge/menu should reflect: user override
+   *  first, then the sender-declared header value; `'normal'`
+   *  renders no badge. */
+  function effectivePriority(): 'high' | 'low' | null {
+    const p = email?.priority_override ?? email?.priority
+    return p === 'high' || p === 'low' ? p : null
+  }
+
+  async function setPriority(priority: 'high' | 'normal' | 'low') {
+    if (!email || uid == null) return
+    const prev = email.priority_override
+    email.priority_override = priority
+    priorityMenuOpen = false
+    try {
+      await invoke('set_message_priority', { accountId, folder, uid, priority })
+      onprioritychanged?.(uid, priority)
+    } catch (e: any) {
+      console.warn('set_message_priority failed:', e)
+      if (email) email.priority_override = prev
     }
   }
 
@@ -2003,8 +2092,36 @@
     <!-- Email header -->
     <div class="p-6 border-b border-surface-200 dark:border-surface-700">
       <div class="flex items-start justify-between mb-2 gap-4">
-        <h2 class="text-xl font-semibold">{email.subject || '(no subject)'}</h2>
+        <h2 class="text-xl font-semibold flex items-center gap-2 min-w-0">
+          {#if email.is_pinned}
+            <span
+              class="shrink-0 inline-flex items-center text-primary-500"
+              title={m.mail_pinned_title()}
+              aria-label={m.mail_pinned_title()}
+            ><Icon name="pin" size={18} /></span>
+          {/if}
+          <span class="min-w-0">{email.subject || '(no subject)'}</span>
+        </h2>
         <div class="flex items-center gap-3 shrink-0">
+          <!-- Priority badge (#414): the user's override wins over
+               the sender-declared header value; normal shows
+               nothing. -->
+          {#if effectivePriority() === 'high'}
+            <span
+              class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400"
+              title={m.mail_priority_high_badge()}
+            >
+              <Icon name="important" size={12} />
+              <span class="font-medium">{m.mail_priority_high()}</span>
+            </span>
+          {:else if effectivePriority() === 'low'}
+            <span
+              class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+              title={m.mail_priority_low_badge()}
+            >
+              <span class="font-medium">{m.mail_priority_low()}</span>
+            </span>
+          {/if}
           <span class="text-sm text-surface-500">{formatFullDate(email.date)}</span>
         </div>
       </div>
@@ -2158,6 +2275,57 @@
           title={email.is_read ? 'Mark this message as unread' : 'Mark this message as read'}
           aria-label={email.is_read ? 'Mark as unread' : 'Mark as read'}
         ><Icon name={email.is_read ? 'unread' : 'read'} size={16} /></button>
+        <!-- Flag / pin / priority (#414).  Flag + pin keep their
+             icon lit while active so the toolbar doubles as the
+             state indicator; priority opens a three-option
+             popover anchored to the button. -->
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-amber-500/15 hover:text-amber-500 hover:border-amber-500/40 {email.is_starred ? 'text-amber-500 border-amber-500/40' : ''}"
+          onclick={toggleFlagged}
+          title={email.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
+          aria-label={email.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
+        ><Icon name="flag" size={16} /></button>
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 {email.is_pinned ? 'text-primary-500 border-primary-500/40' : ''}"
+          onclick={togglePinned}
+          title={email.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
+          aria-label={email.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
+        ><Icon name="pin" size={16} /></button>
+        <div class="relative">
+          <button
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 {effectivePriority() === 'high' ? 'text-red-500 border-red-500/40' : ''}"
+            onclick={() => (priorityMenuOpen = !priorityMenuOpen)}
+            title={m.mail_priority_label()}
+            aria-label={m.mail_priority_label()}
+          ><Icon name="important" size={16} /></button>
+          {#if priorityMenuOpen}
+            <!-- Stop mousedown from reaching the document-level
+                 dismiss listener so the option handlers get to
+                 run before the menu unmounts. -->
+            <div
+              class="absolute left-0 top-full mt-1 z-50 min-w-32 py-1 rounded-md shadow-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 text-sm"
+              role="menu"
+              tabindex="-1"
+              onmousedown={(e) => e.stopPropagation()}
+            >
+              {#each [
+                { value: 'high' as const, label: m.mail_priority_high() },
+                { value: 'normal' as const, label: m.mail_priority_normal() },
+                { value: 'low' as const, label: m.mail_priority_low() },
+              ] as opt (opt.value)}
+                {@const active = (effectivePriority() ?? 'normal') === opt.value}
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 {active ? 'text-primary-500 font-medium' : ''}"
+                  onclick={() => void setPriority(opt.value)}
+                >
+                  {#if active}<Icon name="success" size={14} />{:else}<span class="w-3.5"></span>{/if}
+                  <span>{opt.label}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       {/if}
       <div class="flex-1"></div>
       {#if !inStandaloneWindow && email && uid != null}

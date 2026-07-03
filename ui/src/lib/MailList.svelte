@@ -71,6 +71,17 @@
      *  date on each row.  `null` for plain mail and for
      *  envelopes whose body hasn't been fetched yet. */
     protection?: string | null
+    /** Local-only pin state (#414).  Pinned rows (and the threads
+     *  they belong to) sort above everything else. */
+    is_pinned?: boolean
+    /** Sender-declared priority from the `X-Priority:` /
+     *  `Importance:` headers (#414): `'high'` / `'low'`, absent =
+     *  normal. */
+    priority?: string | null
+    /** User-set priority override (#414): `'high'` / `'normal'` /
+     *  `'low'`, absent = untouched.  Wins over `priority` for the
+     *  badge. */
+    priority_override?: string | null
   }
 
   /** Slim account row used to render the account label on each row in
@@ -311,7 +322,19 @@
     // affected-envelopes lookup) still has a stable handle to key
     // off; nothing groups by it because the keys are all distinct.
     if (!conversationView) {
-      const rows: RenderRow[] = envelopes.map((env) => ({
+      // #414: pinned rows first (stable within each partition, so
+      // date order is preserved on both sides of the split).  Done
+      // here — at render time — rather than by re-sorting
+      // `envelopes`, because the pagination cursor logic
+      // (`paginationWindow`) needs the array's date order intact:
+      // a pinned old message hoisted to the front of `envelopes`
+      // would otherwise become the "smallest UID in the window"
+      // anchor and make `loadOlder` skip everything between.
+      const ordered = [
+        ...envelopes.filter((e) => e.is_pinned),
+        ...envelopes.filter((e) => !e.is_pinned),
+      ]
+      const rows: RenderRow[] = ordered.map((env) => ({
         env,
         siblingCount: 0,
         isSibling: false,
@@ -461,7 +484,13 @@
       }
       return key
     }
-    const out: RenderRow[] = []
+    // #414: emit whole thread blocks (head + expanded siblings)
+    // and partition pinned blocks to the front afterwards.  A
+    // thread counts as pinned when *any* member is pinned — the
+    // user's pin must survive newer replies arriving and becoming
+    // the visible head.  Block-level partitioning (not row-level)
+    // keeps expanded siblings glued to their head.
+    const blocks: { pinned: boolean; rows: RenderRow[] }[] = []
     const seen = new Set<string>()
     for (const env of envelopes) {
       const key = effectiveKey(env)
@@ -493,16 +522,18 @@
         }
       }
       const totalCount = Math.max(group.length, cachedTotal)
-      out.push({
-        env: head,
-        siblingCount: totalCount - 1,
-        isSibling: false,
-        isLastSibling: false,
-        threadKey: key,
-      })
+      const blockRows: RenderRow[] = [
+        {
+          env: head,
+          siblingCount: totalCount - 1,
+          isSibling: false,
+          isLastSibling: false,
+          threadKey: key,
+        },
+      ]
       if (expandedThreads.has(key)) {
         for (let i = 0; i < siblings.length; i++) {
-          out.push({
+          blockRows.push({
             env: siblings[i],
             siblingCount: 0,
             isSibling: true,
@@ -511,7 +542,12 @@
           })
         }
       }
+      blocks.push({ pinned: group.some((g) => g.is_pinned), rows: blockRows })
     }
+    const out: RenderRow[] = [
+      ...blocks.filter((b) => b.pinned),
+      ...blocks.filter((b) => !b.pinned),
+    ].flatMap((b) => b.rows)
     // Build a side-map from envelope identity to its post-merge
     // bucket (#289 follow-up).  `affectedEnvelopes` consults this
     // when the user drags or right-clicks a thread head so the
@@ -1516,6 +1552,74 @@
       env.is_read = !next
     }
   }
+
+  // ── Flag / pin / priority (#414) ──────────────────────────────
+  // Same optimistic shape as toggleEnvelopeRead: mutate the row
+  // in place (the `$state` proxy re-derives `threadView`, so a
+  // pin toggle re-sorts the visible list immediately), then let
+  // the backend call catch up; revert on failure.
+
+  /** The priority the badge should show: the user's override wins
+   *  over the sender-declared header value; `'normal'` (explicit
+   *  or implied by absence) renders no badge. */
+  function effectivePriority(env: EmailEnvelope): 'high' | 'low' | null {
+    const p = env.priority_override ?? env.priority
+    return p === 'high' || p === 'low' ? p : null
+  }
+
+  async function toggleEnvelopeFlagged(env: EmailEnvelope) {
+    const next = !env.is_starred
+    env.is_starred = next
+    closeContextMenu()
+    try {
+      await invoke('set_message_flagged', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        flagged: next,
+      })
+    } catch (e) {
+      console.warn('set_message_flagged failed:', e)
+      env.is_starred = !next
+    }
+  }
+
+  async function toggleEnvelopePinned(env: EmailEnvelope) {
+    const next = !env.is_pinned
+    env.is_pinned = next
+    closeContextMenu()
+    try {
+      await invoke('set_message_pinned', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        pinned: next,
+      })
+    } catch (e) {
+      console.warn('set_message_pinned failed:', e)
+      env.is_pinned = !next
+    }
+  }
+
+  async function setEnvelopePriority(
+    env: EmailEnvelope,
+    priority: 'high' | 'normal' | 'low',
+  ) {
+    const prev = env.priority_override
+    env.priority_override = priority
+    closeContextMenu()
+    try {
+      await invoke('set_message_priority', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        priority,
+      })
+    } catch (e) {
+      console.warn('set_message_priority failed:', e)
+      env.priority_override = prev
+    }
+  }
 </script>
 
 <div class="flex-1 flex flex-col min-w-0">
@@ -1714,9 +1818,52 @@
                         <span class="font-medium">Signed</span>
                       </span>
                     {/if}
+                    <!-- Priority badge (#414): sender-declared from
+                         the headers, or the user's override when
+                         set.  Normal renders nothing so ordinary
+                         mail keeps the date-only layout. -->
+                    {#if effectivePriority(env) === 'high'}
+                      <span
+                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400"
+                        title={m.mail_priority_high_badge()}
+                        aria-label={m.mail_priority_high_badge()}
+                      >
+                        <Icon name="important" size={11} />
+                        <span class="font-medium">{m.mail_priority_high()}</span>
+                      </span>
+                    {:else if effectivePriority(env) === 'low'}
+                      <span
+                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+                        title={m.mail_priority_low_badge()}
+                        aria-label={m.mail_priority_low_badge()}
+                      >
+                        <span class="font-medium">{m.mail_priority_low()}</span>
+                      </span>
+                    {/if}
                   </div>
                 </div>
                 <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
+                  <!-- Pin + flag markers (#414) lead the subject —
+                       the same slot the reply icon uses, so a row
+                       with several markers reads as one icon strip. -->
+                  {#if env.is_pinned}
+                    <span
+                      class="shrink-0 inline-flex items-center text-primary-500"
+                      title={m.mail_pinned_title()}
+                      aria-label={m.mail_pinned_title()}
+                    >
+                      <Icon name="pin" size={14} />
+                    </span>
+                  {/if}
+                  {#if env.is_starred}
+                    <span
+                      class="shrink-0 inline-flex items-center text-amber-500"
+                      title={m.mail_flagged_title()}
+                      aria-label={m.mail_flagged_title()}
+                    >
+                      <Icon name="flag" size={14} />
+                    </span>
+                  {/if}
                   {#if answeredIconName(env)}
                     <span
                       class="shrink-0 inline-flex items-center text-primary-500"
@@ -1802,9 +1949,29 @@
           >
             <button
               type="button"
+              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm {env.is_starred ? 'text-amber-500' : ''}"
+              title={env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
+              aria-label={env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
+              onclick={(e) => {
+                e.stopPropagation()
+                void toggleEnvelopeFlagged(env)
+              }}
+            ><Icon name="flag" size={16} /></button>
+            <button
+              type="button"
+              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm {env.is_pinned ? 'text-primary-500' : ''}"
+              title={env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
+              aria-label={env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
+              onclick={(e) => {
+                e.stopPropagation()
+                void toggleEnvelopePinned(env)
+              }}
+            ><Icon name="pin" size={16} /></button>
+            <button
+              type="button"
               class="w-7 h-7 rounded-md flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
-              title={env.is_read ? 'Mark as unread' : 'Mark as read'}
-              aria-label={env.is_read ? 'Mark as unread' : 'Mark as read'}
+              title={env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
+              aria-label={env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
               onclick={(e) => {
                 e.stopPropagation()
                 void toggleEnvelopeRead(env)
@@ -1813,8 +1980,8 @@
             <button
               type="button"
               class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
-              title="Move to folder"
-              aria-label="Move to folder"
+              title={m.maillist_action_move()}
+              aria-label={m.maillist_action_move()}
               onclick={(e) => {
                 e.stopPropagation()
                 quickMove(env)
@@ -1823,8 +1990,8 @@
             <button
               type="button"
               class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
-              title="Delete"
-              aria-label="Delete"
+              title={m.maillist_action_delete()}
+              aria-label={m.maillist_action_delete()}
               onclick={(e) => {
                 e.stopPropagation()
                 void quickDelete(env)
@@ -1910,11 +2077,39 @@
       <Icon name={contextMenu.env.is_read ? 'unread' : 'read'} size={16} />
       <span>
         {#if groupSize > 1}
-          Mark {groupSize} as {contextMenu.env.is_read ? 'unread' : 'read'}
+          {contextMenu.env.is_read
+            ? m.maillist_action_mark_group_unread({ count: groupSize })
+            : m.maillist_action_mark_group_read({ count: groupSize })}
         {:else}
-          {contextMenu.env.is_read ? 'Mark as unread' : 'Mark as read'}
+          {contextMenu.env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
         {/if}
       </span>
+    </button>
+    <!-- Flag + pin toggles (#414).  Deliberately single-row (they
+         act on the right-clicked row, not the multi-select group) —
+         both states are per-message judgements, unlike the bulk
+         read/delete triage gestures above. -->
+    <button
+      type="button"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      onclick={() => {
+        if (!contextMenu) return
+        void toggleEnvelopeFlagged(contextMenu.env)
+      }}
+    >
+      <Icon name="flag" size={16} />
+      <span>{contextMenu.env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}</span>
+    </button>
+    <button
+      type="button"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      onclick={() => {
+        if (!contextMenu) return
+        void toggleEnvelopePinned(contextMenu.env)
+      }}
+    >
+      <Icon name="pin" size={16} />
+      <span>{contextMenu.env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}</span>
     </button>
     <button
       type="button"
@@ -1928,12 +2123,43 @@
       <Icon name="move-to-folder" size={16} />
       <span>
         {#if moveGroupSize > 1}
-          Move {moveGroupSize} messages to folder…
+          {m.maillist_action_move_group({ count: moveGroupSize })}
         {:else}
-          Move to folder…
+          {m.maillist_action_move()}
         {/if}
       </span>
     </button>
+    <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+    <!-- Priority picker (#414): a label row plus three inline
+         choice buttons rather than a nested submenu — compact and
+         one click, matching the menu's flat structure.  The active
+         value highlights; picking one stores it as the user's
+         override (including "Normal", which is how a sender's
+         "high" gets downgraded). -->
+    <div class="px-3 py-1.5 flex items-center gap-2">
+      <Icon name="important" size={16} />
+      <span class="text-surface-500">{m.mail_priority_label()}</span>
+      <div class="ml-auto inline-flex rounded-md overflow-hidden border border-surface-200 dark:border-surface-700">
+        {#each [
+          { value: 'high' as const, label: m.mail_priority_high() },
+          { value: 'normal' as const, label: m.mail_priority_normal() },
+          { value: 'low' as const, label: m.mail_priority_low() },
+        ] as opt (opt.value)}
+          {@const active =
+            (effectivePriority(contextMenu.env) ?? 'normal') === opt.value}
+          <button
+            type="button"
+            class="px-2 py-0.5 text-xs {active
+              ? 'bg-primary-500 text-white'
+              : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+            onclick={() => {
+              if (!contextMenu) return
+              void setEnvelopePriority(contextMenu.env, opt.value)
+            }}
+          >{opt.label}</button>
+        {/each}
+      </div>
+    </div>
     <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
     <button
       type="button"
@@ -1959,9 +2185,9 @@
       <Icon name="delete" size={16} />
       <span>
         {#if groupSize > 1}
-          Delete {groupSize} messages
+          {m.maillist_action_delete_group({ count: groupSize })}
         {:else}
-          Delete
+          {m.maillist_action_delete()}
         {/if}
       </span>
     </button>
