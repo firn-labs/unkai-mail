@@ -1334,6 +1334,51 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX smime_certs_by_email
         ON smime_certs (email);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v39 → v40: per-message pin + priority state (#414).
+    //
+    // Three columns on `messages`, one per new organizational state:
+    //
+    //   * `is_pinned` — local-only "keep at the top of the list"
+    //     toggle.  No IMAP/JMAP equivalent exists, so like
+    //     `replied_kind` it is never written by the envelope upsert
+    //     path — only the user-action setter touches it, and a
+    //     background re-fetch can't clobber it.  Default 0 so
+    //     existing rows roll forward unpinned.
+    //
+    //   * `priority` — sender-declared priority parsed from the
+    //     `X-Priority:` / `Importance:` headers at envelope-fetch
+    //     time: `'high'` / `'low'`, NULL = normal.  Refreshed by
+    //     the upsert path with the same COALESCE guard the
+    //     threading headers use, so an older fetch path that
+    //     didn't parse the headers can't wipe a value we already
+    //     extracted.  NULL for pre-migration rows until the next
+    //     re-fetch (or forever, for ordinary mail — the column is
+    //     intentionally sparse).
+    //
+    //   * `priority_override` — the user's own priority choice:
+    //     `'high'` / `'normal'` / `'low'`, NULL = untouched.
+    //     Local-only like `is_pinned`; wins over `priority` at
+    //     read time.  `'normal'` is a stored value (not NULL) so
+    //     the user can explicitly downgrade a sender's "high".
+    //
+    // The pin-aware index mirrors `messages_by_folder_date` with
+    // `is_pinned DESC` in front: the mail-list query now orders by
+    // pin state first so pinned rows can never age out of the
+    // newest-N window, and this index lets SQLite satisfy that
+    // ordering with a plain index scan, no sort step.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages
+        ADD COLUMN priority TEXT;
+    ALTER TABLE messages
+        ADD COLUMN priority_override TEXT;
+
+    CREATE INDEX messages_by_folder_pinned_date
+        ON messages (account_id, folder, is_pinned DESC, internal_date DESC);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

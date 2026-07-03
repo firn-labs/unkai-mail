@@ -57,6 +57,8 @@
     // NotDone is the same circle + check with a diagonal slash
     // for the "Mark as not done" toggle.
     | 'not-done'
+    // v8 — per-mail pin (#414)
+    | 'pin'
 </script>
 
 <script lang="ts">
@@ -85,6 +87,7 @@
   import Snooze from './icons/Snooze.svelte'
   import Flag from './icons/Flag.svelte'
   import Star from './icons/Star.svelte'
+  import Pin from './icons/Pin.svelte'
   import Search from './icons/Search.svelte'
   import Filter from './icons/Filter.svelte'
   import Sort from './icons/Sort.svelte'
@@ -216,6 +219,7 @@
     'snooze': Snooze,
     'flag': Flag,
     'star': Star,
+    'pin': Pin,
     'search': Search,
     'filter': Filter,
     'sort': Sort,

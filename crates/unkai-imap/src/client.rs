@@ -12,7 +12,9 @@ use tokio_rustls::client::TlsStream;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 use unkai_core::crypto::CryptoBridge;
 use unkai_core::error::UnkaiError;
-use unkai_core::models::{Email, EmailAttachment, EmailEnvelope, Folder, TrustedCert};
+use unkai_core::models::{
+    Email, EmailAttachment, EmailEnvelope, Folder, TrustedCert, priority_from_headers,
+};
 use unkai_core::tls;
 
 use crate::attachment_filename::decode_attachment_filename;
@@ -223,6 +225,13 @@ fn parse_plaintext_eml_bytes(
         .map(parse_references_header)
         .unwrap_or_default();
 
+    // #414: sender-declared priority headers.
+    let priority = priority_from_headers(
+        header_first("X-Priority").as_deref(),
+        header_first("Importance").as_deref(),
+        header_first("X-MSMail-Priority").as_deref(),
+    );
+
     Ok(Email {
         id: id.to_string(),
         account_id: account_id.to_string(),
@@ -248,6 +257,11 @@ fn parse_plaintext_eml_bytes(
         protection: None,
         signature_status: None,
         signer_fingerprint: None,
+        // #414: pin + override are local-only cache state; the
+        // parse path only knows the sender's declared priority.
+        is_pinned: false,
+        priority,
+        priority_override: None,
     })
 }
 
@@ -1170,7 +1184,7 @@ impl ImapClient {
                     .uid_fetch(
                         range,
                         "(UID FLAGS INTERNALDATE ENVELOPE \
-                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
                     )
                     .await
                     .map_err(|e| UnkaiError::Protocol(format!("UID FETCH failed: {e}")))?
@@ -1187,7 +1201,7 @@ impl ImapClient {
                     .fetch(
                         &range,
                         "(UID FLAGS INTERNALDATE ENVELOPE \
-                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
                     )
                     .await
                     .map_err(|e| UnkaiError::Protocol(format!("FETCH failed: {e}")))?
@@ -1286,6 +1300,14 @@ impl ImapClient {
                     thread_id: None,
                     thread_total_count: None,
                     protection,
+                    // #414: pin + priority override are local-only
+                    // user state the wire knows nothing about; the
+                    // cache read paths fill them back in.  The
+                    // header-derived priority comes from the same
+                    // HEADER.FIELDS slice the protection check uses.
+                    is_pinned: false,
+                    priority: extract_envelope_priority(fetch),
+                    priority_override: None,
                 })
             })
             .collect();
@@ -1540,6 +1562,13 @@ impl ImapClient {
             .map(parse_references_header)
             .unwrap_or_default();
 
+        // #414: sender-declared priority headers.
+        let priority = priority_from_headers(
+            header_first("X-Priority").as_deref(),
+            header_first("Importance").as_deref(),
+            header_first("X-MSMail-Priority").as_deref(),
+        );
+
         // PGP/MIME detection (#57).  Stamping `protection` here even
         // without a bridge lets MailView render a Decrypt affordance
         // and the inline chips instead of silently falling back to an
@@ -1580,6 +1609,12 @@ impl ImapClient {
             // passphrase comes in.
             signature_status: None,
             signer_fingerprint: None,
+            // #414: pin + override live in the cache only; the Tauri
+            // layer stamps the stored values before handing the
+            // message to the UI.
+            is_pinned: false,
+            priority,
+            priority_override: None,
         })
     }
 
@@ -1807,6 +1842,48 @@ impl ImapClient {
             .map_err(|e| UnkaiError::Protocol(format!("Failed to read UID STORE: {e}")))?;
 
         info!("Marked UID {uid} as \\Answered in '{folder}'");
+        Ok(())
+    }
+
+    /// Set or clear the IMAP `\Flagged` system flag on a message
+    /// (#414) — the server half of the user's flag toggle, which the
+    /// mail list reads back as `is_starred`.  One method for both
+    /// directions since, unlike read state, the two are always
+    /// invoked from the same toggle affordance.
+    /// Uses `UID STORE <uid> ±FLAGS (\Flagged)`; idempotent.
+    pub async fn set_flagged(
+        &mut self,
+        folder: &str,
+        uid: u32,
+        flagged: bool,
+    ) -> Result<(), UnkaiError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| UnkaiError::Protocol("Session is closed".into()))?;
+
+        // Read-write SELECT so the server accepts the STORE.
+        session.select(to_wire(folder)).await.map_err(|e| {
+            UnkaiError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        let op = if flagged {
+            "+FLAGS (\\Flagged)"
+        } else {
+            "-FLAGS (\\Flagged)"
+        };
+        let _updates: Vec<_> = session
+            .uid_store(uid.to_string(), op)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("UID STORE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        info!(
+            "{} \\Flagged on UID {uid} in '{folder}'",
+            if flagged { "Set" } else { "Cleared" }
+        );
         Ok(())
     }
 
@@ -2341,7 +2418,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH after SEARCH failed: {e}")))?
@@ -2409,6 +2486,14 @@ impl ImapClient {
                     thread_id: None,
                     thread_total_count: None,
                     protection,
+                    // #414: pin + priority override are local-only
+                    // user state the wire knows nothing about; the
+                    // cache read paths fill them back in.  The
+                    // header-derived priority comes from the same
+                    // HEADER.FIELDS slice the protection check uses.
+                    is_pinned: false,
+                    priority: extract_envelope_priority(fetch),
+                    priority_override: None,
                 })
             })
             .collect();
@@ -2472,7 +2557,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH (older search) failed: {e}")))?
@@ -2536,6 +2621,14 @@ impl ImapClient {
                     thread_id: None,
                     thread_total_count: None,
                     protection,
+                    // #414: pin + priority override are local-only
+                    // user state the wire knows nothing about; the
+                    // cache read paths fill them back in.  The
+                    // header-derived priority comes from the same
+                    // HEADER.FIELDS slice the protection check uses.
+                    is_pinned: false,
+                    priority: extract_envelope_priority(fetch),
+                    priority_override: None,
                 })
             })
             .collect();
@@ -2615,7 +2708,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH (older) failed: {e}")))?
@@ -2683,6 +2776,14 @@ impl ImapClient {
                     thread_id: None,
                     thread_total_count: None,
                     protection,
+                    // #414: pin + priority override are local-only
+                    // user state the wire knows nothing about; the
+                    // cache read paths fill them back in.  The
+                    // header-derived priority comes from the same
+                    // HEADER.FIELDS slice the protection check uses.
+                    is_pinned: false,
+                    priority: extract_envelope_priority(fetch),
+                    priority_override: None,
                 })
             })
             .collect();
@@ -2883,6 +2984,30 @@ fn extract_envelope_protection(fetch: &async_imap::types::Fetch) -> Option<Strin
     } else {
         None
     }
+}
+
+/// #414: read the sender-declared priority out of the
+/// `BODY.PEEK[HEADER.FIELDS ...]` slice — `X-Priority:` /
+/// `Importance:` / `X-MSMail-Priority:` — so the mail list can
+/// badge high/low-priority mail the moment the envelope lands,
+/// without fetching the body.  The mapping rules live in
+/// [`unkai_core::models::priority_from_headers`]; like
+/// [`extract_envelope_protection`] this relies on the FETCH call
+/// site requesting the header names in its `HEADER.FIELDS` list.
+fn extract_envelope_priority(fetch: &async_imap::types::Fetch) -> Option<String> {
+    let raw = fetch.header()?;
+    let parsed = MessageParser::default().parse(raw)?;
+    let header_text = |name: &str| {
+        parsed
+            .header(name)
+            .and_then(|h| h.as_text())
+            .map(str::to_string)
+    };
+    priority_from_headers(
+        header_text("X-Priority").as_deref(),
+        header_text("Importance").as_deref(),
+        header_text("X-MSMail-Priority").as_deref(),
+    )
 }
 
 /// `<abc@host>` → `Some("abc@host")`.  Tolerates surrounding

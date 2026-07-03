@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use tracing::info;
 use unkai_core::error::UnkaiError;
-use unkai_core::models::{Email, EmailEnvelope, Folder, OutgoingEmail};
+use unkai_core::models::{Email, EmailEnvelope, Folder, OutgoingEmail, priority_from_headers};
 use unkai_core::url::ensure_https;
 use url::Url;
 
@@ -300,6 +300,12 @@ impl JmapClient {
                         "properties": [
                             "id", "from", "subject", "receivedAt",
                             "keywords", "hasAttachment", "mailboxIds",
+                            // #414: sender-declared priority, via the
+                            // RFC 8621 §4.1.3 header-form properties
+                            // (priority is not a JMAP keyword).
+                            "header:X-Priority:asText",
+                            "header:Importance:asText",
+                            "header:X-MSMail-Priority:asText",
                         ],
                     }),
                     call_id: "g0".into(),
@@ -370,6 +376,15 @@ impl JmapClient {
                     // encryption either; the cache LEFT-JOIN fills it
                     // in once a body fetch has stamped the value.
                     protection: None,
+                    // #414: pin + override are local-only cache
+                    // state; priority maps from the raw headers.
+                    is_pinned: false,
+                    priority: priority_from_headers(
+                        email.header_x_priority.as_deref(),
+                        email.header_importance.as_deref(),
+                        email.header_msmail_priority.as_deref(),
+                    ),
+                    priority_override: None,
                 }
             })
             .collect();
@@ -408,6 +423,10 @@ impl JmapClient {
                         "id", "from", "to", "cc", "subject", "receivedAt",
                         "keywords", "hasAttachment", "mailboxIds",
                         "bodyValues", "textBody", "htmlBody", "attachments",
+                        // #414: sender-declared priority headers.
+                        "header:X-Priority:asText",
+                        "header:Importance:asText",
+                        "header:X-MSMail-Priority:asText",
                     ],
                     "fetchAllBodyValues": true,
                 }),
@@ -575,6 +594,16 @@ impl JmapClient {
             protection,
             signature_status: None,
             signer_fingerprint: None,
+            // #414: pin + override are local-only cache state; the
+            // Tauri layer stamps the stored values.  Priority maps
+            // from the raw headers requested above.
+            is_pinned: false,
+            priority: priority_from_headers(
+                email.header_x_priority.as_deref(),
+                email.header_importance.as_deref(),
+                email.header_msmail_priority.as_deref(),
+            ),
+            priority_override: None,
         })
     }
 
@@ -798,6 +827,54 @@ impl JmapClient {
         }
 
         info!("JMAP: marked '{jmap_id}' as $answered");
+        Ok(())
+    }
+
+    /// Set or clear the `$flagged` keyword on a message (#414) —
+    /// equivalent of IMAP's `UID STORE ±FLAGS (\Flagged)`, which the
+    /// mail list reads back as `is_starred`.  Keyword removal uses
+    /// `null` in the patch object, same as `mark_as_unread`.
+    pub async fn set_flagged(
+        &self,
+        folder: &str,
+        uid: u32,
+        flagged: bool,
+    ) -> Result<(), UnkaiError> {
+        let jmap_id = self.resolve_jmap_id(folder, uid).await?;
+
+        let keyword_value = if flagged {
+            Value::Bool(true)
+        } else {
+            Value::Null
+        };
+        let resp = self
+            .call(vec![MethodCall {
+                name: "Email/set".into(),
+                args: json!({
+                    "accountId": self.account_id,
+                    "update": {
+                        jmap_id.clone(): {
+                            "keywords/$flagged": keyword_value,
+                        },
+                    },
+                }),
+                call_id: "flag0".into(),
+            }])
+            .await?;
+
+        let args = Self::find_response(&resp.method_responses, "flag0")?;
+        if let Some(errors) = args.get("notUpdated")
+            && let Some(err) = errors.get(&jmap_id)
+        {
+            return Err(UnkaiError::Protocol(format!(
+                "Failed to update $flagged: {err}"
+            )));
+        }
+
+        info!(
+            "JMAP: {} $flagged on '{jmap_id}'",
+            if flagged { "set" } else { "cleared" }
+        );
         Ok(())
     }
 
