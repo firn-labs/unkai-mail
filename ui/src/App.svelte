@@ -1532,6 +1532,20 @@
     }
   }
 
+  // Live mirror of the open message's list row (#414 follow-up).
+  // MailView renders its toggle buttons from this instead of only
+  // its own fetched copy, so a flag / pin / priority / read change
+  // made in the mail LIST while the message is open updates the
+  // reading-pane buttons immediately — without it they'd stay stale
+  // until the user re-opened the message.  The objects are the same
+  // ones MailList mutates optimistically, so `$derived` re-fires on
+  // every toggle.
+  const selectedListState = $derived(
+    selectedUid == null
+      ? null
+      : (mailListEnvelopes.find((e) => e.uid === selectedUid) ?? null),
+  )
+
   // MailView's flag / pin / priority toggles (#414).  Same shape as
   // `onMessageRead`: mutate the bound envelope in place — no
   // refreshToken bump, so nothing races the user's next click.
@@ -1545,7 +1559,7 @@
     const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
     if (idx >= 0) mailListEnvelopes[idx].is_pinned = pinned
   }
-  function onMessagePriorityChanged(uid: number, priority: string) {
+  function onMessagePriorityChanged(uid: number, priority: string | null) {
     const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
     if (idx >= 0) mailListEnvelopes[idx].priority_override = priority
   }
@@ -3614,6 +3628,7 @@
           autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
           linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
           threadMemberUids={currentThreadMemberUids}
+          listState={selectedListState}
           onread={onMessageRead}
           onflagchanged={onMessageFlagChanged}
           onpinchanged={onMessagePinChanged}

@@ -106,7 +106,21 @@
         without a refetch. */
     onflagchanged?: (uid: number, flagged: boolean) => void
     onpinchanged?: (uid: number, pinned: boolean) => void
-    onprioritychanged?: (uid: number, priority: string) => void
+    onprioritychanged?: (uid: number, priority: string | null) => void
+    /** Live mirror of the open message's mail-list row (#414
+        follow-up).  When present, the flag / pin / priority toggles
+        render from THIS instead of the locally-fetched `email` copy,
+        so a toggle made in the list while the message is open
+        updates the reading-pane buttons immediately.  The parent
+        passes the same envelope object MailList mutates
+        optimistically; `null` (standalone windows, no matching row)
+        falls back to `email`'s own fields. */
+    listState?: {
+      is_starred?: boolean
+      is_pinned?: boolean
+      priority?: string | null
+      priority_override?: string | null
+    } | null
     onreply?: (mail: Email & { uid: number }) => void
     onreplyall?: (mail: Email & { uid: number }) => void
     onforward?: (mail: Email & { uid: number }) => void
@@ -200,6 +214,7 @@
     onflagchanged,
     onpinchanged,
     onprioritychanged,
+    listState = null,
     onreply,
     onreplyall,
     onforward,
@@ -709,30 +724,44 @@
   // Same optimistic shape as toggleRead: flip the local state so
   // the button/badge updates instantly, invoke the backend, revert
   // on failure, and notify the parent so the MailList row follows.
+  //
+  // Display state prefers the live `listState` row over the
+  // locally-fetched `email` copy — the list row is the one both
+  // surfaces mutate optimistically, so rendering from it keeps the
+  // toolbar in sync with toggles made in the mail list while this
+  // message is open.
+
+  const shownFlagged = $derived(listState?.is_starred ?? email?.is_starred ?? false)
+  const shownPinned = $derived(listState?.is_pinned ?? email?.is_pinned ?? false)
 
   async function toggleFlagged() {
     if (!email || uid == null) return
-    const next = !email.is_starred
+    const next = !shownFlagged
+    // Notify the parent BEFORE the backend call — the toolbar
+    // renders from the list row, and the flag IPC includes an IMAP
+    // round-trip, so waiting for it would visibly lag the button.
     email.is_starred = next
+    onflagchanged?.(uid, next)
     try {
       await invoke('set_message_flagged', { accountId, folder, uid, flagged: next })
-      onflagchanged?.(uid, next)
     } catch (e: any) {
       console.warn('set_message_flagged failed:', e)
       if (email) email.is_starred = !next
+      onflagchanged?.(uid, !next)
     }
   }
 
   async function togglePinned() {
     if (!email || uid == null) return
-    const next = !email.is_pinned
+    const next = !shownPinned
     email.is_pinned = next
+    onpinchanged?.(uid, next)
     try {
       await invoke('set_message_pinned', { accountId, folder, uid, pinned: next })
-      onpinchanged?.(uid, next)
     } catch (e: any) {
       console.warn('set_message_pinned failed:', e)
       if (email) email.is_pinned = !next
+      onpinchanged?.(uid, !next)
     }
   }
 
@@ -753,23 +782,28 @@
 
   /** The priority the badge/menu should reflect: user override
    *  first, then the sender-declared header value; `'normal'`
-   *  renders no badge. */
+   *  renders no badge.  Reads the whole tuple from `listState`
+   *  when present (never mixes the two sources — a cleared
+   *  override in the list must not fall back to a stale one on
+   *  the fetched copy). */
   function effectivePriority(): 'high' | 'low' | null {
-    const p = email?.priority_override ?? email?.priority
+    const src = listState ?? email
+    const p = src?.priority_override ?? src?.priority
     return p === 'high' || p === 'low' ? p : null
   }
 
   async function setPriority(priority: 'high' | 'normal' | 'low') {
     if (!email || uid == null) return
-    const prev = email.priority_override
+    const prev = (listState ?? email)?.priority_override ?? null
     email.priority_override = priority
+    onprioritychanged?.(uid, priority)
     priorityMenuOpen = false
     try {
       await invoke('set_message_priority', { accountId, folder, uid, priority })
-      onprioritychanged?.(uid, priority)
     } catch (e: any) {
       console.warn('set_message_priority failed:', e)
       if (email) email.priority_override = prev
+      onprioritychanged?.(uid, prev)
     }
   }
 
@@ -2093,7 +2127,7 @@
     <div class="p-6 border-b border-surface-200 dark:border-surface-700">
       <div class="flex items-start justify-between mb-2 gap-4">
         <h2 class="text-xl font-semibold flex items-center gap-2 min-w-0">
-          {#if email.is_pinned}
+          {#if shownPinned}
             <span
               class="shrink-0 inline-flex items-center text-primary-500"
               title={m.mail_pinned_title()}
@@ -2280,16 +2314,16 @@
              state indicator; priority opens a three-option
              popover anchored to the button. -->
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-amber-500/15 hover:text-amber-500 hover:border-amber-500/40 {email.is_starred ? 'text-amber-500 border-amber-500/40' : ''}"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-amber-500/15 hover:text-amber-500 hover:border-amber-500/40 {shownFlagged ? 'text-amber-500 border-amber-500/40' : ''}"
           onclick={toggleFlagged}
-          title={email.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
-          aria-label={email.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
+          title={shownFlagged ? m.mail_action_unflag() : m.mail_action_flag()}
+          aria-label={shownFlagged ? m.mail_action_unflag() : m.mail_action_flag()}
         ><Icon name="flag" size={16} /></button>
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 {email.is_pinned ? 'text-primary-500 border-primary-500/40' : ''}"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 {shownPinned ? 'text-primary-500 border-primary-500/40' : ''}"
           onclick={togglePinned}
-          title={email.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
-          aria-label={email.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
+          title={shownPinned ? m.mail_action_unpin() : m.mail_action_pin()}
+          aria-label={shownPinned ? m.mail_action_unpin() : m.mail_action_pin()}
         ><Icon name="pin" size={16} /></button>
         <div class="relative">
           <button
