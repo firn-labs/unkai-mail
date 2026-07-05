@@ -2168,7 +2168,7 @@
          "high" gets downgraded). -->
     <div class="px-3 py-1.5 flex items-center gap-2">
       <Icon name="important" size={16} />
-      <span class="text-surface-500">{m.mail_priority_label()}</span>
+      <span>{m.mail_priority_label()}</span>
       <div class="ml-auto inline-flex rounded-md overflow-hidden border border-surface-200 dark:border-surface-700">
         {#each [
           { value: 'high' as const, label: m.mail_priority_high() },
