@@ -890,7 +890,38 @@ pub struct Attachment {
     pub content_id: Option<String>,
 }
 
-/// A persistent Nextcloud connection.
+/// Which kind of groupware source a [`NextcloudAccount`] record
+/// describes (#413).
+///
+/// Historically the record only ever meant "a Nextcloud server".
+/// Contacts/calendars can now also come from a plain CardDAV/CalDAV
+/// server on a different host than the mail or Nextcloud account, or
+/// from a purely local store with no remote at all. Those sources
+/// reuse this record (and every sync command, cache table and view
+/// keyed on `nextcloud_account_id`) rather than duplicating the whole
+/// pipeline — the `kind` tells each code path which parts apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DavSourceKind {
+    /// A full Nextcloud connection (Login Flow v2, OCS capabilities,
+    /// Talk/Files/Notes/… on top of DAV). The default so records
+    /// stored before this field existed keep their meaning.
+    #[default]
+    Nextcloud,
+    /// A generic CardDAV/CalDAV server. Only contact/calendar sync
+    /// applies; DAV collection homes are stored explicitly in
+    /// `carddav_home` / `caldav_home` instead of being derived from
+    /// Nextcloud's `/remote.php/dav/...` layout.
+    Dav,
+    /// No remote at all — contacts/calendars live only in the local
+    /// encrypted cache. Sync commands are no-ops; writes skip the
+    /// server round-trip and mint synthetic hrefs/etags.
+    Local,
+}
+
+/// A persistent groupware connection: a Nextcloud server, a generic
+/// CardDAV/CalDAV server, or a purely local contact/calendar store
+/// (see [`DavSourceKind`]).
 ///
 /// One `NextcloudAccount` can be shared across multiple mail accounts —
 /// users often have several email identities but a single Nextcloud
@@ -906,16 +937,21 @@ pub struct Attachment {
 pub struct NextcloudAccount {
     /// Stable UUID; used as the keychain account key for the app password.
     pub id: String,
-    /// Base URL of the Nextcloud server, e.g. `https://cloud.example.com`.
-    /// Stored without trailing slash.
+    /// Base URL of the server, e.g. `https://cloud.example.com`.
+    /// Stored without trailing slash. Empty string for
+    /// [`DavSourceKind::Local`] sources (there is no server).
     pub server_url: String,
-    /// Nextcloud login name returned by Login Flow v2. Often differs from
-    /// the user's email — it's whatever NC uses to identify the user.
+    /// Login name. For Nextcloud this is what Login Flow v2 returned
+    /// (often differs from the user's email); for generic DAV it's
+    /// the HTTP Basic username. Empty for local sources.
     pub username: String,
     /// Optional pretty name shown in the UI — pulled from
-    /// `/ocs/v2.php/cloud/user` after login when available.
+    /// `/ocs/v2.php/cloud/user` after login when available, or
+    /// user-chosen for DAV/local sources.
     pub display_name: Option<String>,
-    /// What the server supports, snapshotted at connect time.
+    /// What the server supports, snapshotted at connect time. For
+    /// DAV/local sources this is synthesised from which of
+    /// contacts/calendars the user enabled.
     pub capabilities: Option<NextcloudCapabilities>,
     /// User-trusted self-signed cert fingerprints (#253).  Same
     /// shape as `Account::trusted_certs` for IMAP/SMTP — every
@@ -929,6 +965,34 @@ pub struct NextcloudAccount {
     /// without this field deserialise cleanly.
     #[serde(default)]
     pub trusted_certs: Vec<TrustedCert>,
+    /// What this record actually is — see [`DavSourceKind`] (#413).
+    /// Defaults to `Nextcloud` so pre-existing rows keep working.
+    #[serde(default)]
+    pub kind: DavSourceKind,
+    /// Absolute CardDAV addressbook-home URL for `kind == Dav`
+    /// sources, resolved via RFC 6764 well-known discovery at add
+    /// time. `None` for Nextcloud (derived from the server layout)
+    /// and local sources.
+    #[serde(default)]
+    pub carddav_home: Option<String>,
+    /// Absolute CalDAV calendar-home URL for `kind == Dav` sources.
+    /// Same story as `carddav_home`.
+    #[serde(default)]
+    pub caldav_home: Option<String>,
+}
+
+impl NextcloudAccount {
+    /// True when this source has no remote — writes stay in the
+    /// local cache and sync is a no-op.
+    pub fn is_local(&self) -> bool {
+        self.kind == DavSourceKind::Local
+    }
+
+    /// True when this source is a real Nextcloud (OCS capabilities,
+    /// Talk/Files/Notes endpoints, `/remote.php/dav/...` layout).
+    pub fn is_nextcloud(&self) -> bool {
+        self.kind == DavSourceKind::Nextcloud
+    }
 }
 
 /// Boolean flags for which Nextcloud apps the connected server offers.

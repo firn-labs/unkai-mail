@@ -495,11 +495,15 @@
   }
   async function loadNcOptions() {
     try {
-      const accs = await invoke<{ id: string; username: string; server_url: string; display_name?: string | null }[]>('get_nextcloud_accounts')
-      ncOptions = accs.map((a) => ({
-        id: a.id,
-        label: a.display_name || `${a.username} @ ${new URL(a.server_url).hostname}`,
-      }))
+      const accs = await invoke<{ id: string; username: string; server_url: string; display_name?: string | null; kind?: string }[]>('get_nextcloud_accounts')
+      // The settings bundle lives on Nextcloud WebDAV — generic-DAV
+      // and local sources (#413) can't be backup targets.
+      ncOptions = accs
+        .filter((a) => (a.kind ?? 'nextcloud') === 'nextcloud')
+        .map((a) => ({
+          id: a.id,
+          label: a.display_name || `${a.username} @ ${new URL(a.server_url).hostname}`,
+        }))
     } catch (e) {
       console.warn('loadNcOptions failed', e)
       ncOptions = []

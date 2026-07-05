@@ -192,7 +192,11 @@
 
   async function refreshTalkBadge() {
     try {
-      const ncAccounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      // Generic-DAV / local sources reuse the NC account record but
+      // have no Talk endpoint (#413) — only poll real Nextclouds.
+      const ncAccounts = (
+        await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+      ).filter((a) => (a.kind ?? 'nextcloud') === 'nextcloud')
       if (ncAccounts.length === 0) {
         talkUnreadTotal = 0
         talkUnreadHasMention = false

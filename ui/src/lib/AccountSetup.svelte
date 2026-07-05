@@ -158,6 +158,7 @@
     { title: () => m.account_setup_step_imap(), icon: 'email-envelope' },
     { title: () => m.account_setup_step_smtp(), icon: 'sent' },
     { title: () => m.account_setup_step_nextcloud(), icon: 'cloud' },
+    { title: () => m.account_setup_step_dav(), icon: 'calendar' },
   ]
   const totalSteps = steps.length
   /** Index of the step where `submit()` persists the mail account.
@@ -228,6 +229,80 @@
     // user lands in the app. Fire-and-forget: failures show up in
     // the Settings sync rows, not here.
     void seedInitialSync(acct)
+  }
+
+  // ── Contacts & Calendar source step (#413) ──────────────────
+  // Lets contacts/calendars come from somewhere other than the
+  // Nextcloud account: a separate CardDAV/CalDAV server, or a
+  // purely local store. "skip" is the default — with a Nextcloud
+  // connected there's usually nothing extra to configure.
+  type DavChoice = 'skip' | 'dav' | 'local'
+  let davChoice = $state<DavChoice>('skip')
+  let davDisplayName = $state('')
+  let davServerUrl = $state('')
+  let davUsername = $state('')
+  let davPassword = $state('')
+  let davUseContacts = $state(true)
+  let davUseCalendars = $state(true)
+  let davSaving = $state(false)
+  let davError = $state('')
+  /** Set once a source was added successfully — locks the step
+   *  into its confirmation state. */
+  let davConfigured = $state<{ kind: 'dav' | 'local'; name: string } | null>(null)
+
+  async function addDavSource() {
+    davError = ''
+    if (!davUseContacts && !davUseCalendars) {
+      davError = m.account_setup_dav_validation_kinds()
+      return
+    }
+    if (
+      davChoice === 'dav' &&
+      (!davServerUrl.trim() || !davUsername.trim() || !davPassword)
+    ) {
+      davError = m.account_setup_dav_validation_server()
+      return
+    }
+    davSaving = true
+    try {
+      if (davChoice === 'dav') {
+        const name = davDisplayName.trim() || davServerUrl.trim()
+        const acct = await invoke<{ id: string }>('add_dav_account', {
+          displayName: name,
+          serverUrl: davServerUrl.trim(),
+          username: davUsername.trim(),
+          password: davPassword,
+          useContacts: davUseContacts,
+          useCalendars: davUseCalendars,
+          trustedCerts: null,
+        })
+        // First pull in the background so the views aren't empty —
+        // same posture as the Nextcloud step (#318).
+        if (davUseContacts) {
+          void invoke('sync_nextcloud_contacts', { ncId: acct.id }).catch((e) =>
+            console.warn('initial CardDAV sync failed:', e),
+          )
+        }
+        if (davUseCalendars) {
+          void invoke('sync_nextcloud_calendars', { ncId: acct.id }).catch((e) =>
+            console.warn('initial CalDAV sync failed:', e),
+          )
+        }
+        davConfigured = { kind: 'dav', name }
+      } else {
+        const name = davDisplayName.trim() || m.account_setup_dav_local_default_name()
+        await invoke('add_local_dav_account', {
+          displayName: name,
+          useContacts: davUseContacts,
+          useCalendars: davUseCalendars,
+        })
+        davConfigured = { kind: 'local', name }
+      }
+    } catch (e: any) {
+      davError = formatError(e) || m.account_setup_dav_add_failed()
+    } finally {
+      davSaving = false
+    }
   }
 
   async function seedInitialSync(acct: NcAccountLite) {
@@ -845,6 +920,128 @@
             <NextcloudConnect onconnected={onNcConnected} />
           {/if}
         </div>
+
+      <!-- Step 4: contacts & calendar source (#413).  Optional like
+           the Nextcloud step; "no extra source" is the default. -->
+      {:else if step === 4}
+        <div>
+          <p class="text-sm text-surface-500 mb-4">
+            {m.account_setup_dav_explainer()}
+          </p>
+
+          {#if davConfigured}
+            <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-sm text-surface-700 dark:text-surface-300 flex items-start gap-2">
+              <span class="text-success-500 mt-0.5"><Icon name="success" size={16} /></span>
+              <span>
+                {#if davConfigured.kind === 'dav'}
+                  {m.account_setup_dav_added_dav({ name: davConfigured.name })}
+                {:else}
+                  {m.account_setup_dav_added_local({ name: davConfigured.name })}
+                {/if}
+              </span>
+            </div>
+          {:else}
+            <!-- Source choice -->
+            <div class="space-y-2 mb-4">
+              {#each [
+                { value: 'skip', label: m.account_setup_dav_option_skip(), hint: m.account_setup_dav_option_skip_hint() },
+                { value: 'dav', label: m.account_setup_dav_option_dav(), hint: m.account_setup_dav_option_dav_hint() },
+                { value: 'local', label: m.account_setup_dav_option_local(), hint: m.account_setup_dav_option_local_hint() },
+              ] as opt (opt.value)}
+                <label class="flex items-start gap-2 p-3 rounded-md cursor-pointer border transition-colors {davChoice === opt.value
+                  ? 'border-primary-500/60 bg-primary-500/5'
+                  : 'border-surface-300 dark:border-surface-600 hover:bg-surface-200/40 dark:hover:bg-surface-700/30'}">
+                  <input
+                    type="radio"
+                    class="radio mt-0.5"
+                    name="dav-source-choice"
+                    value={opt.value}
+                    bind:group={davChoice}
+                  />
+                  <span class="min-w-0">
+                    <span class="block text-sm font-medium text-surface-700 dark:text-surface-200">{opt.label}</span>
+                    <span class="block text-xs text-surface-500">{opt.hint}</span>
+                  </span>
+                </label>
+              {/each}
+            </div>
+
+            {#if davChoice !== 'skip'}
+              <label class="block mb-3">
+                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_display_name_label()}</span>
+                <input
+                  type="text"
+                  bind:value={davDisplayName}
+                  placeholder={m.account_setup_dav_display_name_placeholder()}
+                  class="input w-full mt-1 px-3 py-2 rounded-md"
+                />
+              </label>
+            {/if}
+
+            {#if davChoice === 'dav'}
+              <label class="block mb-3">
+                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_server_url_label()}</span>
+                <input
+                  type="text"
+                  bind:value={davServerUrl}
+                  placeholder="https://dav.example.com"
+                  class="input w-full mt-1 px-3 py-2 rounded-md"
+                />
+              </label>
+              <label class="block mb-3">
+                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_username_label()}</span>
+                <input
+                  type="text"
+                  bind:value={davUsername}
+                  class="input w-full mt-1 px-3 py-2 rounded-md"
+                />
+              </label>
+              <label class="block mb-3">
+                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_password_label()}</span>
+                <input
+                  type="password"
+                  bind:value={davPassword}
+                  class="input w-full mt-1 px-3 py-2 rounded-md"
+                  autocomplete="current-password"
+                />
+              </label>
+            {/if}
+
+            {#if davChoice !== 'skip'}
+              <div class="flex items-center gap-6 mb-4">
+                <div class="flex items-center gap-2">
+                  <Toggle bind:checked={davUseContacts} label={m.account_setup_dav_use_contacts()} />
+                  <span class="text-sm text-surface-700 dark:text-surface-300">{m.account_setup_dav_use_contacts()}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <Toggle bind:checked={davUseCalendars} label={m.account_setup_dav_use_calendars()} />
+                  <span class="text-sm text-surface-700 dark:text-surface-300">{m.account_setup_dav_use_calendars()}</span>
+                </div>
+              </div>
+
+              {#if davError}
+                <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-md flex items-start gap-2">
+                  <span class="mt-0.5"><Icon name="error" size={16} /></span>
+                  <span>{davError}</span>
+                </div>
+              {/if}
+
+              <button
+                class="btn preset-filled-primary-500 flex items-center gap-1"
+                onclick={addDavSource}
+                disabled={davSaving}
+              >
+                {#if davSaving}
+                  <Icon name="loading" size={14} />
+                  {m.account_setup_dav_button_adding()}
+                {:else}
+                  <Icon name="plus" size={14} />
+                  {m.account_setup_dav_button_add()}
+                {/if}
+              </button>
+            {/if}
+          {/if}
+        </div>
       {/if}
 
       <!-- Error message -->
@@ -948,18 +1145,28 @@
               {m.account_setup_button_add_account()}
             {/if}
           </button>
+        {:else if step < totalSteps - 1}
+          <button
+            class="btn preset-filled-primary-500 flex items-center gap-1"
+            onclick={() => {
+              error = ''
+              step++
+            }}
+          >
+            {#if ncAccount}
+              {m.account_setup_button_next()}
+            {:else}
+              {m.account_setup_button_skip()}
+            {/if}
+            <Icon name="arrow-right" size={14} />
+          </button>
         {:else}
           <button
             class="btn preset-filled-primary-500 flex items-center gap-1"
             onclick={() => oncomplete()}
           >
-            {#if ncAccount}
-              <Icon name="success" size={14} />
-              {m.account_setup_button_finish()}
-            {:else}
-              {m.account_setup_button_skip()}
-              <Icon name="arrow-right" size={14} />
-            {/if}
+            <Icon name="success" size={14} />
+            {m.account_setup_button_finish()}
           </button>
         {/if}
       </div>

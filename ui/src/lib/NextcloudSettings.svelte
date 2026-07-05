@@ -19,6 +19,7 @@
   import SyncStatusRow from './SyncStatusRow.svelte'
   import Toggle from './Toggle.svelte'
   import { ncProbeBundle, ncRestoreBundle } from './settingsBundle'
+  import { m } from '../paraglide/messages'
 
   // ── Props ───────────────────────────────────────────────────
   interface Props {
@@ -57,6 +58,10 @@
     /** User-trusted self-signed cert fingerprints (#253).
      *  Mirrors the Rust `NextcloudAccount::trusted_certs`. */
     trusted_certs?: TrustedCert[]
+    /** What this record is (#413): a full Nextcloud, a generic
+     *  CardDAV/CalDAV server, or a local-only store.  Absent on
+     *  records saved before the field existed → Nextcloud. */
+    kind?: 'nextcloud' | 'dav' | 'local'
   }
   /** Mirror of the Rust `TrustedCert` shape — the same struct
    *  is used by IMAP/SMTP and now Nextcloud HTTPS. */
@@ -497,7 +502,11 @@
   }
 
   async function removeAccount(acct: NextcloudAccount) {
-    if (!confirm(`Disconnect Nextcloud ${acct.username}@${acct.server_url}?`)) return
+    const label =
+      (acct.kind ?? 'nextcloud') === 'nextcloud'
+        ? `${acct.username}@${acct.server_url}`
+        : (acct.display_name ?? acct.username ?? acct.id)
+    if (!confirm(m.nextcloud_settings_disconnect_confirm({ name: label }))) return
     try {
       await invoke('remove_nextcloud_account', { id: acct.id })
       await loadAccounts()
@@ -533,7 +542,16 @@
             <div class="flex items-start justify-between">
               <div class="flex-1">
                 <p class="font-semibold">{acct.display_name ?? acct.username}</p>
-                <p class="text-sm text-surface-500 break-all">{acct.server_url}</p>
+                {#if (acct.kind ?? 'nextcloud') === 'local'}
+                  <p class="text-sm text-surface-500">{m.nextcloud_settings_kind_local()}</p>
+                {:else}
+                  <p class="text-sm text-surface-500 break-all">{acct.server_url}</p>
+                {/if}
+                {#if (acct.kind ?? 'nextcloud') === 'dav'}
+                  <span class="inline-block mt-1 text-xs px-2 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700">
+                    {m.nextcloud_settings_kind_dav()}
+                  </span>
+                {/if}
                 {#if acct.capabilities}
                   <div class="flex flex-wrap gap-1.5 mt-2">
                     {#if acct.capabilities.version}
@@ -573,17 +591,24 @@
               </button>
             </div>
 
-            <!-- Contacts sync row -->
-            {#if acct.capabilities?.carddav !== false}
+            <!-- Local-only sources have nothing to sync — the cache
+                 is the source of truth (#413). -->
+            {#if (acct.kind ?? 'nextcloud') === 'local'}
+              <p class="text-xs text-surface-500">
+                {m.nextcloud_settings_local_note()}
+              </p>
+            {:else if acct.capabilities?.carddav !== false || acct.capabilities?.caldav !== false}
               {@const cls = calendarsState[acct.id]}
-              <SyncStatusRow
-                label="Contacts"
-                count={cs?.count ?? null}
-                lastSyncedAt={cs?.lastSyncedAt ?? null}
-                syncing={cs?.syncing ?? false}
-                error={cs?.error ?? null}
-                onsync={() => syncContacts(acct)}
-              />
+              {#if acct.capabilities?.carddav !== false}
+                <SyncStatusRow
+                  label="Contacts"
+                  count={cs?.count ?? null}
+                  lastSyncedAt={cs?.lastSyncedAt ?? null}
+                  syncing={cs?.syncing ?? false}
+                  error={cs?.error ?? null}
+                  onsync={() => syncContacts(acct)}
+                />
+              {/if}
               <!-- Calendars sync row — same component, same shape, so
                    the two surfaces stay visually identical. CalendarView
                    no longer carries its own sync UI; the user comes

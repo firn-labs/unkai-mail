@@ -1317,7 +1317,11 @@
   async function ensureNextcloudAccount(): Promise<string | null> {
     if (ncAccountId) return ncAccountId
     try {
-      const accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      // Talk links / file attachments need a real Nextcloud —
+      // generic-DAV / local contact sources (#413) don't qualify.
+      const accounts = (
+        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+      ).filter((a) => (a.kind ?? 'nextcloud') === 'nextcloud')
       if (accounts.length === 0) {
         error = 'Connect a Nextcloud account first (Settings → Nextcloud).'
         return null
