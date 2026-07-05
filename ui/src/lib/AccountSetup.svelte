@@ -79,10 +79,71 @@
   let smtpHost = $state('')
   let smtpPort = $state(587)    // 587 = standard SMTP submission port
   let useJmap = $state(false)
+  // JMAP session base URL. Filled by a provider preset that ships
+  // one; left empty otherwise (the backend stores Option<String>).
+  let jmapUrl = $state('')
   // Optional plain-text signature appended below new messages from
   // this account. Empty string = no signature; the backend stores it
   // as Option<String>.
   let signature = $state('')
+
+  // ── Provider presets (#413) ─────────────────────────────────
+  // A hardcoded pick-list of well-known providers so discovery
+  // isn't the only path to working server settings. Mirrors the
+  // Rust `ProviderPreset` shape.
+  interface ProviderPreset {
+    id: string
+    display_name: string
+    domains: string[]
+    imap_host: string
+    imap_port: number
+    imap_tls: boolean
+    smtp_host: string
+    smtp_port: number
+    smtp_tls: boolean
+    jmap_url: string | null
+    hint: 'app-password' | 'enable-remote-access' | null
+  }
+  let presets = $state<ProviderPreset[]>([])
+  // 'auto' = no preset picked; run network discovery on email blur.
+  let selectedPresetId = $state('auto')
+  /** True when the preset was matched from the typed email domain
+   *  rather than picked by hand — an auto-match may be revised when
+   *  the email changes; an explicit pick is sticky. */
+  let presetAutoApplied = $state(false)
+  const activePreset = $derived(
+    presets.find((p) => p.id === selectedPresetId) ?? null,
+  )
+
+  $effect(() => {
+    invoke<ProviderPreset[]>('list_provider_presets')
+      .then((list) => (presets = list))
+      .catch((e) => console.warn('list_provider_presets failed:', e))
+  })
+
+  /** Copy a preset's connection settings into the form. Overwrites
+   *  the host/port fields on purpose — picking a provider by name is
+   *  an explicit "use these settings" request, unlike background
+   *  discovery which only fills blanks. */
+  function applyPreset(id: string, auto = false) {
+    selectedPresetId = id
+    presetAutoApplied = auto
+    if (id === 'auto') {
+      discoveryHint = null
+      return
+    }
+    const p = presets.find((x) => x.id === id)
+    if (!p) return
+    imapHost = p.imap_host
+    imapPort = p.imap_port
+    smtpHost = p.smtp_host
+    smtpPort = p.smtp_port
+    jmapUrl = p.jmap_url ?? ''
+    useJmap = !!p.jmap_url
+    discoveryHint = m.account_setup_provider_hint_applied({
+      provider: p.display_name,
+    })
+  }
 
   // ── Step navigation ─────────────────────────────────────────
   // Step metadata drives the numbered progress indicator + the
@@ -143,12 +204,31 @@
     smtp_host: string
     smtp_port: number
     smtp_tls: boolean
-    source: 'autoconfig-domain' | 'autoconfig-ispdb' | 'srv'
+    source: 'autoconfig-domain' | 'autoconfig-ispdb' | 'srv' | 'preset'
   }
 
   async function autoFillServers() {
     if (!email.includes('@')) return
     const domain = email.split('@')[1]
+    // A hand-picked preset wins over anything the email domain says —
+    // the user explicitly chose it. Auto-matched presets get
+    // re-evaluated so changing the address to another provider's
+    // domain doesn't leave stale settings behind.
+    if (selectedPresetId !== 'auto' && !presetAutoApplied) return
+    const matched = presets.find((p) =>
+      p.domains.includes(domain.trim().toLowerCase()),
+    )
+    if (matched) {
+      applyPreset(matched.id, true)
+      return
+    }
+    if (presetAutoApplied) {
+      // Previous auto-match no longer applies — fall back to
+      // discovery below (it only fills blank fields, so nothing
+      // the user typed is lost).
+      selectedPresetId = 'auto'
+      presetAutoApplied = false
+    }
     discoveryHint = null
     discovering = true
     try {
@@ -168,7 +248,9 @@
             ? m.account_setup_discovery_label_provider()
             : found.source === 'autoconfig-ispdb'
               ? m.account_setup_discovery_label_ispdb()
-              : m.account_setup_discovery_label_srv()
+              : found.source === 'preset'
+                ? m.account_setup_discovery_label_preset()
+                : m.account_setup_discovery_label_srv()
         discoveryHint = m.account_setup_discovery_hint_found({ source: label })
         return
       }
@@ -315,6 +397,7 @@
           smtp_host: smtpHost.trim(),
           smtp_port: smtpPort,
           use_jmap: useJmap,
+          jmap_url: jmapUrl.trim() || null,
           signature: signature.trim() || null,
           folder_icons: [],
           // `trustedCerts` already carries `added_at` from when the
@@ -502,6 +585,28 @@
               </span>
             {/if}
           </label>
+
+          <!-- Provider pick-list (#413).  Picking a known provider
+               copies its published server settings into the IMAP/SMTP
+               steps — discovery is no longer the only path.  The
+               fields on the next steps stay editable, so manual
+               override always works. -->
+          <label class="block mb-4">
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_provider_label()}</span>
+            <select
+              class="select w-full mt-1 px-3 py-2 text-sm rounded-md"
+              bind:value={selectedPresetId}
+              onchange={() => applyPreset(selectedPresetId)}
+            >
+              <option value="auto">{m.account_setup_provider_auto()}</option>
+              {#each presets as p (p.id)}
+                <option value={p.id}>{p.display_name}</option>
+              {/each}
+            </select>
+            <span class="block text-xs text-surface-500 mt-1">
+              {m.account_setup_provider_hint()}
+            </span>
+          </label>
         </div>
 
       <!-- Step 1: IMAP settings -->
@@ -510,6 +615,16 @@
           <p class="text-sm text-surface-500 mb-4">
             {m.account_setup_imap_explainer()}
           </p>
+          <!-- Preset-specific requirement (#413): some providers ship
+               with remote access off, or reject the normal account
+               password over IMAP.  Surface that *before* the user
+               types credentials that can't work. -->
+          {#if activePreset?.hint === 'enable-remote-access'}
+            <div class="text-xs text-surface-600 dark:text-surface-400 mb-4 p-3 rounded-md border border-warning-500/40 bg-warning-500/5 flex items-start gap-2">
+              <span class="mt-0.5"><Icon name="warning" size={14} /></span>
+              <span>{m.account_setup_provider_hint_enable_remote_access({ provider: activePreset.display_name })}</span>
+            </div>
+          {/if}
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_imap_server_label()}</span>
             <div class="relative mt-1">
@@ -549,6 +664,11 @@
             <span class="block text-xs text-surface-500 mt-1">
               {m.account_setup_password_hint()}
             </span>
+            {#if activePreset?.hint === 'app-password'}
+              <span class="block text-xs text-warning-600 dark:text-warning-400 mt-1">
+                {m.account_setup_provider_hint_app_password({ provider: activePreset.display_name })}
+              </span>
+            {/if}
           </label>
         </div>
 

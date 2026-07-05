@@ -1,21 +1,25 @@
 //! Unkai Discovery — autoconfigure IMAP/SMTP servers from an email
 //! address.
 //!
-//! Two strategies, tried in order:
+//! Three strategies, tried in order:
 //!
-//! 1. **Mozilla autoconfig** ([`autoconfig`]) — a small XML file the
+//! 1. **Hardcoded presets** ([`presets`]) — a small table of
+//!    widely-used providers (#413). Instant and offline; also
+//!    powers the wizard's provider pick-list.
+//!
+//! 2. **Mozilla autoconfig** ([`autoconfig`]) — a small XML file the
 //!    user's domain (or Mozilla's ISP database) hosts that names the
 //!    incoming/outgoing servers. Covers most major mail providers
 //!    plus every German Hoster that points at Mozilla's autoconfig
 //!    database.
 //!
-//! 2. **DNS SRV records** ([`srv`]) — RFC 6186 records like
+//! 3. **DNS SRV records** ([`srv`]) — RFC 6186 records like
 //!    `_imaps._tcp.<domain>` that point at the right host/port.
 //!    Slower to configure on the provider side, but it's the
 //!    standard fallback when autoconfig isn't available.
 //!
-//! The top-level [`discover`] entry point runs both and returns the
-//! first hit. Callers (the account-setup wizard) prefill the form
+//! The top-level [`discover`] entry point runs all three and returns
+//! the first hit. Callers (the account-setup wizard) prefill the form
 //! with whatever it finds and let the user override anything they
 //! disagree with.
 
@@ -24,7 +28,10 @@ use thiserror::Error;
 use tracing::debug;
 
 pub mod autoconfig;
+pub mod presets;
 pub mod srv;
+
+pub use presets::{PresetHint, ProviderPreset};
 
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
@@ -69,6 +76,9 @@ pub enum DiscoverySource {
     AutoconfigIspdb,
     /// SRV records resolved from `_imaps._tcp.<domain>` etc.
     Srv,
+    /// Matched a hardcoded entry in the [`presets`] table — no
+    /// network involved (#413).
+    Preset,
 }
 
 /// Try every discovery method for `email`'s domain. Returns the
@@ -86,6 +96,13 @@ pub async fn discover(email: &str) -> Result<DiscoveredAccount, DiscoveryError> 
         .ok_or_else(|| DiscoveryError::Parse(format!("not an email: {email:?}")))?;
 
     debug!("Autodiscover starting for domain '{domain}'");
+
+    // Preset table first: instant, offline, and immune to a
+    // provider's autoconfig endpoint having a bad day.
+    if let Some(p) = presets::for_domain(&domain) {
+        debug!("preset '{}' matched domain '{domain}'", p.id);
+        return Ok(p.to_discovered());
+    }
 
     match autoconfig::discover(&domain, email).await {
         Ok(found) => return Ok(found),
