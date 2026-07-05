@@ -2303,7 +2303,7 @@
                  dismiss listener so the option handlers get to
                  run before the menu unmounts. -->
             <div
-              class="absolute left-0 top-full mt-1 z-50 min-w-32 py-1 rounded-md shadow-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 text-sm"
+              class="absolute right-0 top-full mt-1 z-50 min-w-32 py-1 rounded-md shadow-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 text-sm"
               role="menu"
               tabindex="-1"
               onmousedown={(e) => e.stopPropagation()}

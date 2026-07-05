@@ -1942,10 +1942,20 @@
                `pointer-events-none` on the wrapper while hidden
                keeps the layer click-through so the row's drag /
                click still work in the gap. -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="absolute right-1 bottom-3 flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity
                    group-hover:opacity-100 group-hover:pointer-events-auto
                    focus-within:opacity-100 focus-within:pointer-events-auto"
+            oncontextmenu={(e) => {
+              /* The cluster overlays the row while hovered, so a
+                 right-click here would otherwise bypass the row's
+                 own oncontextmenu and fall through to the app-level
+                 "Refresh" fallback menu (#198).  Re-route it to the
+                 same mail context menu the row opens — right-click
+                 and hover affordances must never drift apart. */
+              openContextMenu(e, env)
+            }}
           >
             <button
               type="button"
