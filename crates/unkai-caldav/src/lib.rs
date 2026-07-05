@@ -35,7 +35,7 @@ mod xml_util;
 
 pub use calendars::{create_calendar, delete_calendar, update_calendar};
 pub use client::probe_calendar_writable;
-pub use discovery::{Calendar, list_calendars};
+pub use discovery::{Calendar, list_calendars, list_calendars_at, resolve_calendar_home};
 pub use expand::expand_event;
 pub use freebusy::{BusyKind, BusyPeriod, nc_principal_home, query_free_busy};
 pub use ical::{build_ics, parse_ics};

@@ -167,7 +167,11 @@
 
   async function loadAccounts() {
     try {
-      const list = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      // Files browsing is a Nextcloud feature — skip generic-DAV /
+      // local sources (#413).
+      const list = (
+        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+      ).filter((a) => (a.kind ?? 'nextcloud') === 'nextcloud')
       accounts = list
       if (list.length === 1 && !accountId) {
         accountId = list[0].id

@@ -1379,6 +1379,39 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX messages_by_folder_pinned_date
         ON messages (account_id, folder, is_pinned DESC, internal_date DESC);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v40 → v41: separate CardDAV/CalDAV providers + local store
+    // (#413).
+    //
+    // The `nextcloud_accounts` record generalises into "any
+    // groupware source":
+    //
+    //   * `kind` — 'nextcloud' (default, all pre-existing rows),
+    //     'dav' (a generic CardDAV/CalDAV server on some other
+    //     host), or 'local' (no remote at all; contacts/calendars
+    //     live only in this cache).
+    //
+    //   * `carddav_home` / `caldav_home` — absolute collection-home
+    //     URLs for 'dav' rows, resolved once via RFC 6764
+    //     well-known discovery when the source is added.  NULL for
+    //     'nextcloud' rows (the home is derived from the server's
+    //     `/remote.php/dav/...` layout on every sync) and for
+    //     'local' rows.
+    //
+    // Reusing this table — rather than adding a parallel
+    // `dav_accounts` one — keeps every existing sync command,
+    // cache table and UI view working unchanged: they are all
+    // keyed by `nextcloud_account_id`, which now simply identifies
+    // any groupware source.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE nextcloud_accounts
+        ADD COLUMN kind TEXT NOT NULL DEFAULT 'nextcloud';
+    ALTER TABLE nextcloud_accounts
+        ADD COLUMN carddav_home TEXT;
+    ALTER TABLE nextcloud_accounts
+        ADD COLUMN caldav_home TEXT;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
