@@ -1480,6 +1480,10 @@
     // After adding an account, refresh the account list so we pick
     // up the new account's ID, then switch to the inbox.
     await checkAccounts()
+    // The wizard can also connect a Nextcloud account now (#413) —
+    // re-aggregate capabilities so the IconRail lights up the
+    // integration icons straight away instead of after a restart.
+    await refreshNextcloudCapabilities()
     currentView = 'inbox'
   }
 
