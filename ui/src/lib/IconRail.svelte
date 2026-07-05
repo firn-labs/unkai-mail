@@ -29,6 +29,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { onDestroy } from 'svelte'
   import Icon, { type IconName } from './Icon.svelte'
@@ -196,7 +197,7 @@
       // have no Talk endpoint (#413) — only poll real Nextclouds.
       const ncAccounts = (
         await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
-      ).filter((a) => (a.kind ?? 'nextcloud') === 'nextcloud')
+      ).filter(isNextcloudSource)
       if (ncAccounts.length === 0) {
         talkUnreadTotal = 0
         talkUnreadHasMention = false

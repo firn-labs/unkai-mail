@@ -12,6 +12,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './lib/ncSources'
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import DOMPurify from 'dompurify'
   import {
@@ -719,7 +720,10 @@
    *  swallowed — no toast, no UI block. */
   async function sweepNextcloudTempFiles() {
     try {
-      const accounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      // Office temp files only exist on real Nextclouds (#413).
+      const accounts = (
+        await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+      ).filter(isNextcloudSource)
       for (const a of accounts) {
         try {
           await invoke('office_sweep_temp', { ncId: a.id })
@@ -2838,7 +2842,9 @@
     try {
       let ncId = ''
       try {
-        const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+        const list = (
+          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        ).filter(isNextcloudSource)
         if (list.length === 0) {
           alert('Connect a Nextcloud account first (Settings → Nextcloud).')
           return null
@@ -3211,7 +3217,9 @@
     // the event, so we surface that and bail.
     let ncId = ''
     try {
-      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      const list = (
+          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert(
           'Connect a Nextcloud account first (Settings → Nextcloud) so this event has a calendar to land in.',
@@ -3299,7 +3307,9 @@
   ) {
     let ncId = ''
     try {
-      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      const list = (
+          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert('Connect a Nextcloud account first (Settings → Nextcloud).')
         return
@@ -3358,7 +3368,9 @@
   async function onSaveMailAsNote(mail: OpenMail & { body_html?: string | null }) {
     let ncId = ''
     try {
-      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      const list = (
+          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert('Connect a Nextcloud account first (Settings → Nextcloud).')
         return

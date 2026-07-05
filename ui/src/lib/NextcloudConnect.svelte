@@ -143,7 +143,7 @@
       pendingCert = probed
     } catch (e: any) {
       error = m.nextcloud_connect_cert_probe_failed({
-        reason: formatError(e) || 'unknown error',
+        reason: formatError(e) || m.nextcloud_connect_unknown_error(),
       })
     }
   }

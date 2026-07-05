@@ -17,6 +17,7 @@
    */
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { untrack } from 'svelte'
   import { formatError } from './errors'
   import { extractManagedShares } from './managedShares'
@@ -1321,7 +1322,7 @@
       // generic-DAV / local contact sources (#413) don't qualify.
       const accounts = (
         await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
-      ).filter((a) => (a.kind ?? 'nextcloud') === 'nextcloud')
+      ).filter(isNextcloudSource)
       if (accounts.length === 0) {
         error = 'Connect a Nextcloud account first (Settings → Nextcloud).'
         return null
