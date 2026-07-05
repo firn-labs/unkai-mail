@@ -414,6 +414,13 @@ async fn discover_account_settings(
     }
 }
 
+/// The hardcoded provider table for the wizard's pick-list (#413).
+/// Pure data, no I/O — safe to call any time.
+#[tauri::command]
+fn list_provider_presets() -> Vec<unkai_discovery::ProviderPreset> {
+    unkai_discovery::presets::all()
+}
+
 /// One cert in a probed chain — DER bytes plus its SHA-256
 /// fingerprint formatted for display. The frontend uses `der` to
 /// build a `TrustedCert` entry and `sha256` to render the
@@ -14901,6 +14908,7 @@ fn main() {
             set_account_password,
             set_folder_icon,
             discover_account_settings,
+            list_provider_presets,
             probe_server_certificate,
             test_connection,
             fetch_envelopes,
