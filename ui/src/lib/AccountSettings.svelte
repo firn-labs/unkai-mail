@@ -8,6 +8,7 @@
    */
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { listen } from '@tauri-apps/api/event'
   import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
@@ -499,7 +500,7 @@
       // The settings bundle lives on Nextcloud WebDAV — generic-DAV
       // and local sources (#413) can't be backup targets.
       ncOptions = accs
-        .filter((a) => (a.kind ?? 'nextcloud') === 'nextcloud')
+        .filter(isNextcloudSource)
         .map((a) => ({
           id: a.id,
           label: a.display_name || `${a.username} @ ${new URL(a.server_url).hostname}`,

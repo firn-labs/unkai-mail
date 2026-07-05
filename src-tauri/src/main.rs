@@ -23,8 +23,8 @@ use unkai_caldav::{
     create_calendar as caldav_create_calendar, create_event as caldav_create_event,
     create_task as caldav_create_task, delete_calendar as caldav_delete_calendar,
     delete_event as caldav_delete_event, delete_task as caldav_delete_task,
-    list_calendars as caldav_list_calendars, list_calendars_at as caldav_list_calendars_at,
-    list_task_lists as caldav_list_task_lists, nc_principal_home as caldav_nc_principal_home,
+    list_calendars_at as caldav_list_calendars_at, list_task_lists as caldav_list_task_lists,
+    nc_principal_home as caldav_nc_principal_home,
     probe_calendar_writable as caldav_probe_writable, query_free_busy as caldav_query_free_busy,
     resolve_calendar_home as caldav_resolve_calendar_home, sync_calendar as caldav_sync_calendar,
     sync_tasks as caldav_sync_tasks, update_calendar as caldav_update_calendar,
@@ -32,7 +32,7 @@ use unkai_caldav::{
 };
 use unkai_carddav::{
     Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
-    delete_contact as carddav_delete_contact, list_addressbooks, list_addressbooks_at,
+    delete_contact as carddav_delete_contact, list_addressbooks_at,
     resolve_addressbook_home as carddav_resolve_addressbook_home, sync_addressbook,
     update_contact as carddav_update_contact,
 };
@@ -787,16 +787,31 @@ async fn add_dav_account(
     };
     let trust = trusted_certs.unwrap_or_default();
 
-    let carddav_home = if use_contacts {
-        Some(carddav_resolve_addressbook_home(&server, &username, &password, &trust).await?)
-    } else {
-        None
-    };
-    let caldav_home = if use_calendars {
-        Some(caldav_resolve_calendar_home(&server, &username, &password, &trust).await?)
-    } else {
-        None
-    };
+    // The two resolution ladders are independent — run them
+    // concurrently so the wizard spinner lasts one discovery chain,
+    // not the sum of both.
+    let (carddav_home, caldav_home) = tokio::join!(
+        async {
+            if use_contacts {
+                carddav_resolve_addressbook_home(&server, &username, &password, &trust)
+                    .await
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        },
+        async {
+            if use_calendars {
+                caldav_resolve_calendar_home(&server, &username, &password, &trust)
+                    .await
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+    );
+    let carddav_home = carddav_home?;
+    let caldav_home = caldav_home?;
 
     // `#dav` suffix keeps the id from colliding with a Nextcloud
     // connection to the same server/user (their id is `server#user`).
@@ -2608,28 +2623,13 @@ async fn sync_nextcloud_contacts(
     }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
-    // Generic DAV sources carry an explicit (RFC 6764-resolved)
-    // addressbook home; Nextcloud derives it from the server layout.
-    let books = match &account.carddav_home {
-        Some(home) => {
-            list_addressbooks_at(
-                home,
-                &account.username,
-                &app_password,
-                &account.trusted_certs,
-            )
-            .await?
-        }
-        None => {
-            list_addressbooks(
-                &account.server_url,
-                &account.username,
-                &app_password,
-                &account.trusted_certs,
-            )
-            .await?
-        }
-    };
+    let books = list_addressbooks_at(
+        &carddav_home_of(&account),
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     tracing::info!(
         "CardDAV: {} addressbook(s) to sync for {}",
         books.len(),
@@ -4549,26 +4549,13 @@ async fn list_nextcloud_addressbooks(nc_id: String) -> Result<Vec<AddressbookSum
         }]);
     }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let books: Vec<Addressbook> = match &account.carddav_home {
-        Some(home) => {
-            list_addressbooks_at(
-                home,
-                &account.username,
-                &app_password,
-                &account.trusted_certs,
-            )
-            .await?
-        }
-        None => {
-            list_addressbooks(
-                &account.server_url,
-                &account.username,
-                &app_password,
-                &account.trusted_certs,
-            )
-            .await?
-        }
-    };
+    let books: Vec<Addressbook> = list_addressbooks_at(
+        &carddav_home_of(&account),
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     Ok(books
         .into_iter()
         .map(|b| AddressbookSummary {
@@ -4664,26 +4651,13 @@ async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>,
         });
     }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let calendars: Vec<CaldavCalendar> = match &account.caldav_home {
-        Some(home) => {
-            caldav_list_calendars_at(
-                home,
-                &account.username,
-                &app_password,
-                &account.trusted_certs,
-            )
-            .await?
-        }
-        None => {
-            caldav_list_calendars(
-                &account.server_url,
-                &account.username,
-                &app_password,
-                &account.trusted_certs,
-            )
-            .await?
-        }
-    };
+    let calendars: Vec<CaldavCalendar> = caldav_list_calendars_at(
+        &caldav_home_of(&account),
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     Ok(calendars
         .into_iter()
         .map(|c| CalendarSummary {
@@ -4745,26 +4719,13 @@ async fn sync_nextcloud_calendars(
     // ── Phase 1: discovery + reconcile the calendar list ────────
     // Generic DAV sources carry an explicit (RFC 6764-resolved)
     // calendar home; Nextcloud derives it from the server layout.
-    let mut server_calendars = match &account.caldav_home {
-        Some(home) => {
-            caldav_list_calendars_at(
-                home,
-                &account.username,
-                &app_password,
-                &account.trusted_certs,
-            )
-            .await?
-        }
-        None => {
-            caldav_list_calendars(
-                &account.server_url,
-                &account.username,
-                &app_password,
-                &account.trusted_certs,
-            )
-            .await?
-        }
-    };
+    let mut server_calendars = caldav_list_calendars_at(
+        &caldav_home_of(&account),
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
     tracing::info!(
         "CalDAV: {} calendar(s) discovered for {}",
         server_calendars.len(),
@@ -5005,15 +4966,7 @@ async fn create_nextcloud_calendar(
         format!("local://{slug}/")
     } else {
         let app_password = credentials::get_nextcloud_password(&nc_id)?;
-        // Generic DAV sources store their resolved calendar home;
-        // Nextcloud derives it from the fixed server layout.
-        let home = match &account.caldav_home {
-            Some(h) => h.clone(),
-            None => {
-                let server = account.server_url.trim_end_matches('/');
-                format!("{server}/remote.php/dav/calendars/{}/", account.username)
-            }
-        };
+        let home = caldav_home_of(&account);
         caldav_create_calendar(
             &home,
             &account.username,
@@ -5580,15 +5533,22 @@ async fn update_calendar_event(
 ) -> Result<CalendarEvent, UnkaiError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
     let mut event = input_to_calendar_event(&handle.uid, &input);
     // Preserve recurrence info the editor doesn't surface — losing it
     // would silently demote a recurring series back to a singleton.
     event.recurrence_id = handle.recurrence_id;
 
-    let (organizer_email, organizer_name) =
-        resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await;
+    // Only a real Nextcloud has the OCS profile endpoint behind
+    // `resolve_organizer` — local sources have no keychain entry at
+    // all, and generic DAV servers would just eat a dead request
+    // (#413).
+    let (organizer_email, organizer_name) = if account.is_nextcloud() {
+        let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+        resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await
+    } else {
+        organizer_local(&account)
+    };
     let ics = caldav_build_ics(&event, Some(&organizer_email), organizer_name.as_deref());
     // Use the etag-aware retry helper so a concurrent edit on
     // another device (NC web, phone) doesn't surface to the
@@ -5704,7 +5664,16 @@ async fn get_attendee_availability(
     cache: State<'_, Cache>,
 ) -> Result<Vec<AttendeeAvailability>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    // Sharees lookup + free-busy are Nextcloud OCS/scheduling
+    // features. Non-Nextcloud sources (#413) skip every network
+    // step below (the sharees gate keeps `nc_match` at None) and
+    // degrade to the local-cache scan — the empty password is
+    // never sent anywhere.
+    let app_password = if account.is_nextcloud() {
+        credentials::get_nextcloud_password(&nc_id)?
+    } else {
+        String::new()
+    };
 
     // Pre-load the local-cache events once so the per-attendee
     // scan loop doesn't repeat the SQL + expansion work.
@@ -5725,20 +5694,25 @@ async fn get_attendee_availability(
         }
 
         // Step 1: sharees lookup.  Soft-fail (None) on errors so a
-        // single bad lookup doesn't blank out the planner.
-        let nc_match = match unkai_nextcloud::find_user_by_email(
-            &account.server_url,
-            &account.username,
-            &app_password,
-            &email,
-            &account.trusted_certs,
-        )
-        .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::info!("sharees lookup for '{email}' failed: {e}");
-                None
+        // single bad lookup doesn't blank out the planner.  Skipped
+        // entirely for non-Nextcloud sources (#413) — no OCS there.
+        let nc_match = if !account.is_nextcloud() {
+            None
+        } else {
+            match unkai_nextcloud::find_user_by_email(
+                &account.server_url,
+                &account.username,
+                &app_password,
+                &email,
+                &account.trusted_certs,
+            )
+            .await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::info!("sharees lookup for '{email}' failed: {e}");
+                    None
+                }
             }
         };
 
@@ -6051,20 +6025,24 @@ async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result
     };
     let handle = load_event_handle(&cache, &event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
-    // Use the silent variant — without `Schedule-Reply: F`,
-    // Sabre's attendee-side DELETE handler emits a spurious
-    // `METHOD:REPLY;PARTSTAT=DECLINED` to the organiser.  The
-    // organiser already sent CANCEL; mailing them a decline
-    // back is just noise (and confusing).
-    unkai_caldav::delete_event_silent(
-        &handle.href,
-        &account.username,
-        &app_password,
-        &handle.etag,
-        &account.trusted_certs,
-    )
-    .await?;
+    // A cancelled invite living on a local calendar only exists in
+    // the cache — the delete below is the whole dismissal (#413).
+    if !account.is_local() {
+        let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+        // Use the silent variant — without `Schedule-Reply: F`,
+        // Sabre's attendee-side DELETE handler emits a spurious
+        // `METHOD:REPLY;PARTSTAT=DECLINED` to the organiser.  The
+        // organiser already sent CANCEL; mailing them a decline
+        // back is just noise (and confusing).
+        unkai_caldav::delete_event_silent(
+            &handle.href,
+            &account.username,
+            &app_password,
+            &handle.etag,
+            &account.trusted_certs,
+        )
+        .await?;
+    }
     cache.delete_event_by_id(&event_id)?;
     Ok(())
 }
@@ -6592,7 +6570,6 @@ async fn get_event_partstat_for_user(
 
     // Build the candidate list — same shape as respond_to_invite.
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
     let mut candidates: Vec<String> = Vec::new();
     if let Some(h) = attendee_hint.as_deref() {
         let h = h.trim();
@@ -6600,13 +6577,18 @@ async fn get_event_partstat_for_user(
             candidates.push(h.to_string());
         }
     }
-    if let Ok(profile) = unkai_nextcloud::user::fetch_current_user(
-        &account.server_url,
-        &account.username,
-        &app_password,
-        &account.trusted_certs,
-    )
-    .await
+    // Profile lookup only exists on a real Nextcloud (#413) — for
+    // DAV/local sources the mail-account addresses below carry the
+    // identity matching.
+    if account.is_nextcloud()
+        && let Ok(app_password) = credentials::get_nextcloud_password(&handle.nextcloud_account_id)
+        && let Ok(profile) = unkai_nextcloud::user::fetch_current_user(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            &account.trusted_certs,
+        )
+        .await
         && let Some(email) = profile.email
     {
         candidates.push(email);
@@ -7187,6 +7169,33 @@ fn url_origin(url: &str) -> String {
             origin
         }
         Err(_) => url.trim_end_matches('/').to_string(),
+    }
+}
+
+/// Resolved CardDAV addressbook-home URL for any remote source
+/// (#413): generic DAV records store the RFC 6764-resolved home;
+/// Nextcloud derives it from the fixed server layout. Never called
+/// for local sources (they have no home).
+fn carddav_home_of(account: &NextcloudAccount) -> String {
+    match &account.carddav_home {
+        Some(home) => home.clone(),
+        None => format!(
+            "{}/remote.php/dav/addressbooks/users/{}/",
+            account.server_url.trim_end_matches('/'),
+            account.username
+        ),
+    }
+}
+
+/// CalDAV twin of [`carddav_home_of`].
+fn caldav_home_of(account: &NextcloudAccount) -> String {
+    match &account.caldav_home {
+        Some(home) => home.clone(),
+        None => format!(
+            "{}/remote.php/dav/calendars/{}/",
+            account.server_url.trim_end_matches('/'),
+            account.username
+        ),
     }
 }
 

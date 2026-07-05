@@ -34,6 +34,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import DateField from './DateField.svelte'
   import { formatError } from './errors'
@@ -111,7 +112,10 @@
 
   async function loadAccounts() {
     try {
-      const list = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      // Nextcloud-app feature — skip generic-DAV / local sources (#413).
+      const list = (
+        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+      ).filter(isNextcloudSource)
       accounts = list
       if (list.length === 1 && !accountId) {
         accountId = list[0].id

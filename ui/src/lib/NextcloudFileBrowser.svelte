@@ -29,6 +29,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { formatError } from './errors'
   import Icon, { type IconName } from './Icon.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
@@ -171,7 +172,7 @@
       // local sources (#413).
       const list = (
         await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
-      ).filter((a) => (a.kind ?? 'nextcloud') === 'nextcloud')
+      ).filter(isNextcloudSource)
       accounts = list
       if (list.length === 1 && !accountId) {
         accountId = list[0].id

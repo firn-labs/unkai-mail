@@ -74,6 +74,8 @@
   "account_setup_dav_added_local": "Created the local store {name}.",
   "account_setup_dav_local_default_name": "Local",
   "account_setup_dav_add_failed": "Adding the source failed.",
+  "nextcloud_connect_unknown_error": "unknown error",
+  "nextcloud_settings_row_contacts": "Contacts",
   "nextcloud_settings_kind_dav": "CardDAV/CalDAV",
   "nextcloud_settings_kind_local": "On this device",
   "nextcloud_settings_local_note": "Contacts and calendars from this source are stored only on this device.",

@@ -601,7 +601,7 @@
               {@const cls = calendarsState[acct.id]}
               {#if acct.capabilities?.carddav !== false}
                 <SyncStatusRow
-                  label="Contacts"
+                  label={m.nextcloud_settings_row_contacts()}
                   count={cs?.count ?? null}
                   lastSyncedAt={cs?.lastSyncedAt ?? null}
                   syncing={cs?.syncing ?? false}
