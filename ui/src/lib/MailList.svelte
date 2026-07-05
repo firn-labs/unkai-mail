@@ -303,6 +303,11 @@
     isSibling: boolean
     isLastSibling: boolean
     threadKey: string
+    /** True for every row inside the pinned block at the top of the
+     *  list (#414 follow-up) — including expanded siblings of a
+     *  pinned thread.  Drives the "Pinned" section header and the
+     *  divider where the section ends. */
+    pinnedSection?: boolean
   }
 
   /** Stable identity key for an envelope across the bound list.  UID
@@ -340,6 +345,7 @@
         isSibling: false,
         isLastSibling: false,
         threadKey: `__solo:${env.account_id}:${env.uid}`,
+        pinnedSection: !!env.is_pinned,
       }))
       // Each envelope is its own one-member "bucket" so consumers
       // that read `threadMembersByEnv` (Archive's sweep-the-thread
@@ -547,7 +553,7 @@
     const out: RenderRow[] = [
       ...blocks.filter((b) => b.pinned),
       ...blocks.filter((b) => !b.pinned),
-    ].flatMap((b) => b.rows)
+    ].flatMap((b) => b.rows.map((r) => ({ ...r, pinnedSection: b.pinned })))
     // Build a side-map from envelope identity to its post-merge
     // bucket (#289 follow-up).  `affectedEnvelopes` consults this
     // when the user drags or right-clicks a thread head so the
@@ -1639,8 +1645,20 @@
         {m.maillist_empty_in_folder({ folder: displayFolderName(folder) })}
       </div>
     {:else}
-      {#each renderRows as row (`${row.env.account_id}:${row.env.uid}:${row.isSibling ? 's' : 'h'}`)}
+      {#each renderRows as row, i (`${row.env.account_id}:${row.env.uid}:${row.isSibling ? 's' : 'h'}`)}
         {@const env = row.env}
+        <!-- Pinned-section chrome (#414 follow-up): a small label
+             above the pinned block and a tinted divider where it
+             ends, so the boundary between "kept on top" and the
+             normal date-sorted flow reads at a glance. -->
+        {#if row.pinnedSection && i === 0}
+          <div class="px-4 pt-2 pb-1 text-[11px] uppercase tracking-wider text-primary-500 flex items-center gap-1.5">
+            <Icon name="pin" size={11} />
+            <span>{m.mail_pinned_title()}</span>
+          </div>
+        {:else if !row.pinnedSection && i > 0 && renderRows[i - 1].pinnedSection}
+          <div class="border-b-2 border-primary-500/30" aria-hidden="true"></div>
+        {/if}
         {@const selected = selectedUid === env.uid && (!unified || selectedUid === env.uid)}
         {@const multi = isMulti(env.uid)}
         <!-- Sender avatar lookup (#305).  `env.from` is the raw
@@ -1734,9 +1752,11 @@
                 ? 'bg-primary-500/10'
                 : multi
                   ? 'bg-primary-500/15 hover:bg-primary-500/20'
-                  : !env.is_read
-                    ? 'bg-primary-500/4 dark:bg-primary-500/7 hover:bg-primary-500/10'
-                    : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+                  : env.is_starred
+                    ? 'bg-amber-500/10 hover:bg-amber-500/15'
+                    : !env.is_read
+                      ? 'bg-primary-500/4 dark:bg-primary-500/7 hover:bg-primary-500/10'
+                      : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
             draggable="true"
             ondragstart={(e) => onMailDragStart(e, env)}
             onclick={(e) => onRowClick(e, env)}
