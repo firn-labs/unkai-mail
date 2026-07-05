@@ -74,6 +74,7 @@
   "account_setup_dav_added_local": "Lokaler Speicher {name} wurde erstellt.",
   "account_setup_dav_local_default_name": "Lokal",
   "account_setup_dav_add_failed": "Das Hinzufügen der Quelle ist fehlgeschlagen.",
+  "account_setup_dav_cert_explainer": "Das ist normal bei selbst gehosteten CardDAV/CalDAV-Servern mit selbst signiertem Zertifikat. Vergleichen Sie den Fingerabdruck unten mit dem Zertifikat auf Ihrem Server, bevor Sie ihm vertrauen.",
   "nextcloud_connect_unknown_error": "unbekannter Fehler",
   "nextcloud_settings_row_contacts": "Kontakte",
   "nextcloud_settings_kind_dav": "CardDAV/CalDAV",

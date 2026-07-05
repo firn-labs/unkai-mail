@@ -250,6 +250,66 @@
    *  into its confirmation state. */
   let davConfigured = $state<{ kind: 'dav' | 'local'; name: string } | null>(null)
 
+  // Self-signed cert support for the DAV form — same probe →
+  // fingerprint prompt → retry flow the IMAP submit and the
+  // Nextcloud connect card use (#253). Scoped state so trusting a
+  // DAV cert can't cross-fire the IMAP flow's `submit()` retry.
+  let davTrustedCerts = $state<TrustedCert[]>([])
+  let davPendingCert = $state<ProbedCert | null>(null)
+
+  /** Host + port of the typed DAV server URL, https/443 defaults —
+   *  the target `probe_server_certificate` needs. */
+  function davHostPort(): { host: string; port: number } | null {
+    const url = davServerUrl.trim()
+    const normalised = /^https?:\/\//.test(url) ? url : `https://${url}`
+    try {
+      const u = new URL(normalised)
+      return {
+        host: u.hostname,
+        port: u.port ? Number.parseInt(u.port, 10) : 443,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  async function handleDavCertError() {
+    davPendingCert = null
+    const target = davHostPort()
+    if (!target) {
+      davError = m.nextcloud_connect_error_parse_url()
+      return
+    }
+    try {
+      davPendingCert = await invoke<ProbedCert>('probe_server_certificate', {
+        host: target.host,
+        port: target.port,
+      })
+    } catch (e: any) {
+      davError = m.account_setup_cert_probe_failed({
+        reason: formatError(e) || m.nextcloud_connect_unknown_error(),
+      })
+    }
+  }
+
+  function trustDavPendingCert() {
+    if (!davPendingCert) return
+    // Trust the whole probed chain, not just the leaf — same
+    // rationale as the IMAP prompt (chain reorders / leaf reissues
+    // shouldn't re-prompt).
+    const addedAt = Math.floor(Date.now() / 1000)
+    const host = davPendingCert.host
+    const additions: TrustedCert[] = davPendingCert.chain.map((entry) => ({
+      der: entry.der,
+      sha256: entry.sha256,
+      host,
+      added_at: addedAt,
+    }))
+    davTrustedCerts = [...davTrustedCerts, ...additions]
+    davPendingCert = null
+    void addDavSource()
+  }
+
   async function addDavSource() {
     davError = ''
     if (!davUseContacts && !davUseCalendars) {
@@ -274,7 +334,10 @@
           password: davPassword,
           useContacts: davUseContacts,
           useCalendars: davUseCalendars,
-          trustedCerts: null,
+          // Grows when the user accepts a self-signed cert via the
+          // prompt below; the backend persists it on the account so
+          // every later sync pins the same chain.
+          trustedCerts: davTrustedCerts.length > 0 ? davTrustedCerts : null,
         })
         // First pull in the background so the views aren't empty —
         // same posture as the Nextcloud step (#318).
@@ -299,7 +362,16 @@
         davConfigured = { kind: 'local', name }
       }
     } catch (e: any) {
-      davError = formatError(e) || m.account_setup_dav_add_failed()
+      const msg = formatError(e) || m.account_setup_dav_add_failed()
+      // TLS trust failure on the DAV server → probe + fingerprint
+      // prompt instead of a raw error (local stores never hit this
+      // branch — they make no network calls).
+      if (davChoice === 'dav' && looksLikeCertError(msg)) {
+        davError = ''
+        void handleDavCertError()
+      } else {
+        davError = msg
+      }
     } finally {
       davSaving = false
     }
@@ -1023,6 +1095,64 @@
                 <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-md flex items-start gap-2">
                   <span class="mt-0.5"><Icon name="error" size={16} /></span>
                   <span>{davError}</span>
+                </div>
+              {/if}
+
+              <!-- Self-signed cert trust prompt (#253) — same shape
+                   as the IMAP step's, but backed by DAV-scoped state
+                   so trusting retries addDavSource, not submit(). -->
+              {#if davPendingCert}
+                <div class="mb-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
+                  <p class="text-sm font-medium mb-1 flex items-center gap-2">
+                    <Icon name="lock" size={16} />
+                    {m.account_setup_cert_title()}
+                  </p>
+                  <p class="text-xs text-surface-500 mb-3">
+                    {m.account_setup_dav_cert_explainer()}
+                  </p>
+                  <p class="text-xs mb-1"><span class="text-surface-500">{m.account_setup_cert_host_label()}</span> <span class="font-mono">{davPendingCert.host}</span></p>
+                  <div class="text-xs mb-3">
+                    <p class="text-surface-500 mb-1">
+                      {#if davPendingCert.chain.length === 1}
+                        {m.account_setup_cert_fingerprint_one()}
+                      {:else if davPendingCert.chain.length === 2}
+                        {m.account_setup_cert_fingerprint_many({ n: 1 })}
+                      {:else}
+                        {m.account_setup_cert_fingerprint_many_plural({ n: davPendingCert.chain.length - 1 })}
+                      {/if}
+                    </p>
+                    <ul class="space-y-1">
+                      {#each davPendingCert.chain as entry, i (entry.sha256)}
+                        <li class="font-mono break-all">
+                          <span class="text-surface-500">{i === 0 ? 'leaf:' : `int${i}:`}</span>
+                          {entry.sha256}
+                        </li>
+                      {/each}
+                    </ul>
+                  </div>
+                  <div class="flex gap-2">
+                    <button
+                      type="button"
+                      class="btn btn-sm preset-filled-primary-500"
+                      onclick={trustDavPendingCert}
+                    >{m.account_setup_cert_button_trust()}</button>
+                    <button
+                      type="button"
+                      class="btn btn-sm preset-outlined-surface-500"
+                      onclick={() => (davPendingCert = null)}
+                    >{m.account_setup_cert_button_cancel()}</button>
+                  </div>
+                </div>
+              {/if}
+
+              {#if davTrustedCerts.length > 0 && !davPendingCert}
+                <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
+                  <Icon name="verified" size={14} />
+                  {#if davTrustedCerts.length === 1}
+                    {m.account_setup_cert_trusting_one()}
+                  {:else}
+                    {m.account_setup_cert_trusting_many({ n: davTrustedCerts.length })}
+                  {/if}
                 </div>
               {/if}
 
