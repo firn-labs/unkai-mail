@@ -74,6 +74,7 @@
   "account_setup_dav_added_local": "Created the local store {name}.",
   "account_setup_dav_local_default_name": "Local",
   "account_setup_dav_add_failed": "Adding the source failed.",
+  "account_setup_dav_cert_explainer": "This is normal for self-hosted CardDAV/CalDAV servers using a self-signed certificate. Compare the fingerprint below with the certificate on your server before trusting.",
   "nextcloud_connect_unknown_error": "unknown error",
   "nextcloud_settings_row_contacts": "Contacts",
   "nextcloud_settings_kind_dav": "CardDAV/CalDAV",
