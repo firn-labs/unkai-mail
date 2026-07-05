@@ -24,6 +24,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import NextcloudConnect from './NextcloudConnect.svelte'
   import Toggle from './Toggle.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
@@ -156,8 +157,12 @@
     { title: () => m.account_setup_step_your_information(), icon: 'address-book' },
     { title: () => m.account_setup_step_imap(), icon: 'email-envelope' },
     { title: () => m.account_setup_step_smtp(), icon: 'sent' },
+    { title: () => m.account_setup_step_nextcloud(), icon: 'cloud' },
   ]
   const totalSteps = steps.length
+  /** Index of the step where `submit()` persists the mail account.
+   *  Everything after it runs against an already-saved account. */
+  const submitStep = 2
 
   function nextStep() {
     error = ''
@@ -183,7 +188,76 @@
 
   function handleCancel() {
     if (!canCancel) return
+    // Once the mail account is saved (i.e. the user is on the
+    // optional Nextcloud step), closing the wizard must land in the
+    // normal "account exists" flow, not the pre-setup cancel path —
+    // the parent needs to reload the account list either way.
+    if (accountCreated) {
+      oncomplete()
+      return
+    }
     oncancel?.()
+  }
+
+  // ── Optional Nextcloud step (#413) ──────────────────────────
+  // The mail account is persisted at the end of the SMTP step; the
+  // last step offers the Nextcloud Login Flow v2 connect that used
+  // to live only in Settings. Skipping is always possible.
+  interface NcCapabilitiesLite {
+    caldav: boolean
+    carddav: boolean
+    tasks?: boolean
+  }
+  interface NcAccountLite {
+    id: string
+    server_url: string
+    username: string
+    display_name?: string | null
+    capabilities?: NcCapabilitiesLite | null
+  }
+  /** True once `add_account` succeeded — the wizard's remaining
+   *  steps are optional extras on top of a saved account. */
+  let accountCreated = $state(false)
+  let ncAccount = $state<NcAccountLite | null>(null)
+
+  function onNcConnected(acct: NcAccountLite) {
+    ncAccount = acct
+    // First-time sync (#318): a freshly-connected NC has no local
+    // contacts/calendars yet — kick the initial pulls off in the
+    // background so the integration views aren't empty when the
+    // user lands in the app. Fire-and-forget: failures show up in
+    // the Settings sync rows, not here.
+    void seedInitialSync(acct)
+  }
+
+  async function seedInitialSync(acct: NcAccountLite) {
+    const caps = acct.capabilities
+    if (!caps) return
+    const jobs: Promise<unknown>[] = []
+    if (caps.carddav) {
+      jobs.push(invoke('sync_nextcloud_contacts', { ncId: acct.id }))
+    }
+    if (caps.caldav) {
+      jobs.push(invoke('sync_nextcloud_calendars', { ncId: acct.id }))
+    }
+    await Promise.allSettled(jobs)
+    // Task lists piggy-back on CalDAV but need their own discovery
+    // + per-list sync round-trip (#92).
+    if (caps.tasks && caps.caldav) {
+      try {
+        const lists = await invoke<{ id: string }[]>(
+          'sync_nextcloud_task_lists',
+          { ncId: acct.id },
+        )
+        await Promise.allSettled(
+          lists.map((l) =>
+            invoke('sync_nextcloud_tasks', { ncId: acct.id, listId: l.id }),
+          ),
+        )
+      } catch (e) {
+        console.warn('initial task-list sync failed:', e)
+      }
+    }
   }
 
   // ── Auto-fill server settings from email domain ─────────────
@@ -407,8 +481,12 @@
         password,
       })
 
-      // Success! Tell the parent component to switch to inbox
-      oncomplete()
+      // Success! The mail account exists now — move on to the
+      // optional Nextcloud step instead of closing the wizard.
+      // `oncomplete` fires when the user finishes or skips it.
+      accountCreated = true
+      error = ''
+      step = submitStep + 1
     } catch (e: any) {
       const msg = formatError(e) || m.account_setup_save_failed()
       if (looksLikeCertError(msg)) {
@@ -743,6 +821,30 @@
             </span>
           </div>
         </div>
+
+      <!-- Step 3: optional Nextcloud connect (#413).  Reached only
+           after `add_account` succeeded — the shared NextcloudConnect
+           card drives the Login Flow v2; the backend persists the
+           account itself. -->
+      {:else if step === 3}
+        <div>
+          <p class="text-sm text-surface-500 mb-4">
+            {m.account_setup_nextcloud_explainer()}
+          </p>
+          {#if ncAccount}
+            <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-sm text-surface-700 dark:text-surface-300 flex items-start gap-2">
+              <span class="text-success-500 mt-0.5"><Icon name="success" size={16} /></span>
+              <span>
+                {m.account_setup_nextcloud_connected({
+                  user: ncAccount.display_name ?? ncAccount.username,
+                  server: ncAccount.server_url,
+                })}
+              </span>
+            </div>
+          {:else}
+            <NextcloudConnect onconnected={onNcConnected} />
+          {/if}
+        </div>
       {/if}
 
       <!-- Error message -->
@@ -813,9 +915,12 @@
         </div>
       {/if}
 
-      <!-- Navigation buttons -->
+      <!-- Navigation buttons.  Back is hidden on the Nextcloud step:
+           the mail account is already saved at that point, so going
+           "back" into the credential steps would suggest edits that
+           won't be re-submitted. -->
       <div class="flex justify-between mt-6">
-        {#if step > 0}
+        {#if step > 0 && step <= submitStep}
           <button class="btn preset-outlined-surface-500 flex items-center gap-1" onclick={prevStep}>
             <Icon name="arrow-left" size={14} />
             {m.account_setup_button_back()}
@@ -824,12 +929,12 @@
           <div></div>
         {/if}
 
-        {#if step < totalSteps - 1}
+        {#if step < submitStep}
           <button class="btn preset-filled-primary-500 flex items-center gap-1" onclick={nextStep}>
             {m.account_setup_button_next()}
             <Icon name="arrow-right" size={14} />
           </button>
-        {:else}
+        {:else if step === submitStep}
           <button
             class="btn preset-filled-primary-500 flex items-center gap-1"
             onclick={submit}
@@ -841,6 +946,19 @@
             {:else}
               <Icon name="add-account" size={14} />
               {m.account_setup_button_add_account()}
+            {/if}
+          </button>
+        {:else}
+          <button
+            class="btn preset-filled-primary-500 flex items-center gap-1"
+            onclick={() => oncomplete()}
+          >
+            {#if ncAccount}
+              <Icon name="success" size={14} />
+              {m.account_setup_button_finish()}
+            {:else}
+              {m.account_setup_button_skip()}
+              <Icon name="arrow-right" size={14} />
             {/if}
           </button>
         {/if}
