@@ -183,6 +183,26 @@
   "compose_crypto_send_needs_passphrase": "Öffne den Verschlüsselungs-Tab und gib deine Passphrase ein, um zu senden",
   "compose_send_tooltip": "Nachricht senden",
 
+  "compose_read_receipt": "Lesebestätigung",
+  "compose_read_receipt_active": "Bestätigung angefordert",
+  "compose_read_receipt_title": "Lesebestätigung von den Empfängern anfordern — deren Mailprogramm kann die Anfrage ablehnen oder ignorieren",
+  "compose_read_receipt_title_active": "Eine Lesebestätigung wird angefordert — klicken zum Ausschalten",
+
+  "mail_view_mdn_banner": "{sender} bittet um eine Lesebestätigung für diese Nachricht.",
+  "mail_view_mdn_send": "Bestätigung senden",
+  "mail_view_mdn_sending": "Wird gesendet…",
+  "mail_view_mdn_decline": "Nicht senden",
+  "mail_view_receipt_read": "Gelesen {date}",
+  "mail_view_receipt_requested": "Bestätigung angefordert",
+  "mail_view_receipt_requested_title": "Du hast eine Lesebestätigung angefordert — bisher keine Antwort. Empfänger können die Anfrage ablehnen, daher kommt womöglich nie eine.",
+  "mail_view_receipt_received": "Bestätigung erhalten",
+
+  "settings_mail_mdn_label": "Lesebestätigungen",
+  "settings_mail_mdn_ask": "Jedes Mal fragen",
+  "settings_mail_mdn_always": "Immer senden",
+  "settings_mail_mdn_never": "Nie senden",
+  "settings_mail_mdn_hint": "Wie reagiert werden soll, wenn ein Absender wissen möchte, dass du seine Nachricht angezeigt hast. Bestätigungen verraten, wann du Mails liest — ohne deine Zustimmung wird nichts gesendet, außer du wählst „Immer senden“.",
+
   "mail_decrypt_for_reply_title": "Zum Antworten entschlüsseln",
   "mail_decrypt_for_reply_body": "Geben Sie Ihre PGP-Passphrase ein, um die Nachricht von {sender} zu entschlüsseln, damit Ihre Antwort den Originaltext zitieren kann.",
   "mail_decrypt_for_forward_title": "Zum Weiterleiten entschlüsseln",

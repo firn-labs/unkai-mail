@@ -206,6 +206,16 @@ pub struct JmapEmail {
     pub header_importance: Option<String>,
     #[serde(default, rename = "header:X-MSMail-Priority:asText")]
     pub header_msmail_priority: Option<String>,
+    /// Read-receipt request header (RFC 8098, #416) — requested by
+    /// the full-message fetch only.
+    #[serde(default, rename = "header:Disposition-Notification-To:asText")]
+    pub header_disposition_notification_to: Option<String>,
+    /// Raw top-level `Content-Type:` (#416) — requested by the
+    /// envelope fetch so incoming `multipart/report;
+    /// report-type=disposition-notification` receipts can be
+    /// spotted without pulling bodies.
+    #[serde(default, rename = "header:Content-Type:asText")]
+    pub header_content_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -306,6 +306,9 @@ impl JmapClient {
                             "header:X-Priority:asText",
                             "header:Importance:asText",
                             "header:X-MSMail-Priority:asText",
+                            // #416: spot incoming read receipts
+                            // (multipart/report) at envelope time.
+                            "header:Content-Type:asText",
                         ],
                     }),
                     call_id: "g0".into(),
@@ -386,6 +389,9 @@ impl JmapClient {
                         email.header_msmail_priority.as_deref(),
                     ),
                     priority_override: None,
+                    // #416: wire-only receipt marker, from the raw
+                    // Content-Type header property.
+                    is_mdn_report: is_mdn_report_content_type(email.header_content_type.as_deref()),
                 }
             })
             .collect();
@@ -428,6 +434,8 @@ impl JmapClient {
                         "header:X-Priority:asText",
                         "header:Importance:asText",
                         "header:X-MSMail-Priority:asText",
+                        // #416: read-receipt request header.
+                        "header:Disposition-Notification-To:asText",
                     ],
                     "fetchAllBodyValues": true,
                 }),
@@ -606,6 +614,15 @@ impl JmapClient {
                 email.header_msmail_priority.as_deref(),
             ),
             priority_override: None,
+            // #416: read-receipt request, from the header property
+            // requested above.  Handled-state is local-only; the
+            // Tauri layer overlays the stored value.
+            mdn_requested_to: email
+                .header_disposition_notification_to
+                .as_deref()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            mdn_handled: None,
         })
     }
 
@@ -968,6 +985,25 @@ impl JmapClient {
             .cloned()
             .collect();
 
+        let mut draft = json!({
+            "mailboxIds": { drafts_id: true },
+            "from": [{ "email": email.from }],
+            "to": to,
+            "cc": cc,
+            "bcc": bcc,
+            "subject": email.subject,
+            "bodyValues": body_values,
+            "textBody": text_body,
+            "htmlBody": html_body,
+            "keywords": { "$draft": true },
+        });
+        // RFC 8098 read-receipt request (#416), set via the RFC 8621
+        // §4.1.3 header-form property — the structured Email object
+        // has no first-class field for it.
+        if email.request_read_receipt {
+            draft["header:Disposition-Notification-To:asText"] = json!(email.from);
+        }
+
         // Build the batched request: create email + submit it.
         let resp = self
             .call(vec![
@@ -975,20 +1011,7 @@ impl JmapClient {
                     name: "Email/set".into(),
                     args: json!({
                         "accountId": self.account_id,
-                        "create": {
-                            "draft": {
-                                "mailboxIds": { drafts_id: true },
-                                "from": [{ "email": email.from }],
-                                "to": to,
-                                "cc": cc,
-                                "bcc": bcc,
-                                "subject": email.subject,
-                                "bodyValues": body_values,
-                                "textBody": text_body,
-                                "htmlBody": html_body,
-                                "keywords": { "$draft": true },
-                            },
-                        },
+                        "create": { "draft": draft },
                     }),
                     call_id: "emailCreate".into(),
                 },
@@ -1346,6 +1369,22 @@ fn build_full_name(mbox: &JmapMailbox, by_id: &HashMap<&str, &JmapMailbox>) -> S
     }
     parts.reverse();
     parts.join("/")
+}
+
+/// #416: is this raw `Content-Type:` header value an incoming read
+/// receipt (`multipart/report; report-type=disposition-notification`,
+/// RFC 8098 §3 / RFC 6522)?  String-level check on the header text —
+/// the JMAP envelope fetch hands us the raw header via the
+/// `header:Content-Type:asText` property, and the two substrings
+/// together are unambiguous enough that a full MIME parameter parse
+/// would buy nothing.  Matching on `disposition-notification` alone
+/// (not `report-type=disposition-notification`) keeps both the
+/// quoted and unquoted parameter forms covered.
+fn is_mdn_report_content_type(ct: Option<&str>) -> bool {
+    ct.is_some_and(|v| {
+        let v = v.to_ascii_lowercase();
+        v.contains("multipart/report") && v.contains("disposition-notification")
+    })
 }
 
 /// Generate a stable synthetic u32 UID from a JMAP string ID.

@@ -275,6 +275,12 @@
      *  Optional because older settings bundles won't carry the
      *  key. */
     notes_mail_open_in_view?: boolean
+    /** #416 — response policy for incoming read-receipt requests
+     *  (RFC 8098): `'never'` suppresses the banner and sends
+     *  nothing, `'ask'` (default) prompts per message, `'always'`
+     *  sends automatically on display.  Non-optional because the
+     *  Rust side serialises a default. */
+    mdn_response_mode: 'never' | 'ask' | 'always'
   }
   interface CustomThemeRow {
     id: string
@@ -310,6 +316,7 @@
     location_geocoding_enabled: false,
     nominatim_base_url: '',
     notes_mail_open_in_view: false,
+    mdn_response_mode: 'ask',
   })
 
   /** The default Nominatim base URL — surfaced in the settings
@@ -1634,6 +1641,28 @@
             </p>
           </div>
         </div>
+
+        <!-- #416 — read-receipt response policy (RFC 8098).  A
+             receipt tells the sender when you displayed their
+             mail, so it sits with the other privacy controls
+             (remote images below).  `ask` keeps the per-message
+             banner; `always` answers silently; `never` suppresses
+             the whole flow. -->
+        <label class="flex items-center gap-2">
+          <span class="shrink-0">{m.settings_mail_mdn_label()}</span>
+          <select
+            class="select px-2 py-1 text-sm rounded-md max-w-65"
+            bind:value={appSettings.mdn_response_mode}
+            onchange={() => scheduleSave()}
+          >
+            <option value="ask">{m.settings_mail_mdn_ask()}</option>
+            <option value="always">{m.settings_mail_mdn_always()}</option>
+            <option value="never">{m.settings_mail_mdn_never()}</option>
+          </select>
+        </label>
+        <p class="text-xs text-surface-400 -mt-1">
+          {m.settings_mail_mdn_hint()}
+        </p>
 
         <!-- Auto-load remote images (#197).  Off by default —
              every loaded remote image is a tracking signal back

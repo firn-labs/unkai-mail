@@ -1437,6 +1437,57 @@ const MIGRATIONS: &[&str] = &[
         ON messages (reminder_at)
         WHERE reminder_at IS NOT NULL;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v42 → v43: read receipts / MDN (RFC 8098, #416).
+    //
+    // Two columns on `messages` for the *incoming* side:
+    //
+    //   * `mdn_requested_to` — the sender's
+    //     `Disposition-Notification-To:` header value, i.e. "please
+    //     tell me when this was read" plus the address the receipt
+    //     should go to.  Header-derived like `priority`, so the
+    //     full-message upsert refreshes it with the same COALESCE
+    //     guard.  NULL = no receipt requested (almost all mail).
+    //
+    //   * `mdn_handled` — what already happened about that request:
+    //     'sent' or 'declined', NULL = not yet decided.  Local-only
+    //     user state exactly like `is_pinned` / `reminder_at`: no
+    //     wire equivalent, the upsert paths never write it, only
+    //     the receipt-response setter does.  This is what stops the
+    //     reading pane from asking twice.
+    //
+    // And one table for the *outgoing* side — receipts we asked
+    // for.  A row is created at SMTP-send time (keyed on the sent
+    // mail's Message-ID, bracket-free per the #277 convention) and
+    // patched when a `message/disposition-notification` reply
+    // arrives naming that ID:
+    //
+    //   * `disposition` NULL = requested, nothing back yet;
+    //     'displayed' / 'deleted' / … = what the recipient's client
+    //     reported.  `reporter` is the address that confirmed, when
+    //     the report named one.
+    //
+    // Deliberately NOT a column on `messages`: the sent copy lands
+    // in the Sent folder via a server-side APPEND and its UID is
+    // unknown at send time — the Message-ID is the only stable key
+    // both sides of the round-trip share.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN mdn_requested_to TEXT;
+    ALTER TABLE messages
+        ADD COLUMN mdn_handled TEXT;
+
+    CREATE TABLE sent_receipts (
+        account_id     TEXT NOT NULL,
+        message_id     TEXT NOT NULL,
+        requested_at   INTEGER NOT NULL,
+        disposition    TEXT,
+        disposition_at INTEGER,
+        reporter       TEXT,
+        PRIMARY KEY (account_id, message_id)
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

@@ -92,6 +92,28 @@
     /** User-set priority override (#414): `'high'` / `'normal'` /
      *  `'low'`.  Wins over `priority` for the badge. */
     priority_override?: string | null
+    /** RFC 5322 Message-ID (#277), bracket-free.  Used here to look
+     *  up sent-mail receipt status (#416). */
+    message_id?: string | null
+    /** `Disposition-Notification-To:` value (#416) — the sender
+     *  asked for a read receipt, addressed to this mailbox.  Absent
+     *  for ordinary mail (and suppressed by the backend when it
+     *  points at the reading account's own address). */
+    mdn_requested_to?: string | null
+    /** What already happened about that request (#416): `'sent'` |
+     *  `'declined'`, absent = not yet decided.  Local-only overlay
+     *  from the cache — keeps the banner from asking twice. */
+    mdn_handled?: string | null
+  }
+
+  /** Receipt-tracking state for a sent mail (#416), from the
+   *  `get_receipt_status` IPC.  `disposition: null` = requested but
+   *  nothing back yet. */
+  interface SentReceiptStatus {
+    requested_at: number
+    disposition: string | null
+    disposition_at: number | null
+    reporter: string | null
   }
 
   interface Props {
@@ -555,6 +577,11 @@
     // without re-prompting; opening a different message starts a
     // fresh session.
     sessionPassphrase = ''
+    // #416 — read-receipt state is strictly per-message.
+    mdnMode = null
+    mdnBusy = false
+    mdnError = ''
+    receiptStatus = null
     // #341 — refresh the "Unlock automatically" mirror for the
     // account this message belongs to.  Done in parallel with the
     // cache + IMAP fetches below so the auto-decrypt attempt that
@@ -695,6 +722,73 @@
       } catch (e: any) {
         console.warn('mark_as_read failed:', e)
       }
+    }
+
+    // #416 — read receipts, both directions, after the message is
+    // confirmed displayed (this is the "displayed" moment RFC 8098's
+    // disposition reports).
+    if (email && id === accountId && f === folder && u === uid) {
+      // Incoming request: resolve the user's never/ask/always policy.
+      // `never` leaves mdnMode as-is (banner condition never true);
+      // `ask` arms the banner; `always` fires the receipt silently.
+      if (email.mdn_requested_to && !email.mdn_handled) {
+        try {
+          const settings = await invoke<{ mdn_response_mode?: string }>('get_app_settings')
+          if (id === accountId && f === folder && u === uid) {
+            mdnMode = settings?.mdn_response_mode ?? 'ask'
+            if (mdnMode === 'always') void respondMdn(false, true)
+          }
+        } catch (e: any) {
+          // Settings unavailable — fall back to asking; sending
+          // silently without a confirmed policy is the one wrong move.
+          console.warn('get_app_settings failed (receipt banner):', e)
+          mdnMode = 'ask'
+        }
+      }
+      // Outgoing status: does this mail have a tracked receipt
+      // request?  Only ever non-null for mail we sent with the
+      // Compose toggle on, so the chip stays absent everywhere else.
+      if (email.message_id) {
+        try {
+          const status = await invoke<SentReceiptStatus | null>('get_receipt_status', {
+            accountId: id,
+            messageId: email.message_id,
+          })
+          if (id === accountId && f === folder && u === uid) receiptStatus = status
+        } catch (e: any) {
+          console.warn('get_receipt_status failed:', e)
+        }
+      }
+    }
+  }
+
+  // ── Read receipts (#416) ──────────────────────────────────────
+  /** Response policy for the open message: `'ask'` arms the banner,
+   *  `'always'` already fired, `'never'`/`null` render nothing. */
+  let mdnMode = $state<string | null>(null)
+  let mdnBusy = $state(false)
+  let mdnError = $state('')
+  /** Sent-mail receipt tracking for the open message, when it asked
+   *  for one. */
+  let receiptStatus = $state<SentReceiptStatus | null>(null)
+
+  /** Send (or decline) the read receipt for the open message.
+   *  `automatic` marks the receipt as policy-fired (`Always` mode)
+   *  so the MDN itself reports `automatic-action` per RFC 8098. */
+  async function respondMdn(decline: boolean, automatic = false) {
+    if (!email || uid == null || mdnBusy) return
+    mdnBusy = true
+    mdnError = ''
+    try {
+      await invoke('respond_mdn_request', { accountId, folder, uid, decline, automatic })
+      // Mirror the backend's mdn_handled stamp so the banner drops
+      // without a refetch.
+      if (email) email.mdn_handled = decline ? 'declined' : 'sent'
+    } catch (e: any) {
+      console.warn('respond_mdn_request failed:', e)
+      mdnError = formatError(e) || 'Failed to send the read receipt'
+    } finally {
+      mdnBusy = false
     }
   }
 
@@ -2156,6 +2250,50 @@
               <span class="font-medium">{m.mail_priority_low()}</span>
             </span>
           {/if}
+          <!-- #416 — sent-mail receipt status.  Only ever present for
+               mail this client sent with "request read receipt" on
+               (the status lookup is keyed on tracked Message-IDs).
+               Green once a "displayed" report came back; neutral
+               while pending — and the pending tooltip manages
+               expectations, since recipients can decline and the
+               receipt may simply never arrive. -->
+          {#if receiptStatus}
+            {#if receiptStatus.disposition === 'displayed'}
+              <span
+                class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-success-500/15 text-success-600 dark:text-success-400"
+                title={receiptStatus.reporter ?? ''}
+              >
+                <Icon name="read" size={12} />
+                <span class="font-medium">
+                  {m.mail_view_receipt_read({
+                    date: formatFullDate(
+                      new Date(
+                        (receiptStatus.disposition_at ?? receiptStatus.requested_at) * 1000,
+                      ).toISOString(),
+                    ),
+                  })}
+                </span>
+              </span>
+            {:else if receiptStatus.disposition == null}
+              <span
+                class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+                title={m.mail_view_receipt_requested_title()}
+              >
+                <Icon name="read" size={12} />
+                <span class="font-medium">{m.mail_view_receipt_requested()}</span>
+              </span>
+            {:else}
+              <!-- Any non-"displayed" disposition (deleted, processed,
+                   …) — report receipt without claiming it was read. -->
+              <span
+                class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+                title={receiptStatus.disposition}
+              >
+                <Icon name="read" size={12} />
+                <span class="font-medium">{m.mail_view_receipt_received()}</span>
+              </span>
+            {/if}
+          {/if}
           <span class="text-sm text-surface-500">{formatFullDate(email.date)}</span>
         </div>
       </div>
@@ -2615,6 +2753,36 @@
             </li>
           {/each}
         </ul>
+      </div>
+    {/if}
+
+    <!-- #416 — read-receipt request banner (Ask mode).  Same amber
+         advisory shape as the remote-images banner, but rendered
+         outside the HTML-only branch because the request rides on
+         plain-text mail just as often.  Disappears the moment the
+         user picks either side (the response stamps `mdn_handled`),
+         and never renders under the Never / Always policies. -->
+    {#if email.mdn_requested_to && !email.mdn_handled && mdnMode === 'ask'}
+      <div
+        class="flex flex-wrap items-center gap-3 px-6 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-700 text-sm text-amber-800 dark:text-amber-300"
+      >
+        <span class="shrink-0 inline-flex items-center gap-2">
+          <Icon name="read" size={18} />
+          {m.mail_view_mdn_banner({ sender: getSenderAddress(email.from) })}
+        </span>
+        <button
+          class="btn btn-sm preset-outlined-surface-500"
+          disabled={mdnBusy}
+          onclick={() => void respondMdn(false)}
+        >{mdnBusy ? m.mail_view_mdn_sending() : m.mail_view_mdn_send()}</button>
+        <button
+          class="btn btn-sm preset-outlined-surface-500"
+          disabled={mdnBusy}
+          onclick={() => void respondMdn(true)}
+        >{m.mail_view_mdn_decline()}</button>
+        {#if mdnError}
+          <span class="text-xs text-error-500">{mdnError}</span>
+        {/if}
       </div>
     {/if}
 

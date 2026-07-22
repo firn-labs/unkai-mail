@@ -212,6 +212,17 @@ pub struct AppSettings {
     /// the inbox at that message).
     #[serde(default)]
     pub notes_mail_open_in_view: bool,
+    /// How to react when an incoming message carries a
+    /// `Disposition-Notification-To:` read-receipt request
+    /// (RFC 8098, #416).  `Ask` (default) surfaces a banner in the
+    /// reading pane offering to send or decline the receipt;
+    /// `Always` sends one automatically the first time the message
+    /// is displayed; `Never` suppresses the banner entirely and
+    /// sends nothing.  Read receipts leak reading behaviour to the
+    /// sender, so nothing is ever sent without this setting or an
+    /// explicit per-message click authorising it.
+    #[serde(default)]
+    pub mdn_response_mode: MdnResponseMode,
 }
 
 fn default_logo_style() -> String {
@@ -268,6 +279,21 @@ pub enum ThemeMode {
     Dark,
 }
 
+/// Response policy for incoming read-receipt requests (RFC 8098,
+/// #416).  Lowercase on the wire (`"never"` / `"ask"` / `"always"`)
+/// to match the JSON-over-IPC convention `ThemeMode` set.  `Ask` is
+/// the default: receipts disclose reading behaviour, so the user
+/// stays in the loop per message unless they explicitly opt into
+/// `Always` (or shut the whole thing off with `Never`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MdnResponseMode {
+    Never,
+    #[default]
+    Ask,
+    Always,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -318,6 +344,10 @@ impl Default for AppSettings {
             // the editor.  Flipping this on routes the click
             // through the main view-switch instead.
             notes_mail_open_in_view: false,
+            // Ask per message (#416) — read receipts disclose
+            // reading behaviour, so nothing is sent without the
+            // user's say-so.
+            mdn_response_mode: MdnResponseMode::Ask,
         }
     }
 }
@@ -607,6 +637,17 @@ pub struct EmailEnvelope {
     /// `None` once the reminder has fired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reminder_at: Option<i64>,
+    /// Wire-only marker (#416): the envelope's top-level
+    /// `Content-Type:` is `multipart/report;
+    /// report-type=disposition-notification` — i.e. this message IS
+    /// a read receipt some recipient sent back to us.  Stamped by
+    /// the protocol clients from the same HEADER.FIELDS /
+    /// header-property slice the protection check uses, and
+    /// consumed by the sync path to fetch + parse the report body
+    /// and update the matching sent-mail receipt record.  Never
+    /// persisted: cache read paths always produce `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_mdn_report: bool,
 }
 
 /// Map the sender-declared priority headers to our two-value
@@ -730,6 +771,23 @@ pub struct Email {
     /// Local-only; mirrors the field on `EmailEnvelope`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reminder_at: Option<i64>,
+    /// The sender's `Disposition-Notification-To:` header value
+    /// (RFC 8098, #416) — present means "please tell me when this
+    /// was read", naming the address the receipt should go to.
+    /// Parsed by the full-message fetch paths and persisted on the
+    /// envelope row so a cache-served open still knows to offer
+    /// the receipt banner.  `None` = no receipt requested (the
+    /// overwhelmingly common case).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mdn_requested_to: Option<String>,
+    /// What the user (or their `Always`/`Never` policy) already did
+    /// about this message's receipt request (#416): `"sent"` or
+    /// `"declined"`.  Local-only like `is_pinned` — there is no
+    /// wire equivalent, protocol clients always produce `None`, and
+    /// the cache overlay fills in the stored value.  Drives the
+    /// banner's "don't ask twice" behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mdn_handled: Option<String>,
 }
 
 /// Metadata for one attachment on a received email.
@@ -863,6 +921,18 @@ pub struct OutgoingEmail {
     /// preserve the historical plaintext behaviour.
     #[serde(default)]
     pub signing_enabled: bool,
+    /// Ask recipients for a read receipt (RFC 8098, #416).  When
+    /// set, the SMTP layer stamps `Disposition-Notification-To:`
+    /// with the sender's own address on the outgoing message, and
+    /// the send pipeline records the sent Message-ID so an
+    /// incoming `message/disposition-notification` reply can be
+    /// matched back to this mail and surfaced as "read" status.
+    /// Advisory only — most clients let their user ignore or
+    /// decline the request, so absence of a receipt never means
+    /// the mail went unread.  `#[serde(default)]` keeps queued
+    /// outbox rows from before this field deserialising cleanly.
+    #[serde(default)]
+    pub request_read_receipt: bool,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body

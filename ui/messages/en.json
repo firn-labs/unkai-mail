@@ -182,6 +182,26 @@
   "compose_crypto_send_needs_passphrase": "Open the Encryption tab and enter your passphrase to send",
   "compose_send_tooltip": "Send the message",
 
+  "compose_read_receipt": "Read receipt",
+  "compose_read_receipt_active": "Receipt requested",
+  "compose_read_receipt_title": "Request a read receipt from the recipients — their mail client may decline or ignore the request",
+  "compose_read_receipt_title_active": "A read receipt will be requested — click to turn off",
+
+  "mail_view_mdn_banner": "{sender} asked for a read receipt for this message.",
+  "mail_view_mdn_send": "Send receipt",
+  "mail_view_mdn_sending": "Sending…",
+  "mail_view_mdn_decline": "Don't send",
+  "mail_view_receipt_read": "Read {date}",
+  "mail_view_receipt_requested": "Receipt requested",
+  "mail_view_receipt_requested_title": "You asked for a read receipt — no response yet. Recipients can decline the request, so one may never arrive.",
+  "mail_view_receipt_received": "Receipt received",
+
+  "settings_mail_mdn_label": "Read receipts",
+  "settings_mail_mdn_ask": "Ask each time",
+  "settings_mail_mdn_always": "Always send",
+  "settings_mail_mdn_never": "Never send",
+  "settings_mail_mdn_hint": "How to respond when a sender asks to be told that you displayed their message. Receipts reveal when you read mail, so nothing is sent without your say-so unless you pick Always.",
+
   "mail_decrypt_for_reply_title": "Decrypt to reply",
   "mail_decrypt_for_reply_body": "Enter your PGP passphrase to decrypt the message from {sender} so your reply can quote the original content.",
   "mail_decrypt_for_forward_title": "Decrypt to forward",
