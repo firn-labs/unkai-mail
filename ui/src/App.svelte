@@ -1368,7 +1368,18 @@
     }
   })
 
-  async function checkAccounts() {
+  /** Re-read the account list from Rust and reconcile the shell
+   *  state that hangs off it (`accounts`, `activeAccountId`,
+   *  message selection).
+   *
+   *  `keepView` (#421): the Settings panel calls this the moment an
+   *  account is deleted so the always-mounted IconRail drops the
+   *  avatar immediately — but the user is still *in* Settings, so
+   *  that path must not yank them back to the inbox the way the
+   *  startup / setup-complete callers want. An empty list still
+   *  routes to the setup wizard regardless — with zero accounts
+   *  there is nothing left for Settings to manage. */
+  async function checkAccounts(opts: { keepView?: boolean } = {}) {
     try {
       const list = await invoke<Account[]>('get_accounts')
       accounts = list
@@ -1394,8 +1405,20 @@
             return a.id.localeCompare(b.id)
           })
           activeAccountId = sorted[0].id
+          // The account the selection was scoped to is gone (deleted
+          // from Settings, #421) — folder names, UIDs, and search
+          // queries are all per-account, so reset them the same way
+          // an explicit account switch does. On first launch this
+          // just rewrites the defaults.
+          selectedFolder = 'INBOX'
+          selectedUid = null
+          selectedMessageAccountId = null
+          selectedMessageFolder = null
+          searchQuery = ''
+          searchScope = {}
+          searchFilters = {}
         }
-        currentView = 'inbox'
+        if (!opts.keepView) currentView = 'inbox'
       } else {
         activeAccountId = null
         currentView = 'setup'
@@ -3631,6 +3654,7 @@
         <AccountSettings
           onclose={goToInbox}
           onaddaccount={goToSetup}
+          onaccountschanged={() => void checkAccounts({ keepView: true })}
           onappprefschanged={(p) => (appPrefs = p)}
           onnextcloudchanged={refreshNextcloudCapabilities}
           onreplaytour={replayTour}
