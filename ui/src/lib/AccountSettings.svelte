@@ -154,6 +154,12 @@
         `$effect` it drives — in sync. Optional so callers that don't
         care about live updates aren't forced to handle it. */
     onappprefschanged?: (prefs: AppSettings) => void
+    /** Notify the parent when the set of mail accounts changes
+        (currently: an account was removed) so the IconRail avatars
+        and the active-account selection update immediately, without
+        waiting for the Settings panel to close (#421). Mirrors
+        `onnextcloudchanged` below. */
+    onaccountschanged?: () => void
     /** Notify the parent when the connected Nextcloud accounts (or
         their capabilities) change so the IconRail can refresh its
         integration icons immediately, without waiting for the
@@ -174,6 +180,7 @@
   let {
     onclose,
     onaddaccount,
+    onaccountschanged,
     onappprefschanged,
     onnextcloudchanged,
     onreplaytour,
@@ -815,6 +822,11 @@
       await invoke('remove_account', { id })
       // Refresh the list after removal
       await loadAccounts()
+      // Tell the shell too (#421) — the IconRail is mounted outside
+      // this panel and keeps its own copy of the account list, so
+      // without this the deleted account's avatar lingers until the
+      // user leaves Settings.
+      onaccountschanged?.()
     } catch (e: any) {
       error = typeof e === 'string' ? e : e?.message ?? 'Failed to remove account'
     }
