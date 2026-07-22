@@ -82,6 +82,10 @@
      *  `'low'`, absent = untouched.  Wins over `priority` for the
      *  badge. */
     priority_override?: string | null
+    /** Pending reminder time in unix-epoch seconds (#415), absent =
+     *  no reminder.  Local-only like the pin; the backend clears it
+     *  once the reminder fires. */
+    reminder_at?: number | null
   }
 
   /** Slim account row used to render the account label on each row in
@@ -1459,6 +1463,8 @@
   function openContextMenu(e: MouseEvent, env: EmailEnvelope) {
     e.preventDefault()
     contextMenu = { x: e.clientX, y: e.clientY, env }
+    // #415: fresh menu, fresh custom-reminder input.
+    reminderCustomValue = ''
   }
 
   function closeContextMenu() {
@@ -1625,6 +1631,77 @@
       console.warn('set_message_priority failed:', e)
       env.priority_override = prev
     }
+  }
+
+  // ── Message reminders (#415) ───────────────────────────────────
+
+  /** Value of the custom `datetime-local` input in the context
+   *  menu's reminder section.  Reset whenever a menu opens so a
+   *  half-typed time from one mail doesn't leak into the next. */
+  let reminderCustomValue = $state('')
+
+  /** Quick-choice fire times, computed at render time so "In 1
+   *  hour" is relative to when the user opens the menu. */
+  function reminderPresets(): { label: string; when: number }[] {
+    const now = new Date()
+    const tomorrow = new Date(now)
+    tomorrow.setDate(now.getDate() + 1)
+    tomorrow.setHours(9, 0, 0, 0)
+    return [
+      {
+        label: m.mail_reminder_in_1h(),
+        when: Math.floor(now.getTime() / 1000) + 3600,
+      },
+      {
+        label: m.mail_reminder_in_3h(),
+        when: Math.floor(now.getTime() / 1000) + 3 * 3600,
+      },
+      {
+        label: m.mail_reminder_tomorrow(),
+        when: Math.floor(tomorrow.getTime() / 1000),
+      },
+    ]
+  }
+
+  /** Local-time render of a stored reminder moment for the row
+   *  marker tooltip and the "set for …" line in the menu. */
+  function formatReminderTime(sec: number): string {
+    return new Date(sec * 1000).toLocaleString(undefined, {
+      dateStyle: 'short',
+      timeStyle: 'short',
+    })
+  }
+
+  /** Set (or clear, with `null`) the reminder on a message.
+   *  Optimistic like the pin toggle — the row marker updates
+   *  immediately and rolls back if the cache write fails. */
+  async function setEnvelopeReminder(env: EmailEnvelope, when: number | null) {
+    const prev = env.reminder_at
+    env.reminder_at = when
+    closeContextMenu()
+    try {
+      await invoke('set_message_reminder', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        remindAt: when,
+      })
+    } catch (e) {
+      console.warn('set_message_reminder failed:', e)
+      env.reminder_at = prev
+    }
+  }
+
+  /** Commit the custom `datetime-local` value.  Silently ignores
+   *  an empty / unparseable input; past times are allowed (the
+   *  scanner fires them on its next tick, which is the least
+   *  surprising reading of "remind me at a time that already
+   *  passed"). */
+  function setCustomReminder(env: EmailEnvelope) {
+    if (!reminderCustomValue) return
+    const t = new Date(reminderCustomValue).getTime()
+    if (!Number.isFinite(t)) return
+    void setEnvelopeReminder(env, Math.floor(t / 1000))
   }
 </script>
 
@@ -1882,6 +1959,19 @@
                       aria-label={m.mail_flagged_title()}
                     >
                       <Icon name="flag" size={14} />
+                    </span>
+                  {/if}
+                  {#if env.reminder_at}
+                    <span
+                      class="shrink-0 inline-flex items-center text-primary-500"
+                      title={m.mail_reminder_set_for({
+                        time: formatReminderTime(env.reminder_at),
+                      })}
+                      aria-label={m.mail_reminder_set_for({
+                        time: formatReminderTime(env.reminder_at),
+                      })}
+                    >
+                      <Icon name="snooze" size={14} />
                     </span>
                   {/if}
                   {#if answeredIconName(env)}
@@ -2188,6 +2278,67 @@
             }}
           >{opt.label}</button>
         {/each}
+      </div>
+    </div>
+    <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+    <!-- Reminder section (#415): label row, three quick choices,
+         and a custom date-time input — flat and inline like the
+         priority picker above, no nested submenu.  When a reminder
+         is already pending the label row shows its time and a
+         Remove affordance instead of duplicating the pickers'
+         job. -->
+    <div class="px-3 py-1.5">
+      <div class="flex items-center gap-2">
+        <Icon name="snooze" size={16} />
+        <span>{m.mail_reminder_label()}</span>
+        {#if contextMenu.env.reminder_at}
+          <button
+            type="button"
+            class="ml-auto text-xs text-red-500 hover:underline"
+            onclick={() => {
+              if (!contextMenu) return
+              void setEnvelopeReminder(contextMenu.env, null)
+            }}
+          >{m.mail_reminder_remove()}</button>
+        {/if}
+      </div>
+      {#if contextMenu.env.reminder_at}
+        <p class="mt-1 text-[11px] text-surface-500">
+          {m.mail_reminder_set_for({
+            time: formatReminderTime(contextMenu.env.reminder_at),
+          })}
+        </p>
+      {/if}
+      <div class="mt-1.5 inline-flex rounded-md overflow-hidden border border-surface-200 dark:border-surface-700">
+        {#each reminderPresets() as preset (preset.label)}
+          <button
+            type="button"
+            class="px-2 py-0.5 text-xs hover:bg-surface-200 dark:hover:bg-surface-800"
+            onclick={() => {
+              if (!contextMenu) return
+              void setEnvelopeReminder(contextMenu.env, preset.when)
+            }}
+          >{preset.label}</button>
+        {/each}
+      </div>
+      <div class="mt-1.5 flex items-center gap-1">
+        <input
+          type="datetime-local"
+          class="input flex-1 text-xs px-2 py-1 rounded-md"
+          bind:value={reminderCustomValue}
+          aria-label={m.mail_reminder_custom_label()}
+        />
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          title={m.mail_reminder_set_custom()}
+          aria-label={m.mail_reminder_set_custom()}
+          disabled={!reminderCustomValue}
+          onclick={() => {
+            if (!contextMenu) return
+            setCustomReminder(contextMenu.env)
+          }}
+        ><Icon name="save-draft" size={14} /></button>
       </div>
     </div>
     <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>

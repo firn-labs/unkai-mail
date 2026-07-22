@@ -409,6 +409,8 @@
     is_pinned?: boolean
     priority?: string | null
     priority_override?: string | null
+    /** #415 — pending reminder time (unix seconds). */
+    reminder_at?: number | null
   }
   let mailListEnvelopes = $state<MailListEnvelope[]>([])
   /** Mirror of MailList's post-merge thread membership map (#289
@@ -597,6 +599,35 @@
     subject: string
   }
 
+  /** `message-reminder` event payload (#415).  The reminder loop on
+   *  the Rust side fires this once a per-message reminder elapses
+   *  (clearing the stored time afterwards, so it fires exactly
+   *  once — including reminders that came due while the app was
+   *  closed, which fire on the first scan after launch). */
+  type MessageReminder = {
+    accountId: string
+    folder: string
+    uid: number
+    from: string
+    subject: string
+  }
+
+  /** `notification-clicked` event payload (#415).  Rust emits this
+   *  after focusing the main window when the user clicks a
+   *  new-mail / reminder toast that references a message. */
+  type NotificationClick = {
+    accountId: string
+    folder: string
+    uid: number
+  }
+
+  /** Message identity a toast can deep-link to on click (#415). */
+  type ToastMailRef = {
+    accountId: string
+    folder: string
+    uid: number
+  }
+
   /** `mail-flags-updated` event payload (#255 follow-up).  Backend
    *  fires this whenever the cached `\Seen` / `\Flagged` /
    *  `\Answered` flags change — either Compose's post-send
@@ -742,17 +773,23 @@
     )
   }
 
-  async function fireToast(title: string, body: string) {
-    // On Linux the native command sends through `notify-rust` with
-    // the `DesktopEntry` hint set, so notifications land in the
-    // notification center / history (GNOME Shell, KDE Plasma).  The
-    // command returns `false` on non-Linux platforms so we fall
-    // through to the Tauri plugin, whose macOS / Windows backends
-    // already wire in the right OS hooks.
+  async function fireToast(title: string, body: string, mailRef?: ToastMailRef) {
+    // On Linux and Windows the native command owns the toast so it
+    // can attach a click handler (#415): clicking a toast that
+    // carries `mailRef` focuses the window and opens that message
+    // (routed back via the `notification-clicked` event).  On Linux
+    // it additionally sets the `DesktopEntry` hint so notifications
+    // land in the notification center / history (GNOME Shell, KDE
+    // Plasma).  The command returns `false` where the native path
+    // isn't wired (macOS) so we fall through to the Tauri plugin —
+    // toast still shows, click does nothing there.
     try {
       const handled = await invoke<boolean>('send_native_notification', {
         title,
         body,
+        accountId: mailRef?.accountId,
+        folder: mailRef?.folder,
+        uid: mailRef?.uid,
       })
       if (handled) return
     } catch (err) {
@@ -870,7 +907,11 @@
     recentBurst.push(now)
 
     if (recentBurst.length <= 3) {
-      void fireToast(payload.from || 'New mail', payload.subject || '(no subject)')
+      void fireToast(payload.from || 'New mail', payload.subject || '(no subject)', {
+        accountId: payload.account_id,
+        folder: payload.folder,
+        uid: payload.uid,
+      })
       return
     }
 
@@ -882,6 +923,22 @@
       void fireToast('Unkai Mail', `${count} new messages`)
       pendingSummaryTimer = null
     }, 600)
+  }
+
+  /** A per-message reminder elapsed (#415).  Deliberately NOT gated
+   *  on `shouldNotify()` — the new-mail toast toggle mutes ambient
+   *  notifications, but a reminder is something the user explicitly
+   *  asked for, so it always fires.  The toast carries the mail ref,
+   *  so clicking it focuses the window and opens the message. */
+  function handleMessageReminder(payload: MessageReminder) {
+    // The backend cleared `reminder_at` when it fired — re-read the
+    // cache so the row's reminder marker disappears.
+    refreshToken++
+    void fireToast(
+      m.mail_reminder_toast_title({ subject: payload.subject || '(no subject)' }),
+      payload.from,
+      { accountId: payload.accountId, folder: payload.folder, uid: payload.uid },
+    )
   }
 
   async function loadAppPrefs() {
@@ -985,9 +1042,25 @@
     let unlistenMailtoDeepLink: UnlistenFn | null = null
     let unlistenMailFlagsUpdated: UnlistenFn | null = null
     let unlistenOutboxUpdated: UnlistenFn | null = null
+    let unlistenMessageReminder: UnlistenFn | null = null
+    let unlistenNotificationClicked: UnlistenFn | null = null
     ;(async () => {
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
+      )
+      // #415: a per-message reminder elapsed — toast it (with a
+      // click-through back to the mail).
+      unlistenMessageReminder = await listen<MessageReminder>(
+        'message-reminder',
+        (e) => handleMessageReminder(e.payload),
+      )
+      // #415: the user clicked a new-mail / reminder toast.  Rust
+      // already focused this window (`show_main_window`) before
+      // emitting; all that's left is routing to the message.
+      unlistenNotificationClicked = await listen<NotificationClick>(
+        'notification-clicked',
+        (e) =>
+          openMailInMainView(e.payload.accountId, e.payload.folder, e.payload.uid),
       )
       // #255: backend fires this whenever the answered / read /
       // starred flag on a cached envelope changes (Compose's
@@ -1288,6 +1361,8 @@
       unlistenMailtoDeepLink?.()
       unlistenMailFlagsUpdated?.()
       unlistenOutboxUpdated?.()
+      unlistenMessageReminder?.()
+      unlistenNotificationClicked?.()
       if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     }
   })
@@ -1439,13 +1514,22 @@
       void openMailInStandaloneWindow(accId, folder, uid)
       return
     }
+    openMailInMainView(accId, folder, uid)
+  }
+
+  /** Flip the main window over to the inbox at a specific message.
+   *  Shared by the Notes `mail://` in-view path above and the
+   *  notification-click deep-link (#415) — the latter always opens
+   *  in-view (Rust already focused this window; spawning a second
+   *  window from a toast click would be disorienting). */
+  function openMailInMainView(accId: string, folder: string, uid: number): void {
     currentView = 'inbox'
     unifiedMode = false
     activeAccountId = accId
     selectedFolder = folder
     selectedUid = uid
     selectedMessageAccountId = accId
-    // Notes deep-links flip out of unified mode, so the row's folder
+    // Deep-links flip out of unified mode, so the row's folder
     // matches `selectedFolder` — no override needed.
     selectedMessageFolder = null
     searchQuery = ''

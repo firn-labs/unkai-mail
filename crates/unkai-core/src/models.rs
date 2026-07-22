@@ -599,6 +599,14 @@ pub struct EmailEnvelope {
     /// back to `priority`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority_override: Option<String>,
+    /// Unix-epoch seconds at which the user asked to be reminded
+    /// about this message (#415).  Local-only — like `is_pinned`,
+    /// there is no server-side equivalent, so protocol clients
+    /// always produce `None` and the cache read paths fill in the
+    /// stored value.  The background scanner clears it back to
+    /// `None` once the reminder has fired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_at: Option<i64>,
 }
 
 /// Map the sender-declared priority headers to our two-value
@@ -718,6 +726,10 @@ pub struct Email {
     /// field on `EmailEnvelope`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority_override: Option<String>,
+    /// Pending reminder time in unix-epoch seconds (#415).
+    /// Local-only; mirrors the field on `EmailEnvelope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_at: Option<i64>,
 }
 
 /// Metadata for one attachment on a received email.

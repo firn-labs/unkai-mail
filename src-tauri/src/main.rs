@@ -188,8 +188,56 @@ fn get_notification_icon_path(state: State<'_, NotificationIconPath>) -> String 
     state.0.to_string_lossy().into_owned()
 }
 
-/// Linux-only: send a desktop notification through libnotify with
-/// the `DesktopEntry` + `Category` hints set, so the notification
+/// `notification-clicked` event payload (#415): the identity
+/// triple of the message a clicked notification refers to.  The
+/// frontend routes it through the same in-view open path the Notes
+/// `mail://` deep-link uses.  Window focus happens on the Rust
+/// side (`show_main_window`) before the event is emitted, because
+/// JS `setFocus()` from a background window is unreliable on
+/// Windows (`SetForegroundWindow` lock).
+#[cfg(any(target_os = "linux", windows))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationClickPayload {
+    account_id: String,
+    folder: String,
+    uid: u32,
+}
+
+/// Assemble the optional deep-link target from the three optional
+/// IPC args (#415).  All-or-nothing: a notification either
+/// references a concrete message (new-mail and reminder toasts) or
+/// it's informational (burst summaries) and clicking it does
+/// nothing.
+#[cfg(any(target_os = "linux", windows))]
+fn notification_click_target(
+    account_id: Option<String>,
+    folder: Option<String>,
+    uid: Option<u32>,
+) -> Option<NotificationClickPayload> {
+    match (account_id, folder, uid) {
+        (Some(account_id), Some(folder), Some(uid)) => Some(NotificationClickPayload {
+            account_id,
+            folder,
+            uid,
+        }),
+        _ => None,
+    }
+}
+
+/// Focus the main window and tell the frontend which message the
+/// clicked notification referred to (#415).  Shared by the Linux
+/// action handler and the Windows toast-activation callback.
+#[cfg(any(target_os = "linux", windows))]
+fn handle_notification_click(app: &AppHandle, payload: &NotificationClickPayload) {
+    let _ = show_main_window(app);
+    if let Err(e) = app.emit("notification-clicked", payload) {
+        tracing::warn!("failed to emit notification-clicked event: {e}");
+    }
+}
+
+/// Linux: send a desktop notification through libnotify with the
+/// `DesktopEntry` + `Category` hints set, so the notification
 /// daemon (GNOME Shell / KDE Plasma / mako / dunst) tracks it under
 /// our app identity and keeps it in its notification center.
 ///
@@ -199,17 +247,28 @@ fn get_notification_icon_path(state: State<'_, NotificationIconPath>) -> String 
 /// notification history. Wrapping the builder ourselves with the
 /// hints set is enough to make them persist.
 ///
+/// #415: when the caller identifies a message (`account_id` +
+/// `folder` + `uid`), the notification carries a default action
+/// and a detached thread waits for the daemon's click callback —
+/// clicking the toast then focuses the main window and deep-links
+/// to that message via the `notification-clicked` event.
+///
 /// Returns `Ok(true)` when the call succeeded so the JS side can
 /// fall back to the regular plugin if anything goes wrong (e.g.
 /// no notification daemon running).
 #[cfg(target_os = "linux")]
 #[tauri::command]
 fn send_native_notification(
+    app: AppHandle,
     title: String,
     body: String,
+    account_id: Option<String>,
+    folder: Option<String>,
+    uid: Option<u32>,
     icon: State<'_, NotificationIconPath>,
 ) -> Result<bool, UnkaiError> {
     use notify_rust::{Hint, Notification};
+    let target = notification_click_target(account_id, folder, uid);
     let mut n = Notification::new();
     n.summary(&title)
         .body(&body)
@@ -220,18 +279,91 @@ fn send_native_notification(
     if !icon_path.is_empty() {
         n.icon(&icon_path);
     }
-    n.show()
-        .map(|_| true)
-        .map_err(|e| UnkaiError::Other(format!("notify-rust failed: {e}")))
+    if target.is_some() {
+        // "default" is the reserved XDG action id daemons fire when
+        // the user clicks the notification body itself — no visible
+        // button is rendered for it.  Daemons without action support
+        // simply never invoke it; the toast still shows.
+        n.action("default", "Open");
+    }
+    let handle = n
+        .show()
+        .map_err(|e| UnkaiError::Other(format!("notify-rust failed: {e}")))?;
+    if let Some(payload) = target {
+        // `wait_for_action` parks until the notification is
+        // activated or closed — one short-lived OS thread per live
+        // toast is fine at desktop notification volumes.
+        std::thread::spawn(move || {
+            handle.wait_for_action(move |action| {
+                if action == "default" {
+                    handle_notification_click(&app, &payload);
+                }
+            });
+        });
+    }
+    Ok(true)
 }
 
-/// Stub on non-Linux platforms — the JS side is expected to fall
-/// back to `sendNotification` from the Tauri plugin when this
-/// returns `Ok(false)`. Keeps the JS branch code platform-agnostic
-/// without needing to ask the OS layer about the platform.
-#[cfg(not(target_os = "linux"))]
+/// Windows: send the toast through WinRT directly (the same
+/// backend the notification plugin uses underneath) so we can
+/// attach an activation callback — the plugin exposes no desktop
+/// click event, and without the callback a clicked toast does
+/// nothing (#415).  The explicit AUMID matches the one
+/// `set_app_user_model_id` registers at process startup, so toasts
+/// attribute to "Unkai Mail" either way.
+///
+/// Returns `Ok(false)` when the WinRT call fails so the JS side
+/// falls back to the plugin — the toast still shows, only the
+/// click deep-link is lost.
+#[cfg(windows)]
 #[tauri::command]
-fn send_native_notification(_title: String, _body: String) -> Result<bool, UnkaiError> {
+fn send_native_notification(
+    app: AppHandle,
+    title: String,
+    body: String,
+    account_id: Option<String>,
+    folder: Option<String>,
+    uid: Option<u32>,
+    icon: State<'_, NotificationIconPath>,
+) -> Result<bool, UnkaiError> {
+    use tauri_winrt_notification::{IconCrop, Toast};
+
+    let target = notification_click_target(account_id, folder, uid);
+    let mut toast = Toast::new("com.unkai.mail").title(&title).text1(&body);
+    if !icon.0.as_os_str().is_empty() {
+        toast = toast.icon(&icon.0, IconCrop::Square, "Unkai Mail");
+    }
+    if let Some(payload) = target {
+        toast = toast.on_activated(move |_action| {
+            handle_notification_click(&app, &payload);
+            Ok(())
+        });
+    }
+    match toast.show() {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            tracing::warn!("winrt toast failed, falling back to the plugin: {e}");
+            Ok(false)
+        }
+    }
+}
+
+/// Stub on the remaining desktop platform (macOS) — the JS side
+/// falls back to `sendNotification` from the Tauri plugin when
+/// this returns `Ok(false)`.  Click deep-linking (#415) isn't
+/// wired there yet: the plugin exposes no desktop click event and
+/// the OS-level notification delegate it would take is a
+/// follow-up.  The unused message args keep the IPC payload shape
+/// identical across platforms.
+#[cfg(not(any(target_os = "linux", windows)))]
+#[tauri::command]
+fn send_native_notification(
+    _title: String,
+    _body: String,
+    _account_id: Option<String>,
+    _folder: Option<String>,
+    _uid: Option<u32>,
+) -> Result<bool, UnkaiError> {
     Ok(false)
 }
 
@@ -8036,15 +8168,16 @@ async fn fetch_message_inner(
         email
     };
 
-    // #414: pin + priority-override are local-only cache state the
-    // wire fetch can't know — overlay from the cached envelope row
-    // so MailView reflects them even on a fresh network fetch.  (The
-    // upsert below leaves those columns alone either way.)
-    if let Ok(Some((is_pinned, priority_override))) =
+    // #414/#415: pin + priority-override + reminder are local-only
+    // cache state the wire fetch can't know — overlay from the cached
+    // envelope row so MailView reflects them even on a fresh network
+    // fetch.  (The upsert below leaves those columns alone either way.)
+    if let Ok(Some((is_pinned, priority_override, reminder_at))) =
         cache.envelope_local_state(account_id, folder, uid)
     {
         email.is_pinned = is_pinned;
         email.priority_override = priority_override;
+        email.reminder_at = reminder_at;
     }
 
     // Single transactional write-through: envelope + body together so the
@@ -8316,13 +8449,14 @@ async fn decrypt_message(
     // is_read=true when it has no IMAP / JMAP context.
     decrypted.is_read = envelope_email.is_read;
     decrypted.is_starred = envelope_email.is_starred;
-    // #414: pin + priority-override live only in the cache; the
-    // server-side envelope fetch above can't carry them.
-    if let Ok(Some((is_pinned, priority_override))) =
+    // #414/#415: pin + priority-override + reminder live only in the
+    // cache; the server-side envelope fetch above can't carry them.
+    if let Ok(Some((is_pinned, priority_override, reminder_at))) =
         cache.envelope_local_state(&account_id, &folder, uid)
     {
         decrypted.is_pinned = is_pinned;
         decrypted.priority_override = priority_override;
+        decrypted.reminder_at = reminder_at;
     }
 
     if let Err(e) = cache.upsert_message(&decrypted) {
@@ -8747,6 +8881,26 @@ async fn set_message_priority(
     cache
         .set_envelope_priority(&account_id, &folder, uid, priority.as_deref())
         .map_err(|e| UnkaiError::Other(format!("cache priority update failed: {e}")))
+}
+
+/// Set or clear a per-message reminder (#415).  `remind_at` is
+/// unix-epoch seconds at which the reminder should fire, or `None`
+/// to remove a pending reminder.  Local-only like the pin — the
+/// cache write IS the whole operation; the background scanner
+/// (`check_message_reminders_inner`) picks the row up once its
+/// time elapses, and the DB persistence is what lets a reminder
+/// survive an app restart.
+#[tauri::command]
+async fn set_message_reminder(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    remind_at: Option<i64>,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    cache
+        .set_message_reminder(&account_id, &folder, uid, remind_at)
+        .map_err(|e| UnkaiError::Other(format!("cache reminder update failed: {e}")))
 }
 
 /// Remove a message from a folder.
@@ -11806,6 +11960,91 @@ fn snooze_event_reminder(
         f.retain(|(u, _)| u != &uid);
     }
     Ok(())
+}
+
+// ── Message reminders (#415) ────────────────────────────────────
+//
+// Unlike calendar reminders — whose fire times derive from VALARMs
+// on cached events — a message reminder is a single user-chosen
+// moment persisted straight into the `messages.reminder_at` column.
+// That gives restart-survival for free: the scanner asks the DB
+// "anything elapsed?" on every tick, so a reminder that came due
+// while the app was closed fires (late) on the first tick after
+// the next launch instead of being lost.  No in-memory dedupe
+// state is needed either — firing *clears the column*, which is
+// the dedupe.
+
+/// Tick length for the message-reminder scanner.  Deliberately its
+/// own loop rather than riding `background_sync_loop`: the sync
+/// interval is user-configurable (and sync can be disabled
+/// entirely), but a reminder the user explicitly set should fire
+/// within moments of its chosen time regardless of how mail
+/// polling is configured.  The scan is one indexed SQL query, so a
+/// short fixed tick costs effectively nothing.
+const MESSAGE_REMINDER_TICK_SECS: u64 = 30;
+
+/// `message-reminder` event payload.  camelCase like the other
+/// reminder payloads; carries the same identity triple the
+/// notification deep-link uses plus enough envelope data for the
+/// frontend to word the toast without a cache round-trip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageReminderPayload {
+    account_id: String,
+    folder: String,
+    uid: u32,
+    from: String,
+    subject: String,
+}
+
+/// One scan: emit a `message-reminder` event for every elapsed
+/// reminder, then clear each fired row's `reminder_at`.  Clearing
+/// only happens after a successful emit — if the emit fails the
+/// row stays put and the next tick retries, which errs on the
+/// side of a duplicate toast over a silently lost reminder.
+async fn check_message_reminders_inner(app: &AppHandle) -> Result<(), UnkaiError> {
+    let now = chrono::Utc::now().timestamp();
+    let due = {
+        let cache = app.state::<Cache>();
+        cache
+            .due_message_reminders(now)
+            .map_err(|e| UnkaiError::Other(format!("due_message_reminders failed: {e}")))?
+    };
+    for r in due {
+        let payload = MessageReminderPayload {
+            account_id: r.account_id.clone(),
+            folder: r.folder.clone(),
+            uid: r.uid,
+            from: r.from,
+            subject: r.subject,
+        };
+        if let Err(e) = app.emit("message-reminder", &payload) {
+            tracing::warn!("failed to emit message-reminder event: {e}");
+            continue;
+        }
+        let cache = app.state::<Cache>();
+        if let Err(e) = cache.set_message_reminder(&r.account_id, &r.folder, r.uid, None) {
+            tracing::warn!(
+                "failed to clear fired reminder for {}/{}/{}: {e}",
+                r.account_id,
+                r.folder,
+                r.uid,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Dedicated fixed-cadence loop for message reminders.  Spawned
+/// once at setup, next to `background_sync_loop`.
+async fn message_reminder_loop(app: AppHandle) {
+    tracing::info!("message reminder loop started");
+    loop {
+        tokio::time::sleep(Duration::from_secs(MESSAGE_REMINDER_TICK_SECS)).await;
+        if let Err(e) = check_message_reminders_inner(&app).await {
+            tracing::warn!("check_message_reminders_inner failed: {e}");
+        }
+    }
 }
 
 /// Launch-time message-body prerender (#178).
@@ -15271,6 +15510,16 @@ fn main() {
                 background_sync_loop(bg_handle).await;
             });
 
+            // ── Message reminders (#415) ─────────────────────────
+            //
+            // Own fixed-cadence loop, deliberately NOT gated on the
+            // background-sync setting: a reminder the user set must
+            // fire on time even with mail polling turned off.
+            let reminder_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                message_reminder_loop(reminder_handle).await;
+            });
+
             // ── Launch-time prerender (#178) ─────────────────────
             //
             // Warm the message cache for the newest INBOX envelopes
@@ -15371,6 +15620,7 @@ fn main() {
             set_message_flagged,
             set_message_pinned,
             set_message_priority,
+            set_message_reminder,
             send_email,
             list_outbox,
             list_all_outbox,

@@ -65,6 +65,19 @@ use unkai_core::models::{Email, EmailEnvelope, Folder};
 
 use crate::cache::pool::SqlitePool;
 
+/// One elapsed message reminder (#415) — everything the
+/// notification path needs to describe the mail in a toast and
+/// deep-link back to it on click.  Produced by
+/// [`Cache::due_message_reminders`].
+#[derive(Debug, Clone)]
+pub struct DueMessageReminder {
+    pub account_id: String,
+    pub folder: String,
+    pub uid: u32,
+    pub from: String,
+    pub subject: String,
+}
+
 /// Errors specific to the cache layer. Converted to `UnkaiError::Storage`
 /// when crossing out of the crate so the rest of the app doesn't have to
 /// care which database we happen to be using.
@@ -720,7 +733,8 @@ impl Cache {
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
                     COALESCE(b.protection, m.protection),
-                    m.is_pinned, m.priority, m.priority_override
+                    m.is_pinned, m.priority, m.priority_override,
+                    m.reminder_at
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1 AND m.folder = ?2 AND m.pending_action IS NULL
@@ -761,6 +775,7 @@ impl Cache {
                 is_pinned: r.get::<_, i64>(15)? != 0,
                 priority: r.get(16)?,
                 priority_override: r.get(17)?,
+                reminder_at: r.get(18)?,
             })
         })?;
 
@@ -802,7 +817,8 @@ impl Cache {
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
                     COALESCE(b.protection, m.protection),
-                    m.is_pinned, m.priority, m.priority_override
+                    m.is_pinned, m.priority, m.priority_override,
+                    m.reminder_at
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1
@@ -842,6 +858,7 @@ impl Cache {
                 is_pinned: r.get::<_, i64>(15)? != 0,
                 priority: r.get(16)?,
                 priority_override: r.get(17)?,
+                reminder_at: r.get(18)?,
             })
         })?;
         let mut out = Vec::new();
@@ -930,7 +947,8 @@ impl Cache {
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
                     COALESCE(b.protection, m.protection),
-                    m.is_pinned, m.priority, m.priority_override
+                    m.is_pinned, m.priority, m.priority_override,
+                    m.reminder_at
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.folder = ?1 AND m.pending_action IS NULL
@@ -968,6 +986,7 @@ impl Cache {
                 is_pinned: r.get::<_, i64>(16)? != 0,
                 priority: r.get(17)?,
                 priority_override: r.get(18)?,
+                reminder_at: r.get(19)?,
             })
         })?;
 
@@ -1024,7 +1043,8 @@ impl Cache {
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
                     COALESCE(b.protection, m.protection),
-                    m.is_pinned, m.priority, m.priority_override
+                    m.is_pinned, m.priority, m.priority_override,
+                    m.reminder_at
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE ({where_clause}) AND m.pending_action IS NULL
@@ -1071,6 +1091,7 @@ impl Cache {
                 is_pinned: r.get::<_, i64>(16)? != 0,
                 priority: r.get(17)?,
                 priority_override: r.get(18)?,
+                reminder_at: r.get(19)?,
             })
         })?;
 
@@ -1592,27 +1613,90 @@ impl Cache {
         Ok(())
     }
 
+    /// Set or clear the per-message reminder (#415).  `remind_at` is
+    /// unix-epoch seconds at which the reminder should fire, or
+    /// `None` to drop a pending reminder.  Local-only like the pin —
+    /// there is nothing to propagate, so this write IS the whole
+    /// operation.  The background scanner also calls this with
+    /// `None` to mark a reminder as fired.
+    pub fn set_message_reminder(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        remind_at: Option<i64>,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET reminder_at = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, remind_at],
+        )?;
+        Ok(())
+    }
+
+    /// Every message whose reminder time has elapsed (#415):
+    /// `reminder_at <= now`, tombstoned rows excluded.  No lower
+    /// bound on purpose — a reminder that elapsed while the app was
+    /// closed should fire (late) on the first scan after launch
+    /// rather than be silently dropped; that is the whole
+    /// restart-survival contract.  Served by the partial
+    /// `messages_by_reminder` index, so a mailbox with no pending
+    /// reminders answers this from an empty index.
+    pub fn due_message_reminders(&self, now: i64) -> Result<Vec<DueMessageReminder>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT account_id, folder, uid, from_addr, subject
+             FROM messages
+             WHERE reminder_at IS NOT NULL
+               AND reminder_at <= ?1
+               AND pending_action IS NULL
+             ORDER BY reminder_at ASC",
+        )?;
+        let rows = stmt.query_map(params![now], |r| {
+            Ok(DueMessageReminder {
+                account_id: r.get(0)?,
+                folder: r.get(1)?,
+                uid: r.get::<_, i64>(2)? as u32,
+                from: r.get(3)?,
+                subject: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Read the local-only organizational state for one cached
-    /// envelope (#414): `(is_pinned, priority_override)`.  Used by
-    /// the full-message fetch paths to overlay pin / override onto
-    /// an `Email` that came off the wire — the protocols can't know
-    /// local state, and without the overlay a fresh network fetch
-    /// would render the message unpinned in the UI even though the
-    /// cache row still says otherwise.  `Ok(None)` when the UID
-    /// isn't cached (nothing local to overlay).
+    /// envelope (#414, #415): `(is_pinned, priority_override,
+    /// reminder_at)`.  Used by the full-message fetch paths to
+    /// overlay pin / override / reminder onto an `Email` that came
+    /// off the wire — the protocols can't know local state, and
+    /// without the overlay a fresh network fetch would render the
+    /// message unpinned in the UI even though the cache row still
+    /// says otherwise.  `Ok(None)` when the UID isn't cached
+    /// (nothing local to overlay).
     pub fn envelope_local_state(
         &self,
         account_id: &str,
         folder: &str,
         uid: u32,
-    ) -> Result<Option<(bool, Option<String>)>, CacheError> {
+    ) -> Result<Option<(bool, Option<String>, Option<i64>)>, CacheError> {
         let conn = self.conn()?;
         let row = conn
             .query_row(
-                "SELECT is_pinned, priority_override FROM messages
+                "SELECT is_pinned, priority_override, reminder_at FROM messages
                  WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
                 params![account_id, folder, uid as i64],
-                |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, Option<String>>(1)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)? != 0,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                    ))
+                },
             )
             .optional()?;
         Ok(row)
@@ -1815,7 +1899,8 @@ impl Cache {
                         b.to_addrs, b.cc_addrs, b.attachments,
                         m.message_id, m.in_reply_to, m.references_ids,
                         b.protection, b.signature_status, b.signer_fingerprint,
-                        m.is_pinned, m.priority, m.priority_override
+                        m.is_pinned, m.priority, m.priority_override,
+                        m.reminder_at
                  FROM messages m
                  INNER JOIN message_bodies b USING (account_id, folder, uid)
                  WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
@@ -1855,6 +1940,7 @@ impl Cache {
                         is_pinned: r.get::<_, i64>(17)? != 0,
                         priority: r.get(18)?,
                         priority_override: r.get(19)?,
+                        reminder_at: r.get(20)?,
                     })
                 },
             )
@@ -2472,6 +2558,7 @@ mod tests {
             thread_total_count: None,
             protection: None,
             is_pinned: false,
+            reminder_at: None,
             priority: None,
             priority_override: None,
         }
@@ -2597,6 +2684,49 @@ mod tests {
         assert!(!got[0].is_starred);
     }
 
+    /// #415: the reminder round-trip.  Setting a reminder surfaces
+    /// it on the envelope read, `due_message_reminders` only
+    /// returns rows whose time has elapsed, an envelope re-fetch
+    /// can't clobber the pending reminder, and clearing (what the
+    /// scanner does after firing) empties the due list.
+    #[test]
+    fn reminder_roundtrip() {
+        let cache = open_test_cache();
+        let envs = vec![make_envelope(1, "INBOX", 60), make_envelope(2, "INBOX", 5)];
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+
+        cache
+            .set_message_reminder("acc", "INBOX", 1, Some(1_000))
+            .unwrap();
+
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        let row = got.iter().find(|e| e.uid == 1).unwrap();
+        assert_eq!(row.reminder_at, Some(1_000));
+
+        // Not yet due …
+        assert!(cache.due_message_reminders(999).unwrap().is_empty());
+        // … due exactly at / after the stored moment, carrying the
+        // fields the notification needs.
+        let due = cache.due_message_reminders(1_000).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].uid, 1);
+        assert_eq!(due[0].account_id, "acc");
+        assert_eq!(due[0].folder, "INBOX");
+
+        // A background envelope re-fetch must leave the pending
+        // reminder alone (local-only column, like the pin).
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        let row = got.iter().find(|e| e.uid == 1).unwrap();
+        assert_eq!(row.reminder_at, Some(1_000));
+
+        // Clearing (fired, or user removed it) empties the due list.
+        cache.set_message_reminder("acc", "INBOX", 1, None).unwrap();
+        assert!(cache.due_message_reminders(2_000).unwrap().is_empty());
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        assert!(got.iter().all(|e| e.reminder_at.is_none()));
+    }
+
     fn make_email(uid: u32, folder: &str) -> Email {
         Email {
             id: format!("{folder}:{uid}"),
@@ -2620,6 +2750,7 @@ mod tests {
             signature_status: None,
             signer_fingerprint: None,
             is_pinned: false,
+            reminder_at: None,
             priority: None,
             priority_override: None,
         }
