@@ -409,6 +409,7 @@
                : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
       title={entry.label}
       aria-label={entry.label}
+      data-tour="rail-nav"
       onclick={() => onselectview(entry.match)}
     >
       <Icon name={entry.icon} size={20} />
@@ -439,6 +440,7 @@
                : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
       title="Settings"
       aria-label="Settings"
+      data-tour="rail-settings"
       onclick={() => onselectview('settings')}
     >
       <Icon name="settings" size={20} />
