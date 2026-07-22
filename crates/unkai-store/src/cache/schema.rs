@@ -1488,6 +1488,44 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (account_id, message_id)
     );
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v43 → v44: `To:` recipients on cached envelopes (#417).
+    //
+    // The conversation grouper's subject fallback (the merge pass
+    // that rescues threads whose References/Message-ID chain broke
+    // in transit) used to match on normalized subject alone, which
+    // over-grouped unrelated mail sharing a common subject
+    // ("Invoice", "Meeting"). The fix requires overlapping
+    // *participants* too — and participants need the recipient
+    // list, which until now only existed on `message_bodies` rows
+    // (i.e. after the user opened the message).
+    //
+    // One nullable JSON-array column, same display-string shape as
+    // `message_bodies.to_addrs` (v1 → v2). NULL = unknown (row
+    // pre-dates this migration and its body was never fetched), so
+    // the column stays sparse and the upsert's COALESCE guard can
+    // tell "no data" apart from "no recipients".
+    //
+    // Back-fill from `message_bodies` where a body was already
+    // cached — that's the "re-thread existing messages on
+    // migration" half of #417. Rows without a cached body heal
+    // lazily: the next envelope sync of the folder re-fetches the
+    // newest window with the recipient slot populated, and opening
+    // a message stamps it via the full-message upsert.
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN to_addrs TEXT;
+
+    UPDATE messages
+    SET to_addrs = (
+        SELECT b.to_addrs FROM message_bodies b
+        WHERE b.account_id = messages.account_id
+          AND b.folder     = messages.folder
+          AND b.uid        = messages.uid
+          AND b.to_addrs IS NOT NULL
+          AND b.to_addrs != '[]'
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

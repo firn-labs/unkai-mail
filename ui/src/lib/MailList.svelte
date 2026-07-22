@@ -27,6 +27,13 @@
     uid: number
     folder: string
     from: string
+    /** `To:` recipients as `"Name <addr>"` display strings (#417) —
+     *  same shape as `from`.  Feeds the participant-overlap check
+     *  that gates the subject-based thread merges below.  Absent
+     *  for cached rows that pre-date the v44 migration; those rows
+     *  simply never merge via the subject fallback until a re-sync
+     *  heals them (reference-based threading is unaffected). */
+    to_addrs?: string[]
     subject: string
     date: string      // RFC 3339 string (serde serialises DateTime<Utc> this way)
     is_read: boolean
@@ -244,6 +251,67 @@
     return /^(re|fwd?|aw|wg|sv)\s*(\[\d+\])?\s*:/i.test(subject || '')
   }
 
+  // ── Participant-overlap gate for the subject fallback (#417) ──
+  // A matching canonical subject alone over-groups: two unrelated
+  // "Invoice" mails from different senders used to collapse into
+  // one thread.  Both subject-merge passes below now additionally
+  // require the two buckets to share at least one participant
+  // (sender or recipient).  Reference-based threading (thread_id /
+  // References) is untouched — it stays the authoritative path.
+
+  /** The user's own account addresses, lowercased.  Excluded from
+   *  participant sets because every mail in the mailbox shares
+   *  "me" as sender or recipient — leaving them in would make any
+   *  two same-subject mails overlap and defeat the gate. */
+  const ownAddresses = $derived(
+    new Set(
+      accounts
+        .map((a) => (a.email || '').trim().toLowerCase())
+        .filter((s) => s.length > 0),
+    ),
+  )
+
+  /** Bare lowercase address out of a `"Name <addr>"` display string. */
+  function bareAddress(display: string): string {
+    return parseFromHeader(display).email.toLowerCase()
+  }
+
+  /** Every distinct sender + recipient across a bucket's members,
+   *  minus the user's own addresses.  Recomputed on demand so a
+   *  bucket that just absorbed another automatically widens its
+   *  participant set for later comparisons. */
+  function bucketParticipants(arr: EmailEnvelope[]): Set<string> {
+    const out = new Set<string>()
+    for (const env of arr) {
+      const from = bareAddress(env.from)
+      if (from && !ownAddresses.has(from)) out.add(from)
+      for (const t of env.to_addrs ?? []) {
+        const a = bareAddress(t)
+        if (a && !ownAddresses.has(a)) out.add(a)
+      }
+    }
+    return out
+  }
+
+  /** True when the two buckets share at least one non-own
+   *  participant.  Deliberately strict about missing data: a bucket
+   *  whose participant set is empty (pre-#417 cached rows with no
+   *  recipient data, or self-sent mail) never passes — a wrong
+   *  merge is confusing and sticky, while a missed merge heals on
+   *  the next sync once recipient data lands. */
+  function participantsOverlap(
+    a: EmailEnvelope[],
+    b: EmailEnvelope[],
+  ): boolean {
+    const pa = bucketParticipants(a)
+    if (pa.size === 0) return false
+    const pb = bucketParticipants(b)
+    for (const p of pb) {
+      if (pa.has(p)) return true
+    }
+    return false
+  }
+
   /** Thread keys we've already pulled the full membership for from
    *  the cache (#334).  Reset on folder change.  Used to skip the
    *  per-expand IPC round-trip on a thread the user has already
@@ -377,31 +445,36 @@
       arr.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
     }
 
-    // JWZ-style subject-based merge pass (#277).  Some servers
-    // rewrite Message-IDs on delivery (local-SMTP test rigs and
-    // a few Exchange configs we've seen) so the inbox copy
-    // anchors a different ID than the reply's `In-Reply-To`
-    // points at.  Standard practice in conversation groupers is
-    // to fall back to subject matching when the header chain
-    // breaks — Unkai does the same.
+    // JWZ-style subject-based merge pass (#277, gated on
+    // participants since #417).  Some servers rewrite Message-IDs
+    // on delivery (local-SMTP test rigs and a few conservative
+    // gateway configs we've seen) so the inbox copy anchors a
+    // different ID than the reply's `In-Reply-To` points at.
+    // Standard practice in conversation groupers is to fall back
+    // to subject matching when the header chain breaks — Unkai
+    // does the same, but only folds a reply into a root it also
+    // shares a participant with.
     //
     // For every reply-shaped bucket head (`Re:` / `Fwd:` / …),
     // look for another bucket whose head has the same canonical
-    // subject; merge the reply bucket into the older bucket.
+    // subject AND whose participants overlap; merge the reply
+    // bucket into that bucket.
     //
-    // `byCanonicalRoot` indexes the *non-reply* heads
-    // (potential thread roots) so the lookup is O(1) per
-    // bucket.  The 4-char floor avoids cascading merges on
-    // trivial subjects like `"hi"`.
-    const byCanonicalRoot = new Map<string, string>() // canon → group key
+    // `byCanonicalRoot` indexes ALL *non-reply* heads (potential
+    // thread roots) per canonical subject — keeping every
+    // candidate (not just the first, as pre-#417) lets the
+    // participant check pick the RIGHT "Invoice" root instead of
+    // blindly taking whichever appeared first.  The 4-char floor
+    // still avoids matching on trivial subjects like `"hi"`.
+    const byCanonicalRoot = new Map<string, string[]>() // canon → root group keys
     for (const [key, arr] of groups) {
       const head = arr[arr.length - 1] // oldest in bucket = candidate root
       if (!head || isReplyOrForward(head.subject)) continue
       const canon = canonicalSubject(head.subject)
       if (canon.length < 4) continue
-      // Ties: first non-reply bucket wins; later collisions
-      // stay separate to avoid mass merges on common subjects.
-      if (!byCanonicalRoot.has(canon)) byCanonicalRoot.set(canon, key)
+      const keys = byCanonicalRoot.get(canon)
+      if (keys) keys.push(key)
+      else byCanonicalRoot.set(canon, [key])
     }
     // `keyRedirect` maps a now-merged-away key to its merge
     // target so the seen-key bookkeeping below still resolves
@@ -415,8 +488,18 @@
       if (!head || !isReplyOrForward(head.subject)) continue
       const canon = canonicalSubject(head.subject)
       if (canon.length < 4) continue
-      const targetKey = byCanonicalRoot.get(canon)
-      if (!targetKey || targetKey === key) continue
+      const candidates = byCanonicalRoot.get(canon)
+      if (!candidates) continue
+      // #417: first same-subject root the reply also shares a
+      // participant with wins; no overlap anywhere → stays its
+      // own thread.
+      const targetKey = candidates.find(
+        (c) =>
+          c !== key &&
+          !mergedAway.has(c) &&
+          participantsOverlap(groups.get(c) ?? [], arr),
+      )
+      if (!targetKey) continue
       // Move every envelope into the target bucket.
       const target = groups.get(targetKey)
       if (!target) continue
@@ -429,39 +512,47 @@
     }
     for (const key of mergedAway) groups.delete(key)
 
-    // Orphan-reply merge pass (#289).  The pass above only fires
-    // when there's a non-reply head to anchor the canonical-subject
-    // group on.  When the original got archived or deleted on the
-    // server, every remaining bucket head is a reply (`Re: Foo`) and
-    // none of them get picked as the byCanonicalRoot anchor, so
-    // two genuinely-same-thread reply buckets stay separate even
-    // though their canonical subjects match.  Fix: walk the
-    // surviving buckets, and for any canonical subject that appears
-    // on multiple reply-shaped heads, pick the *oldest* bucket
-    // (largest internal date span — the one most likely to be the
-    // closest-to-root surviving copy) as the anchor and fold the
-    // rest into it.  Same ≥4-char floor; we still skip canon
-    // subjects that already won an anchor in the first pass, so
-    // trivial subjects never cascade.
-    const orphanAnchor = new Map<string, string>() // canon → group key
+    // Orphan-reply merge pass (#289, participant-gated since #417).
+    // The pass above only fires when there's a non-reply head to
+    // anchor the canonical-subject group on.  When the original got
+    // archived or deleted on the server, every remaining bucket
+    // head is a reply (`Re: Foo`), so two genuinely-same-thread
+    // reply buckets stay separate even though their canonical
+    // subjects match.  Fix: walk the surviving buckets, and for any
+    // canonical subject appearing on multiple reply-shaped heads,
+    // cluster the ones that share a participant — the *oldest*
+    // bucket of a cluster (the closest-to-root surviving copy)
+    // becomes its anchor.  Same ≥4-char floor.
+    //
+    // Pre-#417 this pass skipped canons that already had a pass-1
+    // root, because without a participant check a second merge
+    // opportunity meant a cascade risk on common subjects.  The
+    // overlap gate now provides that safety, so orphaned reply
+    // pairs cluster even when an *unrelated* root shares their
+    // subject — each cluster keyed by who's actually in it.
+    const orphanAnchors = new Map<string, string[]>() // canon → cluster anchor keys
     for (const [key, arr] of groups) {
       const head = arr[arr.length - 1]
       if (!head || !isReplyOrForward(head.subject)) continue
       const canon = canonicalSubject(head.subject)
       if (canon.length < 4) continue
-      if (byCanonicalRoot.has(canon)) continue // pass-1 already handled this canon
-      const existing = orphanAnchor.get(canon)
+      const anchors = orphanAnchors.get(canon)
+      if (!anchors) {
+        orphanAnchors.set(canon, [key])
+        continue
+      }
+      // #417: join the first existing cluster this bucket shares a
+      // participant with; none → start a new cluster for this canon.
+      const existing = anchors.find(
+        (a) => groups.has(a) && participantsOverlap(groups.get(a)!, arr),
+      )
       if (!existing) {
-        orphanAnchor.set(canon, key)
+        anchors.push(key)
         continue
       }
       // Pick the bucket whose oldest member is older — that's the
       // surviving anchor; merge the other into it.
-      const existingArr = groups.get(existing)
-      if (!existingArr) {
-        orphanAnchor.set(canon, key)
-        continue
-      }
+      const existingArr = groups.get(existing)!
       const existingOldest = new Date(
         existingArr[existingArr.length - 1].date,
       ).getTime()
@@ -477,7 +568,7 @@
       )
       groups.delete(mergeKey)
       keyRedirect.set(mergeKey, anchorKey)
-      orphanAnchor.set(canon, anchorKey)
+      anchors[anchors.indexOf(existing)] = anchorKey
     }
 
     /** Resolve an envelope's natural threadKey through the
