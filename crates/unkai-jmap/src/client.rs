@@ -300,6 +300,9 @@ impl JmapClient {
                         "properties": [
                             "id", "from", "subject", "receivedAt",
                             "keywords", "hasAttachment", "mailboxIds",
+                            // #417: recipients feed the conversation
+                            // grouper's participant-overlap check.
+                            "to",
                             // #414: sender-declared priority, via the
                             // RFC 8621 §4.1.3 header-form properties
                             // (priority is not a JMAP keyword).
@@ -352,6 +355,13 @@ impl JmapClient {
                     uid: synthetic_uid(&email.id, i),
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients for the participant-overlap
+                    // check, same display shape as `from`.
+                    to_addrs: email
+                        .to
+                        .as_ref()
+                        .map(|addrs| addrs.iter().map(|a| a.display()).collect())
+                        .unwrap_or_default(),
                     subject: email.subject.clone().unwrap_or_default(),
                     date,
                     is_read,

@@ -1288,6 +1288,10 @@ impl ImapClient {
                     uid,
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients ride along off the same ENVELOPE
+                    // so the conversation grouper can match on
+                    // participants, not just subject.
+                    to_addrs: format_address_list(envelope.to.as_ref()),
                     subject,
                     date,
                     is_read,
@@ -2498,6 +2502,10 @@ impl ImapClient {
                     uid,
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients ride along off the same ENVELOPE
+                    // so the conversation grouper can match on
+                    // participants, not just subject.
+                    to_addrs: format_address_list(envelope.to.as_ref()),
                     subject,
                     date,
                     is_read,
@@ -2637,6 +2645,10 @@ impl ImapClient {
                     uid,
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients ride along off the same ENVELOPE
+                    // so the conversation grouper can match on
+                    // participants, not just subject.
+                    to_addrs: format_address_list(envelope.to.as_ref()),
                     subject,
                     date,
                     is_read,
@@ -2796,6 +2808,10 @@ impl ImapClient {
                     uid,
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients ride along off the same ENVELOPE
+                    // so the conversation grouper can match on
+                    // participants, not just subject.
+                    to_addrs: format_address_list(envelope.to.as_ref()),
                     subject,
                     date,
                     is_read,
@@ -2918,6 +2934,26 @@ fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
         (false, true) => decoded_name,
         (false, false) => format!("{decoded_name} <{email}>"),
     }
+}
+
+/// Format a whole ENVELOPE address list (e.g. the `To:` slot) as
+/// `"Name <user@host>"` display strings, one per address (#417).
+///
+/// Group syntax (RFC 5322 §3.4) shows up in the ENVELOPE as marker
+/// entries whose `mailbox`/`host` are NIL — `format_address` renders
+/// those as an empty string, which we drop so the participant-overlap
+/// check downstream never sees a phantom "" address.
+fn format_address_list(
+    addrs: Option<&Vec<async_imap::imap_proto::types::Address<'_>>>,
+) -> Vec<String> {
+    addrs
+        .map(|list| {
+            list.iter()
+                .map(format_address)
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Pull RFC 5322 threading headers off a `Fetch` response (#277).

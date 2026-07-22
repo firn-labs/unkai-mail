@@ -517,6 +517,16 @@ pub struct EmailEnvelope {
     pub uid: u32,
     pub folder: String,
     pub from: String,
+    /// `To:` recipients formatted as `"Name <addr>"` display strings —
+    /// same shape as `from` (#417).  Lifted from the ENVELOPE / JMAP
+    /// `to` property at fetch time so the conversation grouper can
+    /// require overlapping *participants* (not just a matching
+    /// subject) before folding two reference-less mails into one
+    /// thread.  Empty for cached rows that pre-date the v44 schema
+    /// migration; those heal on the next envelope sync or full-message
+    /// fetch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub to_addrs: Vec<String>,
     pub subject: String,
     pub date: DateTime<Utc>,
     pub is_read: bool,

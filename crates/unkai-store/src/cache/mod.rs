@@ -645,9 +645,9 @@ impl Cache {
                    (account_id, folder, uid, from_addr, subject, internal_date,
                     is_read, is_starred, is_answered, cached_at,
                     message_id, in_reply_to, references_ids, thread_id, protection,
-                    priority)
+                    priority, to_addrs)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                         ?11, ?12, ?13, ?14, ?15, ?16)
+                         ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
@@ -675,13 +675,30 @@ impl Cache {
                    -- #414: header-derived priority.  COALESCE so a
                    -- fetch path that didn't parse the priority
                    -- headers can't wipe a value already extracted.
-                   priority      = COALESCE(excluded.priority, messages.priority)",
+                   priority      = COALESCE(excluded.priority, messages.priority),
+                   -- #417: recipient list, COALESCE-guarded like the
+                   -- threading headers — a path that didn't capture
+                   -- recipients (e.g. a JMAP server omitting `to`)
+                   -- can't wipe what an earlier fetch stored.
+                   to_addrs      = COALESCE(excluded.to_addrs, messages.to_addrs)",
             )?;
             for env in envelopes {
                 let refs_json: Option<String> = if env.references_ids.is_empty() {
                     None
                 } else {
                     serde_json::to_string(&env.references_ids).ok()
+                };
+                // #417: same empty-vector → NULL convention as
+                // `references_ids` so the column stays sparse and the
+                // COALESCE guard can distinguish "no data" from
+                // "captured, zero recipients" — both serialise the
+                // same here because a genuinely recipient-less mail
+                // (Bcc-only delivery) carries no threading signal
+                // anyway.
+                let to_json: Option<String> = if env.to_addrs.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(&env.to_addrs).ok()
                 };
                 let thread_id = Self::compute_thread_id(account_id, env);
                 stmt.execute(params![
@@ -701,6 +718,7 @@ impl Cache {
                     thread_id,
                     env.protection,
                     env.priority,
+                    to_json,
                 ])?;
             }
         }
@@ -752,7 +770,7 @@ impl Cache {
                        AND m2.pending_action IS NULL) AS thread_total_count,
                     COALESCE(b.protection, m.protection),
                     m.is_pinned, m.priority, m.priority_override,
-                    m.reminder_at
+                    m.reminder_at, m.to_addrs
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1 AND m.folder = ?2 AND m.pending_action IS NULL
@@ -794,6 +812,12 @@ impl Cache {
                 priority: r.get(16)?,
                 priority_override: r.get(17)?,
                 reminder_at: r.get(18)?,
+                // #417: recipients, JSON-decoded like references_ids.
+                to_addrs: r
+                    .get::<_, Option<String>>(19)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
                 // #416: wire-only marker, never persisted.
                 is_mdn_report: false,
             })
@@ -838,7 +862,7 @@ impl Cache {
                        AND m2.pending_action IS NULL) AS thread_total_count,
                     COALESCE(b.protection, m.protection),
                     m.is_pinned, m.priority, m.priority_override,
-                    m.reminder_at
+                    m.reminder_at, m.to_addrs
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1
@@ -879,6 +903,12 @@ impl Cache {
                 priority: r.get(16)?,
                 priority_override: r.get(17)?,
                 reminder_at: r.get(18)?,
+                // #417: recipients, JSON-decoded like references_ids.
+                to_addrs: r
+                    .get::<_, Option<String>>(19)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
                 // #416: wire-only marker, never persisted.
                 is_mdn_report: false,
             })
@@ -970,7 +1000,7 @@ impl Cache {
                        AND m2.pending_action IS NULL) AS thread_total_count,
                     COALESCE(b.protection, m.protection),
                     m.is_pinned, m.priority, m.priority_override,
-                    m.reminder_at
+                    m.reminder_at, m.to_addrs
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.folder = ?1 AND m.pending_action IS NULL
@@ -1009,6 +1039,12 @@ impl Cache {
                 priority: r.get(17)?,
                 priority_override: r.get(18)?,
                 reminder_at: r.get(19)?,
+                // #417: recipients, JSON-decoded like references_ids.
+                to_addrs: r
+                    .get::<_, Option<String>>(20)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
                 // #416: wire-only marker, never persisted.
                 is_mdn_report: false,
             })
@@ -1068,7 +1104,7 @@ impl Cache {
                        AND m2.pending_action IS NULL) AS thread_total_count,
                     COALESCE(b.protection, m.protection),
                     m.is_pinned, m.priority, m.priority_override,
-                    m.reminder_at
+                    m.reminder_at, m.to_addrs
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE ({where_clause}) AND m.pending_action IS NULL
@@ -1116,6 +1152,12 @@ impl Cache {
                 priority: r.get(17)?,
                 priority_override: r.get(18)?,
                 reminder_at: r.get(19)?,
+                // #417: recipients, JSON-decoded like references_ids.
+                to_addrs: r
+                    .get::<_, Option<String>>(20)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
                 // #416: wire-only marker, never persisted.
                 is_mdn_report: false,
             })
@@ -1931,13 +1973,23 @@ impl Cache {
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
 
+        // #417: recipient list for the envelope row — empty → NULL
+        // (same convention as the envelope-batch upsert) so the
+        // COALESCE guard below can tell "no data" from "captured".
+        let env_to_json: Option<String> = if email.to.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&email.to).ok()
+        };
+
         // Envelope row — mirrors upsert_envelopes_for_account but inside
         // the same transaction as the body so the two can't drift.
         tx.execute(
             "INSERT INTO messages
                 (account_id, folder, uid, from_addr, subject, internal_date,
-                 is_read, is_starred, cached_at, priority, mdn_requested_to)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 is_read, is_starred, cached_at, priority, mdn_requested_to,
+                 to_addrs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                 from_addr     = excluded.from_addr,
                 subject       = excluded.subject,
@@ -1952,7 +2004,11 @@ impl Cache {
                 -- #416: receipt request, header-derived like priority.
                 -- (`mdn_handled` is local-only and deliberately absent
                 -- from this statement, like is_pinned / reminder_at.)
-                mdn_requested_to = COALESCE(excluded.mdn_requested_to, messages.mdn_requested_to)",
+                mdn_requested_to = COALESCE(excluded.mdn_requested_to, messages.mdn_requested_to),
+                -- #417: a full-message fetch always knows the real
+                -- recipient list, so opening a message back-fills the
+                -- participant data pre-migration envelope rows lack.
+                to_addrs      = COALESCE(excluded.to_addrs, messages.to_addrs)",
             params![
                 email.account_id,
                 email.folder,
@@ -1968,6 +2024,7 @@ impl Cache {
                 now,
                 email.priority,
                 email.mdn_requested_to,
+                env_to_json,
             ],
         )?;
 
@@ -2697,6 +2754,7 @@ mod tests {
             uid,
             folder: folder.to_string(),
             from: format!("sender-{uid}@example.com"),
+            to_addrs: vec![format!("Jane Smith <recipient-{uid}@example.com>")],
             subject: format!("Test subject {uid}"),
             date: Utc::now() - Duration::minutes(offset_min),
             is_read: false,
@@ -2748,6 +2806,42 @@ mod tests {
         assert_eq!(got[0].uid, 2);
         assert_eq!(got[1].uid, 3);
         assert_eq!(got[2].uid, 1);
+    }
+
+    /// #417: the `To:` recipient list round-trips through the
+    /// envelope upsert, and the COALESCE guard keeps an earlier
+    /// capture alive when a later fetch path produced no recipients
+    /// (empty vector → NULL bind).
+    #[test]
+    fn to_addrs_roundtrip_and_coalesce_guard() {
+        let cache = open_test_cache();
+        let mut env = make_envelope(7, "INBOX", 5);
+        env.to_addrs = vec![
+            "Alex Morgan <alex@example.com>".to_string(),
+            "team@example.com".to_string(),
+        ];
+        cache
+            .upsert_envelopes_for_account("acc", std::slice::from_ref(&env))
+            .unwrap();
+
+        let got = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].to_addrs, env.to_addrs);
+
+        // Re-fetch that didn't capture recipients: must not wipe them.
+        env.to_addrs = Vec::new();
+        cache
+            .upsert_envelopes_for_account("acc", std::slice::from_ref(&env))
+            .unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert_eq!(
+            got[0].to_addrs,
+            vec![
+                "Alex Morgan <alex@example.com>".to_string(),
+                "team@example.com".to_string(),
+            ],
+            "empty re-fetch must not clobber stored recipients",
+        );
     }
 
     #[test]
