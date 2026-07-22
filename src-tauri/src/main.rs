@@ -51,7 +51,7 @@ use unkai_smtp::{SmtpClient, build_outgoing_message};
 use unkai_store::cache::{
     CalendarEventRow, CalendarEventServerHandle, CalendarRow, ContactRow, ContactServerHandle,
     PgpKeySource, PgpPublicKeyRow, SearchFilters, SearchHit, SearchScope, SmimeCertRow,
-    SmimeCertSource, SyncState,
+    SmimeCertSource, SyncState, parse_date_period,
 };
 use unkai_store::{
     Cache, account_store, app_settings, credentials, link_check, nextcloud_store, settings_bundle,
@@ -11458,10 +11458,19 @@ async fn search_imap_server_older(
 /// We keep this much simpler than the FTS parser — IMAP SEARCH
 /// doesn't have rich boolean syntax and most servers only support
 /// a small subset of RFC 3501's operators. We emit a conjunction
-/// (implicit AND) of `TEXT`/`FROM`/`TO`/`SUBJECT` terms.
+/// (implicit AND) of `TEXT`/`FROM`/`TO`/`SUBJECT` terms, plus the
+/// RFC 3501 date criteria for the `after:`/`before:`/`on:` operators
+/// (the operand grammar is shared with the FTS parser via
+/// `unkai_store::cache::parse_date_period` so both tiers agree on
+/// what a date means).
+///
+/// `in:`/`folder:` tokens are dropped here — an IMAP SEARCH always
+/// runs inside the folder the frontend selected, so a folder operator
+/// can't be honoured server-side and must not degrade into a TEXT
+/// term that matches nothing.
 ///
 /// The result is a single string like:
-///   `SUBJECT "foo" FROM "alice" TEXT "budget"`
+///   `SUBJECT "foo" FROM "alice" SINCE 01-Jan-2026 TEXT "budget"`
 fn imap_search_criterion(query: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut free_text: Vec<String> = Vec::new();
@@ -11484,6 +11493,45 @@ fn imap_search_criterion(query: &str) -> String {
                 parts.push(format!("{k} \"{}\"", imap_quote(value)));
                 continue;
             }
+            match op.to_ascii_lowercase().as_str() {
+                // RFC 3501: SINCE is on-or-after, BEFORE is strictly-
+                // before — the same semantics the local FTS tier gives
+                // `after:`/`before:`. Both compare the server's internal
+                // date, date-only, so no timezone conversion applies.
+                "after" | "since" => {
+                    if let Some(p) = parse_date_period(value) {
+                        parts.push(format!("SINCE {}", imap_date(p.start)));
+                        continue;
+                    }
+                }
+                "before" => {
+                    if let Some(p) = parse_date_period(value) {
+                        parts.push(format!("BEFORE {}", imap_date(p.start)));
+                        continue;
+                    }
+                }
+                "on" => {
+                    if let Some(p) = parse_date_period(value) {
+                        // A one-day period maps to ON; a month/year
+                        // period becomes the equivalent SINCE+BEFORE
+                        // range (ON only takes a single day).
+                        if p.start.succ_opt() == Some(p.next_start) {
+                            parts.push(format!("ON {}", imap_date(p.start)));
+                        } else {
+                            parts.push(format!(
+                                "SINCE {} BEFORE {}",
+                                imap_date(p.start),
+                                imap_date(p.next_start)
+                            ));
+                        }
+                        continue;
+                    }
+                }
+                // Folder scoping is meaningless within a single-folder
+                // IMAP SEARCH — swallow the token entirely.
+                "in" | "folder" => continue,
+                _ => {}
+            }
         }
         let cleaned = token.trim_matches('"');
         if !cleaned.is_empty() {
@@ -11496,6 +11544,13 @@ fn imap_search_criterion(query: &str) -> String {
     }
 
     parts.join(" ")
+}
+
+/// Format a date as RFC 3501's `date-text` (`1-Jan-2026`). `%b` in
+/// chrono always emits the English month abbreviations RFC 3501
+/// expects, independent of system locale.
+fn imap_date(date: chrono::NaiveDate) -> String {
+    date.format("%-d-%b-%Y").to_string()
 }
 
 /// Split a query into tokens, keeping quoted phrases intact.
@@ -11526,6 +11581,53 @@ fn tokenize_imap_query(input: &str) -> Vec<String> {
 /// Escape `"` and `\` inside an IMAP quoted string (RFC 3501 §4.3).
 fn imap_quote(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod search_criterion_tests {
+    use super::imap_search_criterion;
+
+    #[test]
+    fn maps_field_and_text_terms() {
+        assert_eq!(
+            imap_search_criterion("from:alice budget"),
+            "FROM \"alice\" TEXT \"budget\""
+        );
+    }
+
+    #[test]
+    fn maps_date_operators() {
+        assert_eq!(
+            imap_search_criterion("after:2026-01-05"),
+            "SINCE 5-Jan-2026"
+        );
+        assert_eq!(
+            imap_search_criterion("before:2026-02-01"),
+            "BEFORE 1-Feb-2026"
+        );
+        assert_eq!(imap_search_criterion("on:31.01.2026"), "ON 31-Jan-2026");
+        // Month-long periods become a SINCE+BEFORE range — ON only
+        // accepts a single day.
+        assert_eq!(
+            imap_search_criterion("on:2026-03"),
+            "SINCE 1-Mar-2026 BEFORE 1-Apr-2026"
+        );
+    }
+
+    #[test]
+    fn unparseable_date_degrades_to_text() {
+        assert_eq!(
+            imap_search_criterion("before:lunch"),
+            "TEXT \"before:lunch\""
+        );
+    }
+
+    #[test]
+    fn folder_operator_is_dropped() {
+        // `in:` can't be honoured inside a single-folder SEARCH and
+        // must not turn into a TEXT term that matches nothing.
+        assert_eq!(imap_search_criterion("in:Sent budget"), "TEXT \"budget\"");
+    }
 }
 
 // ── Tray, window lifecycle, and background sync (Issue #16) ────

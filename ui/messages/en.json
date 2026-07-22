@@ -487,6 +487,15 @@
   "smime_unlock_auto_storage_hint": "Stored in the OS keychain alongside this account's mail password. Removing the S/MIME certificate here clears it; toggling this off also clears it.",
 
   "search_input_clear": "Clear search",
+  "search_tips_header": "Search tips",
+  "search_tip_from": "from a specific sender",
+  "search_tip_subject": "subject contains",
+  "search_tip_has_attachment": "only with files",
+  "search_tip_is_unread": "only unread",
+  "search_tip_after": "sent on or after a date",
+  "search_tip_before": "sent before a date",
+  "search_tip_on": "sent that day (or month: on:2026-03)",
+  "search_tip_in": "only in that folder (in:anywhere for all)",
 
   "talk_view_search_placeholder": "Search rooms",
   "talk_view_no_matches": "No Talk rooms match this search.",

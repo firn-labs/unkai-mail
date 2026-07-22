@@ -47,7 +47,7 @@ pub use calendars::{
 pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 pub use notes::NotesSyncState;
 pub use pgp_keys::{PgpKeySource, PgpPublicKeyRow};
-pub use search::{SearchFilters, SearchHit, SearchScope};
+pub use search::{DatePeriod, SearchFilters, SearchHit, SearchScope, parse_date_period};
 pub use smime_certs::{SmimeCertRow, SmimeCertSource};
 pub use tasks::{CachedTaskList, TaskListSyncState};
 
