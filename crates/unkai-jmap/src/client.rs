@@ -379,6 +379,7 @@ impl JmapClient {
                     // #414: pin + override are local-only cache
                     // state; priority maps from the raw headers.
                     is_pinned: false,
+                    reminder_at: None,
                     priority: priority_from_headers(
                         email.header_x_priority.as_deref(),
                         email.header_importance.as_deref(),
@@ -598,6 +599,7 @@ impl JmapClient {
             // Tauri layer stamps the stored values.  Priority maps
             // from the raw headers requested above.
             is_pinned: false,
+            reminder_at: None,
             priority: priority_from_headers(
                 email.header_x_priority.as_deref(),
                 email.header_importance.as_deref(),

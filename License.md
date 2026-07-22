@@ -46,7 +46,8 @@ The following packages are distributed under the MIT License:
 `hickory-resolver`, `font-kit`, `pgp` (rpgp), `rand`, `zeroize`, `tauri`,
 `tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
-`tauri-plugin-single-instance`, `notify-rust`, `windows`.
+`tauri-plugin-single-instance`, `notify-rust`,
+`tauri-winrt-notification`, `windows`.
 
 **npm packages**: `@tauri-apps/api`, `@tauri-apps/plugin-autostart`,
 `@tauri-apps/plugin-dialog`, `@tauri-apps/plugin-notification`,
@@ -109,7 +110,8 @@ with downstream consumers who require it):
 `pgp` (rpgp), `rand`, `openssl`, `zeroize`, `tauri`, `tauri-build`,
 `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
-`tauri-plugin-single-instance`, `notify-rust`, `windows`.
+`tauri-plugin-single-instance`, `notify-rust`,
+`tauri-winrt-notification`, `windows`.
 
 **Vendored libraries**: OpenSSL (statically linked through
 `rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature for the

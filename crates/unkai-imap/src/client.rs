@@ -260,6 +260,7 @@ fn parse_plaintext_eml_bytes(
         // #414: pin + override are local-only cache state; the
         // parse path only knows the sender's declared priority.
         is_pinned: false,
+        reminder_at: None,
         priority,
         priority_override: None,
     })
@@ -1306,6 +1307,7 @@ impl ImapClient {
                     // header-derived priority comes from the same
                     // HEADER.FIELDS slice the protection check uses.
                     is_pinned: false,
+                    reminder_at: None,
                     priority: extract_envelope_priority(fetch),
                     priority_override: None,
                 })
@@ -1613,6 +1615,7 @@ impl ImapClient {
             // layer stamps the stored values before handing the
             // message to the UI.
             is_pinned: false,
+            reminder_at: None,
             priority,
             priority_override: None,
         })
@@ -2492,6 +2495,7 @@ impl ImapClient {
                     // header-derived priority comes from the same
                     // HEADER.FIELDS slice the protection check uses.
                     is_pinned: false,
+                    reminder_at: None,
                     priority: extract_envelope_priority(fetch),
                     priority_override: None,
                 })
@@ -2627,6 +2631,7 @@ impl ImapClient {
                     // header-derived priority comes from the same
                     // HEADER.FIELDS slice the protection check uses.
                     is_pinned: false,
+                    reminder_at: None,
                     priority: extract_envelope_priority(fetch),
                     priority_override: None,
                 })
@@ -2782,6 +2787,7 @@ impl ImapClient {
                     // header-derived priority comes from the same
                     // HEADER.FIELDS slice the protection check uses.
                     is_pinned: false,
+                    reminder_at: None,
                     priority: extract_envelope_priority(fetch),
                     priority_override: None,
                 })

@@ -473,6 +473,7 @@ mod tests {
             signature_status: None,
             signer_fingerprint: None,
             is_pinned: false,
+            reminder_at: None,
             priority: None,
             priority_override: None,
         }

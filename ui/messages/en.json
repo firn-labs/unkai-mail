@@ -382,6 +382,16 @@
   "mail_priority_high_badge": "High priority",
   "mail_priority_low_badge": "Low priority",
 
+  "mail_reminder_label": "Remind me",
+  "mail_reminder_remove": "Remove",
+  "mail_reminder_set_for": "Reminder set for {time}",
+  "mail_reminder_in_1h": "In 1 hour",
+  "mail_reminder_in_3h": "In 3 hours",
+  "mail_reminder_tomorrow": "Tomorrow 9:00",
+  "mail_reminder_custom_label": "Custom reminder time",
+  "mail_reminder_set_custom": "Set reminder",
+  "mail_reminder_toast_title": "Reminder: {subject}",
+
   "folder_name_inbox": "Inbox",
   "folder_name_sent": "Sent",
   "folder_name_drafts": "Drafts",

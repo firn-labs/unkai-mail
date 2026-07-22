@@ -1412,6 +1412,31 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE nextcloud_accounts
         ADD COLUMN caldav_home TEXT;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v41 → v42: per-message reminders (#415).
+    //
+    // `reminder_at` — unix-epoch seconds at which the user asked to
+    // be re-surfaced about this message.  Local-only user state with
+    // no IMAP/JMAP equivalent, so — exactly like `is_pinned` /
+    // `priority_override` (#414) — the envelope-upsert path never
+    // writes it: only the user-action setter and the fired-reminder
+    // clear touch the column.  NULL = no reminder (the
+    // overwhelmingly common case), keeping the column sparse and
+    // the partial index below tiny.
+    //
+    // Persisting the fire time here is what makes reminders survive
+    // an app restart: the scanner asks "any row with reminder_at <=
+    // now?" on every tick, so a reminder that elapsed while the app
+    // was closed fires on the first tick after the next launch.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN reminder_at INTEGER;
+
+    CREATE INDEX messages_by_reminder
+        ON messages (reminder_at)
+        WHERE reminder_at IS NOT NULL;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

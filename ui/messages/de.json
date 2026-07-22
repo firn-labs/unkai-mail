@@ -383,6 +383,16 @@
   "mail_priority_high_badge": "Hohe Priorität",
   "mail_priority_low_badge": "Niedrige Priorität",
 
+  "mail_reminder_label": "Erinnere mich",
+  "mail_reminder_remove": "Entfernen",
+  "mail_reminder_set_for": "Erinnerung für {time} gesetzt",
+  "mail_reminder_in_1h": "In 1 Stunde",
+  "mail_reminder_in_3h": "In 3 Stunden",
+  "mail_reminder_tomorrow": "Morgen 9:00",
+  "mail_reminder_custom_label": "Eigene Erinnerungszeit",
+  "mail_reminder_set_custom": "Erinnerung setzen",
+  "mail_reminder_toast_title": "Erinnerung: {subject}",
+
   "folder_name_inbox": "Posteingang",
   "folder_name_sent": "Gesendet",
   "folder_name_drafts": "Entwürfe",
