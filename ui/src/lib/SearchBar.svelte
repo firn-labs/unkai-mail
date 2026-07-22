@@ -12,6 +12,7 @@
   import { onMount, onDestroy } from 'svelte'
   import SearchInput from './SearchInput.svelte'
   import { displayFolderName } from './unifiedFolders'
+  import { m } from '../paraglide/messages'
 
   export type SearchScope = {
     accountId?: string
@@ -147,6 +148,33 @@
 
   const hasAnyFilter = $derived(unread || flagged || hasAttachment)
   const isActive = $derived(query.trim().length > 0 || hasAnyFilter)
+
+  // Operator hint rows — `insert` is what click-to-insert puts into
+  // the query box, `example` is the monospace sample shown to the
+  // user, `hint` the localised description (kept as the message fn
+  // so the template call picks up the active locale).
+  const searchTips = [
+    { insert: 'from:', example: 'from:alice', hint: m.search_tip_from },
+    {
+      insert: 'subject:',
+      example: 'subject:"weekly update"',
+      hint: m.search_tip_subject,
+    },
+    {
+      insert: 'has:attachment',
+      example: 'has:attachment',
+      hint: m.search_tip_has_attachment,
+    },
+    { insert: 'is:unread', example: 'is:unread', hint: m.search_tip_is_unread },
+    { insert: 'after:', example: 'after:2026-01-31', hint: m.search_tip_after },
+    {
+      insert: 'before:',
+      example: 'before:2026-01-31',
+      hint: m.search_tip_before,
+    },
+    { insert: 'on:', example: 'on:2026-01-31', hint: m.search_tip_on },
+    { insert: 'in:', example: 'in:Sent', hint: m.search_tip_in },
+  ]
 </script>
 
 <div class="border-b border-surface-200 dark:border-surface-700 p-2 space-y-1.5">
@@ -169,52 +197,22 @@
       <div
         class="absolute left-0 right-0 top-full mt-1 z-40 bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-700 rounded-md shadow-lg p-2 text-xs space-y-0.5"
       >
-        <div class="font-semibold text-surface-500 mb-1">Search tips</div>
-        <div
-          role="button"
-          tabindex="-1"
-          class="cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800 px-1.5 py-0.5 rounded"
-          onmousedown={(e) => {
-            e.preventDefault()
-            insertOperator('from:')
-          }}
-        >
-          <code class="font-mono">from:alice</code> — from a specific sender
+        <div class="font-semibold text-surface-500 mb-1">
+          {m.search_tips_header()}
         </div>
-        <div
-          role="button"
-          tabindex="-1"
-          class="cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800 px-1.5 py-0.5 rounded"
-          onmousedown={(e) => {
-            e.preventDefault()
-            insertOperator('subject:')
-          }}
-        >
-          <code class="font-mono">subject:"weekly update"</code> — subject
-          contains
-        </div>
-        <div
-          role="button"
-          tabindex="-1"
-          class="cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800 px-1.5 py-0.5 rounded"
-          onmousedown={(e) => {
-            e.preventDefault()
-            insertOperator('has:attachment')
-          }}
-        >
-          <code class="font-mono">has:attachment</code> — only with files
-        </div>
-        <div
-          role="button"
-          tabindex="-1"
-          class="cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800 px-1.5 py-0.5 rounded"
-          onmousedown={(e) => {
-            e.preventDefault()
-            insertOperator('is:unread')
-          }}
-        >
-          <code class="font-mono">is:unread</code> — only unread
-        </div>
+        {#each searchTips as tip (tip.example)}
+          <div
+            role="button"
+            tabindex="-1"
+            class="cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800 px-1.5 py-0.5 rounded"
+            onmousedown={(e) => {
+              e.preventDefault()
+              insertOperator(tip.insert)
+            }}
+          >
+            <code class="font-mono">{tip.example}</code> — {tip.hint()}
+          </div>
+        {/each}
       </div>
     {/if}
   </SearchInput>

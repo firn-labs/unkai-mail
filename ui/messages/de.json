@@ -488,6 +488,15 @@
   "smime_unlock_auto_storage_hint": "Wird im OS-Schlüsselbund neben dem Mail-Passwort dieses Kontos abgelegt. Entfernen des S/MIME-Zertifikats hier löscht sie; Abschalten dieser Option ebenfalls.",
 
   "search_input_clear": "Suche leeren",
+  "search_tips_header": "Suchtipps",
+  "search_tip_from": "von einem bestimmten Absender",
+  "search_tip_subject": "Betreff enthält",
+  "search_tip_has_attachment": "nur mit Anhängen",
+  "search_tip_is_unread": "nur Ungelesene",
+  "search_tip_after": "am oder nach einem Datum gesendet",
+  "search_tip_before": "vor einem Datum gesendet",
+  "search_tip_on": "an diesem Tag gesendet (oder Monat: on:2026-03)",
+  "search_tip_in": "nur in diesem Ordner (in:anywhere für alle)",
 
   "talk_view_search_placeholder": "Räume durchsuchen",
   "talk_view_no_matches": "Keine Talk-Räume passen zu dieser Suche.",
