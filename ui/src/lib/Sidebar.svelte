@@ -811,7 +811,7 @@
   <!-- Compose CTA. Emoji makes the primary action visually anchored —
        matches Nick's ask for "nice emoji" on the button. -->
   <div class="p-3">
-    <button class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5" onclick={() => oncompose?.()}>
+    <button class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5" data-tour="compose" onclick={() => oncompose?.()}>
       <Icon name="compose" size={16} /> Compose
     </button>
   </div>

@@ -27,6 +27,7 @@
   import MailView from './lib/MailView.svelte'
   import AccountSetup from './lib/AccountSetup.svelte'
   import AccountSettings, { type SettingsCategory } from './lib/AccountSettings.svelte'
+  import WelcomeTour from './lib/WelcomeTour.svelte'
   import LockScreen from './lib/LockScreen.svelte'
   import Compose, {
     type Attachment as ComposeAttachment,
@@ -1565,6 +1566,11 @@
   })
 
   async function onSetupComplete() {
+    // Whether this wizard run was the true first launch (no account
+    // existed before it) — captured before `checkAccounts()` mutates
+    // the list.  Adding a *second* account also routes through the
+    // wizard, and that flow must never re-trigger the welcome tour.
+    const wasFirstRun = accounts.length === 0
     // After adding an account, refresh the account list so we pick
     // up the new account's ID, then switch to the inbox.
     await checkAccounts()
@@ -1573,6 +1579,48 @@
     // integration icons straight away instead of after a restart.
     await refreshNextcloudCapabilities()
     currentView = 'inbox'
+    // Guided welcome tour (#420): fires once, right after the very
+    // first setup completes.  Awaiting the capability refresh above
+    // matters — the tour's Nextcloud step spotlights the rail icons,
+    // which only mount once `ncCaps` is populated.
+    if (wasFirstRun && !tourCompleted()) showTour = true
+  }
+
+  // ── Guided welcome tour (#420) ──────────────────────────────
+  // Completion is a machine-local `localStorage` flag on purpose:
+  // one-shot "seen it" markers shouldn't ride the settings bundle
+  // between machines (see the curation note in settingsBundle.ts),
+  // and a fresh install showing the tour once per machine is the
+  // behaviour we want anyway.
+  const TOUR_COMPLETED_KEY = 'unkai.tourCompleted'
+  let showTour = $state(false)
+
+  function tourCompleted(): boolean {
+    try {
+      return localStorage.getItem(TOUR_COMPLETED_KEY) !== null
+    } catch {
+      // Storage unavailable → we couldn't remember a completion
+      // either, so suppress the tour rather than replay it on
+      // every launch.
+      return true
+    }
+  }
+
+  /** Single exit path for finish *and* skip — both remember. */
+  function closeTour() {
+    showTour = false
+    try {
+      localStorage.setItem(TOUR_COMPLETED_KEY, '1')
+    } catch {
+      /* storage unavailable — the tour just won't be remembered */
+    }
+  }
+
+  /** Replay from Settings → General.  The tour's anchors live in
+      the mail view, so hop back to the inbox before starting. */
+  function replayTour() {
+    currentView = 'inbox'
+    showTour = true
   }
 
   function selectMessage(uid: number, accountId?: string, folder?: string) {
@@ -3585,6 +3633,7 @@
           onaddaccount={goToSetup}
           onappprefschanged={(p) => (appPrefs = p)}
           onnextcloudchanged={refreshNextcloudCapabilities}
+          onreplaytour={replayTour}
           bind:activeCategory={settingsCategory}
         />
       </div>
@@ -3649,6 +3698,7 @@
            returning nothing. -->
       <div
         class="flex flex-col shrink-0 border-r border-surface-200 dark:border-surface-700"
+        data-tour="mail-list"
         use:resizableSidebar={{ key: 'mail.listColumn', defaultWidth: 320, min: 240, max: 600 }}
       >
         {#if selectedFolder !== OUTBOX_FOLDER}
@@ -3791,6 +3841,15 @@
         ondraftexpunged={onDraftExpunged}
       />
     {/each}
+
+    <!-- Guided welcome tour (#420).  Mounted inside the post-setup
+         shell so its anchors (rail, sidebar, mail-list column) are
+         guaranteed to exist while it's up.  It covers the viewport
+         and swallows pointer events, so the app is inert until the
+         user finishes or skips. -->
+    {#if showTour}
+      <WelcomeTour onclose={closeTour} />
+    {/if}
   </div>
 {/if}
 

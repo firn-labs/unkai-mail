@@ -159,6 +159,11 @@
         integration icons immediately, without waiting for the
         Settings panel to close (#318). */
     onnextcloudchanged?: () => void
+    /** Restart the guided welcome tour (#420).  The parent owns the
+        tour overlay (it spans the whole shell, not just Settings)
+        and switches back to the inbox first so the tour's anchors
+        are mounted. */
+    onreplaytour?: () => void
     /** Which settings category the panel is currently showing.
         Lifted to the parent (#318) so that a remount of Settings
         — e.g. the user clicks a freshly-revealed Nextcloud
@@ -171,6 +176,7 @@
     onaddaccount,
     onappprefschanged,
     onnextcloudchanged,
+    onreplaytour,
     activeCategory = $bindable('general'),
   }: Props = $props()
   interface CategoryEntry {
@@ -1507,6 +1513,28 @@
             >
               <Icon name="open-link" size={14} />
               {m.settings_general_file_assoc_button()}
+            </button>
+          </div>
+        </div>
+
+        <!-- Welcome tour replay (#420).  The tour auto-plays once
+             after first-run setup; this is the on-demand path the
+             issue asks for ("replay it later from settings"). -->
+        <div class="pt-2 border-t border-surface-300/40 dark:border-surface-700/40">
+          <div class="flex items-start justify-between gap-3">
+            <div class="text-sm">
+              <div>{m.settings_general_replay_tour_label()}</div>
+              <div class="text-xs text-surface-500 mt-0.5">
+                {m.settings_general_replay_tour_hint()}
+              </div>
+            </div>
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-500 shrink-0 inline-flex items-center gap-1.5"
+              onclick={() => onreplaytour?.()}
+            >
+              <Icon name="help" size={14} />
+              {m.settings_general_replay_tour_button()}
             </button>
           </div>
         </div>

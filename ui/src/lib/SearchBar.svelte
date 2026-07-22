@@ -177,7 +177,7 @@
   ]
 </script>
 
-<div class="border-b border-surface-200 dark:border-surface-700 p-2 space-y-1.5">
+<div class="border-b border-surface-200 dark:border-surface-700 p-2 space-y-1.5" data-tour="search">
   <!-- Row 1: search input — uses the shared `SearchInput` so the
        magnifier / clear-X chrome stays in sync with every other
        "Search …" surface in the app.  The operator-hint dropdown
