@@ -597,6 +597,15 @@
       iconName: 'encrypted',
       content: encryptionTabContent,
     },
+    // #416 — per-send options tab.  Currently just the read-receipt
+    // request toggle; future per-send switches land here rather
+    // than crowding the Send actions row.
+    {
+      id: 'options',
+      label: 'Options',
+      iconName: 'settings',
+      content: optionsTabContent,
+    },
   ])
 
   /** Shares minted from this Compose during the current draft.
@@ -1045,6 +1054,14 @@
   // encryption on.  Cleared on submit and on cancel so a freshly-
   // opened Compose never inherits a stale passphrase.
   let pgpPassphrase = $state('')
+
+  // Read-receipt request toggle (#416, RFC 8098).  When on, the
+  // backend stamps `Disposition-Notification-To:` with the sender's
+  // own address and tracks the sent Message-ID so an incoming
+  // receipt can be matched back and shown as status on the sent
+  // mail.  Defaults off per message — receipts are an explicit ask,
+  // and most recipients' clients let them decline anyway.
+  let requestReadReceipt = $state(false)
 
   // #341 — when the sending account has opted into "Unlock
   // automatically" we hide the inline passphrase input entirely
@@ -2263,6 +2280,8 @@
                 ? 'pgp'
                 : null,
           signing_enabled: cryptoStack === 'pgp' && (encryptEnabled || signOnlyEnabled),
+          // #416: ask the recipient's client to send a read receipt.
+          request_read_receipt: requestReadReceipt,
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list
@@ -2968,6 +2987,29 @@
   >
     <span class="rt-btn-icon"><Icon name="calendar" size={20} /></span>
     <span class="rt-btn-label">Event</span>
+  </button>
+{/snippet}
+
+<!-- Options tab panel — per-send options (#416).  Same `.rt-btn`
+     shape as the Attach / Meetings panels.  The read-receipt toggle
+     asks the recipient's client to confirm display; the tooltip
+     manages expectations up front — receipts are advisory and many
+     clients decline or ignore the request entirely. -->
+{#snippet optionsTabContent()}
+  <button
+    type="button"
+    class="rt-btn"
+    class:active={requestReadReceipt}
+    title={requestReadReceipt
+      ? m.compose_read_receipt_title_active()
+      : m.compose_read_receipt_title()}
+    aria-pressed={requestReadReceipt}
+    onclick={() => (requestReadReceipt = !requestReadReceipt)}
+  >
+    <span class="rt-btn-icon"><Icon name="read" size={20} /></span>
+    <span class="rt-btn-label">
+      {requestReadReceipt ? m.compose_read_receipt_active() : m.compose_read_receipt()}
+    </span>
   </button>
 {/snippet}
 

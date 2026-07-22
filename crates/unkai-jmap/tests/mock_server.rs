@@ -708,6 +708,7 @@ async fn test_send_email() {
         references: vec![],
         encryption_mode: None,
         signing_enabled: false,
+        request_read_receipt: false,
     };
 
     client

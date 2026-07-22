@@ -7806,6 +7806,36 @@ struct FolderPollOutcome {
     flag_changes: u32,
 }
 
+/// #416: parse raw message bytes as an incoming read receipt and, on
+/// a match, patch the tracked sent-mail request it answers.  Shared
+/// by the IMAP and JMAP poll branches — both hand us the same
+/// wire-format RFC 5322 bytes.  An untracked `Original-Message-ID`
+/// (a receipt for mail sent from another client, or from before the
+/// feature) is logged at debug and dropped: there is nothing local
+/// it could update.
+fn apply_mdn_report(cache: &Cache, account_id: &str, raw: &[u8]) {
+    let Some(report) = unkai_imap::parse_mdn_report(raw) else {
+        return;
+    };
+    match cache.record_receipt_disposition(
+        account_id,
+        &report.original_message_id,
+        &report.disposition,
+        report.reporter.as_deref(),
+    ) {
+        Ok(true) => tracing::info!(
+            "Read receipt recorded for Message-ID '{}' (disposition: {})",
+            report.original_message_id,
+            report.disposition,
+        ),
+        Ok(false) => tracing::debug!(
+            "Ignoring read receipt for untracked Message-ID '{}'",
+            report.original_message_id,
+        ),
+        Err(e) => tracing::warn!("record_receipt_disposition failed: {e}"),
+    }
+}
+
 /// Fetch+cache+reconcile for one (account, folder) pair.
 ///
 /// Shared code path for interactive refreshes and background polling.
@@ -7836,6 +7866,29 @@ async fn poll_folder(
 
         if let Err(e) = cache.upsert_envelopes_for_account(account_id, &envelopes) {
             tracing::warn!("cache.upsert_envelopes (JMAP) failed: {e}");
+        }
+
+        // #416: incoming read receipts.  Same shape as the IMAP
+        // branch below — gated on a pending request existing, scoped
+        // to newly-arrived envelopes only.
+        if cache
+            .has_pending_receipt_requests(account_id)
+            .unwrap_or(false)
+        {
+            let report_uids: Vec<u32> = envelopes
+                .iter()
+                .filter(|e| e.is_mdn_report)
+                .filter(|e| prior_highest.is_some_and(|p| e.uid > p))
+                .map(|e| e.uid)
+                .collect();
+            for uid in report_uids {
+                match client.fetch_raw_message(folder, uid).await {
+                    Ok(raw) => apply_mdn_report(cache, account_id, &raw),
+                    Err(e) => {
+                        tracing::warn!("MDN report fetch (JMAP) UID {uid} failed: {e}");
+                    }
+                }
+            }
         }
 
         let new_envelopes: Vec<EmailEnvelope> = envelopes
@@ -7991,6 +8044,35 @@ async fn poll_folder(
                 background_decrypt_new(&mut client, account_id, folder, &new_encrypted, cache).await
             }
         };
+
+    // #416: incoming read receipts.  A newly-arrived
+    // `multipart/report; report-type=disposition-notification`
+    // envelope is a receipt some recipient sent back — fetch its
+    // body over the still-open session and patch the tracked
+    // sent-mail request it answers.  Gated on the account having at
+    // least one request still pending, so users who never ask for
+    // receipts never pay the extra body fetches; scoped to
+    // strictly-new UIDs with the same `prior_highest` /
+    // rotation-skip semantics the background decrypt uses.
+    if !uidvalidity_rotated
+        && cache
+            .has_pending_receipt_requests(account_id)
+            .unwrap_or(false)
+    {
+        let report_uids: Vec<u32> = batch
+            .envelopes
+            .iter()
+            .filter(|e| e.is_mdn_report)
+            .filter(|e| prior_highest.is_some_and(|p| e.uid > p))
+            .map(|e| e.uid)
+            .collect();
+        for uid in report_uids {
+            match client.fetch_raw_message(folder, uid).await {
+                Ok(raw) => apply_mdn_report(cache, account_id, &raw),
+                Err(e) => tracing::warn!("MDN report fetch UID {uid} failed: {e}"),
+            }
+        }
+    }
 
     let _ = client.logout().await;
 
@@ -8150,6 +8232,91 @@ async fn fetch_message(
     }
 }
 
+/// Resolve an incoming read-receipt request (#416): either send the
+/// RFC 8098 `message/disposition-notification` reply, or record that
+/// the user declined.  Called by MailView's receipt banner (Ask
+/// mode) and fired automatically on message open under the Always
+/// policy (`automatic: true`, which the receipt reports as
+/// `automatic-action` so the sender knows a policy, not the reader,
+/// confirmed).
+///
+/// The receipt goes out via SMTP with a null reverse-path regardless
+/// of the account's retrieval protocol — JMAP's structured
+/// submission object can't express the `multipart/report` shape, and
+/// every account carries SMTP submission settings.
+///
+/// `mdn_handled` is stamped only after the send succeeded, so a
+/// failed send leaves the banner up for a retry.
+#[tauri::command]
+async fn respond_mdn_request(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    decline: bool,
+    automatic: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    if decline {
+        cache.set_mdn_handled(&account_id, &folder, uid, "declined")?;
+        return Ok(());
+    }
+
+    let account = load_account(&cache, &account_id)?;
+    // The banner only renders on an open message, so the body (and
+    // with it the parsed request header) is always cached by now.
+    let email = cache
+        .get_message(&account_id, &folder, uid)?
+        .ok_or_else(|| {
+            UnkaiError::Other("Message is not cached — open it before sending a receipt".into())
+        })?;
+    let to = email
+        .mdn_requested_to
+        .clone()
+        .ok_or_else(|| UnkaiError::Protocol("Message did not request a read receipt".into()))?;
+
+    let from = if account.display_name.is_empty() {
+        account.email.clone()
+    } else {
+        format!("{} <{}>", account.display_name, account.email)
+    };
+    let reply = unkai_smtp::MdnReply {
+        from,
+        to,
+        original_message_id: email.message_id.clone(),
+        original_subject: email.subject.clone(),
+        automatic,
+    };
+
+    let password = credentials::get_imap_password(&account_id)?;
+    let smtp = SmtpClient::connect(
+        &account.smtp_host,
+        account.smtp_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await?;
+    smtp.send_mdn(&reply).await?;
+
+    cache.set_mdn_handled(&account_id, &folder, uid, "sent")?;
+    Ok(())
+}
+
+/// Receipt-tracking state for one sent mail (#416), by Message-ID.
+/// `None` = this mail never asked for a receipt, so MailView renders
+/// no chip.  A row with `disposition: null` renders as "requested,
+/// nothing back yet"; `"displayed"` as read.
+#[tauri::command]
+async fn get_receipt_status(
+    account_id: String,
+    message_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Option<unkai_store::SentReceiptStatus>, UnkaiError> {
+    cache
+        .get_receipt_status(&account_id, &message_id)
+        .map_err(Into::into)
+}
+
 async fn fetch_message_inner(
     account_id: &str,
     folder: &str,
@@ -8168,16 +8335,30 @@ async fn fetch_message_inner(
         email
     };
 
-    // #414/#415: pin + priority-override + reminder are local-only
-    // cache state the wire fetch can't know — overlay from the cached
-    // envelope row so MailView reflects them even on a fresh network
-    // fetch.  (The upsert below leaves those columns alone either way.)
-    if let Ok(Some((is_pinned, priority_override, reminder_at))) =
+    // #414/#415/#416: pin + priority-override + reminder +
+    // receipt-handled are local-only cache state the wire fetch can't
+    // know — overlay from the cached envelope row so MailView
+    // reflects them even on a fresh network fetch.  (The upsert
+    // below leaves those columns alone either way.)
+    if let Ok(Some((is_pinned, priority_override, reminder_at, mdn_handled))) =
         cache.envelope_local_state(account_id, folder, uid)
     {
         email.is_pinned = is_pinned;
         email.priority_override = priority_override;
         email.reminder_at = reminder_at;
+        email.mdn_handled = mdn_handled;
+    }
+
+    // #416: a receipt request pointing back at the reading account's
+    // own address is meaningless (our own sent copy, or a
+    // self-addressed mail) — suppress it so the reading pane never
+    // offers to send a receipt to ourselves.
+    if email
+        .mdn_requested_to
+        .as_deref()
+        .is_some_and(|dnt| addresses_match(dnt, &account.email))
+    {
+        email.mdn_requested_to = None;
     }
 
     // Single transactional write-through: envelope + body together so the
@@ -8407,6 +8588,16 @@ async fn decrypt_message(
                     // #414: local-only state, same overlay reason.
                     decrypted.is_pinned = env.is_pinned;
                     decrypted.priority_override = env.priority_override;
+                    // #416: same overlay + self-request suppression
+                    // as the network path below.
+                    decrypted.mdn_handled = env.mdn_handled;
+                }
+                if decrypted
+                    .mdn_requested_to
+                    .as_deref()
+                    .is_some_and(|dnt| addresses_match(dnt, &account.email))
+                {
+                    decrypted.mdn_requested_to = None;
                 }
                 if let Err(e) = cache.upsert_message(&decrypted) {
                     tracing::warn!("cache.upsert_message after offline decrypt failed: {e}");
@@ -8449,14 +8640,28 @@ async fn decrypt_message(
     // is_read=true when it has no IMAP / JMAP context.
     decrypted.is_read = envelope_email.is_read;
     decrypted.is_starred = envelope_email.is_starred;
-    // #414/#415: pin + priority-override + reminder live only in the
-    // cache; the server-side envelope fetch above can't carry them.
-    if let Ok(Some((is_pinned, priority_override, reminder_at))) =
+    // #414/#415/#416: pin + priority-override + reminder +
+    // receipt-handled live only in the cache; the server-side
+    // envelope fetch above can't carry them.
+    if let Ok(Some((is_pinned, priority_override, reminder_at, mdn_handled))) =
         cache.envelope_local_state(&account_id, &folder, uid)
     {
         decrypted.is_pinned = is_pinned;
         decrypted.priority_override = priority_override;
         decrypted.reminder_at = reminder_at;
+        decrypted.mdn_handled = mdn_handled;
+    }
+
+    // #416: same self-request suppression as `fetch_message_inner` —
+    // our own sent copies carry our own address in
+    // `Disposition-Notification-To`, and a receipt to ourselves is
+    // meaningless.
+    if decrypted
+        .mdn_requested_to
+        .as_deref()
+        .is_some_and(|dnt| addresses_match(dnt, &account.email))
+    {
+        decrypted.mdn_requested_to = None;
     }
 
     if let Err(e) = cache.upsert_message(&decrypted) {
@@ -9957,6 +10162,28 @@ async fn run_send_pipeline(
         smtp.send(email).await?;
     }
 
+    // #416: the mail asked for a read receipt — remember the sent
+    // Message-ID (lettre stamped it during `build_outgoing_message`)
+    // so an incoming `message/disposition-notification` can be
+    // matched back to this mail and surfaced as receipt status.
+    // Recorded only after the SMTP send succeeded: a failed send
+    // stays in the outbox and will re-run this pipeline with a
+    // *fresh* Message-ID, and a pending row for never-sent mail
+    // would hold the receipt-scan gate open for nothing.
+    if email.request_read_receipt
+        && let Some(mid) = extract_message_id(&raw)
+    {
+        // sent_receipts keys on the bracket-free form (#277).
+        let mid = mid
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string();
+        if let Err(e) = cache.record_receipt_request(&account.id, &mid) {
+            tracing::warn!("record_receipt_request failed: {e}");
+        }
+    }
+
     // Best-effort APPEND to Sent (same behaviour as before #276):
     // the user's mail is already out, a failure here is logged
     // but doesn't roll the send back.
@@ -10345,6 +10572,26 @@ fn extract_message_id(raw: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// Reduce a `Name <addr@host>` mailbox (or a bare address) to the
+/// lowercased `addr@host` alone (#416).  Used to compare header
+/// addresses against the account's own address without caring about
+/// display names, quoting, or case.
+fn bare_address(value: &str) -> String {
+    let v = value.trim();
+    match (v.rfind('<'), v.rfind('>')) {
+        (Some(start), Some(end)) if start < end => v[start + 1..end].trim().to_lowercase(),
+        _ => v.trim_matches('"').trim().to_lowercase(),
+    }
+}
+
+/// Do two mailbox strings name the same address (#416)?  Empty
+/// values never match — a malformed header shouldn't accidentally
+/// equal a malformed account entry.
+fn addresses_match(a: &str, b: &str) -> bool {
+    let (a, b) = (bare_address(a), bare_address(b));
+    !a.is_empty() && a == b
 }
 
 /// Save an in-progress message to the account's IMAP Drafts folder.
@@ -15621,6 +15868,8 @@ fn main() {
             set_message_pinned,
             set_message_priority,
             set_message_reminder,
+            respond_mdn_request,
+            get_receipt_status,
             send_email,
             list_outbox,
             list_all_outbox,

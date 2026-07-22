@@ -476,6 +476,8 @@ mod tests {
             reminder_at: None,
             priority: None,
             priority_override: None,
+            mdn_requested_to: None,
+            mdn_handled: None,
         }
     }
 
