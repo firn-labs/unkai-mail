@@ -59,6 +59,9 @@
     | 'not-done'
     // v8 — per-mail pin (#414)
     | 'pin'
+    // v9 — AI settings category (#439): the sparkles metaphor
+    // most desktop apps use for AI surfaces.
+    | 'ai'
 </script>
 
 <script lang="ts">
@@ -182,6 +185,8 @@
   import ShieldImageBlocked from './icons/ShieldImageBlocked.svelte'
   // v6
   import Close from './icons/Close.svelte'
+  // v9
+  import Ai from './icons/Ai.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -310,6 +315,7 @@
     'respond-with-meeting': RespondWithMeeting,
     'shield-image-blocked': ShieldImageBlocked,
     'close': Close,
+    'ai': Ai,
   }
   const Cmp = $derived(map[name])
 </script>

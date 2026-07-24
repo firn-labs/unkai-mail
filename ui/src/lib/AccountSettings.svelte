@@ -14,6 +14,7 @@
   import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
   import SecuritySettings from './SecuritySettings.svelte'
+  import AiSettings from './AiSettings.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
@@ -143,6 +144,7 @@
     | 'calendar'
     | 'nextcloud'
     | 'security'
+    | 'ai'
     | 'backup'
 
   // ── Props ───────────────────────────────────────────────────
@@ -201,6 +203,10 @@
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'nextcloud', label: 'Nextcloud', icon: 'cloud' },
     { id: 'security', label: 'Security', icon: 'lock' },
+    // #439 — the local MCP interface for the user's own AI
+    // agents (BYO model).  Localized from day one per the lazy
+    // paraglide migration rule — it's a brand-new string.
+    { id: 'ai', label: m.settings_ai_category(), icon: 'ai' },
     // #168 — the page where the user manages local export +
     // Nextcloud-recovery sync.  The `sync` glyph (two arrows in a
     // loop) communicates "this is the page where state moves
@@ -2394,6 +2400,19 @@
 
     {#if activeCategory === 'security'}
     <SecuritySettings />
+    {/if}
+
+    {#if activeCategory === 'ai'}
+    <!-- #439 — AiSettings saves the whole AppSettings struct
+         itself; the callback refreshes our copy (and App's) so a
+         later debounced save from this panel can't roll the MCP
+         fields back to what they were at mount. -->
+    <AiSettings
+      onsettingschanged={(fresh) => {
+        appSettings = fresh as unknown as AppSettings
+        onappprefschanged?.({ ...appSettings })
+      }}
+    />
     {/if}
 
     {#if activeCategory === 'backup'}

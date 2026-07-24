@@ -257,6 +257,16 @@ pub struct AppSettings {
     /// settings-sync bundle.
     #[serde(default)]
     pub mcp_tool_enablement: HashMap<String, bool>,
+    /// Whether MCP tool responses may include the plaintext of
+    /// PGP/S-MIME-encrypted messages (#439).  The local store can
+    /// hold decrypted bodies (auto-unlock accounts), but handing
+    /// end-to-end-encrypted content to an AI agent defeats the
+    /// point of E2E — so bodies whose `protection` marks them
+    /// encrypted are redacted from tool responses and search
+    /// snippets unless the user flips this on.  Default **off**;
+    /// enforced by the mail tools (#440).
+    #[serde(default)]
+    pub mcp_expose_decrypted_content: bool,
 }
 
 fn default_logo_style() -> String {
@@ -395,6 +405,9 @@ impl Default for AppSettings {
             mcp_enabled: false,
             mcp_port: default_mcp_port(),
             mcp_tool_enablement: HashMap::new(),
+            // Encrypted mail stays redacted from AI tool
+            // responses until the user explicitly opts in (#439).
+            mcp_expose_decrypted_content: false,
         }
     }
 }

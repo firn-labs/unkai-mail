@@ -13273,6 +13273,46 @@ async fn mcp_server_status(mcp: State<'_, McpServer>) -> Result<McpServerStatus,
     Ok(mcp.status().await)
 }
 
+/// One row of the AI settings page's per-tool toggle list: a
+/// registry descriptor plus the tool's *effective* enablement
+/// (explicit `mcp_tool_enablement` entry, or the class default —
+/// reads on, writes off).  Same snake_case wire shape as the
+/// other MCP views.
+#[derive(Debug, Clone, Serialize)]
+struct McpToolView {
+    id: &'static str,
+    category: &'static str,
+    /// `"read"` or `"write"` — drives the visual grouping and the
+    /// write-tool warning hints in the settings UI.
+    access: &'static str,
+    description: &'static str,
+    enabled: bool,
+}
+
+/// Every MCP tool this build knows about (#439).  The settings
+/// page renders whatever the registry advertises rather than a
+/// hardcoded list, so the tool surfaces landing in #440/#441
+/// appear in the UI without another frontend change.
+#[tauri::command]
+async fn mcp_list_tools(
+    settings: State<'_, SharedSettings>,
+) -> Result<Vec<McpToolView>, UnkaiError> {
+    let settings = settings.read().await;
+    Ok(unkai_mcp::registry::ToolRegistry::builtin()
+        .iter()
+        .map(|tool| McpToolView {
+            id: tool.descriptor.id,
+            category: tool.descriptor.category,
+            access: match tool.descriptor.access {
+                unkai_mcp::registry::ToolAccess::Read => "read",
+                unkai_mcp::registry::ToolAccess::Write => "write",
+            },
+            description: tool.descriptor.description,
+            enabled: unkai_mcp::registry::is_enabled(&settings, &tool.descriptor),
+        })
+        .collect())
+}
+
 // ── Settings backup & sync (#168) ──────────────────────────────
 //
 // Lets the user save every preference (app-wide settings, account
@@ -16207,6 +16247,7 @@ fn main() {
             mcp_revoke_token,
             mcp_token_status,
             mcp_server_status,
+            mcp_list_tools,
             get_settings_sync_state,
             set_settings_sync_target,
             notify_settings_changed,
