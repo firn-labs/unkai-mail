@@ -337,6 +337,21 @@ impl Cache {
     /// (e.g. `account_store`) that needs a Cache to run unit tests
     /// against without touching the user's real config dir or the
     /// keychain.
+    /// Construct a cache handle that is permanently locked — the
+    /// pool is `None` and never opens.  Mirrors the state
+    /// `open_default` produces in FIDO-only mode before the unlock
+    /// IPC runs.  Only for tests that need to exercise
+    /// `CacheError::Locked` paths (e.g. unkai-mcp's "vault locked"
+    /// rejection) without touching the keychain envelope.
+    #[doc(hidden)]
+    pub fn locked_for_tests() -> Self {
+        Self {
+            pool: Arc::new(RwLock::new(None)),
+            path: PathBuf::from(":memory:"),
+            master_key_hex: Arc::new(RwLock::new(None)),
+        }
+    }
+
     pub fn open_in_memory() -> Result<Self, CacheError> {
         let pool = pool::open_memory_pool()?;
         let mut conn = pool.get()?;
