@@ -14,6 +14,11 @@ unkai-carddav.workspace = true
 unkai-nextcloud.workspace = true
 unkai-store.workspace = true
 unkai-discovery.workspace = true
+# Local MCP server (#438) — the AI-integration endpoint the app
+# hosts on 127.0.0.1 when the user opts in.  The Tauri layer owns
+# its lifecycle (start/stop on the settings toggle) and the token
+# commands; the crate itself stays keychain- and Tauri-free.
+unkai-mcp.workspace = true
 # OpenPGP primitives for the receive (decrypt+verify) and send
 # (encrypt+sign) bridges, the vCard KEY auto-import flow, and the
 # Account-Settings "import private key" command (#57).  Lives only

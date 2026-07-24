@@ -1,5 +1,7 @@
 //! Core domain models shared across all Unkai crates.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -223,10 +225,49 @@ pub struct AppSettings {
     /// explicit per-message click authorising it.
     #[serde(default)]
     pub mdn_response_mode: MdnResponseMode,
+    /// Master toggle for the local MCP (Model Context Protocol)
+    /// server (#438).  When on, a localhost-only streamable-HTTP
+    /// endpoint exposes the enabled tools to the user's own AI
+    /// client (BYO model — Unkai never ships or calls an LLM
+    /// itself).  Default **off**: an extra network listener, even
+    /// a loopback one guarded by a bearer token, is something the
+    /// user should consciously opt into.
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    /// TCP port the MCP server binds on `127.0.0.1` (#438).  The
+    /// default sits in the dynamic/private range (49152–65535) so
+    /// no IANA-registered service collides with it out of the box.
+    /// `0` asks the OS for an ephemeral port — mainly useful for
+    /// tests; real clients want a stable address, so the settings
+    /// UI keeps users in the fixed range.
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
+    /// Per-tool enablement overrides for the MCP server (#438),
+    /// keyed by stable tool id (e.g. `"ping"`, later
+    /// `"search_messages"`).  A missing key falls back to the
+    /// tool's class default: **read** tools default on, **write**
+    /// tools default off — reads are how an AI client is useful at
+    /// all, while anything that mutates state is an explicit
+    /// opt-in.  Enforced server-side at `tools/call`, not just
+    /// filtered from `tools/list`.
+    ///
+    /// Note the bearer token itself is *never* stored here (or
+    /// anywhere in `AppSettings`) — it lives in the OS keychain
+    /// and therefore never rides along in the Nextcloud
+    /// settings-sync bundle.
+    #[serde(default)]
+    pub mcp_tool_enablement: HashMap<String, bool>,
 }
 
 fn default_logo_style() -> String {
     "storm".to_string()
+}
+
+/// Default MCP server port (#438).  Chosen from the dynamic/private
+/// range so nothing IANA-registered squats on it; arbitrary beyond
+/// that.
+fn default_mcp_port() -> u16 {
+    52226
 }
 
 /// Default UI-scale multiplier (#191).  1.0 means "as designed".
@@ -348,6 +389,12 @@ impl Default for AppSettings {
             // reading behaviour, so nothing is sent without the
             // user's say-so.
             mdn_response_mode: MdnResponseMode::Ask,
+            // MCP server off until the user opts in (#438); port
+            // from the dynamic range; empty map = per-class
+            // defaults (reads on, writes off) apply.
+            mcp_enabled: false,
+            mcp_port: default_mcp_port(),
+            mcp_tool_enablement: HashMap::new(),
         }
     }
 }

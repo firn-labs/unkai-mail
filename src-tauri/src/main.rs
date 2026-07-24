@@ -44,6 +44,7 @@ use unkai_core::models::{
 };
 use unkai_imap::ImapClient;
 use unkai_jmap::JmapClient;
+use unkai_mcp::{McpServer, McpServerStatus};
 use unkai_nextcloud::{
     FileEntry, LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
 };
@@ -13216,11 +13217,60 @@ async fn update_app_settings(
     new_settings: AppSettings,
     settings: State<'_, SharedSettings>,
     notify: State<'_, SettingsSyncNotify>,
+    mcp: State<'_, McpServer>,
 ) -> Result<(), UnkaiError> {
     app_settings::save_settings(&new_settings)?;
     *settings.write().await = new_settings;
     notify.0.notify_one();
+    // The MCP server reads `mcp_enabled` / `mcp_port` from these
+    // settings — reconcile so a toggle flip takes effect
+    // immediately, not on next launch (#438).
+    mcp.reconcile().await;
     Ok(())
+}
+
+// ── MCP server (#438) ──────────────────────────────────────────
+//
+// Token management + status for the AI settings page.  The
+// keychain (`unkai-mail-mcp` service) is the only place the
+// bearer token persists; the running server compares against an
+// in-memory copy, so generate/revoke update both in one step.
+
+/// Generate (or rotate) the MCP bearer token.  Returns the secret
+/// **once** — the frontend shows it a single time and never asks
+/// for it again; afterwards only `mcp_token_status` (a bool) is
+/// available.  Rotating invalidates the previous token instantly.
+#[tauri::command]
+async fn mcp_generate_token(mcp: State<'_, McpServer>) -> Result<String, UnkaiError> {
+    let token = unkai_mcp::auth::generate_token()?;
+    credentials::store_mcp_token(&token)?;
+    mcp.set_token(Some(token.clone())).await;
+    Ok(token)
+}
+
+/// Revoke the MCP bearer token: every connected client is cut off
+/// on its next request.  The server keeps running (if enabled)
+/// but answers 401 until a new token is generated.
+#[tauri::command]
+async fn mcp_revoke_token(mcp: State<'_, McpServer>) -> Result<(), UnkaiError> {
+    credentials::delete_mcp_token()?;
+    mcp.set_token(None).await;
+    Ok(())
+}
+
+/// Whether a bearer token currently exists.  Deliberately a bare
+/// bool — the secret itself is only ever returned by
+/// `mcp_generate_token`.
+#[tauri::command]
+async fn mcp_token_status() -> Result<bool, UnkaiError> {
+    credentials::has_mcp_token()
+}
+
+/// Live server status (running / bound port / endpoint URL /
+/// last start error) for the AI settings page.
+#[tauri::command]
+async fn mcp_server_status(mcp: State<'_, McpServer>) -> Result<McpServerStatus, UnkaiError> {
+    Ok(mcp.status().await)
 }
 
 // ── Settings backup & sync (#168) ──────────────────────────────
@@ -13298,11 +13348,17 @@ async fn apply_settings_bundle(
     json: String,
     cache: State<'_, Cache>,
     settings: State<'_, SharedSettings>,
+    mcp: State<'_, McpServer>,
 ) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
     let bundle = settings_bundle::parse(&json)?;
     let new_app_settings = bundle.app_settings.clone();
     let local_storage = settings_bundle::apply(&cache, bundle)?;
     *settings.write().await = new_app_settings;
+    // The imported bundle may flip `mcp_enabled` / `mcp_port`
+    // (#438).  Note the bearer token never travels in a bundle —
+    // a restored machine serves 401s until the user generates a
+    // fresh token here.
+    mcp.reconcile().await;
     Ok(local_storage)
 }
 
@@ -15495,6 +15551,18 @@ fn main() {
     let settings = app_settings::load_settings().unwrap_or_default();
     let shared_settings: SharedSettings = Arc::new(RwLock::new(settings));
 
+    // MCP server controller (#438).  Created up front (not in
+    // `.setup()`) so it can borrow clones of `cache` and
+    // `shared_settings` before the builder consumes them.  The
+    // token load is best-effort: a broken keychain shouldn't stop
+    // the app from booting, it just leaves the server answering
+    // 401 until the user re-generates a token.
+    let mcp_token = credentials::get_mcp_token().unwrap_or_else(|e| {
+        tracing::warn!("could not read MCP token from keychain: {e}");
+        None
+    });
+    let mcp_server = McpServer::new(cache.clone(), shared_settings.clone(), mcp_token);
+
     tauri::Builder::default()
         // single-instance MUST come before any plugin that cares
         // about second-launch argv (here: deep-link).  With the
@@ -15535,6 +15603,7 @@ fn main() {
         ))
         .manage(cache)
         .manage(shared_settings)
+        .manage(mcp_server)
         .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
         // Settings backup & sync (#168).  Frontend pushes its
         // localStorage snapshot on every settings change; the
@@ -15931,6 +16000,17 @@ fn main() {
                 urlhaus_refresh_worker(urlhaus_cache, urlhaus_settings).await;
             });
 
+            // MCP server (#438).  One reconcile at boot brings the
+            // listener up if `mcp_enabled` was saved on; afterwards
+            // the `update_app_settings` / `apply_settings_bundle`
+            // commands re-reconcile on every settings change, so no
+            // polling loop is needed.  Same clone-into-spawn shape
+            // as the workers above.
+            let mcp = app.state::<McpServer>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                mcp.reconcile().await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -16123,6 +16203,10 @@ fn main() {
             // Issue #168: settings backup & sync.
             build_settings_bundle,
             apply_settings_bundle,
+            mcp_generate_token,
+            mcp_revoke_token,
+            mcp_token_status,
+            mcp_server_status,
             get_settings_sync_state,
             set_settings_sync_target,
             notify_settings_changed,
