@@ -10546,33 +10546,11 @@ struct SavedDraft {
 
 /// Pull the `Message-ID` header value out of a raw RFC 822 message.
 ///
-/// Returns the bare bracketed form (e.g. `<uuid@host>`) so the
-/// caller can hand it straight to `find_uid_by_message_id`, which
-/// SEARCHes on the literal header value the IMAP server stored.
-///
-/// Tolerant of casing variants (`Message-ID:` / `Message-Id:` /
-/// `message-id:`) since RFC 5322 header field names are case-
-/// insensitive. Folded continuation lines aren't expected for
-/// Message-ID values (lettre emits a single short line) but the
-/// scanner stops at the first match and bails on the first blank
-/// line, which is the conventional header/body separator.
+/// Thin re-export shim: the implementation moved to
+/// `unkai_core::mail_util` (#440) so the MCP `create_draft` tool
+/// can share it.
 fn extract_message_id(raw: &[u8]) -> Option<String> {
-    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
-    let headers = std::str::from_utf8(&raw[..header_end]).ok()?;
-    for line in headers.split("\r\n") {
-        let prefix_len = if line.len() >= "Message-ID:".len()
-            && line[..="Message-ID:".len() - 1].eq_ignore_ascii_case("Message-ID:")
-        {
-            "Message-ID:".len()
-        } else {
-            continue;
-        };
-        let value = line[prefix_len..].trim();
-        if !value.is_empty() {
-            return Some(value.to_string());
-        }
-    }
-    None
+    unkai_core::mail_util::extract_message_id(raw)
 }
 
 /// Reduce a `Name <addr@host>` mailbox (or a bare address) to the
@@ -10934,33 +10912,12 @@ async fn expunge_draft_after_send(
 /// Same strategy as `pick_sent_folder`: prefer the IMAP `\Drafts`
 /// special-use attribute, fall back to common English / German / French
 /// names so accounts that haven't been synced yet still land in the
-/// right place.
+/// right place.  The heuristic itself lives in
+/// `unkai_core::mail_util` (#440) so the MCP `create_draft` tool
+/// shares it.
 fn pick_drafts_folder(account_id: &str, cache: &Cache) -> Option<String> {
     let folders = cache.get_folders(account_id).ok()?;
-
-    if let Some(by_attr) = folders.iter().find(|f| {
-        f.attributes
-            .iter()
-            .any(|a| a.eq_ignore_ascii_case("drafts") || a.eq_ignore_ascii_case("\\drafts"))
-    }) {
-        return Some(by_attr.name.clone());
-    }
-
-    const NAME_HINTS: &[&str] = &[
-        "drafts",
-        "draft",
-        "entwürfe",
-        "entwurf",
-        "brouillons",
-        "brouillon",
-    ];
-    folders
-        .iter()
-        .find(|f| {
-            let lower = f.name.to_lowercase();
-            NAME_HINTS.iter().any(|h| lower.contains(h))
-        })
-        .map(|f| f.name.clone())
+    unkai_core::mail_util::pick_drafts_folder(&folders)
 }
 
 /// Pick the most likely Sent folder name from the cached folder list.

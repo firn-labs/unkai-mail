@@ -29,6 +29,7 @@
 //! never ride along in the Nextcloud settings-sync bundle.
 
 pub mod auth;
+pub mod mail;
 pub mod registry;
 pub mod server;
 
@@ -198,6 +199,7 @@ impl McpServer {
         let router = server::build_router(
             ToolContext {
                 cache: self.inner.cache.clone(),
+                settings: self.inner.settings.clone(),
             },
             self.inner.settings.clone(),
             self.inner.registry.clone(),

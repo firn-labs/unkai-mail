@@ -108,6 +108,15 @@ pub struct SearchHit {
     /// FTS5 `snippet()` output with `<mark>…</mark>` around matches.
     /// Empty string when the query is purely filter-based.
     pub snippet: String,
+    /// Kebab-case `unkai_crypto::Protection` for the hit, same
+    /// sourcing as the envelope read paths: `COALESCE(b.protection,
+    /// m.protection)` (#440).  Consumers that surface snippets to
+    /// third parties (the MCP mail tools) need this to know when a
+    /// snippet was cut from decrypted E2E-encrypted plaintext —
+    /// the FTS index stores whatever `message_bodies` holds, which
+    /// for auto-unlock accounts is the decrypted text.  `None` =
+    /// plain message or body not fetched yet.
+    pub protection: Option<String>,
 }
 
 impl Cache {
@@ -134,7 +143,8 @@ impl Cache {
         let mut sql = String::from(
             "SELECT m.account_id, m.folder, m.uid, m.from_addr, m.subject,
                     m.internal_date, m.is_read, m.is_starred,
-                    COALESCE(b.has_attachments, 0) AS has_attachments,",
+                    COALESCE(b.has_attachments, 0) AS has_attachments,
+                    COALESCE(b.protection, m.protection) AS protection,",
         );
         let mut params: Vec<Box<dyn ToSql>> = Vec::new();
 
@@ -251,7 +261,8 @@ impl Cache {
                 is_read: r.get::<_, i64>(6)? != 0,
                 is_starred: r.get::<_, i64>(7)? != 0,
                 has_attachments: r.get::<_, i64>(8)? != 0,
-                snippet: r.get(9)?,
+                protection: r.get(9)?,
+                snippet: r.get(10)?,
             })
         })?;
 
@@ -843,6 +854,41 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].subject, "Budget planning Q2");
         assert!(hits[0].snippet.contains("<mark>"));
+    }
+
+    #[test]
+    fn search_hit_carries_protection() {
+        // #440: consumers that hand snippets to third parties (the
+        // MCP mail tools) decide redaction from the hit itself, so
+        // the body row's protection has to ride along.
+        let cache = open();
+        let mut encrypted = email(1, "INBOX", "Plans", "the secret rendezvous point", "a@x.de");
+        encrypted.protection = Some("encrypted".into());
+        cache.upsert_message(&encrypted).unwrap();
+        cache
+            .upsert_message(&email(2, "INBOX", "Plans", "the public agenda", "b@x.de"))
+            .unwrap();
+
+        let hits = cache
+            .search_emails("plans", &SearchScope::default(), &SearchFilters::default())
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        let by_uid = |uid| hits.iter().find(|h| h.uid == uid).unwrap();
+        assert_eq!(by_uid(1).protection.as_deref(), Some("encrypted"));
+        assert_eq!(by_uid(2).protection, None);
+
+        // Pure-filter queries go through the no-FTS branch — the
+        // column must be projected there too.
+        let filters = SearchFilters {
+            unread_only: true,
+            ..Default::default()
+        };
+        let hits = cache
+            .search_emails("", &SearchScope::default(), &filters)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        let by_uid = |uid| hits.iter().find(|h| h.uid == uid).unwrap();
+        assert_eq!(by_uid(1).protection.as_deref(), Some("encrypted"));
     }
 
     #[test]

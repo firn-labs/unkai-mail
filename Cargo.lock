@@ -7510,6 +7510,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "chrono",
  "futures",
  "getrandom 0.4.2",
  "keyring",
@@ -7523,6 +7524,8 @@ dependencies = [
  "tokio-util",
  "tracing",
  "unkai-core",
+ "unkai-imap",
+ "unkai-smtp",
  "unkai-store",
 ]
 

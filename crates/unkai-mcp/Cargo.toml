@@ -7,6 +7,11 @@ publish.workspace = true
 [dependencies]
 unkai-core.workspace = true
 unkai-store.workspace = true
+# The mail tools (#440): create_draft builds MIME via unkai-smtp's
+# message builder and APPENDs it over unkai-imap.  Both are
+# internal workspace crates — no new external dependencies.
+unkai-imap.workspace = true
+unkai-smtp.workspace = true
 rmcp.workspace = true
 axum.workspace = true
 subtle.workspace = true
@@ -34,3 +39,6 @@ keyring.workspace = true
 # running server (auth rejection, Host/Origin validation, locked
 # vault).  Workspace version, rustls-only feature set.
 reqwest.workspace = true
+# Test fixtures build `Email` / `EmailEnvelope` values, which
+# carry `DateTime<Utc>` timestamps.
+chrono.workspace = true
