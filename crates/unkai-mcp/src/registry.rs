@@ -58,6 +58,11 @@ pub struct ToolDescriptor {
 #[derive(Clone)]
 pub struct ToolContext {
     pub cache: Cache,
+    /// Live app settings (#440).  Handlers read policy flags —
+    /// today `mcp_expose_decrypted_content` — per call, so a
+    /// settings flip applies to in-flight sessions immediately
+    /// instead of waiting for a server restart.
+    pub settings: crate::SharedSettings,
 }
 
 /// Type-erased async tool handler: `(context, arguments) →
@@ -105,9 +110,9 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// All built-in tools.  For #438 that is just `ping` — the
-    /// real tool surface lands in #440/#441 by adding entries
-    /// here.
+    /// All built-in tools: the `ping` health check (#438) plus the
+    /// mail tool set (#440).  The groupware tools (#441) add their
+    /// entries here too.
     pub fn builtin() -> Self {
         let mut registry = Self { tools: Vec::new() };
         registry.register(
@@ -132,10 +137,11 @@ impl ToolRegistry {
                 })
             }),
         );
+        crate::mail::register_mail_tools(&mut registry);
         registry
     }
 
-    fn register(
+    pub(crate) fn register(
         &mut self,
         descriptor: ToolDescriptor,
         input_schema: JsonObject,
@@ -227,6 +233,7 @@ mod tests {
         let ping = registry.get("ping").expect("ping registered");
         let ctx = ToolContext {
             cache: Cache::open_in_memory().expect("in-memory cache"),
+            settings: Arc::new(tokio::sync::RwLock::new(AppSettings::default())),
         };
         let result = ping.invoke(ctx, None).await.expect("ping succeeds");
         assert_eq!(result.is_error, Some(false));

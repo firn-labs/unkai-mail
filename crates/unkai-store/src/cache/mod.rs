@@ -935,6 +935,33 @@ impl Cache {
         Ok(out)
     }
 
+    /// Look up the stable thread id of a single cached message
+    /// (#440).  Entry point for callers that hold a message ref
+    /// (`account_id`/`folder`/`uid`) and want the conversation it
+    /// belongs to via [`Cache::get_envelopes_by_thread`] — the MCP
+    /// `get_thread` tool being the first.  Runs the same
+    /// `thread_id` warm-up as [`Cache::get_envelopes`] so rows
+    /// cached before the #334 migration still resolve.  `Ok(None)`
+    /// = no such message in the cache.
+    pub fn get_thread_id(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<String>, CacheError> {
+        let _ = self.assign_pending_thread_ids(account_id, folder);
+        let conn = self.conn()?;
+        let thread_id = conn
+            .query_row(
+                "SELECT thread_id FROM messages
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![account_id, folder, uid as i64],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        Ok(thread_id.flatten())
+    }
+
     /// Return the newest `limit` envelopes in `folder` whose body has
     /// **not** yet been fetched (no row in `message_bodies`).  Used by
     /// the launch-time prerender (#178) to warm the message cache —
