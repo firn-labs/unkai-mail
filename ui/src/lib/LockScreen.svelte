@@ -149,7 +149,7 @@
     </div>
 
     {#if methods.length === 0}
-      <div class="rounded-md border border-error-500/40 bg-error-500/10 p-4 text-sm">
+      <div class="rounded-lg border border-error-500/40 bg-error-500/10 p-4 text-sm">
         No unlock methods are registered.  Use the Settings → Security
         panel to enroll a hardware key or recovery passphrase before
         switching to FIDO-only mode.
@@ -163,7 +163,7 @@
           {#each methods as m (m.credentialId)}
             <button
               type="button"
-              class="w-full flex items-center gap-3 px-4 py-3 rounded-md text-left transition-colors
+              class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors
                      border {activeMethod?.credentialId === m.credentialId
                        ? 'border-primary-500 bg-primary-500/10'
                        : 'border-surface-300 dark:border-surface-700 hover:bg-surface-200/60 dark:hover:bg-surface-800/40'}"
@@ -190,7 +190,7 @@
         <div class="space-y-2">
           <input
             type="password"
-            class="input w-full text-sm px-3 py-2 rounded-md"
+            class="input w-full text-sm px-3 py-2 rounded-lg"
             placeholder="Passphrase"
             bind:value={passphraseValue}
             bind:this={passphraseInput}

@@ -293,7 +293,7 @@
     {placeholder}
     bind:this={inputEl}
     bind:value
-    class="input w-full px-3 py-2 text-sm rounded-md"
+    class="input w-full px-3 py-2 text-sm rounded-lg"
     oninput={onInput}
     onkeydown={onKeydown}
     onblur={onBlur}
@@ -307,7 +307,7 @@
     <ul
       class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto
              bg-surface-50 dark:bg-surface-900 border border-surface-300
-             dark:border-surface-700 rounded-md shadow-lg"
+             dark:border-surface-700 rounded-lg shadow-lg"
       role="listbox"
     >
       {#each suggestions as s, i (s.kind === 'contact' ? `${s.contact.id}::${s.email.value}` : s.list.id)}

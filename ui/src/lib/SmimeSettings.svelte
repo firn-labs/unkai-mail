@@ -330,7 +330,7 @@
                 <input
                   id="smime-unlock-pw-{account.id}"
                   type="password"
-                  class="input flex-1 text-sm px-2 py-1 rounded-md"
+                  class="input flex-1 text-sm px-2 py-1 rounded-lg"
                   placeholder={m.smime_unlock_auto_passphrase_placeholder()}
                   aria-label={m.smime_unlock_auto_passphrase_label()}
                   bind:value={unlockPassphrase}

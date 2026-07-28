@@ -242,7 +242,7 @@
   role="dialog"
   aria-modal="true"
 >
-  <div class="w-160 max-h-[80vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col">
+  <div class="w-160 max-h-[80vh] glass-float rounded-2xl flex flex-col">
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
       <h2 class="text-base font-semibold">
         {pickFolderMode ? 'Save to Nextcloud' : 'Attach from Nextcloud'}

@@ -850,7 +850,7 @@
     <!-- Sidebar: virtuals + task lists.  Mirrors NotesView's nav
          column shape so the two integration views feel coherent. -->
     <aside
-      class="shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col text-sm"
+      class="shrink-0 border-r glass-panel flex flex-col text-sm"
       use:resizableSidebar={{ key: 'tasks.navSidebar', defaultWidth: 224, min: 160, max: 480 }}
     >
       <!-- Primary action — same shape + filled-primary preset as
@@ -959,7 +959,7 @@
       {#if accounts.length > 1}
         <div class="px-3 py-1.5 border-b border-surface-200 dark:border-surface-700">
           <select
-            class="select text-xs py-1 px-2 rounded-md w-full"
+            class="select text-xs py-1 px-2 rounded-lg w-full"
             value={accountId}
             onchange={(e) => selectAccount((e.currentTarget as HTMLSelectElement).value)}
           >
@@ -996,7 +996,7 @@
               role="listitem"
             >
               <div class="flex items-start gap-2 px-3 py-2.5
-                  {selectedUid === t.uid ? 'bg-primary-500/10' : 'hover:bg-surface-100 dark:hover:bg-surface-800'}">
+                  {selectedUid === t.uid ? 'bg-primary-500/10' : 'hover:bg-primary-500/10'}">
                 <!-- Checkbox lives outside the row's main button
                      so a click on it doesn't also open the editor.
                      This is the standard pattern for task UIs:
@@ -1074,7 +1074,7 @@
                 {#if sourceMail}
                   <button
                     type="button"
-                    class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
+                    class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
                     title="Open source mail"
                     aria-label="Open source mail"
                     onclick={(e) => {
@@ -1087,7 +1087,7 @@
                 {/if}
                 <button
                   type="button"
-                  class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+                  class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
                   title="Delete"
                   aria-label="Delete"
                   onclick={(e) => {
@@ -1116,7 +1116,7 @@
           {@const sourceMail = parseSourceMail(open.url)}
           <div class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
             <input
-              class="input flex-1 text-base font-semibold px-3 py-2 rounded-md"
+              class="input flex-1 text-base font-semibold px-3 py-2 rounded-lg"
               placeholder="Task title"
               bind:value={draftSummary}
               oninput={scheduleSave}
@@ -1217,7 +1217,7 @@
               <label class="block text-xs text-surface-500 mb-1" for="tasks-editor-priority">Priority</label>
               <select
                 id="tasks-editor-priority"
-                class="select text-sm px-2 py-1 rounded-md"
+                class="select text-sm px-2 py-1 rounded-lg"
                 bind:value={draftPriority}
                 onchange={scheduleSave}
               >
@@ -1232,7 +1232,7 @@
               <label class="block text-xs text-surface-500 mb-1" for="tasks-editor-desc">Description</label>
               <textarea
                 id="tasks-editor-desc"
-                class="textarea w-full text-sm px-2 py-1 rounded-md"
+                class="textarea w-full text-sm px-2 py-1 rounded-lg"
                 rows="6"
                 placeholder="Add details…"
                 bind:value={draftDescription}
@@ -1244,7 +1244,7 @@
               <div>
                 <p class="block text-xs text-surface-500 mb-1">Source</p>
                 <button
-                  class="inline-flex items-center gap-1.5 text-sm px-2 py-1 rounded-md
+                  class="inline-flex items-center gap-1.5 text-sm px-2 py-1 rounded-lg
                          bg-primary-500/10 text-primary-500 hover:bg-primary-500/20"
                   onclick={() => openSourceMail(open)}
                   title="Open the mail this task was created from"
@@ -1310,7 +1310,7 @@
       }
     }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-lg max-w-full max-h-[90vh] overflow-y-auto p-5">
+    <div class="glass-float rounded-2xl w-lg max-w-full max-h-[90vh] overflow-y-auto p-5">
       <h2 class="text-base font-semibold mb-3">New task</h2>
 
       <div class="space-y-3 text-sm">
@@ -1321,7 +1321,7 @@
             bind:this={newSummaryInput}
             bind:value={newSummary}
             type="text"
-            class="input w-full text-sm px-3 py-2 rounded-md"
+            class="input w-full text-sm px-3 py-2 rounded-lg"
             placeholder="What needs doing?"
             onkeydown={(e) => {
               if (e.key === 'Enter' && newSummary.trim() && newTaskListId && !creatingInFlight) {
@@ -1337,7 +1337,7 @@
             <label class="block text-xs text-surface-500 mb-1" for="new-task-list">Task list</label>
             <select
               id="new-task-list"
-              class="select w-full text-sm px-2 py-1.5 rounded-md"
+              class="select w-full text-sm px-2 py-1.5 rounded-lg"
               bind:value={newTaskListId}
             >
               <!-- Only non-hidden lists are offered as create
@@ -1384,7 +1384,7 @@
           <label class="block text-xs text-surface-500 mb-1" for="new-task-priority">Priority</label>
           <select
             id="new-task-priority"
-            class="select w-full text-sm px-2 py-1.5 rounded-md"
+            class="select w-full text-sm px-2 py-1.5 rounded-lg"
             bind:value={newPriority}
           >
             <option value={0}>None</option>
@@ -1400,7 +1400,7 @@
             id="new-task-description"
             bind:value={newDescription}
             rows="4"
-            class="textarea w-full text-sm px-2 py-1.5 rounded-md"
+            class="textarea w-full text-sm px-2 py-1.5 rounded-lg"
             placeholder="Add details…"
           ></textarea>
         </div>

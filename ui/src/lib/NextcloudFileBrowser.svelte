@@ -403,7 +403,7 @@
       <div class="flex-1"></div>
       {#if !creatingFolder && !hideInlineNewFolderTrigger}
         <button
-          class="text-primary-500 hover:bg-primary-500/10 rounded-md p-1 inline-flex items-center justify-center"
+          class="text-primary-500 hover:bg-primary-500/10 rounded-lg p-1 inline-flex items-center justify-center"
           onclick={startCreateFolder}
           title="Create a new folder in this directory"
           aria-label="New folder"
@@ -420,7 +420,7 @@
         <label for="nc-new-folder" class="text-xs text-surface-500">New folder name</label>
         <input
           id="nc-new-folder"
-          class="input flex-1 px-3 py-1.5 text-sm rounded-md"
+          class="input flex-1 px-3 py-1.5 text-sm rounded-lg"
           bind:this={newFolderInput}
           bind:value={newFolderName}
           placeholder="My folder"
@@ -477,7 +477,7 @@
               <div
                 role="button"
                 tabindex="0"
-                class="w-full flex items-center gap-3 px-5 py-2 text-left cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800"
+                class="w-full flex items-center gap-3 px-5 py-2 text-left cursor-pointer hover:bg-primary-500/10"
                 onclick={() => onEntryClick(entry)}
                 onkeydown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {

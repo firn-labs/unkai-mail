@@ -192,7 +192,7 @@
   <input
     bind:this={inputEl}
     id="event-location"
-    class="input w-full px-3 py-2 text-sm rounded-md"
+    class="input w-full px-3 py-2 text-sm rounded-lg"
     {value}
     {placeholder}
     aria-label={placeholder || 'Location'}
@@ -209,7 +209,7 @@
   {#if open}
     <div
       bind:this={listEl}
-      class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-md shadow-lg"
+      class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-lg shadow-lg"
       role="listbox"
     >
       {#if loading && suggestions.length === 0}
@@ -224,7 +224,7 @@
             aria-selected={i === activeIndex}
             class="w-full text-left flex items-start gap-2 px-3 py-2 text-sm cursor-pointer {i === activeIndex
               ? 'bg-primary-500/15'
-              : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+              : 'hover:bg-primary-500/10'}"
             onmousedown={(e) => {
               // Stop the document-level mousedown listener that
               // dismisses the popover from firing first.

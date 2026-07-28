@@ -275,7 +275,7 @@
       </div>
       <button
         type="button"
-        class="p-1 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
+        class="p-1 rounded-lg text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
         onclick={dismiss}
         aria-label="Dismiss reminder"
         title="Dismiss"
@@ -344,7 +344,7 @@
       <div class="flex items-center gap-2 mt-1">
         <span class="text-surface-500 shrink-0"><Icon name="snooze" size={14} /></span>
         <select
-          class="select px-2 py-1 text-sm rounded-md flex-1 min-w-0"
+          class="select px-2 py-1 text-sm rounded-lg flex-1 min-w-0"
           bind:value={snoozeChoice}
           aria-label="Remind me"
         >

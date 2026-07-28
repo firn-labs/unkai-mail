@@ -202,8 +202,7 @@
        Notes view would use for any future dialog. -->
   <ul
     bind:this={listEl}
-    class="fixed z-60 max-h-72 min-w-80 overflow-y-auto rounded-md border border-surface-300
-           dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    class="fixed z-60 max-h-72 min-w-80 overflow-y-auto rounded-xl glass-float py-1 text-sm"
     style="left: {resolved.left}px; top: {resolved.top}px;"
     role="listbox"
   >
@@ -258,7 +257,7 @@
                  the subject only when the message is unread so the
                  picker echoes the MailList's read/unread emphasis. -->
             <div
-              class="w-7 h-7 rounded-md bg-primary-500/10 text-primary-600
+              class="w-7 h-7 rounded-lg bg-primary-500/10 text-primary-600
                      dark:text-primary-400 flex items-center justify-center shrink-0"
               aria-hidden="true"
             >

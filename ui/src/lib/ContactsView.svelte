@@ -1543,7 +1543,7 @@
        tab strip + heading don't move; only the navigation
        sections collapse. ───────────────────────────────────── -->
   <aside
-    class="shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col"
+    class="shrink-0 border-r glass-panel flex flex-col"
     use:resizableSidebar={{ key: 'contacts.navSidebar', defaultWidth: 224, min: 160, max: 480 }}
   >
     <!-- Primary action — same shape + filled-primary preset as
@@ -1570,16 +1570,16 @@
     <div class="px-3 pt-2 flex gap-1">
       <button
         type="button"
-        class="flex-1 px-2 py-2 text-sm rounded-md transition-colors {activeTab === 'contacts'
+        class="flex-1 px-2 py-2 text-sm rounded-lg transition-colors {activeTab === 'contacts'
           ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-          : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+          : 'text-surface-600 dark:text-surface-300 hover:bg-primary-500/10'}"
         onclick={() => selectTab('contacts')}
       >Contacts</button>
       <button
         type="button"
-        class="flex-1 px-2 py-2 text-sm rounded-md transition-colors {activeTab === 'lists'
+        class="flex-1 px-2 py-2 text-sm rounded-lg transition-colors {activeTab === 'lists'
           ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-          : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+          : 'text-surface-600 dark:text-surface-300 hover:bg-primary-500/10'}"
         onclick={() => selectTab('lists')}
       >Lists</button>
     </div>
@@ -1587,9 +1587,9 @@
     <div class="flex-1 overflow-y-auto px-2 py-3 space-y-1">
       <!-- "All" -->
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors {selectedScope === 'all'
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors {selectedScope === 'all'
           ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-          : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+          : 'hover:bg-primary-500/10'}"
         onclick={() => (selectedScope = 'all')}
       >
         <span class="w-6 flex items-center justify-center"><Icon name="meetings" size={16} /></span>
@@ -1608,10 +1608,10 @@
         {#each allAddressbooks as b (`${b.ncId}::${b.name}`)}
           {@const sel = selectedScope === `addressbook:${b.name}`}
           <button
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors
                    {sel
                      ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-                     : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                     : 'hover:bg-primary-500/10'}"
             onclick={() => (selectedScope = `addressbook:${b.name}`)}
           >
             <span class="w-6 flex items-center justify-center"><Icon name="address-book" size={16} /></span>
@@ -1627,7 +1627,7 @@
       <div class="px-3 pt-3 pb-1 flex items-center justify-between">
         <span class="text-[10px] uppercase tracking-wider text-surface-500">Contact Groups</span>
         <button
-          class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
+          class="w-5 h-5 rounded-lg flex items-center justify-center text-surface-500 hover:bg-primary-500/10"
           title="New Contact Group"
           aria-label="New Contact Group"
           onclick={() => void createCategory()}
@@ -1645,10 +1645,10 @@
         <div
           role="button"
           tabindex="0"
-          class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors cursor-pointer
+          class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors cursor-pointer
                  {sel
                    ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-                   : 'hover:bg-surface-200 dark:hover:bg-surface-700'}
+                   : 'hover:bg-primary-500/10'}
                  {dragOver ? 'ring-2 ring-primary-500' : ''}"
           oncontextmenu={(e) => {
             e.preventDefault()
@@ -1705,7 +1705,7 @@
             >⋯</button>
             {#if openMenuFor === `cat:${c.name}`}
               <div
-                class="z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+                class="z-30 w-56 py-1 rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
                 style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
                 onclick={(e) => e.stopPropagation()}
                 role="menu"
@@ -1713,7 +1713,7 @@
                 onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
               >
                 <button
-                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
                   onclick={() => { openMenuFor = null; void renameCategory(c.name) }}
                 >Rename…</button>
                 <button
@@ -1748,9 +1748,9 @@
           <div
             role="button"
             tabindex="0"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm cursor-pointer transition-colors {sel
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors {sel
               ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-              : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+              : 'hover:bg-primary-500/10'}"
             onclick={() => (selectedListId = ml.id)}
             onkeydown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
@@ -1830,7 +1830,7 @@
           </div>
           {#if openMenuFor === `ml:${ml.id}` && ml.source !== 'team'}
             <div
-              class="z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+              class="z-30 w-56 py-1 rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
               style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
               onclick={(e) => e.stopPropagation()}
               onmousedown={(e) => e.stopPropagation()}
@@ -1839,11 +1839,11 @@
               onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
             >
               <button
-                class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
                 onclick={() => { openMenuFor = null; startRenameMailingList(ml) }}
               >Rename</button>
               <button
-                class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
                 onclick={(e) => {
                   // Anchor the picker to the row, not the menu
                   // item — the menu closes immediately so its
@@ -1855,7 +1855,7 @@
               >{ml.emoji ? 'Change emoji' : 'Set emoji'}</button>
               {#if ml.emoji}
                 <button
-                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
                   onclick={() => { openMenuFor = null; void pickMailingListEmoji(ml, null) }}
                 >Remove emoji</button>
               {/if}
@@ -1892,7 +1892,7 @@
       <div class="px-3 pt-1 pb-1 flex items-center justify-between">
         <span class="text-[10px] uppercase tracking-wider text-surface-500">Mailing lists</span>
         <button
-          class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
+          class="w-5 h-5 rounded-lg flex items-center justify-center text-surface-500 hover:bg-primary-500/10"
           title="New mailing list"
           aria-label="New mailing list"
           onclick={() => openNewMailingListForm()}
@@ -1963,7 +1963,7 @@
             class="w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors border-b border-surface-100 dark:border-surface-800
               {selectedId === c.id
                 ? 'bg-primary-500/10 text-primary-500 font-medium'
-                : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+                : 'hover:bg-primary-500/10'}"
             draggable="true"
             ondragstart={(e) => {
               draggedContactId = c.id
@@ -2055,7 +2055,7 @@
                  primary-text, no border, subtle primary halo on
                  hover.  Sits below the search bar, anchored left. -->
             <button
-              class="self-start mt-2 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-md px-2 py-1"
+              class="self-start mt-2 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-lg px-2 py-1"
               onclick={() => {
                 pickerOpen = !pickerOpen
                 pickerQuery = ''
@@ -2081,7 +2081,7 @@
             {/if}
             {#each pickableContacts as c (c.id)}
               <button
-                class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors border-b border-surface-100 dark:border-surface-800 hover:bg-surface-100 dark:hover:bg-surface-800"
+                class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors border-b border-surface-100 dark:border-surface-800 hover:bg-primary-500/10"
                 onclick={() => void addContactToSelectedList(c.id)}
               >
                 <Avatar
@@ -2122,7 +2122,7 @@
               <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
               <div
                 class="group flex items-center gap-2 px-3 py-2 text-sm transition-colors border-b border-surface-100 dark:border-surface-800 {isOpenable
-                  ? 'cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800'
+                  ? 'cursor-pointer hover:bg-primary-500/10'
                   : ''} {linkedContact && selectedId === linkedContact.id
                   ? 'bg-primary-500/10 text-primary-500 font-medium'
                   : ''}"
@@ -2153,7 +2153,7 @@
                 </div>
                 {#if editable && m.email}
                   <button
-                    class="opacity-0 group-hover:opacity-100 transition-opacity w-7 h-7 rounded-md text-surface-500 hover:bg-error-500/15 hover:text-error-500 leading-none shrink-0"
+                    class="opacity-0 group-hover:opacity-100 transition-opacity w-7 h-7 rounded-lg text-surface-500 hover:bg-error-500/15 hover:text-error-500 leading-none shrink-0"
                     title="Remove from list"
                     aria-label="Remove from list"
                     onclick={(e) => {
@@ -2450,7 +2450,7 @@
             {#if selectedPhotoBytes}
               <button
                 type="button"
-                class="text-xs text-error-500 hover:bg-red-500/20 rounded-md px-2 py-1 self-start mt-1"
+                class="text-xs text-error-500 hover:bg-red-500/20 rounded-lg px-2 py-1 self-start mt-1"
                 onclick={() => {
                   selectedPhotoBytes = null
                   formPhotoMime = null
@@ -2467,34 +2467,34 @@
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_prefix()}</span>
-                <input class="input rounded-md" bind:value={formPrefix} placeholder="Dr." />
+                <input class="input rounded-lg" bind:value={formPrefix} placeholder="Dr." />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_suffix()}</span>
-                <input class="input rounded-md" bind:value={formSuffix} placeholder="Jr." />
+                <input class="input rounded-lg" bind:value={formSuffix} placeholder="Jr." />
               </label>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_given_name()}</span>
-                <input class="input rounded-md" bind:value={formGiven} placeholder="Jane" />
+                <input class="input rounded-lg" bind:value={formGiven} placeholder="Jane" />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_family_name()}</span>
-                <input class="input rounded-md" bind:value={formFamily} placeholder="Doe" />
+                <input class="input rounded-lg" bind:value={formFamily} placeholder="Doe" />
               </label>
             </div>
             <label class="label">
               <span>{m.contact_form_label_additional_names()}</span>
-              <input class="input rounded-md" bind:value={formAdditional} placeholder={m.contact_form_hint_additional_names()} />
+              <input class="input rounded-lg" bind:value={formAdditional} placeholder={m.contact_form_hint_additional_names()} />
             </label>
             <label class="label">
               <span>{m.contact_form_label_display_name()} <span class="text-surface-500">({m.contact_form_hint_display_name_auto()})</span></span>
-              <input class="input rounded-md" bind:value={formName} placeholder="Jane Doe" />
+              <input class="input rounded-lg" bind:value={formName} placeholder="Jane Doe" />
             </label>
             <label class="label">
               <span>{m.contact_form_label_nickname()}</span>
-              <input class="input rounded-md" bind:value={formNickname} placeholder="JD" />
+              <input class="input rounded-lg" bind:value={formNickname} placeholder="JD" />
             </label>
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
@@ -2514,7 +2514,7 @@
             </div>
             <label class="label">
               <span>{m.contact_form_label_gender()}</span>
-              <input class="input rounded-md" bind:value={formGender} placeholder={m.contact_form_placeholder_gender()} />
+              <input class="input rounded-lg" bind:value={formGender} placeholder={m.contact_form_placeholder_gender()} />
             </label>
           </div>
         </details>
@@ -2531,14 +2531,14 @@
                     <Select bind:value={email.kind} options={emailKindOptions} />
                   </div>
                   <input
-                    class="input flex-1 rounded-md"
+                    class="input flex-1 rounded-lg"
                     type="email"
                     bind:value={email.value}
                     placeholder="jane@example.com"
                   />
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeEmail(i)}
@@ -2547,7 +2547,7 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
                 aria-label={m.contact_form_button_add_email()}
                 title={m.contact_form_button_add_email()}
                 onclick={addEmail}
@@ -2562,13 +2562,13 @@
                     <Select bind:value={phone.kind} options={phoneKindOptions} />
                   </div>
                   <input
-                    class="input flex-1 rounded-md"
+                    class="input flex-1 rounded-lg"
                     bind:value={phone.value}
                     placeholder="+1 555 0100"
                   />
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removePhone(i)}
@@ -2577,7 +2577,7 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
                 aria-label={m.contact_form_button_add_phone()}
                 title={m.contact_form_button_add_phone()}
                 onclick={addPhone}
@@ -2592,13 +2592,13 @@
                     <Select bind:value={im.kind} options={imppKindOptions} />
                   </div>
                   <input
-                    class="input flex-1 rounded-md"
+                    class="input flex-1 rounded-lg"
                     bind:value={im.value}
                     placeholder={m.contact_form_placeholder_impp()}
                   />
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeImpp(i)}
@@ -2607,7 +2607,7 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
                 aria-label={m.contact_form_button_add_impp()}
                 title={m.contact_form_button_add_impp()}
                 onclick={addImpp}
@@ -2623,16 +2623,16 @@
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_organization()}</span>
-                <input class="input rounded-md" bind:value={formOrg} placeholder="Example Corp" />
+                <input class="input rounded-lg" bind:value={formOrg} placeholder="Example Corp" />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_job_title()}</span>
-                <input class="input rounded-md" bind:value={formTitle} placeholder="Product Manager" />
+                <input class="input rounded-lg" bind:value={formTitle} placeholder="Product Manager" />
               </label>
             </div>
             <label class="label">
               <span>{m.contact_form_label_role()} <span class="text-surface-500">({m.contact_form_hint_role()})</span></span>
-              <input class="input rounded-md" bind:value={formRole} placeholder="Project Lead" />
+              <input class="input rounded-lg" bind:value={formRole} placeholder="Project Lead" />
             </label>
             <div>
               <span class="text-sm font-medium mb-1 block">{m.contact_form_label_categories()}</span>
@@ -2643,7 +2643,7 @@
                       <span class="text-sm">{cat}</span>
                       <button
                         type="button"
-                        class="ml-auto text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                        class="ml-auto text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
                         aria-label={m.contact_form_button_remove()}
                         title={m.contact_form_button_remove()}
                         onclick={() => removeChip(formCategories, i, (next) => (formCategories = next))}
@@ -2654,7 +2654,7 @@
               {/if}
               <div class="relative">
                 <input
-                  class="input rounded-md w-full"
+                  class="input rounded-lg w-full"
                   bind:value={formCategoryDraft}
                   placeholder={m.contact_form_placeholder_chip()}
                   onfocus={() => (categoryFieldFocused = true)}
@@ -2677,7 +2677,7 @@
                 />
                 {#if categoryFieldFocused && filteredCategorySuggestions.length > 0}
                   <ul
-                    class="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg"
+                    class="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-xl glass-float"
                     role="listbox"
                   >
                     {#each filteredCategorySuggestions as suggestion (suggestion)}
@@ -2708,14 +2708,14 @@
             <div class="space-y-2">
               <span class="text-sm font-medium block">{m.contact_form_label_addresses()}</span>
               {#each formAddresses as addr, i (i)}
-                <div class="card p-3 bg-surface-50 dark:bg-surface-900/50 rounded-md space-y-2">
+                <div class="card p-3 bg-surface-50 dark:bg-surface-900/50 rounded-lg space-y-2">
                   <div class="flex items-center gap-2">
                     <div class="w-32 shrink-0">
                       <Select bind:value={addr.kind} options={addressKindOptions} />
                     </div>
                     <button
                       type="button"
-                      class="ml-auto text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                      class="ml-auto text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
                       aria-label={m.contact_form_button_remove()}
                       title={m.contact_form_button_remove()}
                       onclick={() => removeAddress(i)}
@@ -2737,18 +2737,18 @@
                     }}
                   />
                   <div class="grid grid-cols-2 gap-2">
-                    <input class="input rounded-md" bind:value={addr.locality} placeholder={m.contact_form_placeholder_city()} />
-                    <input class="input rounded-md" bind:value={addr.region} placeholder={m.contact_form_placeholder_region()} />
+                    <input class="input rounded-lg" bind:value={addr.locality} placeholder={m.contact_form_placeholder_city()} />
+                    <input class="input rounded-lg" bind:value={addr.region} placeholder={m.contact_form_placeholder_region()} />
                   </div>
                   <div class="grid grid-cols-2 gap-2">
-                    <input class="input rounded-md" bind:value={addr.postal_code} placeholder={m.contact_form_placeholder_postal()} />
-                    <input class="input rounded-md" bind:value={addr.country} placeholder={m.contact_form_placeholder_country()} />
+                    <input class="input rounded-lg" bind:value={addr.postal_code} placeholder={m.contact_form_placeholder_postal()} />
+                    <input class="input rounded-lg" bind:value={addr.country} placeholder={m.contact_form_placeholder_country()} />
                   </div>
                 </div>
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
                 aria-label={m.contact_form_button_add_address()}
                 title={m.contact_form_button_add_address()}
                 onclick={addAddress}
@@ -2760,14 +2760,14 @@
               {#each formWebsites as site, i (i)}
                 <div class="flex items-center gap-2">
                   <input
-                    class="input flex-1 rounded-md"
+                    class="input flex-1 rounded-lg"
                     type="url"
                     bind:value={site.value}
                     placeholder="https://example.com"
                   />
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeWebsite(i)}
@@ -2776,7 +2776,7 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
                 aria-label={m.contact_form_button_add_website()}
                 title={m.contact_form_button_add_website()}
                 onclick={addWebsite}
@@ -2794,14 +2794,14 @@
               {#each formKeys as key, i (i)}
                 <div class="flex items-start gap-2">
                   <textarea
-                    class="input flex-1 rounded-md font-mono text-xs"
+                    class="input flex-1 rounded-lg font-mono text-xs"
                     rows="4"
                     bind:value={key.value}
                     placeholder={m.contact_form_placeholder_pgp_key()}
                   ></textarea>
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-md p-1 inline-flex items-center justify-center"
+                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeKey(i)}
@@ -2810,7 +2810,7 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-md inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
                 aria-label={m.contact_form_button_add_pgp_key()}
                 title={m.contact_form_button_add_pgp_key()}
                 onclick={addKey}
@@ -2841,7 +2841,7 @@
                 {/each}
               </div>
               <input
-                class="input rounded-md"
+                class="input rounded-lg"
                 bind:value={formLanguageDraft}
                 placeholder={m.contact_form_placeholder_languages()}
                 onkeydown={(e) => {
@@ -2858,7 +2858,7 @@
             <label class="label">
               <span>{m.contact_form_label_timezone()}</span>
               <input
-                class="input rounded-md"
+                class="input rounded-lg"
                 bind:value={formTimezone}
                 placeholder={m.contact_form_placeholder_timezone()}
               />
@@ -2866,7 +2866,7 @@
             <label class="label">
               <span>{m.contact_form_label_notes()}</span>
               <textarea
-                class="textarea rounded-md"
+                class="textarea rounded-lg"
                 rows="3"
                 bind:value={formNote}
                 placeholder={m.contact_form_placeholder_notes()}
@@ -2937,7 +2937,7 @@
     tabindex="-1"
     onmousedown={(e) => { if (e.target === e.currentTarget) newListForm = null }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+    <div class="glass-float rounded-2xl w-96 max-w-full p-5">
       <h3 class="text-base font-semibold mb-3">New mailing list</h3>
 
       <label class="block text-xs text-surface-500 mb-1" for="new-ml-name">Name</label>
@@ -2945,7 +2945,7 @@
       <input
         id="new-ml-name"
         type="text"
-        class="input w-full text-sm px-2 py-1.5 rounded-md mb-3"
+        class="input w-full text-sm px-2 py-1.5 rounded-lg mb-3"
         placeholder="Family, Team, Newsletter, …"
         bind:value={newListForm.name}
         disabled={newListBusy}

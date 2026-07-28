@@ -258,7 +258,7 @@
 </script>
 
 {#if error}
-  <div class="text-sm text-red-500 p-3 bg-red-500/10 rounded-md mb-3">{error}</div>
+  <div class="text-sm text-red-500 p-3 bg-red-500/10 rounded-lg mb-3">{error}</div>
 {/if}
 
 {#if !connecting}
@@ -269,7 +269,7 @@
     <div class="flex gap-2">
       <input
         id="nc-connect-server"
-        class="input flex-1 px-3 py-2 text-sm rounded-md"
+        class="input flex-1 px-3 py-2 text-sm rounded-lg"
         placeholder="https://cloud.example.com"
         bind:value={serverInput}
         onkeydown={(e) => e.key === 'Enter' && startConnect()}
@@ -283,7 +283,7 @@
          AccountSetup's IMAP-side prompt: full chain SHA-256
          fingerprints, trust / cancel CTA. -->
     {#if pendingCert}
-      <div class="mt-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
+      <div class="mt-4 p-4 rounded-lg border border-warning-500/40 bg-warning-500/5">
         <p class="text-sm font-medium mb-1">
           {m.nextcloud_connect_cert_title()}
         </p>
@@ -327,7 +327,7 @@
     {/if}
 
     {#if trustedCerts.length > 0 && !pendingCert}
-      <div class="mt-3 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
+      <div class="mt-3 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
         <Icon name="verified" size={14} />
         {#if trustedCerts.length === 1}
           {m.nextcloud_connect_trusting_one()}

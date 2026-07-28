@@ -2678,7 +2678,7 @@
          flex-column already scrolls the body region, so the modal
          itself never needs to scroll. -->
     <div
-      class="compose-modal bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col"
+      class="compose-modal glass-float rounded-2xl flex flex-col"
       style="resize: both; overflow: hidden; width: 720px; height: 80vh; min-width: 480px; min-height: 420px; max-width: 95vw; max-height: 95vh;"
     >
       {@render composeBody()}
@@ -2764,7 +2764,7 @@
         {#if accounts.length > 1}
           <select
             id="compose-from"
-            class="select flex-1 px-3 py-2 text-sm rounded-md"
+            class="select flex-1 px-3 py-2 text-sm rounded-lg"
             bind:value={fromAccountId}
           >
             {#each accounts as a (a.id)}
@@ -2803,7 +2803,7 @@
 
       <div class="flex items-center gap-2">
         <label class="text-xs w-14 text-surface-500" for="compose-subject">Subject</label>
-        <input id="compose-subject" class="input flex-1 px-3 py-2 text-sm rounded-md" bind:value={subject} />
+        <input id="compose-subject" class="input flex-1 px-3 py-2 text-sm rounded-lg" bind:value={subject} />
       </div>
 
       <!-- `flex-1 min-h-0` makes this the stretchy slot in the body
@@ -2844,7 +2844,7 @@
            recipient has a key, or encryption is off. -->
       {#if cryptoStack === 'pgp' && encryptEnabled && recipientsWithoutKey.length > 0}
         <div
-          class="flex items-start gap-3 px-3 py-2 rounded-md border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
+          class="flex items-start gap-3 px-3 py-2 rounded-lg border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
           role="alert"
         >
           <span class="shrink-0 mt-0.5"><Icon name="warning" size={16} /></span>
@@ -2866,7 +2866,7 @@
            in the attached PDF I sent earlier"). -->
       {#if showAttachmentMentionWarning}
         <div
-          class="flex items-start gap-3 px-3 py-2 rounded-md border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
+          class="flex items-start gap-3 px-3 py-2 rounded-lg border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
           role="alert"
         >
           <span aria-hidden="true">⚠️</span>
@@ -2891,7 +2891,7 @@
                  the OS default app).  The ✕ remove button keeps
                  its own click handler with stopPropagation so
                  hitting it doesn't also trigger the preview. -->
-            <span class="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-surface-200 dark:bg-surface-800 text-xs">
+            <span class="inline-flex items-center gap-2 px-2 py-1 rounded-lg bg-surface-200 dark:bg-surface-800 text-xs">
               <button
                 type="button"
                 class="inline-flex items-center gap-2 cursor-pointer text-left"
@@ -3066,12 +3066,12 @@
   {#if bothStacksAvailable}
     <div class="flex items-center gap-2 px-2" role="group" aria-label={m.compose_crypto_stack_label()}>
       <span class="text-xs text-surface-500 whitespace-nowrap">{m.compose_crypto_stack_label()}</span>
-      <div class="inline-flex rounded-md border border-surface-300 dark:border-surface-600 overflow-hidden text-xs">
+      <div class="inline-flex rounded-lg border border-surface-300 dark:border-surface-600 overflow-hidden text-xs">
         <button
           type="button"
           class="px-2.5 py-1 transition-colors {cryptoStack === 'pgp'
             ? 'bg-primary-500 text-white'
-            : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'text-surface-600 dark:text-surface-300 hover:bg-primary-500/10'}"
           aria-pressed={cryptoStack === 'pgp'}
           onclick={() => {
             if (cryptoStack !== 'pgp') {
@@ -3086,7 +3086,7 @@
           type="button"
           class="px-2.5 py-1 transition-colors {cryptoStack === 'smime'
             ? 'bg-primary-500 text-white'
-            : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'text-surface-600 dark:text-surface-300 hover:bg-primary-500/10'}"
           aria-pressed={cryptoStack === 'smime'}
           onclick={() => {
             if (cryptoStack !== 'smime') {
@@ -3189,7 +3189,7 @@
         <input
           id="pgp-passphrase-input"
           type="password"
-          class="input text-xs px-2 py-1 rounded-md w-56"
+          class="input text-xs px-2 py-1 rounded-lg w-56"
           placeholder={m.compose_crypto_passphrase_placeholder()}
           bind:value={pgpPassphrase}
           disabled={sending}
@@ -3314,17 +3314,16 @@
     align-items: center;
     gap: 0.15rem;
     padding: 0.5rem 0.75rem;
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
     line-height: 1;
     color: inherit;
     cursor: pointer;
-    transition: background-color 100ms ease, color 100ms ease;
+    transition: background-color 150ms ease-out, color 150ms ease-out;
   }
+  /* Theme-derived translucent hover (#451) — matches the
+     hover:bg-primary-500/10 accent the Tailwind chrome uses. */
   :global(.ctb:hover:not(:disabled)) {
-    background: rgb(0 0 0 / 0.06);
-  }
-  :global([data-mode='dark'] .ctb:hover:not(:disabled)) {
-    background: rgb(255 255 255 / 0.08);
+    background: color-mix(in oklab, var(--color-primary-500) 10%, transparent);
   }
   :global(.ctb:disabled) {
     opacity: 0.5;

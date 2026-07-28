@@ -1914,17 +1914,17 @@
             role="button"
             tabindex="0"
             aria-pressed={selected}
-            class="w-full text-left {row.isSibling ? 'pl-12' : 'pl-3'} pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
+            class="w-full text-left {row.isSibling ? 'pl-12' : 'pl-3'} pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors duration-150 ease-out cursor-pointer
               {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
               {selected
-                ? 'bg-primary-500/10'
+                ? 'bg-primary-500/12 ring-1 ring-inset ring-primary-500/30'
                 : multi
                   ? 'bg-primary-500/15 hover:bg-primary-500/20'
                   : env.is_starred
                     ? 'bg-amber-500/10 hover:bg-amber-500/15'
                     : !env.is_read
                       ? 'bg-primary-500/4 dark:bg-primary-500/7 hover:bg-primary-500/10'
-                      : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+                      : 'hover:bg-primary-500/10'}"
             draggable="true"
             ondragstart={(e) => onMailDragStart(e, env)}
             onclick={(e) => onRowClick(e, env)}
@@ -2160,7 +2160,7 @@
           >
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm {env.is_starred ? 'text-amber-500' : ''}"
+              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm {env.is_starred ? 'text-amber-500' : ''}"
               title={env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
               aria-label={env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
               onclick={(e) => {
@@ -2170,7 +2170,7 @@
             ><Icon name="flag" size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm {env.is_pinned ? 'text-primary-500' : ''}"
+              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm {env.is_pinned ? 'text-primary-500' : ''}"
               title={env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
               aria-label={env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
               onclick={(e) => {
@@ -2180,7 +2180,7 @@
             ><Icon name="pin" size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
+              class="w-7 h-7 rounded-lg flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
               title={env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
               aria-label={env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
               onclick={(e) => {
@@ -2190,7 +2190,7 @@
             ><Icon name={env.is_read ? 'unread' : 'read'} size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
+              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
               title={m.maillist_action_move()}
               aria-label={m.maillist_action_move()}
               onclick={(e) => {
@@ -2200,7 +2200,7 @@
             ><Icon name="move-to-folder" size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
               title={m.maillist_action_delete()}
               aria-label={m.maillist_action_delete()}
               onclick={(e) => {
@@ -2255,7 +2255,7 @@
        before the action handler runs. `role="menu"` keeps screen
        readers oriented. -->
   <div
-    class="fixed z-50 min-w-45 py-1 rounded-md shadow-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 text-sm"
+    class="fixed z-50 min-w-45 py-1 rounded-xl glass-float text-sm"
     style="top: {contextMenu.y}px; left: {contextMenu.x}px;"
     role="menu"
     tabindex="-1"
@@ -2350,7 +2350,7 @@
     <div class="px-3 py-1.5 flex items-center gap-2">
       <Icon name="important" size={16} />
       <span>{m.mail_priority_label()}</span>
-      <div class="ml-auto inline-flex rounded-md overflow-hidden border border-surface-200 dark:border-surface-700">
+      <div class="ml-auto inline-flex rounded-lg overflow-hidden border border-surface-200 dark:border-surface-700">
         {#each [
           { value: 'high' as const, label: m.mail_priority_high() },
           { value: 'normal' as const, label: m.mail_priority_normal() },
@@ -2400,7 +2400,7 @@
           })}
         </p>
       {/if}
-      <div class="mt-1.5 inline-flex rounded-md overflow-hidden border border-surface-200 dark:border-surface-700">
+      <div class="mt-1.5 inline-flex rounded-lg overflow-hidden border border-surface-200 dark:border-surface-700">
         {#each reminderPresets() as preset (preset.label)}
           <button
             type="button"
@@ -2415,7 +2415,7 @@
       <div class="mt-1.5 flex items-center gap-1">
         <input
           type="datetime-local"
-          class="input flex-1 text-xs px-2 py-1 rounded-md"
+          class="input flex-1 text-xs px-2 py-1 rounded-lg"
           bind:value={reminderCustomValue}
           aria-label={m.mail_reminder_custom_label()}
         />

@@ -527,7 +527,7 @@
   </div>
 
   {#if error}
-    <div class="text-sm text-red-500 p-3 bg-red-500/10 rounded-md">{error}</div>
+    <div class="text-sm text-red-500 p-3 bg-red-500/10 rounded-lg">{error}</div>
   {/if}
 
   {#if loading}
@@ -538,7 +538,7 @@
       <div class="space-y-2">
         {#each accounts as acct (acct.id)}
           {@const cs = contactsState[acct.id]}
-          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg space-y-3">
+          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl space-y-3">
             <div class="flex items-start justify-between">
               <div class="flex-1">
                 <p class="font-semibold">{acct.display_name ?? acct.username}</p>
@@ -720,7 +720,7 @@
     <!-- Connect form — shared with the setup wizard (#413). The
          component owns the Login Flow v2 polling and the TLS-trust
          prompt; we only handle the post-connect bookkeeping. -->
-    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg">
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl">
       <NextcloudConnect onconnected={onConnected} />
     </div>
   {/if}

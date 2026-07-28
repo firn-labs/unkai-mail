@@ -62,7 +62,7 @@
                rounded-t-lg min-w-44 max-w-65 shadow-md
                bg-surface-100 dark:bg-surface-800
                border border-b-0 border-surface-300 dark:border-surface-700
-               hover:bg-surface-200 dark:hover:bg-surface-700
+               hover:bg-primary-500/10
                transition-colors"
       >
         <button
