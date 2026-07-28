@@ -1656,19 +1656,19 @@
     font-weight: 500;
     background: transparent;
     border: none;
-    color: inherit;
+    /* Inactive tabs sit exactly on the muted tier — the readability
+       floor for text on glass chrome (#453) — never below it. */
+    color: var(--text-on-glass-muted);
     cursor: pointer;
     border-bottom: 2px solid transparent;
     border-top-left-radius: 0.25rem;
     border-top-right-radius: 0.25rem;
     line-height: 1;
-    transition: background 0.1s, border-color 0.1s, color 0.1s;
+    transition: background 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
   }
   :global(.rt-tab:hover) {
-    background: var(--color-surface-200);
-  }
-  :global([data-mode='dark'] .rt-tab:hover) {
-    background: var(--color-surface-700);
+    background: color-mix(in oklab, var(--color-primary-500) 10%, transparent);
+    color: var(--text-on-glass);
   }
   :global(.rt-tab-active) {
     color: var(--color-primary-500);
@@ -1690,7 +1690,7 @@
     border-radius: 0.5rem;
     background: transparent;
     border: none;
-    color: inherit;
+    color: var(--text-on-glass);
     cursor: pointer;
     transition: background 150ms ease-out, color 150ms ease-out;
     position: relative;
@@ -1773,7 +1773,7 @@
     float: left;
     pointer-events: none;
     height: 0;
-    color: var(--color-surface-400);
+    color: var(--text-on-glass-muted);
   }
   /* Basic table styling so it's visible in the editor. */
   :global(.tiptap table) {
@@ -2338,7 +2338,7 @@
        wrapper's available height; `overflow-y-auto` scrolls internally
        once the content exceeds what fits. When the Compose modal is
        resized taller, this is what absorbs the new space. -->
-  <div class="flex-1 min-h-0 border border-surface-200 dark:border-surface-700 rounded-b-md bg-surface-50 dark:bg-surface-950 overflow-y-auto">
+  <div class="flex-1 min-h-0 border border-surface-200 dark:border-surface-700 rounded-b-lg glass-writing-surface overflow-y-auto">
     <EditorContent editor={$editor} />
   </div>
 </div>

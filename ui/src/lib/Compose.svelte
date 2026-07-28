@@ -2737,13 +2737,13 @@
                because the OS window itself is the minimise surface
                there. -->
           <button
-            class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100 px-1 text-lg leading-none"
+            class="text-on-glass-muted hover:text-on-glass px-1 text-lg leading-none"
             onclick={() => void minimizeAndSave()}
             aria-label={m.compose_button_minimize_aria_label()}
             title={m.compose_button_minimize_title()}
           >–</button>
         {/if}
-        <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
+        <button class="text-on-glass-muted hover:text-on-glass" onclick={cancel} aria-label="Close">✕</button>
       </div>
     </header>
 
@@ -2760,7 +2760,7 @@
            more than one account, otherwise collapsed to a static label
            so single-account users see no extra chrome. -->
       <div class="flex items-center gap-2">
-        <label class="text-xs w-14 text-surface-500" for="compose-from">From</label>
+        <label class="text-xs w-14 text-on-glass-muted" for="compose-from">From</label>
         {#if accounts.length > 1}
           <select
             id="compose-from"
@@ -2772,14 +2772,14 @@
             {/each}
           </select>
         {:else}
-          <span id="compose-from" class="text-sm text-surface-700 dark:text-surface-300">
+          <span id="compose-from" class="text-sm text-on-glass">
             {(fromAccount?.person_name ?? fromAccount?.display_name) || ''} &lt;{fromAddress}&gt;
           </span>
         {/if}
       </div>
 
       <div class="flex items-center gap-2">
-        <label class="text-xs w-14 text-surface-500" for="compose-to">To</label>
+        <label class="text-xs w-14 text-on-glass-muted" for="compose-to">To</label>
         <AddressAutocomplete
           id="compose-to"
           bind:value={to}
@@ -2792,17 +2792,17 @@
 
       {#if showCcBcc}
         <div class="flex items-center gap-2">
-          <label class="text-xs w-14 text-surface-500" for="compose-cc">Cc</label>
+          <label class="text-xs w-14 text-on-glass-muted" for="compose-cc">Cc</label>
           <AddressAutocomplete id="compose-cc" bind:value={cc} />
         </div>
         <div class="flex items-center gap-2">
-          <label class="text-xs w-14 text-surface-500" for="compose-bcc">Bcc</label>
+          <label class="text-xs w-14 text-on-glass-muted" for="compose-bcc">Bcc</label>
           <AddressAutocomplete id="compose-bcc" bind:value={bcc} />
         </div>
       {/if}
 
       <div class="flex items-center gap-2">
-        <label class="text-xs w-14 text-surface-500" for="compose-subject">Subject</label>
+        <label class="text-xs w-14 text-on-glass-muted" for="compose-subject">Subject</label>
         <input id="compose-subject" class="input flex-1 px-3 py-2 text-sm rounded-lg" bind:value={subject} />
       </div>
 
@@ -3316,7 +3316,7 @@
     padding: 0.5rem 0.75rem;
     border-radius: 0.5rem;
     line-height: 1;
-    color: inherit;
+    color: var(--text-on-glass);
     cursor: pointer;
     transition: background-color 150ms ease-out, color 150ms ease-out;
   }
