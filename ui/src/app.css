@@ -107,6 +107,80 @@ body {
   }
 }
 
+/* ── Text contrast + writing surfaces on glass (#453) ────────────────── */
+/* Companion tokens to the glass set above. Glass stays on window chrome;
+   anything that carries text sits on these opaque-leaning treatments so
+   readability never depends on what happens to be blurred underneath.
+     --text-on-glass        primary text — WCAG AA (4.5:1) on chrome
+     --text-on-glass-muted  labels/placeholders — target ~AA, never <3:1
+   The muted mix is anchored on the strong end of the surface scale
+   (950 in light, 50 in dark) and only pulled *toward* surface-400 —
+   starting from the weak end is what produced the unreadable grey
+   this block fixes. */
+/* Border alphas look strong on paper because they're calibrated against
+   the WORST composited background across the stock themes (vox's
+   compressed light scale), not the friendliest: computed contrast for
+   a 1px input border vs the modal chrome is >=3:1 (non-text AA) in
+   cerberus / wintry / vox, light + dark. If a future theme still rips
+   through the floor, sharpen these mixes globally — no per-theme
+   exceptions. */
+:root {
+  --text-on-glass: var(--color-surface-950);
+  --text-on-glass-muted: color-mix(in oklab, var(--color-surface-950) 72%, var(--color-surface-400));
+  --glass-input-fill: color-mix(in oklab, var(--color-surface-950) 6%, transparent);
+  --glass-input-border: color-mix(in oklab, var(--color-surface-950) 60%, transparent);
+}
+
+[data-mode='dark'] {
+  --text-on-glass: var(--color-surface-50);
+  --text-on-glass-muted: color-mix(in oklab, var(--color-surface-50) 70%, var(--color-surface-400));
+  --glass-input-fill: color-mix(in oklab, var(--color-surface-50) 8%, transparent);
+  --glass-input-border: color-mix(in oklab, var(--color-surface-50) 40%, transparent);
+}
+
+.text-on-glass {
+  color: var(--text-on-glass);
+}
+
+.text-on-glass-muted {
+  color: var(--text-on-glass-muted);
+}
+
+/* Central input treatment: every Skeleton `.input` / `.select` gets a
+   slightly lighter-than-chrome opaque-leaning fill, a visible 1px
+   border, and an unmistakable primary focus state. background-color
+   (not the shorthand) so `.select` keeps its caret background-image. */
+.input,
+.select {
+  background-color: var(--glass-input-fill);
+  border: 1px solid var(--glass-input-border);
+  color: var(--text-on-glass);
+}
+
+.input::placeholder,
+.select::placeholder {
+  color: var(--text-on-glass-muted);
+}
+
+.input:focus,
+.select:focus {
+  border-color: var(--color-primary-500);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-primary-500) 25%, transparent);
+}
+
+/* Opaque reading/writing canvas one step above the chrome — no blur,
+   no transparency: this is where eyes rest. Dark mode gets a
+   surface-800/900 mix instead of near-black so the canvas reads as a
+   surface, not a hole. */
+.glass-writing-surface {
+  background: var(--color-surface-50);
+}
+
+[data-mode='dark'] .glass-writing-surface {
+  background: color-mix(in oklab, var(--color-surface-800) 55%, var(--color-surface-900));
+}
+
 /* ── Email body renderer ─────────────────────────────────────────────── */
 /* Scoped resets for HTML email content injected via {@html}. We can't
    scope <style> tags from the email (they're stripped by DOMPurify), but
