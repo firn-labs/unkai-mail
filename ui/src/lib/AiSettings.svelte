@@ -370,7 +370,7 @@
       <!-- Port.  Kept in the fixed 1024–65535 range — MCP clients
            want a stable address, so the ephemeral-port trick (0)
            stays a test-only affair. -->
-      <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
+      <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4">
         <div class="flex items-center gap-3">
           <label class="text-sm text-surface-700 dark:text-surface-300" for="mcp-port">
             {m.settings_ai_port_label()}
@@ -380,7 +380,7 @@
             type="number"
             min="1024"
             max="65535"
-            class="input w-32 text-sm px-3 py-1.5 rounded-md"
+            class="input w-32 text-sm px-3 py-1.5 rounded-lg"
             bind:value={portRaw}
             onchange={() => void onPortChange()}
             disabled={saving || !enabled}
@@ -392,7 +392,7 @@
       <!-- Token management.  The secret is displayed exactly once,
            straight from `mcp_generate_token`; afterwards the
            backend only reports whether one exists. -->
-      <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-3">
+      <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4 space-y-3">
         <div class="flex items-center gap-3">
           <div class="flex-1 min-w-0">
             <h3 class="font-medium leading-tight">{m.settings_ai_token_title()}</h3>
@@ -434,7 +434,7 @@
         </div>
 
         {#if generatedToken}
-          <div class="rounded-md border border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 p-3">
+          <div class="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 p-3">
             <div class="flex items-center gap-2">
               <code class="flex-1 min-w-0 font-mono text-xs break-all select-all">
                 {generatedToken}
@@ -460,7 +460,7 @@
       </div>
 
       <!-- Ready-to-paste MCP client config. -->
-      <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-2">
+      <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4 space-y-2">
         <div class="flex items-center gap-3">
           <h3 class="flex-1 min-w-0 font-medium leading-tight">
             {m.settings_ai_snippet_title()}
@@ -475,7 +475,7 @@
           ><Icon name={copiedTarget === 'snippet' ? 'success' : 'copy'} size={14} /></button>
         </div>
         <pre
-          class="rounded-md bg-surface-100 dark:bg-surface-800 p-3 text-xs font-mono overflow-x-auto"><code
+          class="rounded-lg bg-surface-100 dark:bg-surface-800 p-3 text-xs font-mono overflow-x-auto"><code
             >{configSnippet}</code></pre>
         <p class="text-xs text-surface-500">{m.settings_ai_snippet_hint()}</p>
       </div>
@@ -497,7 +497,7 @@
               <h4 class="text-xs font-semibold uppercase tracking-wide text-surface-500 mb-1.5">
                 {group.label}
               </h4>
-              <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-md border border-surface-200 dark:border-surface-700">
+              <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-lg border border-surface-200 dark:border-surface-700">
                 {#each group.tools as tool (tool.id)}
                   <li class="flex items-start gap-3 p-3">
                     <Toggle
@@ -539,7 +539,7 @@
       <!-- Encrypted-content policy.  Default off: end-to-end
            encrypted bodies stay redacted from every tool response
            (#440 enforces it); this is the explicit opt-out. -->
-      <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
+      <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4">
         <div class="flex items-start gap-3">
           <Toggle
             checked={settings.mcp_expose_decrypted_content}

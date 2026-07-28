@@ -215,7 +215,7 @@
 
   {#if cardPos}
     <div
-      class="absolute w-80 bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 rounded-lg shadow-xl p-4"
+      class="absolute w-80 glass-float rounded-2xl p-4"
       style="top:{cardPos.top}px; left:{cardPos.left}px; transition: top 0.25s ease, left 0.25s ease;"
       bind:clientWidth={cardW}
       bind:clientHeight={cardH}
@@ -225,7 +225,7 @@
   {:else}
     <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
       <div
-        class="w-96 max-w-[90%] bg-surface-50 dark:bg-surface-900 border border-surface-200 dark:border-surface-700 rounded-lg shadow-xl p-5 pointer-events-auto"
+        class="w-96 max-w-[90%] glass-float rounded-2xl p-5 pointer-events-auto"
       >
         {@render cardContent()}
       </div>

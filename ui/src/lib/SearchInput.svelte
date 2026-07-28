@@ -82,7 +82,7 @@
     bind:this={inputEl}
     bind:value
     type="text"
-    class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-md"
+    class="input w-full pl-7 pr-8 py-1.5 text-sm rounded-lg"
     {placeholder}
     aria-label={ariaLabel ?? placeholder}
     {oninput}

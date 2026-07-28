@@ -372,7 +372,7 @@
           class="w-full text-left px-4 py-3 border-b border-surface-100 dark:border-surface-800 transition-colors
             {selectedUid === hit.uid
             ? 'bg-primary-500/10'
-            : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+            : 'hover:bg-primary-500/10'}"
           onclick={() => onselect(hit.uid, hit.folder)}
         >
           <div class="flex items-center justify-between mb-1">

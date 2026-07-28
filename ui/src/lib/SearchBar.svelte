@@ -177,7 +177,7 @@
   ]
 </script>
 
-<div class="border-b border-surface-200 dark:border-surface-700 p-2 space-y-1.5" data-tour="search">
+<div class="border-b glass-panel p-2 space-y-1.5" data-tour="search">
   <!-- Row 1: search input — uses the shared `SearchInput` so the
        magnifier / clear-X chrome stays in sync with every other
        "Search …" surface in the app.  The operator-hint dropdown
@@ -195,7 +195,7 @@
     {#if showHints && query.length === 0}
       <!-- Operator hint dropdown — shown while focused + empty -->
       <div
-        class="absolute left-0 right-0 top-full mt-1 z-40 bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-700 rounded-md shadow-lg p-2 text-xs space-y-0.5"
+        class="absolute left-0 right-0 top-full mt-1 z-40 glass-float rounded-xl p-2 text-xs space-y-0.5"
       >
         <div class="font-semibold text-surface-500 mb-1">
           {m.search_tips_header()}
@@ -204,7 +204,7 @@
           <div
             role="button"
             tabindex="-1"
-            class="cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800 px-1.5 py-0.5 rounded"
+            class="cursor-pointer hover:bg-primary-500/10 transition-colors duration-150 ease-out px-1.5 py-0.5 rounded-lg"
             onmousedown={(e) => {
               e.preventDefault()
               insertOperator(tip.insert)
@@ -226,7 +226,7 @@
       id="search-scope"
       bind:value={scope}
       onchange={onScopeChange}
-      class="select text-xs py-1 px-1.5 rounded-md flex-1 min-w-0"
+      class="select text-xs py-1 px-1.5 rounded-lg flex-1 min-w-0"
       aria-label="Search scope"
       title="Search scope"
     >
@@ -241,10 +241,10 @@
     <div class="flex flex-wrap items-center gap-1">
       <button
         type="button"
-        class="chip text-xs px-2 py-0.5 rounded-full border transition
+        class="chip text-xs px-2 py-0.5 rounded-full border transition duration-150 ease-out
           {unread
           ? 'bg-primary-500/20 border-primary-500 text-primary-700 dark:text-primary-200'
-          : 'border-surface-300 dark:border-surface-600 hover:bg-surface-100 dark:hover:bg-surface-800'}"
+          : 'border-surface-300 dark:border-surface-600 hover:bg-primary-500/10'}"
         onclick={() => toggleChip('unread')}
         aria-pressed={unread}
       >
@@ -252,10 +252,10 @@
       </button>
       <button
         type="button"
-        class="chip text-xs px-2 py-0.5 rounded-full border transition
+        class="chip text-xs px-2 py-0.5 rounded-full border transition duration-150 ease-out
           {flagged
           ? 'bg-primary-500/20 border-primary-500 text-primary-700 dark:text-primary-200'
-          : 'border-surface-300 dark:border-surface-600 hover:bg-surface-100 dark:hover:bg-surface-800'}"
+          : 'border-surface-300 dark:border-surface-600 hover:bg-primary-500/10'}"
         onclick={() => toggleChip('flagged')}
         aria-pressed={flagged}
       >
@@ -263,10 +263,10 @@
       </button>
       <button
         type="button"
-        class="chip text-xs px-2 py-0.5 rounded-full border transition
+        class="chip text-xs px-2 py-0.5 rounded-full border transition duration-150 ease-out
           {hasAttachment
           ? 'bg-primary-500/20 border-primary-500 text-primary-700 dark:text-primary-200'
-          : 'border-surface-300 dark:border-surface-600 hover:bg-surface-100 dark:hover:bg-surface-800'}"
+          : 'border-surface-300 dark:border-surface-600 hover:bg-primary-500/10'}"
         onclick={() => toggleChip('hasAttachment')}
         aria-pressed={hasAttachment}
       >

@@ -229,7 +229,7 @@
        the primary New folder CTA, tonal-surface for the secondary
        Refresh. -->
   <div
-    class="flex items-center gap-3 px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+    class="flex items-center gap-3 px-6 py-3 border-b glass-panel"
   >
     <div class="flex-1 min-w-0 flex justify-start">
       <h2 class="text-xl font-semibold truncate">Nextcloud Files</h2>

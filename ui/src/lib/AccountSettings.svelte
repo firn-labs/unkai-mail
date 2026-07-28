@@ -1256,9 +1256,9 @@
           <li>
             <button
               type="button"
-              class="w-full text-left px-3 py-2 rounded-md text-sm flex items-center gap-2 transition-colors {active
+              class="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors {active
                 ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-                : 'hover:bg-surface-200 dark:hover:bg-surface-700 text-surface-700 dark:text-surface-200'}"
+                : 'hover:bg-primary-500/10 text-surface-700 dark:text-surface-200'}"
               onclick={() => (activeCategory = cat.id)}
               aria-current={active ? 'page' : undefined}
             >
@@ -1278,7 +1278,7 @@
     <!-- App Preferences (Issue #16) — always visible, independent
          of per-account loading state so the user can tweak tray /
          sync / notification behaviour even before adding an account. -->
-    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl mb-6">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-base font-semibold">General</h2>
         <div class="flex items-center gap-2">
@@ -1385,7 +1385,7 @@
                 <input
                   id="nominatim-base-url"
                   type="url"
-                  class="input flex-1 text-sm py-1 px-2 rounded-md"
+                  class="input flex-1 text-sm py-1 px-2 rounded-lg"
                   placeholder={DEFAULT_NOMINATIM_BASE_URL}
                   bind:value={appSettings.nominatim_base_url}
                   onchange={() => scheduleSave()}
@@ -1478,7 +1478,7 @@
           <label class="flex items-center gap-2 pt-1 pl-9 text-sm">
             <span class="shrink-0">{m.settings_general_language_label()}</span>
             <select
-              class="select px-2 py-1 text-sm rounded-md flex-1 max-w-65"
+              class="select px-2 py-1 text-sm rounded-lg flex-1 max-w-65"
               value={appSettings.ui_locale || (locales as readonly string[])[0]}
               onchange={(e) => {
                 const v = (e.currentTarget as HTMLSelectElement).value
@@ -1564,7 +1564,7 @@
     <!-- Mail-specific preferences: sync cadence + new-mail
          toast.  Account list is rendered by the gated section
          further down. -->
-    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl mb-6">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-base font-semibold">Mail preferences</h2>
         <div class="flex items-center gap-2">
@@ -1697,7 +1697,7 @@
         <label class="flex items-center gap-2">
           <span class="shrink-0">{m.settings_mail_mdn_label()}</span>
           <select
-            class="select px-2 py-1 text-sm rounded-md max-w-65"
+            class="select px-2 py-1 text-sm rounded-lg max-w-65"
             bind:value={appSettings.mdn_response_mode}
             onchange={() => scheduleSave()}
           >
@@ -1753,7 +1753,7 @@
               and use "Always show from [sender]" on the banner to add one.
             </p>
           {:else}
-            <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-md border border-surface-200 dark:border-surface-700 max-w-xl">
+            <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-lg border border-surface-200 dark:border-surface-700 max-w-xl">
               {#each trustedSenders as addr (addr)}
                 <li class="flex items-center gap-3 px-3 py-2">
                   <span class="flex-1 min-w-0 truncate text-sm font-mono">{addr}</span>
@@ -1776,7 +1776,7 @@
     <!-- Calendar preferences: default calendar + the two
          reminder toggles.  Both belong here because they're
          CalDAV / event-level concerns, not mail-app behaviour. -->
-    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl mb-6">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-base font-semibold">Calendar preferences</h2>
         {#if prefsSaveStatus === 'saving'}
@@ -1859,7 +1859,7 @@
           <label class="flex items-center gap-2 pt-2">
             <span class="shrink-0">Default calendar</span>
             <select
-              class="select px-2 py-1 text-sm rounded-md flex-1 max-w-[320px]"
+              class="select px-2 py-1 text-sm rounded-lg flex-1 max-w-[320px]"
               bind:value={appSettings.default_calendar_id}
               onchange={scheduleSave}
             >
@@ -1878,7 +1878,7 @@
     <!-- Appearance (Issue #17) — theme + light/dark mode picker.
          Changes apply live via `onThemeChange` so the user sees the
          result before navigating away from settings. -->
-    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl mb-6">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-base font-semibold">Appearance</h2>
       </div>
@@ -1982,9 +1982,9 @@
               <div class="relative">
                 <button
                   type="button"
-                  class="w-full text-left p-3 rounded-md border transition-colors {active
+                  class="w-full text-left p-3 rounded-lg border transition-colors {active
                     ? 'border-primary-500 bg-primary-500/10'
-                    : 'border-surface-300 dark:border-surface-700 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                    : 'border-surface-300 dark:border-surface-700 hover:bg-primary-500/10'}"
                   onclick={() => onThemeChange(theme.id, appSettings.theme_mode)}
                 >
                   <div class="font-medium flex items-center gap-2">
@@ -2070,9 +2070,9 @@
               {@const active = (appSettings.logo_style ?? 'storm') === style.id}
               <button
                 type="button"
-                class="flex flex-col items-center gap-1 p-2 rounded-md border transition-colors {active
+                class="flex flex-col items-center gap-1 p-2 rounded-lg border transition-colors {active
                   ? 'border-primary-500 bg-primary-500/10'
-                  : 'border-surface-300 dark:border-surface-700 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                  : 'border-surface-300 dark:border-surface-700 hover:bg-primary-500/10'}"
                 disabled={logoSaving}
                 aria-pressed={active}
                 onclick={() => void pickLogoStyle(style.id)}
@@ -2099,7 +2099,7 @@
       <p class="text-surface-500 text-center py-8">Loading accounts...</p>
 
     {:else if error}
-      <div class="text-sm text-red-500 p-4 bg-red-500/10 rounded-md mb-4">
+      <div class="text-sm text-red-500 p-4 bg-red-500/10 rounded-lg mb-4">
         {error}
       </div>
 
@@ -2137,7 +2137,7 @@
               onclick={() => openSignaturePopout(account)}
             ><Icon name="full-screen" size={18} /></button>
           {/snippet}
-          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg">
+          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl">
             <div class="flex items-start justify-between">
               <div class="flex items-start gap-3">
                 <!-- Reorder handle: ▲ / ▼ swap places with the
@@ -2147,7 +2147,7 @@
                 <div class="flex flex-col gap-1 mt-1">
                   <button
                     type="button"
-                    class="w-5 h-5 flex items-center justify-center rounded text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700 disabled:opacity-30"
+                    class="w-5 h-5 flex items-center justify-center rounded text-surface-500 hover:bg-primary-500/10 disabled:opacity-30"
                     disabled={accountIdx === 0}
                     title="Move up"
                     aria-label="Move account up"
@@ -2155,7 +2155,7 @@
                   >▲</button>
                   <button
                     type="button"
-                    class="w-5 h-5 flex items-center justify-center rounded text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700 disabled:opacity-30"
+                    class="w-5 h-5 flex items-center justify-center rounded text-surface-500 hover:bg-primary-500/10 disabled:opacity-30"
                     disabled={accountIdx === sortedRows.length - 1}
                     title="Move down"
                     aria-label="Move account down"
@@ -2197,7 +2197,7 @@
                 <button
                   id="emoji-{account.id}"
                   type="button"
-                  class="input text-lg text-center w-16 px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700"
+                  class="input text-lg text-center w-16 px-2 py-1 rounded-lg hover:bg-primary-500/10"
                   aria-label="Account emoji avatar"
                   onclick={(e) => {
                     e.stopPropagation()
@@ -2230,7 +2230,7 @@
                 placeholder={account.display_name}
                 value={account.person_name ?? ''}
                 onchange={(e) => void onPersonNameChange(account, (e.currentTarget as HTMLInputElement).value)}
-                class="input flex-1 text-sm px-3 py-1 rounded-md"
+                class="input flex-1 text-sm px-3 py-1 rounded-lg"
                 aria-label="Sender display name"
               />
             </div>
@@ -2321,7 +2321,7 @@
                   <div class="relative">
                     <button
                       type="button"
-                      class="input text-lg text-center w-14 px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700"
+                      class="input text-lg text-center w-14 px-2 py-1 rounded-lg hover:bg-primary-500/10"
                       aria-label="Icon"
                       onclick={(e) => {
                         e.stopPropagation()
@@ -2353,7 +2353,7 @@
                     placeholder="bank"
                     bind:value={iconDrafts[account.id].keyword}
                     onkeydown={(e) => e.key === 'Enter' && addIconRule(account)}
-                    class="input flex-1 text-sm px-3 py-1 rounded-md"
+                    class="input flex-1 text-sm px-3 py-1 rounded-lg"
                     aria-label="Folder name keyword"
                   />
                   <button
@@ -2438,7 +2438,7 @@
         </header>
 
         <!-- Local backup -->
-        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-3">
+        <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4 space-y-3">
           <div>
             <h3 class="font-medium leading-tight">Local backup</h3>
             <p class="text-xs text-surface-500 leading-snug mt-1">
@@ -2461,7 +2461,7 @@
         </div>
 
         <!-- Nextcloud recovery sync -->
-        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-3">
+        <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4 space-y-3">
           <div>
             <h3 class="font-medium leading-tight">Save to Nextcloud</h3>
             <p class="text-xs text-surface-500 leading-snug mt-1">
@@ -2490,7 +2490,7 @@
               </label>
               <select
                 id="sync-target"
-                class="select w-72 max-w-full text-sm px-3 py-1.5 rounded-md"
+                class="select w-72 max-w-full text-sm px-3 py-1.5 rounded-lg"
                 value={syncState.targetNcId ?? ''}
                 onchange={(e) => {
                   const v = (e.currentTarget as HTMLSelectElement).value
@@ -2545,7 +2545,7 @@
     onmousedown={(e) => { if (e.target === e.currentTarget) closeServerEdit() }}
     onkeydown={(e) => { if (e.key === 'Escape') closeServerEdit() }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-lg max-w-full mx-4 p-6 space-y-5">
+    <div class="glass-float rounded-2xl w-lg max-w-full mx-4 p-6 space-y-5">
       <div class="flex items-start justify-between gap-3">
         <div>
           <h3 class="text-base font-semibold">Connection settings</h3>
@@ -2575,7 +2575,7 @@
           <input
             type="text"
             bind:value={draft.imap_host}
-            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+            class="input w-full text-sm px-3 py-2 rounded-lg mt-1"
           />
         </label>
         <label class="block">
@@ -2583,7 +2583,7 @@
           <input
             type="number"
             bind:value={draft.imap_port}
-            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+            class="input w-full text-sm px-3 py-2 rounded-lg mt-1"
           />
         </label>
         <label class="block">
@@ -2591,7 +2591,7 @@
           <input
             type="text"
             bind:value={draft.smtp_host}
-            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+            class="input w-full text-sm px-3 py-2 rounded-lg mt-1"
           />
         </label>
         <label class="block">
@@ -2599,7 +2599,7 @@
           <input
             type="number"
             bind:value={draft.smtp_port}
-            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+            class="input w-full text-sm px-3 py-2 rounded-lg mt-1"
           />
         </label>
         <label class="block col-span-2">
@@ -2609,7 +2609,7 @@
             autocomplete="new-password"
             placeholder="Leave empty to keep current password"
             bind:value={passwordDrafts[acc.id]}
-            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+            class="input w-full text-sm px-3 py-2 rounded-lg mt-1"
           />
           <span class="block text-xs text-surface-400 mt-1">
             When set, replaces the password stored in your OS keychain. Takes effect on the next IMAP/SMTP connection.
@@ -2642,7 +2642,7 @@
     tabindex="-1"
     onmousedown={(e) => { if (e.target === e.currentTarget && !trustBusy) cancelRetrust() }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-md max-w-full p-5">
+    <div class="glass-float rounded-2xl w-md max-w-full p-5">
       <h3 class="text-base font-semibold mb-1">Trust this server certificate?</h3>
       <p class="text-xs text-surface-500 mb-3">
         For <span class="font-medium text-surface-700 dark:text-surface-300">{trustPrompt.account.email}</span>
@@ -2690,7 +2690,7 @@
      `startRetrust` itself errored (no modal opens) so the user
      still sees what went wrong. -->
 {#if trustError && !trustPrompt}
-  <div class="fixed bottom-4 right-4 z-50 max-w-sm bg-red-500/95 text-white text-sm rounded-md shadow-lg px-3 py-2">
+  <div class="fixed bottom-4 right-4 z-50 max-w-sm bg-red-500/95 text-white text-sm rounded-lg shadow-lg px-3 py-2">
     {trustError}
     <button
       class="ml-2 underline"
@@ -2714,7 +2714,7 @@
     aria-modal="true"
     aria-labelledby="restart-required-title"
   >
-    <div class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl">
+    <div class="card p-5 max-w-sm w-[90%] glass-float rounded-2xl">
       <h2 id="restart-required-title" class="text-base font-semibold mb-2">
         {m.settings_general_language_restart_title()}
       </h2>
@@ -2763,7 +2763,7 @@
     height: 18rem;
     min-height: 18rem;
     border: 1px solid var(--color-surface-300);
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
     overflow: hidden;
     display: flex;
     flex-direction: column;

@@ -51,6 +51,62 @@ body {
   @apply h-full;
 }
 
+/* ── Glass aesthetic (#451) ──────────────────────────────────────────── */
+/* Frosted-glass chrome derived entirely from the active Skeleton theme's
+   surface scale, so every stock theme and tier-2 user import keeps its
+   own tint. Two utilities only:
+     .glass-panel — persistent layout chrome (IconRail, Sidebar, headers)
+     .glass-float — floating layers (modals, popovers, dropdowns)
+   backdrop-filter stays exclusive to these two classes; never apply it
+   per list row (MailList renders thousands) or stack two glass layers. */
+:root {
+  --glass-blur: 18px;
+  --glass-opacity-light: 65%;
+  --glass-opacity-dark: 60%;
+  --glass-border: color-mix(in oklab, var(--color-surface-500) 20%, transparent);
+  --glass-shadow: 0 8px 32px -12px color-mix(in oklab, var(--color-surface-950) 45%, transparent);
+}
+
+.glass-panel {
+  background: color-mix(in oklab, var(--color-surface-50) var(--glass-opacity-light), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border-color: var(--glass-border);
+}
+
+[data-mode='dark'] .glass-panel {
+  background: color-mix(in oklab, var(--color-surface-900) var(--glass-opacity-dark), transparent);
+}
+
+.glass-float {
+  background: color-mix(in oklab, var(--color-surface-50) 80%, transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+[data-mode='dark'] .glass-float {
+  background: color-mix(in oklab, var(--color-surface-900) 80%, transparent);
+}
+
+/* WebKitGTK (Linux Tauri) handles backdrop-filter unreliably — the
+   opaque fallback must look complete on its own, not like a bug. */
+@supports not (backdrop-filter: blur(1px)) {
+  .glass-panel {
+    background: var(--color-surface-100);
+  }
+  [data-mode='dark'] .glass-panel {
+    background: var(--color-surface-800);
+  }
+  .glass-float {
+    background: var(--color-surface-100);
+  }
+  [data-mode='dark'] .glass-float {
+    background: var(--color-surface-800);
+  }
+}
+
 /* ── Email body renderer ─────────────────────────────────────────────── */
 /* Scoped resets for HTML email content injected via {@html}. We can't
    scope <style> tags from the email (they're stripped by DOMPurify), but

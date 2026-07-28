@@ -178,7 +178,7 @@
        is doing about it — a queue with no explanation is a
        worry; a queue with "we'll retry on the next sync" reads
        as a calm pending state. -->
-  <header class="px-4 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800/60">
+  <header class="px-4 py-3 border-b glass-panel">
     <div class="flex items-start gap-2">
       <span class="text-warning-500 shrink-0 mt-0.5">
         <Icon name={rowsHaveErrors() ? 'warning' : 'time'} size={16} />
@@ -223,7 +223,7 @@
             {row.lastError ? 'border-l-error-500' : 'border-l-transparent'}
             {selectedId === row.id
               ? 'bg-primary-500/10'
-              : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+              : 'hover:bg-primary-500/10'}"
           onclick={() => onselect?.(row)}
           onkeydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {

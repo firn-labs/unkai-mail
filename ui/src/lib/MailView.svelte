@@ -2320,7 +2320,7 @@
              input + button on a second row so the user reads the
              "what's going on" copy before reaching for the field. -->
         <div
-          class="mt-2 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
+          class="mt-2 rounded-lg border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
         >
           <!-- Explanation copy uses the same muted surface tone as
                the From-line in the header so the badge reads as
@@ -2333,7 +2333,7 @@
           <div class="flex items-center gap-2">
             <input
               type="password"
-              class="input text-sm px-2 py-1.5 rounded-md flex-1"
+              class="input text-sm px-2 py-1.5 rounded-lg flex-1"
               placeholder="PGP passphrase"
               bind:value={decryptPassphrase}
               disabled={decrypting}
@@ -2384,7 +2384,7 @@
          of the reply/forward/mark-read cluster — a draft is the user's
          own unfinished work, so re-opening it in Compose is the only
          gesture that makes sense. -->
-    <div class="flex items-center gap-2 px-6 py-2 border-b border-surface-200 dark:border-surface-700 text-sm">
+    <div class="flex items-center gap-2 px-6 py-2 border-b glass-panel text-sm">
       <!-- Toolbar action buttons (#179): icon-only with hover
            tooltips.  Labels live in `title` + `aria-label` so the
            strip stays compact and the visual rhythm is uniform.
@@ -2475,7 +2475,7 @@
                  dismiss listener so the option handlers get to
                  run before the menu unmounts. -->
             <div
-              class="absolute right-0 top-full mt-1 z-50 min-w-32 py-1 rounded-md shadow-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 text-sm"
+              class="absolute right-0 top-full mt-1 z-50 min-w-32 py-1 rounded-xl glass-float text-sm"
               role="menu"
               tabindex="-1"
               onmousedown={(e) => e.stopPropagation()}
@@ -2582,7 +2582,7 @@
             {@const isMarkdown = isMarkdownAttachment(att)}
             {@const menuOpen = openMenuFor === att.part_id}
             {@const emoji = attachmentEmoji(att)}
-            <li class="relative flex items-center gap-2 pl-3 pr-1 py-1.5 rounded-md bg-surface-100 dark:bg-surface-800 text-sm">
+            <li class="relative flex items-center gap-2 pl-3 pr-1 py-1.5 rounded-lg bg-surface-100 dark:bg-surface-800 text-sm">
               {#if emoji}
                 <span class="text-base">{emoji}</span>
               {:else}
@@ -2705,7 +2705,7 @@
                 ></button>
                 <div
                   role="menu"
-                  class="absolute right-0 top-full mt-1 z-50 min-w-52 rounded-md shadow-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 py-1 text-sm"
+                  class="absolute right-0 top-full mt-1 z-50 min-w-52 rounded-xl glass-float py-1 text-sm"
                 >
                   {#if isOffice}
                     <button
@@ -2885,7 +2885,7 @@
         if (e.key === 'Escape') unsafeLinkPrompt = null
       }}
     >
-      <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-md max-w-full mx-4 p-6 space-y-4">
+      <div class="glass-float rounded-2xl w-md max-w-full mx-4 p-6 space-y-4">
         <div class="flex items-start gap-3">
           <span class="text-2xl" aria-hidden="true">⚠️</span>
           <div class="flex-1 min-w-0">

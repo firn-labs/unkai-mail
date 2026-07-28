@@ -163,7 +163,7 @@
   role="dialog"
   aria-modal="true"
 >
-  <div class="w-[520px] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col">
+  <div class="w-[520px] max-h-[90vh] glass-float rounded-2xl flex flex-col">
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
       <h2 class="text-base font-semibold">New Talk room</h2>
       <button
@@ -178,7 +178,7 @@
         <label class="text-xs w-24 text-surface-500" for="talk-room-name">Room name</label>
         <input
           id="talk-room-name"
-          class="input flex-1 px-3 py-2 text-sm rounded-md"
+          class="input flex-1 px-3 py-2 text-sm rounded-lg"
           bind:value={roomName}
           placeholder="Project sync"
           autocomplete="off"

@@ -687,12 +687,12 @@
          padding so the corner-anchored "×" button doesn't crowd
          the step indicator below it. -->
     <div
-      class="card relative p-6 {canCancel ? 'pt-10' : ''} bg-surface-100 dark:bg-surface-800 rounded-xl shadow-lg"
+      class="card relative p-6 {canCancel ? 'pt-10' : ''} glass-float rounded-2xl"
     >
       {#if canCancel}
         <button
           type="button"
-          class="absolute top-1 right-1 p-1.5 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
+          class="absolute top-1 right-1 p-1.5 rounded-lg text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
           onclick={handleCancel}
           aria-label={m.account_setup_close_label()}
           title={m.account_setup_close_title()}
@@ -759,7 +759,7 @@
                 type="text"
                 bind:value={displayName}
                 placeholder={m.account_setup_account_name_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
               />
             </div>
             <span class="block text-xs text-surface-500 mt-1">
@@ -776,7 +776,7 @@
                 type="text"
                 bind:value={personName}
                 placeholder={m.account_setup_your_name_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
               />
             </div>
             <span class="block text-xs text-surface-500 mt-1">
@@ -793,7 +793,7 @@
                 type="email"
                 bind:value={email}
                 placeholder={m.account_setup_email_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
                 onblur={autoFillServers}
                 disabled={discovering}
               />
@@ -819,7 +819,7 @@
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_provider_label()}</span>
             <select
-              class="select w-full mt-1 px-3 py-2 text-sm rounded-md"
+              class="select w-full mt-1 px-3 py-2 text-sm rounded-lg"
               bind:value={selectedPresetId}
               onchange={() => applyPreset(selectedPresetId)}
             >
@@ -845,7 +845,7 @@
                password over IMAP.  Surface that *before* the user
                types credentials that can't work. -->
           {#if activePreset?.hint === 'enable-remote-access'}
-            <div class="text-xs text-surface-600 dark:text-surface-400 mb-4 p-3 rounded-md border border-warning-500/40 bg-warning-500/5 flex items-start gap-2">
+            <div class="text-xs text-surface-600 dark:text-surface-400 mb-4 p-3 rounded-lg border border-warning-500/40 bg-warning-500/5 flex items-start gap-2">
               <span class="mt-0.5"><Icon name="warning" size={14} /></span>
               <span>{m.account_setup_provider_hint_enable_remote_access({ provider: activePreset.display_name })}</span>
             </div>
@@ -860,7 +860,7 @@
                 type="text"
                 bind:value={imapHost}
                 placeholder={m.account_setup_imap_server_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
               />
             </div>
           </label>
@@ -869,7 +869,7 @@
             <input
               type="number"
               bind:value={imapPort}
-              class="input w-full mt-1 px-3 py-2 rounded-md"
+              class="input w-full mt-1 px-3 py-2 rounded-lg"
             />
           </label>
           <label class="block mb-4">
@@ -882,7 +882,7 @@
                 type="password"
                 bind:value={password}
                 placeholder={m.account_setup_password_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
                 autocomplete="current-password"
               />
             </div>
@@ -913,7 +913,7 @@
                 type="text"
                 bind:value={smtpHost}
                 placeholder={m.account_setup_smtp_server_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
               />
             </div>
           </label>
@@ -922,13 +922,13 @@
             <input
               type="number"
               bind:value={smtpPort}
-              class="input w-full mt-1 px-3 py-2 rounded-md"
+              class="input w-full mt-1 px-3 py-2 rounded-lg"
             />
           </label>
 
           <!-- JMAP toggle.  A modern protocol some servers offer
                in addition to (or instead of) IMAP/SMTP. -->
-          <div class="flex items-center justify-between gap-3 mb-4 p-3 rounded-md bg-surface-200/50 dark:bg-surface-700/40">
+          <div class="flex items-center justify-between gap-3 mb-4 p-3 rounded-lg bg-surface-200/50 dark:bg-surface-700/40">
             <div class="flex items-start gap-2 min-w-0">
               <span class="text-primary-500 mt-0.5"><Icon name="sync" size={16} /></span>
               <div class="min-w-0">
@@ -979,7 +979,7 @@
             {m.account_setup_nextcloud_explainer()}
           </p>
           {#if ncAccount}
-            <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-sm text-surface-700 dark:text-surface-300 flex items-start gap-2">
+            <div class="mb-4 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-sm text-surface-700 dark:text-surface-300 flex items-start gap-2">
               <span class="text-success-500 mt-0.5"><Icon name="success" size={16} /></span>
               <span>
                 {m.account_setup_nextcloud_connected({
@@ -1002,7 +1002,7 @@
           </p>
 
           {#if davConfigured}
-            <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-sm text-surface-700 dark:text-surface-300 flex items-start gap-2">
+            <div class="mb-4 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-sm text-surface-700 dark:text-surface-300 flex items-start gap-2">
               <span class="text-success-500 mt-0.5"><Icon name="success" size={16} /></span>
               <span>
                 {#if davConfigured.kind === 'dav'}
@@ -1020,7 +1020,7 @@
                 { value: 'dav', label: m.account_setup_dav_option_dav(), hint: m.account_setup_dav_option_dav_hint() },
                 { value: 'local', label: m.account_setup_dav_option_local(), hint: m.account_setup_dav_option_local_hint() },
               ] as opt (opt.value)}
-                <label class="flex items-start gap-2 p-3 rounded-md cursor-pointer border transition-colors {davChoice === opt.value
+                <label class="flex items-start gap-2 p-3 rounded-lg cursor-pointer border transition-colors {davChoice === opt.value
                   ? 'border-primary-500/60 bg-primary-500/5'
                   : 'border-surface-300 dark:border-surface-600 hover:bg-surface-200/40 dark:hover:bg-surface-700/30'}">
                   <input
@@ -1045,7 +1045,7 @@
                   type="text"
                   bind:value={davDisplayName}
                   placeholder={m.account_setup_dav_display_name_placeholder()}
-                  class="input w-full mt-1 px-3 py-2 rounded-md"
+                  class="input w-full mt-1 px-3 py-2 rounded-lg"
                 />
               </label>
             {/if}
@@ -1057,7 +1057,7 @@
                   type="text"
                   bind:value={davServerUrl}
                   placeholder="https://dav.example.com"
-                  class="input w-full mt-1 px-3 py-2 rounded-md"
+                  class="input w-full mt-1 px-3 py-2 rounded-lg"
                 />
               </label>
               <label class="block mb-3">
@@ -1065,7 +1065,7 @@
                 <input
                   type="text"
                   bind:value={davUsername}
-                  class="input w-full mt-1 px-3 py-2 rounded-md"
+                  class="input w-full mt-1 px-3 py-2 rounded-lg"
                 />
               </label>
               <label class="block mb-3">
@@ -1073,7 +1073,7 @@
                 <input
                   type="password"
                   bind:value={davPassword}
-                  class="input w-full mt-1 px-3 py-2 rounded-md"
+                  class="input w-full mt-1 px-3 py-2 rounded-lg"
                   autocomplete="current-password"
                 />
               </label>
@@ -1092,7 +1092,7 @@
               </div>
 
               {#if davError}
-                <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-md flex items-start gap-2">
+                <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-lg flex items-start gap-2">
                   <span class="mt-0.5"><Icon name="error" size={16} /></span>
                   <span>{davError}</span>
                 </div>
@@ -1102,7 +1102,7 @@
                    as the IMAP step's, but backed by DAV-scoped state
                    so trusting retries addDavSource, not submit(). -->
               {#if davPendingCert}
-                <div class="mb-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
+                <div class="mb-4 p-4 rounded-lg border border-warning-500/40 bg-warning-500/5">
                   <p class="text-sm font-medium mb-1 flex items-center gap-2">
                     <Icon name="lock" size={16} />
                     {m.account_setup_cert_title()}
@@ -1146,7 +1146,7 @@
               {/if}
 
               {#if davTrustedCerts.length > 0 && !davPendingCert}
-                <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
+                <div class="mb-4 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
                   <Icon name="verified" size={14} />
                   {#if davTrustedCerts.length === 1}
                     {m.account_setup_cert_trusting_one()}
@@ -1176,7 +1176,7 @@
 
       <!-- Error message -->
       {#if error}
-        <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-md flex items-start gap-2">
+        <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-lg flex items-start gap-2">
           <span class="mt-0.5"><Icon name="error" size={16} /></span>
           <span>{error}</span>
         </div>
@@ -1188,7 +1188,7 @@
            compare against their server, then chooses whether to
            trust it for this account. -->
       {#if pendingCert}
-        <div class="mb-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
+        <div class="mb-4 p-4 rounded-lg border border-warning-500/40 bg-warning-500/5">
           <p class="text-sm font-medium mb-1 flex items-center gap-2">
             <Icon name="lock" size={16} />
             {m.account_setup_cert_title()}
@@ -1232,7 +1232,7 @@
       {/if}
 
       {#if trustedCerts.length > 0 && !pendingCert}
-        <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
+        <div class="mb-4 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
           <Icon name="verified" size={14} />
           {#if trustedCerts.length === 1}
             {m.account_setup_cert_trusting_one()}
@@ -1313,7 +1313,7 @@
     height: 16rem;
     min-height: 16rem;
     border: 1px solid var(--color-surface-300);
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
     overflow: hidden;
     display: flex;
     flex-direction: column;

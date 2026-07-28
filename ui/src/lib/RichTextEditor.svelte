@@ -1687,19 +1687,18 @@
     gap: 0.25rem;
     min-width: 3.75rem;
     padding: 0.5rem 0.625rem;
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
     background: transparent;
     border: none;
     color: inherit;
     cursor: pointer;
-    transition: background 0.1s, color 0.1s;
+    transition: background 150ms ease-out, color 150ms ease-out;
     position: relative;
   }
+  /* Theme-derived translucent hover (#451) — matches the
+     hover:bg-primary-500/10 accent the Tailwind chrome uses. */
   :global(.rt-btn:hover:not(:disabled)) {
-    background: var(--color-surface-200);
-  }
-  :global([data-mode='dark'] .rt-btn:hover:not(:disabled)) {
-    background: var(--color-surface-700);
+    background: color-mix(in oklab, var(--color-primary-500) 10%, transparent);
   }
   :global(.rt-btn:disabled) {
     opacity: 0.4;
@@ -1972,7 +1971,7 @@
           </button>
           {#if showFontPicker}
             <div
-              class="fixed z-60 mt-0 w-64 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1 flex flex-col"
+              class="fixed z-60 mt-0 w-64 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1 flex flex-col"
               style="left: {Math.min(fontPickerPos.x, window.innerWidth - 272)}px; top: {fontPickerPos.y}px;"
               role="menu"
               tabindex="-1"
@@ -1982,7 +1981,7 @@
               <div class="px-2 pt-1 pb-2 border-b border-surface-200 dark:border-surface-700">
                 <input
                   type="search"
-                  class="input w-full text-sm px-2 py-1 rounded-md"
+                  class="input w-full text-sm px-2 py-1 rounded-lg"
                   placeholder="Search fonts ({systemFonts.length} system)"
                   bind:value={fontPickerQuery}
                 />
@@ -2090,7 +2089,7 @@
               role="dialog"
               aria-label="Insert link"
               tabindex="-1"
-              class="fixed z-60 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md p-2 flex items-center gap-2"
+              class="fixed z-60 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md p-2 flex items-center gap-2"
               style="left: {Math.min(linkPopoverPos.x, window.innerWidth - 320)}px; top: {linkPopoverPos.y}px; width: 304px;"
               onclick={(e) => e.stopPropagation()}
               onmousedown={(e) => e.stopPropagation()}
@@ -2120,7 +2119,7 @@
               {#if linkPopoverHasExisting}
                 <button
                   type="button"
-                  class="text-xs px-2 py-1 rounded text-error-500 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  class="text-xs px-2 py-1 rounded text-error-500 hover:bg-primary-500/10"
                   title="Remove link"
                   onclick={removeLink}
                 >Remove</button>
@@ -2159,7 +2158,7 @@
           {#if showTablePicker}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="fixed z-60 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg"
+              class="fixed z-60 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg shadow-lg"
               style="left: {Math.min(tablePickerPos.x, window.innerWidth - 200)}px; top: {tablePickerPos.y}px;"
               onmouseleave={() => { tableHoverRows = 0; tableHoverCols = 0 }}
               onkeydown={(e) => e.key === 'Escape' && (showTablePicker = false)}
@@ -2352,7 +2351,7 @@
      popup never lingers in the DOM tree when no `@` is active. -->
 {#if mentionPicker.visible}
   <ul
-    class="fixed z-60 max-h-72 min-w-72 overflow-y-auto rounded-md border border-surface-300
+    class="fixed z-60 max-h-72 min-w-72 overflow-y-auto rounded-lg border border-surface-300
            dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
     style="left: {mentionPicker.position.left}px; top: {mentionPicker.position.top}px;"
     role="listbox"
@@ -2418,7 +2417,7 @@
        allocating the popup at all in the common case where the
        user never types `/`. -->
   <ul
-    class="fixed z-60 max-h-72 min-w-64 overflow-y-auto rounded-md border border-surface-300
+    class="fixed z-60 max-h-72 min-w-64 overflow-y-auto rounded-lg border border-surface-300
            dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
     style="left: {attachmentPicker.position.left}px; top: {attachmentPicker.position.top}px; display: {attachmentPicker.visible ? 'block' : 'none'};"
     role="listbox"
