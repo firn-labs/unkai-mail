@@ -2219,7 +2219,11 @@
   {:else if email}
     <!-- Email header -->
     <div class="p-6 border-b border-surface-200 dark:border-surface-700">
-      <div class="flex items-start justify-between mb-2 gap-4">
+      <!-- `flex-wrap` (#454): on a narrow pane the badge/date cluster
+           drops below the subject instead of clipping past the
+           pane's right edge (the cluster is shrink-0 by design so
+           the date never squashes). -->
+      <div class="flex flex-wrap items-start justify-between mb-2 gap-x-4 gap-y-1">
         <h2 class="text-xl font-semibold flex items-center gap-2 min-w-0">
           {#if shownPinned}
             <span
@@ -2384,7 +2388,13 @@
          of the reply/forward/mark-read cluster — a draft is the user's
          own unfinished work, so re-opening it in Compose is the only
          gesture that makes sense. -->
-    <div class="flex items-center gap-2 px-6 py-2 border-b glass-panel text-sm">
+    <!-- `flex-wrap` (#454): the reading pane absorbs all the shrink
+         when the window narrows (the sidebar + list columns are
+         fixed-width), and the app shell clips overflow — without
+         wrapping, the right-side buttons (move / archive / delete)
+         silently vanish with no way to scroll them back. Wrapping
+         keeps every action visible on a second row instead. -->
+    <div class="flex flex-wrap items-center gap-2 px-6 py-2 border-b glass-panel text-sm">
       <!-- Toolbar action buttons (#179): icon-only with hover
            tooltips.  Labels live in `title` + `aria-label` so the
            strip stays compact and the visual rhythm is uniform.
