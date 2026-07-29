@@ -33,16 +33,20 @@
 use std::sync::Arc;
 
 use rmcp::ErrorData;
-use rmcp::model::{CallToolResult, ContentBlock, JsonObject};
+use rmcp::model::{CallToolResult, JsonObject};
 use serde_json::{Value, json};
 use unkai_core::mail_util;
 use unkai_core::models::{Account, Email, OutgoingEmail};
 use unkai_imap::ImapClient;
 use unkai_smtp::build_outgoing_message;
 use unkai_store::cache::{SearchFilters, SearchScope};
-use unkai_store::{account_store, credentials};
+use unkai_store::credentials;
 
 use crate::registry::{ToolAccess, ToolContext, ToolDescriptor, ToolRegistry};
+use crate::util::{
+    arg, internal, invalid, json_result, load_accounts, optional_str, optional_str_list,
+    optional_u32, require_known_account, required_str, required_str_list, required_u32, schema,
+};
 
 /// What replaces bodies and snippets of encrypted messages while
 /// the expose toggle is off.  Public so tests (and the docs issue,
@@ -65,6 +69,7 @@ pub(crate) fn register_mail_tools(registry: &mut ToolRegistry) {
             id: "search_mail",
             category: "mail",
             access: ToolAccess::Read,
+            requires: None,
             description:
                 "Full-text search over the user's locally synced mail. The query combines free \
                  text with operators, all AND-ed: from:, to:, cc:, subject:, body: (quote \
@@ -107,6 +112,7 @@ pub(crate) fn register_mail_tools(registry: &mut ToolRegistry) {
             id: "get_message",
             category: "mail",
             access: ToolAccess::Read,
+            requires: None,
             description:
                 "Read one cached message: envelope fields plus the plain-text body (HTML-only \
                  mail is converted to text). Bodies of end-to-end-encrypted messages are \
@@ -123,6 +129,7 @@ pub(crate) fn register_mail_tools(registry: &mut ToolRegistry) {
             id: "get_thread",
             category: "mail",
             access: ToolAccess::Read,
+            requires: None,
             description: "List every cached message in the same conversation (thread) as the given \
                  message, newest first. Returns envelope data only — no bodies; call \
                  get_message per member for content. Threads are scoped to one folder.",
@@ -136,6 +143,7 @@ pub(crate) fn register_mail_tools(registry: &mut ToolRegistry) {
             id: "list_folders",
             category: "mail",
             access: ToolAccess::Read,
+            requires: None,
             description: "List one account's mail folders as Unkai has them synced, including IMAP \
                  special-use attributes (\\Drafts, \\Sent, \\Trash, …) and unread counts.",
         },
@@ -157,6 +165,7 @@ pub(crate) fn register_mail_tools(registry: &mut ToolRegistry) {
             id: "list_accounts",
             category: "mail",
             access: ToolAccess::Read,
+            requires: None,
             description:
                 "List the mail accounts configured in Unkai Mail: id, display name, and email \
                  address. Use the id as account_id in every other mail tool.",
@@ -170,6 +179,7 @@ pub(crate) fn register_mail_tools(registry: &mut ToolRegistry) {
             id: "create_draft",
             category: "mail",
             access: ToolAccess::Write,
+            requires: None,
             description:
                 "Create a draft in the account's Drafts folder (IMAP APPEND — the draft also \
                  appears on the user's other devices). The draft is NOT sent and there is no \
@@ -494,14 +504,42 @@ async fn create_draft(
 
     let outgoing =
         build_draft_outgoing(&account, to, cc, bcc, subject, body, reply_parent.as_ref());
-    let message = build_outgoing_message(&outgoing)
+    let saved = append_draft(&ctx, &account, &outgoing).await?;
+
+    Ok(json_result(json!({
+        "status": "draft_created",
+        "account_id": account_id,
+        "folder": saved.folder,
+        "uid": saved.uid,
+        "note": "The draft was saved, not sent. The user can review and send it from Unkai Mail.",
+    })))
+}
+
+/// Where an appended draft landed.  `uid: None` means the UID
+/// couldn't be discovered afterwards — the draft itself is fine.
+pub(crate) struct SavedDraft {
+    pub folder: String,
+    pub uid: Option<u32>,
+}
+
+/// Build the MIME message for `outgoing` and APPEND it to the
+/// account's Drafts folder — the shared write path behind
+/// `create_draft` and the `create_meeting_invite` composite
+/// (#441).  IMAP only; the caller has already screened out JMAP
+/// accounts.
+pub(crate) async fn append_draft(
+    ctx: &ToolContext,
+    account: &Account,
+    outgoing: &OutgoingEmail,
+) -> Result<SavedDraft, ErrorData> {
+    let message = build_outgoing_message(outgoing)
         .map_err(|e| invalid(format!("could not build the draft message: {e}")))?;
     let raw = message.formatted();
     let message_id = mail_util::extract_message_id(&raw);
 
     let folders = ctx
         .cache
-        .get_folders(&account_id)
+        .get_folders(&account.id)
         .map_err(|e| internal(format!("cache read failed: {e}")))?;
     let drafts_folder = mail_util::pick_drafts_folder(&folders).ok_or_else(|| {
         ErrorData::invalid_request(
@@ -552,13 +590,10 @@ async fn create_draft(
 
     append_result.map_err(|e| internal(format!("IMAP APPEND to '{drafts_folder}' failed: {e}")))?;
 
-    Ok(json_result(json!({
-        "status": "draft_created",
-        "account_id": account_id,
-        "folder": drafts_folder,
-        "uid": uid,
-        "note": "The draft was saved, not sent. The user can review and send it from Unkai Mail.",
-    })))
+    Ok(SavedDraft {
+        folder: drafts_folder,
+        uid,
+    })
 }
 
 /// Assemble the `OutgoingEmail` for a new draft.  Pure — split out
@@ -572,7 +607,7 @@ async fn create_draft(
 /// itself per RFC 5322 §3.6.4.  A parent without a Message-ID
 /// yields a draft that sends fine but threads as an orphan — same
 /// trade-off the in-app reply flow makes.
-fn build_draft_outgoing(
+pub(crate) fn build_draft_outgoing(
     account: &Account,
     to: Vec<String>,
     cc: Vec<String>,
@@ -629,103 +664,13 @@ async fn expose_decrypted(ctx: &ToolContext) -> bool {
     ctx.settings.read().await.mcp_expose_decrypted_content
 }
 
-fn load_accounts(ctx: &ToolContext) -> Result<Vec<Account>, ErrorData> {
-    account_store::load_accounts(&ctx.cache)
-        .map_err(|e| internal(format!("could not load accounts: {e}")))
-}
-
-/// Reject unknown account ids with a pointer at `list_accounts` —
-/// without this, a typo'd id would just return an empty folder
-/// list and send the agent down a "no folders synced" dead end.
-fn require_known_account(ctx: &ToolContext, account_id: &str) -> Result<(), ErrorData> {
-    if load_accounts(ctx)?.iter().any(|a| a.id == account_id) {
-        Ok(())
-    } else {
-        Err(invalid(format!(
-            "unknown account_id '{account_id}' — call list_accounts for valid ids"
-        )))
-    }
-}
-
 // ── Argument parsing ────────────────────────────────────────────
-
-fn invalid(message: impl Into<String>) -> ErrorData {
-    ErrorData::invalid_params(message.into(), None)
-}
-
-fn internal(message: impl Into<String>) -> ErrorData {
-    ErrorData::internal_error(message.into(), None)
-}
 
 fn message_not_cached() -> ErrorData {
     invalid(
         "message not found in the local cache — only mail Unkai has already synced is \
          readable; find messages via search_mail, or open the folder in Unkai Mail",
     )
-}
-
-fn arg<'a>(args: &'a Option<JsonObject>, key: &str) -> Option<&'a Value> {
-    args.as_ref()
-        .and_then(|a| a.get(key))
-        .filter(|v| !v.is_null())
-}
-
-fn optional_str(args: &Option<JsonObject>, key: &str) -> Result<Option<String>, ErrorData> {
-    match arg(args, key) {
-        None => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(invalid(format!("parameter '{key}' must be a string"))),
-    }
-}
-
-fn required_str(args: &Option<JsonObject>, key: &str) -> Result<String, ErrorData> {
-    optional_str(args, key)?
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| invalid(format!("parameter '{key}' is required")))
-}
-
-fn optional_u32(args: &Option<JsonObject>, key: &str) -> Result<Option<u32>, ErrorData> {
-    match arg(args, key) {
-        None => Ok(None),
-        Some(Value::Number(n)) => n
-            .as_u64()
-            .and_then(|n| u32::try_from(n).ok())
-            .map(Some)
-            .ok_or_else(|| invalid(format!("parameter '{key}' is out of range"))),
-        Some(_) => Err(invalid(format!("parameter '{key}' must be an integer"))),
-    }
-}
-
-fn required_u32(args: &Option<JsonObject>, key: &str) -> Result<u32, ErrorData> {
-    optional_u32(args, key)?.ok_or_else(|| invalid(format!("parameter '{key}' is required")))
-}
-
-fn optional_str_list(args: &Option<JsonObject>, key: &str) -> Result<Vec<String>, ErrorData> {
-    match arg(args, key) {
-        None => Ok(Vec::new()),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|v| match v {
-                Value::String(s) if !s.trim().is_empty() => Ok(s.clone()),
-                _ => Err(invalid(format!(
-                    "parameter '{key}' must be an array of non-empty strings"
-                ))),
-            })
-            .collect(),
-        Some(_) => Err(invalid(format!(
-            "parameter '{key}' must be an array of strings"
-        ))),
-    }
-}
-
-fn required_str_list(args: &Option<JsonObject>, key: &str) -> Result<Vec<String>, ErrorData> {
-    let list = optional_str_list(args, key)?;
-    if list.is_empty() {
-        return Err(invalid(format!(
-            "parameter '{key}' is required and must not be empty"
-        )));
-    }
-    Ok(list)
 }
 
 /// The `account_id`/`folder`/`uid` triple shared by `get_message`
@@ -756,17 +701,6 @@ fn reply_to_ref(args: &Option<JsonObject>) -> Result<Option<(String, u32)>, Erro
 }
 
 // ── Output helpers ──────────────────────────────────────────────
-
-fn json_result(value: Value) -> CallToolResult {
-    CallToolResult::success(vec![ContentBlock::text(value.to_string())])
-}
-
-fn schema(value: Value) -> JsonObject {
-    match value {
-        Value::Object(map) => map,
-        _ => unreachable!("tool schemas are object literals"),
-    }
-}
 
 /// Cut `s` to at most `max` characters on a char boundary.
 /// Returns the (possibly cut) string and whether it was cut.
@@ -904,7 +838,7 @@ mod tests {
     use chrono::Utc;
     use tokio::sync::RwLock;
     use unkai_core::models::{AppSettings, EmailAttachment, EmailEnvelope, Folder};
-    use unkai_store::Cache;
+    use unkai_store::{Cache, account_store};
 
     fn test_context(expose: bool) -> ToolContext {
         let settings = AppSettings {

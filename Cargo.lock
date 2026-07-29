@@ -7523,10 +7523,14 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "unkai-caldav",
+ "unkai-carddav",
  "unkai-core",
  "unkai-imap",
+ "unkai-nextcloud",
  "unkai-smtp",
  "unkai-store",
+ "uuid",
 ]
 
 [[package]]

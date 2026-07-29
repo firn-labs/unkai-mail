@@ -12,6 +12,19 @@ unkai-store.workspace = true
 # internal workspace crates — no new external dependencies.
 unkai-imap.workspace = true
 unkai-smtp.workspace = true
+# The groupware tools (#441): calendar reads/writes + free-busy,
+# contact search/create, Talk rooms, and the meeting-invite
+# composite.  All internal workspace crates — no new external
+# dependencies.
+unkai-caldav.workspace = true
+unkai-carddav.workspace = true
+unkai-nextcloud.workspace = true
+# Fresh UIDs for events/contacts and local-source etags — same
+# workspace version the Tauri layer uses.
+uuid.workspace = true
+# Timestamp parameters (RFC 3339) and the invite card's date line.
+# Was dev-only before #441.
+chrono.workspace = true
 rmcp.workspace = true
 axum.workspace = true
 subtle.workspace = true
@@ -39,6 +52,3 @@ keyring.workspace = true
 # running server (auth rejection, Host/Origin validation, locked
 # vault).  Workspace version, rustls-only feature set.
 reqwest.workspace = true
-# Test fixtures build `Email` / `EmailEnvelope` values, which
-# carry `DateTime<Utc>` timestamps.
-chrono.workspace = true

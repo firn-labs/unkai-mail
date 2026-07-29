@@ -38,16 +38,36 @@ pub enum ToolAccess {
     Write,
 }
 
+/// Which groupware surface a tool needs from a connected DAV /
+/// Nextcloud source (#441).  Drives *availability*: a tool whose
+/// feature no connected source offers is neither advertised in
+/// `tools/list` nor callable — there is nothing it could answer
+/// with.  Distinct from *enablement*, which is the user's choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextcloudFeature {
+    /// CardDAV contacts (real Nextcloud, generic DAV, or a local
+    /// source with contacts enabled).
+    Contacts,
+    /// CalDAV calendars (same source spread as `Contacts`).
+    Calendar,
+    /// Nextcloud Talk — OCS-only, so a real Nextcloud whose
+    /// capability snapshot says the Talk app is installed.
+    Talk,
+}
+
 /// Static metadata for one tool.  `id` is the wire name MCP
 /// clients call and the key in the enablement map — treat it as a
 /// public API and never rename an existing one.
 #[derive(Debug, Clone, Copy)]
 pub struct ToolDescriptor {
     pub id: &'static str,
-    /// Coarse grouping for the settings UI (`"server"`, later
-    /// `"mail"`, `"contacts"`, `"calendar"`, `"talk"`).
+    /// Coarse grouping for the settings UI (`"server"`, `"mail"`,
+    /// `"contacts"`, `"calendar"`, `"talk"`).
     pub category: &'static str,
     pub access: ToolAccess,
+    /// `Some(feature)` gates the tool on a connected source
+    /// offering that feature; `None` means always available.
+    pub requires: Option<NextcloudFeature>,
     pub description: &'static str,
 }
 
@@ -120,6 +140,7 @@ impl ToolRegistry {
                 id: "ping",
                 category: "server",
                 access: ToolAccess::Read,
+                requires: None,
                 description: "Health check. Returns server name and version so a client can \
                               verify the connection end-to-end.",
             },
@@ -138,6 +159,10 @@ impl ToolRegistry {
             }),
         );
         crate::mail::register_mail_tools(&mut registry);
+        crate::contacts::register_contact_tools(&mut registry);
+        crate::calendar::register_calendar_tools(&mut registry);
+        crate::talk::register_talk_tools(&mut registry);
+        crate::meeting::register_meeting_tools(&mut registry);
         registry
     }
 
@@ -190,6 +215,23 @@ pub fn is_enabled(settings: &AppSettings, tool: &ToolDescriptor) -> bool {
         .unwrap_or(tool.access == ToolAccess::Read)
 }
 
+/// Whether `tool` is *available* given the currently connected
+/// DAV / Nextcloud sources (#441): a tool with no `requires` is
+/// always available; one that needs Talk / calendars / contacts
+/// is only offered while some connected source has that feature.
+/// Checked at both `tools/list` and `tools/call`, same as
+/// enablement.  `accounts` is the caller's snapshot so one
+/// listing reads the store once, not once per tool.
+pub fn is_available(
+    accounts: &[unkai_core::models::NextcloudAccount],
+    tool: &ToolDescriptor,
+) -> bool {
+    match tool.requires {
+        None => true,
+        Some(feature) => crate::nc::feature_available(accounts, feature),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +241,7 @@ mod tests {
             id,
             category: "test",
             access,
+            requires: None,
             description: "test tool",
         }
     }
@@ -217,6 +260,87 @@ mod tests {
         settings.mcp_tool_enablement.insert("w".into(), true);
         assert!(!is_enabled(&settings, &descriptor("r", ToolAccess::Read)));
         assert!(is_enabled(&settings, &descriptor("w", ToolAccess::Write)));
+    }
+
+    #[test]
+    fn groupware_tools_registered_with_expected_defaults() {
+        let registry = ToolRegistry::builtin();
+        let settings = AppSettings::default();
+        for (id, feature) in [
+            ("search_contacts", NextcloudFeature::Contacts),
+            ("list_calendars", NextcloudFeature::Calendar),
+            ("get_events", NextcloudFeature::Calendar),
+            ("get_availability", NextcloudFeature::Calendar),
+            ("list_talk_rooms", NextcloudFeature::Talk),
+        ] {
+            let tool = registry
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} registered"));
+            assert_eq!(
+                tool.descriptor.access,
+                ToolAccess::Read,
+                "{id} is a read tool"
+            );
+            assert!(is_enabled(&settings, &tool.descriptor), "{id} defaults on");
+            assert_eq!(tool.descriptor.requires, Some(feature), "{id} gating");
+        }
+        for (id, feature) in [
+            ("create_contact", NextcloudFeature::Contacts),
+            ("create_event", NextcloudFeature::Calendar),
+            ("rsvp_event", NextcloudFeature::Calendar),
+            ("create_talk_room", NextcloudFeature::Talk),
+            ("create_meeting_invite", NextcloudFeature::Calendar),
+        ] {
+            let tool = registry
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} registered"));
+            assert_eq!(
+                tool.descriptor.access,
+                ToolAccess::Write,
+                "{id} is a write tool"
+            );
+            assert!(
+                !is_enabled(&settings, &tool.descriptor),
+                "{id} defaults off"
+            );
+            assert_eq!(tool.descriptor.requires, Some(feature), "{id} gating");
+        }
+    }
+
+    #[test]
+    fn availability_gates_on_connected_features() {
+        use crate::nc::test_support::{caps, nc_account};
+        use unkai_core::models::DavSourceKind;
+
+        let registry = ToolRegistry::builtin();
+        let talk_tool = &registry.get("list_talk_rooms").unwrap().descriptor;
+        let calendar_tool = &registry.get("get_events").unwrap().descriptor;
+        let contacts_tool = &registry.get("search_contacts").unwrap().descriptor;
+        let mail_tool = &registry.get("search_mail").unwrap().descriptor;
+
+        // Nothing connected: only ungated tools are available.
+        assert!(is_available(&[], mail_tool));
+        assert!(!is_available(&[], talk_tool));
+        assert!(!is_available(&[], calendar_tool));
+        assert!(!is_available(&[], contacts_tool));
+
+        // A Talk-less Nextcloud offers DAV but not Talk.
+        let no_talk = vec![nc_account(
+            "a",
+            DavSourceKind::Nextcloud,
+            Some(caps(false, true, true)),
+        )];
+        assert!(!is_available(&no_talk, talk_tool));
+        assert!(is_available(&no_talk, calendar_tool));
+        assert!(is_available(&no_talk, contacts_tool));
+
+        // Talk shows up once any connection has the app.
+        let with_talk = vec![nc_account(
+            "a",
+            DavSourceKind::Nextcloud,
+            Some(caps(true, true, true)),
+        )];
+        assert!(is_available(&with_talk, talk_tool));
     }
 
     #[test]
