@@ -283,8 +283,14 @@
   )
 </script>
 
+<!-- `overflow-y-auto` (#454): on a vertically-small window the rail
+     used to clip its lower icons (and the pinned Settings button)
+     with no way to reach them — the app shell hides overflow.
+     Scrolling keeps every destination reachable; `shrink-0` on the
+     items stops the flex column from squashing the 36px bubbles
+     before the scrollbar kicks in. -->
 <aside
-  class="w-14 shrink-0 border-r glass-panel flex flex-col items-center py-2 gap-3"
+  class="w-14 shrink-0 border-r glass-panel flex flex-col items-center py-2 gap-3 overflow-y-auto"
 >
   <!-- Account avatars. The "All" bubble only appears when the user
        has more than one account — for a single-account setup it's
@@ -292,7 +298,7 @@
   {#if accounts.length > 1}
     {@const allActive = unified && currentView === 'inbox'}
     <button
-      class="relative w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold
+      class="relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold
              transition-colors
              {allActive
                ? 'bg-primary-500 text-white ring-2 ring-offset-2 ring-offset-surface-100 dark:ring-offset-surface-800 ring-primary-500'
@@ -338,7 +344,7 @@
          individual account avatars.  Visually groups "aggregate"
          vs. "single account" without making the rail noisier
          than the main divider below the avatar stack. -->
-    <div class="w-6 h-px my-1 bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
+    <div class="w-6 h-px my-1 shrink-0 bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
   {/if}
   {#each sortedAccounts as a (a.id)}
     <!-- The active ring only paints while we're actually on the
@@ -349,7 +355,7 @@
     {@const active = !unified && accountId === a.id && currentView === 'inbox'}
     {@const unread = unreadFor(a.id)}
     <button
-      class="relative w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold
+      class="relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold
              transition-colors
              {active
                ? 'bg-primary-500 text-white ring-2 ring-offset-2 ring-offset-surface-100 dark:ring-offset-surface-800 ring-primary-500'
@@ -396,13 +402,13 @@
        connected (#189), the integration block is empty and the
        divider has nothing to separate. -->
   {#if accounts.length > 0 && visibleNav.length > 0}
-    <div class="w-6 h-px my-1 bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
+    <div class="w-6 h-px my-1 shrink-0 bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
   {/if}
 
   {#each visibleNav as entry (entry.match)}
     {@const active = currentView === entry.match}
     <button
-      class="w-9 h-9 rounded-lg flex items-center justify-center text-lg transition-colors duration-150 ease-out relative
+      class="w-9 h-9 shrink-0 rounded-lg flex items-center justify-center text-lg transition-colors duration-150 ease-out relative
              {active
                ? 'bg-primary-500/15 text-primary-500'
                : 'text-surface-600 dark:text-surface-300 hover:bg-primary-500/10'}"
@@ -431,7 +437,7 @@
   <!-- Settings pinned to the bottom. `mt-auto` on the wrapper
        pushes the remaining flex space between the main nav and
        this slot. -->
-  <div class="mt-auto">
+  <div class="mt-auto shrink-0">
     <button
       class="w-9 h-9 rounded-lg flex items-center justify-center text-lg transition-colors duration-150 ease-out
              {currentView === 'settings'
