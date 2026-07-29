@@ -21,7 +21,7 @@ use rmcp::transport::streamable_http_server::{
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use tokio_util::sync::CancellationToken;
 
-use crate::registry::{ToolContext, ToolRegistry, is_enabled};
+use crate::registry::{ToolContext, ToolRegistry, is_available, is_enabled};
 use crate::{GuardState, SharedSettings};
 
 /// Path the MCP endpoint is mounted on:
@@ -69,12 +69,19 @@ impl ServerHandler for UnkaiMcp {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         // Snapshot the settings once so one listing can't observe
-        // a mid-flight toggle half-applied.
+        // a mid-flight toggle half-applied; same for the connected
+        // sources backing the availability check (#441 — groupware
+        // tools are only advertised while a connection offers
+        // their feature).
         let settings = self.settings.read().await;
+        let nc_accounts = crate::nc::load_nc_accounts(&self.ctx.cache);
         let tools = self
             .registry
             .iter()
-            .filter(|tool| is_enabled(&settings, &tool.descriptor))
+            .filter(|tool| {
+                is_enabled(&settings, &tool.descriptor)
+                    && is_available(&nc_accounts, &tool.descriptor)
+            })
             .map(|tool| tool.to_tool())
             .collect();
         Ok(ListToolsResult::with_all_items(tools))
@@ -103,6 +110,21 @@ impl ServerHandler for UnkaiMcp {
             return Err(ErrorData::invalid_request(
                 format!(
                     "tool '{}' is disabled in Unkai Mail's AI settings",
+                    request.name
+                ),
+                None,
+            ));
+        }
+
+        // Availability is re-checked too (#441): a client holding
+        // a stale tools/list must not reach a groupware tool whose
+        // backing connection has since been removed.
+        let nc_accounts = crate::nc::load_nc_accounts(&self.ctx.cache);
+        if !is_available(&nc_accounts, &tool.descriptor) {
+            return Err(ErrorData::invalid_request(
+                format!(
+                    "tool '{}' is unavailable — no connected Nextcloud / DAV source offers \
+                     the feature it needs",
                     request.name
                 ),
                 None,

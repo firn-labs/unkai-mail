@@ -29,9 +29,18 @@
 //! never ride along in the Nextcloud settings-sync bundle.
 
 pub mod auth;
+pub mod calendar;
+pub mod contacts;
+pub mod invite_html;
 pub mod mail;
+pub mod meeting;
+pub mod nc;
 pub mod registry;
 pub mod server;
+pub mod talk;
+#[cfg(test)]
+pub(crate) mod testutil;
+mod util;
 
 use std::sync::Arc;
 
