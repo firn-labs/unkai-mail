@@ -421,16 +421,20 @@
     <!-- Advanced-search popout / query builder.  Anchored under the
          bar, deliberately floating over the mail list — it's an
          intentional surface the user opened, unlike the retired
-         focus-triggered hint dropdown (#460). -->
+         focus-triggered hint dropdown (#460).  Deliberately opaque,
+         not .glass-float: it renders inside the glass search bar
+         (stacking a second backdrop-filter layer is off-limits), and
+         a translucent panel over the mail list is unreadable — live
+         results can wait beneath it. -->
     <div
-      class="absolute left-0 right-0 top-full mt-1 z-40 glass-float rounded-xl p-3 space-y-2"
+      class="absolute left-0 right-0 top-full mt-1 z-40 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-xl shadow-lg p-3 space-y-2"
       aria-label={m.search_adv_toggle()}
     >
       <div class="grid grid-cols-2 gap-2">
         <div>
           <label
             for="search-adv-from"
-            class="block text-xs text-on-glass-muted mb-0.5"
+            class="block text-xs text-surface-500 mb-0.5"
           >
             {m.search_adv_from()}
           </label>
@@ -445,7 +449,7 @@
         <div>
           <label
             for="search-adv-to"
-            class="block text-xs text-on-glass-muted mb-0.5"
+            class="block text-xs text-surface-500 mb-0.5"
           >
             {m.search_adv_to()}
           </label>
@@ -462,7 +466,7 @@
       <div>
         <label
           for="search-adv-subject"
-          class="block text-xs text-on-glass-muted mb-0.5"
+          class="block text-xs text-surface-500 mb-0.5"
         >
           {m.search_adv_subject()}
         </label>
@@ -479,7 +483,7 @@
         <div>
           <label
             for="search-adv-after"
-            class="block text-xs text-on-glass-muted mb-0.5"
+            class="block text-xs text-surface-500 mb-0.5"
           >
             {m.search_adv_after()}
           </label>
@@ -494,7 +498,7 @@
         <div>
           <label
             for="search-adv-before"
-            class="block text-xs text-on-glass-muted mb-0.5"
+            class="block text-xs text-surface-500 mb-0.5"
           >
             {m.search_adv_before()}
           </label>
@@ -514,7 +518,7 @@
           class="chip text-xs px-2 py-0.5 rounded-full border transition duration-150 ease-out
             {parsed.unread
             ? 'bg-primary-500/20 border-primary-500 text-primary-700 dark:text-primary-200'
-            : 'border-surface-300 dark:border-surface-600 text-on-glass hover:bg-primary-500/10'}"
+            : 'border-surface-300 dark:border-surface-600 hover:bg-primary-500/10'}"
           onclick={() => updateField({ unread: !parsed.unread })}
           aria-pressed={parsed.unread}
         >
@@ -525,7 +529,7 @@
           class="chip text-xs px-2 py-0.5 rounded-full border transition duration-150 ease-out
             {parsed.flagged
             ? 'bg-primary-500/20 border-primary-500 text-primary-700 dark:text-primary-200'
-            : 'border-surface-300 dark:border-surface-600 text-on-glass hover:bg-primary-500/10'}"
+            : 'border-surface-300 dark:border-surface-600 hover:bg-primary-500/10'}"
           onclick={() => updateField({ flagged: !parsed.flagged })}
           aria-pressed={parsed.flagged}
         >
@@ -536,7 +540,7 @@
           class="chip text-xs px-2 py-0.5 rounded-full border transition duration-150 ease-out
             {parsed.attachment
             ? 'bg-primary-500/20 border-primary-500 text-primary-700 dark:text-primary-200'
-            : 'border-surface-300 dark:border-surface-600 text-on-glass hover:bg-primary-500/10'}"
+            : 'border-surface-300 dark:border-surface-600 hover:bg-primary-500/10'}"
           onclick={() => updateField({ attachment: !parsed.attachment })}
           aria-pressed={parsed.attachment}
         >
@@ -547,7 +551,7 @@
       <div class="flex items-center gap-1.5">
         <label
           for="search-scope"
-          class="text-xs text-on-glass-muted shrink-0"
+          class="text-xs text-surface-500 shrink-0"
         >
           {m.search_scope_label()}
         </label>
@@ -567,7 +571,7 @@
         </select>
         <button
           type="button"
-          class="{ghostBtn} text-on-glass-muted"
+          class="{ghostBtn} text-surface-500"
           onclick={() => (showHelp = true)}
           title={m.search_help_button()}
           aria-label={m.search_help_button()}
