@@ -935,6 +935,75 @@ mod tests {
     }
 
     #[test]
+    fn search_operators_combine_with_and() {
+        // Multiple operators (the advanced-search panel emits e.g.
+        // `from:… subject:…`) must intersect — a hit has to satisfy
+        // every operator, not any one of them.
+        let cache = open();
+        cache
+            .upsert_message(&email(
+                1,
+                "INBOX",
+                "Status report",
+                "body",
+                "alice@example.com",
+            ))
+            .unwrap();
+        cache
+            .upsert_message(&email(
+                2,
+                "INBOX",
+                "Lunch plans",
+                "body",
+                "alice@example.com",
+            ))
+            .unwrap();
+        cache
+            .upsert_message(&email(
+                3,
+                "INBOX",
+                "Status report",
+                "body",
+                "bob@example.com",
+            ))
+            .unwrap();
+
+        // Bare-word operands, typed by hand.
+        let hits = cache
+            .search_emails(
+                "from:alice subject:report",
+                &SearchScope::default(),
+                &SearchFilters::default(),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1, "bare operands must AND");
+        assert_eq!(hits[0].uid, 1);
+
+        // Full-address operand — what a contact pick in the advanced
+        // panel commits into `from:`.
+        let hits = cache
+            .search_emails(
+                "from:alice@example.com subject:report",
+                &SearchScope::default(),
+                &SearchFilters::default(),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1, "address operand must AND with subject");
+        assert_eq!(hits[0].uid, 1);
+
+        // Operator + state filter + free text all intersect too.
+        let hits = cache
+            .search_emails(
+                "report from:bob",
+                &SearchScope::default(),
+                &SearchFilters::default(),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1, "free text must AND with operators");
+        assert_eq!(hits[0].uid, 3);
+    }
+
+    #[test]
     fn search_filter_unread_only() {
         let cache = open();
         let mut read_mail = email(1, "INBOX", "one", "body", "a@x.de");
