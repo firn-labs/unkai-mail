@@ -22,7 +22,7 @@
    * time.
    */
 
-  import { onMount, onDestroy, untrack } from 'svelte'
+  import { onMount, onDestroy, tick, untrack } from 'svelte'
   import Icon from './Icon.svelte'
   import SearchInput from './SearchInput.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
@@ -298,6 +298,19 @@
     fireSearch()
   }
 
+  /** Commit from the popout: close it and search NOW.  Wired to the
+   *  panel's search button and to contact picks in the From / To
+   *  autocomplete.  `tick()` first — a pick lands in the query via
+   *  the advFrom/advTo → query effect chain, so firing synchronously
+   *  would search the stale query. */
+  async function commitSearch() {
+    showAdvanced = false
+    await tick()
+    if (debounceTimer) clearTimeout(debounceTimer)
+    fireSearch()
+    inputEl?.focus()
+  }
+
   function insertOperator(op: string) {
     const suffix = query.endsWith(' ') || query.length === 0 ? '' : ' '
     query = `${query}${suffix}${op}`
@@ -425,16 +438,19 @@
   </div>
 
   {#if showAdvanced}
-    <!-- Advanced-search popout / query builder.  Anchored under the
-         bar, deliberately floating over the mail list — it's an
-         intentional surface the user opened, unlike the retired
-         focus-triggered hint dropdown (#460).  Deliberately opaque,
-         not .glass-float: it renders inside the glass search bar
-         (stacking a second backdrop-filter layer is off-limits), and
-         a translucent panel over the mail list is unreadable — live
-         results can wait beneath it. -->
+    <!-- Advanced-search popout / query builder.  Docked flush under
+         the bar (no gap, square top corners) so it reads as a drawer
+         sliding out of the search surface, not a free-floating card;
+         the bar's own border-b is the divider between the two.  It
+         deliberately floats over the mail list — an intentional
+         surface the user opened, unlike the retired focus-triggered
+         hint dropdown (#460).  Deliberately opaque, not .glass-float:
+         it renders inside the glass search bar (stacking a second
+         backdrop-filter layer is off-limits), and a translucent panel
+         over the mail list is unreadable — live results can wait
+         beneath it. -->
     <div
-      class="absolute left-0 right-0 top-full mt-1 z-40 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-xl shadow-lg p-3 space-y-2"
+      class="absolute left-0 right-0 top-full z-40 bg-surface-50 dark:bg-surface-900 border border-t-0 border-surface-300 dark:border-surface-600 rounded-b-xl shadow-lg p-3 space-y-2"
       aria-label={m.search_adv_toggle()}
     >
       <!-- From / To stacked full-width: names and addresses need the
@@ -453,6 +469,7 @@
           pickMode="replace-address"
           inputClass="input w-full px-2 py-1 text-sm rounded-lg"
           placeholder={m.search_adv_person_placeholder()}
+          onpick={() => void commitSearch()}
         />
       </div>
       <div>
@@ -468,6 +485,7 @@
           pickMode="replace-address"
           inputClass="input w-full px-2 py-1 text-sm rounded-lg"
           placeholder={m.search_adv_person_placeholder()}
+          onpick={() => void commitSearch()}
         />
       </div>
 
@@ -585,6 +603,15 @@
           aria-label={m.search_help_button()}
         >
           <Icon name="help" size={16} />
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+          onclick={() => void commitSearch()}
+          title={m.search_adv_run()}
+          aria-label={m.search_adv_run()}
+        >
+          <Icon name="search" size={14} />
         </button>
       </div>
     </div>
