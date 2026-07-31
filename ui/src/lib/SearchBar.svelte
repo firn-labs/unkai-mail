@@ -386,9 +386,16 @@
     + 'hover:text-primary-500 hover:bg-primary-500/10 shrink-0'
 </script>
 
+<!-- z-30: the glass bar's backdrop-filter creates a stacking context
+     with z-index auto, which paints at the same level as the mail
+     list's positioned rows (`relative` on every MailList row) — and
+     the list, being later in DOM order, would win.  The popout's own
+     z-index is trapped INSIDE this context and can't fix that, so
+     the elevation has to sit here, on the context itself.  30 keeps
+     us under modals and fixed context menus (z-50). -->
 <div
   bind:this={barEl}
-  class="border-b glass-panel p-2 relative"
+  class="border-b glass-panel p-2 relative z-30"
   data-tour="search"
 >
   <!-- Resting state: one slim row.  Scope, state toggles, and the
