@@ -521,6 +521,9 @@
   "search_tip_before": "sent before a date",
   "search_tip_on": "sent that day (or month: on:2026-03)",
   "search_tip_in": "only in that folder (in:anywhere for all)",
+  "search_help_button": "Search syntax help",
+  "search_help_intro": "Click an operator to insert it into the search field. Operators can be combined with free text and with each other.",
+  "search_help_close": "Close",
 
   "talk_view_search_placeholder": "Search rooms",
   "talk_view_no_matches": "No Talk rooms match this search.",

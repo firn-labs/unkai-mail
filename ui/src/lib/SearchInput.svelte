@@ -21,9 +21,8 @@
    *
    * # Adornment slot
    *
-   * Some callers (mail SearchBar's operator-hint dropdown) need a
-   * popover anchored to the input's bounding box.  Children passed
-   * into the component render *inside* the wrapper's `relative`
+   * Callers that need a popover anchored to the input's bounding box
+   * can pass children — they render *inside* the wrapper's `relative`
    * container so `absolute top-full left-0 right-0` resolves against
    * the input, not the page.
    */
