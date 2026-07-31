@@ -19,10 +19,13 @@ use unkai_jmap::JmapClient;
 // ── Mock server state ���─────────────────────────────────────────
 
 /// Shared state for the mock server — controls what responses it gives.
-#[derive(Clone)]
 struct MockState {
     /// The port the server is listening on (so we can build self-referential URLs).
     port: u16,
+    /// Every request body POSTed to `/api`, in arrival order — lets
+    /// tests assert the exact JSON the client put on the wire (#461
+    /// uses this to check the submission envelope's DSN parameters).
+    captured: std::sync::Mutex<Vec<Value>>,
 }
 
 // ── Mock endpoints ─────────────────────────────────────────────
@@ -51,6 +54,16 @@ async fn well_known(
                 "name": "Test User",
                 "isPersonal": true,
                 "isReadOnly": false,
+                // RFC 8621 §1.3 — the submission capability advertises
+                // which ESMTP extensions accept envelope parameters.
+                // DSN listed here is what lets the client attach
+                // NOTIFY parameters to a submission (#461).
+                "accountCapabilities": {
+                    "urn:ietf:params:jmap:submission": {
+                        "maxDelayedSend": 0,
+                        "submissionExtensions": { "DSN": [] },
+                    },
+                },
             },
         },
         "primaryAccounts": {
@@ -63,7 +76,11 @@ async fn well_known(
 /// `POST /api` — the JMAP method call endpoint.
 ///
 /// Dispatches based on the method name in each method call.
-async fn api_handler(Json(body): Json<Value>) -> Json<Value> {
+async fn api_handler(
+    AxState(state): AxState<Arc<MockState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    state.captured.lock().unwrap().push(body.clone());
     let calls = body
         .get("methodCalls")
         .and_then(|v| v.as_array())
@@ -532,17 +549,27 @@ async fn download_handler(
 
 /// Start the mock JMAP server and return (base_url, port).
 async fn start_mock() -> (String, u16) {
+    let (base_url, port, _state) = start_mock_capturing().await;
+    (base_url, port)
+}
+
+/// Like [`start_mock`] but hands back the shared state too, so a
+/// test can inspect the request bodies the client actually sent.
+async fn start_mock_capturing() -> (String, u16, Arc<MockState>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     let port = addr.port();
 
-    let state = Arc::new(MockState { port });
+    let state = Arc::new(MockState {
+        port,
+        captured: std::sync::Mutex::new(Vec::new()),
+    });
 
     let app = Router::new()
         .route("/.well-known/jmap", get(well_known))
         .route("/api", post(api_handler))
         .route("/download/{blob_id}", get(download_handler))
-        .with_state(state);
+        .with_state(state.clone());
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -551,7 +578,7 @@ async fn start_mock() -> (String, u16) {
     // Give the server a moment to bind.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    (format!("http://127.0.0.1:{port}"), port)
+    (format!("http://127.0.0.1:{port}"), port, state)
 }
 
 /// Connect to the mock server.
@@ -709,12 +736,82 @@ async fn test_send_email() {
         encryption_mode: None,
         signing_enabled: false,
         request_read_receipt: false,
+        request_delivery_receipt: false,
     };
 
     client
         .send_email(&email)
         .await
         .expect("send_email should succeed");
+}
+
+/// #461 — a send flagged `request_delivery_receipt` puts RFC 3461
+/// `NOTIFY` parameters on every `rcptTo` envelope entry (the mock's
+/// session advertises DSN via `submissionExtensions`), and an
+/// unflagged send keeps the plain envelope shape.
+#[tokio::test]
+async fn test_send_email_requests_dsn_envelope_parameters() {
+    use unkai_core::models::OutgoingEmail;
+
+    let (base_url, _port, state) = start_mock_capturing().await;
+    let client = JmapClient::connect(&base_url, "test@example.com", "password123")
+        .await
+        .expect("connect to mock JMAP server should succeed");
+
+    let mut email = OutgoingEmail {
+        from: "test@example.com".into(),
+        to: vec!["recipient@example.com".into()],
+        cc: vec![],
+        bcc: vec!["hidden@example.com".into()],
+        reply_to: None,
+        subject: "Confirm this arrives".into(),
+        body_text: Some("Hello from JMAP tests!".into()),
+        body_html: None,
+        attachments: vec![],
+        calendar_part: None,
+        skip_sent_copy: false,
+        in_reply_to: None,
+        references: vec![],
+        encryption_mode: None,
+        signing_enabled: false,
+        request_read_receipt: false,
+        request_delivery_receipt: true,
+    };
+    client.send_email(&email).await.expect("DSN send");
+
+    email.request_delivery_receipt = false;
+    client.send_email(&email).await.expect("plain send");
+
+    // Pull the two EmailSubmission/set calls off the wire, in order.
+    let captured = state.captured.lock().unwrap();
+    let submissions: Vec<Value> = captured
+        .iter()
+        .flat_map(|body| body["methodCalls"].as_array().cloned().unwrap_or_default())
+        .filter(|call| call[0] == "EmailSubmission/set")
+        .collect();
+    assert_eq!(submissions.len(), 2, "expected exactly two submissions");
+
+    let rcpt_to = |sub: &Value| {
+        sub[1]["create"]["sub"]["envelope"]["rcptTo"]
+            .as_array()
+            .cloned()
+            .expect("envelope must carry rcptTo")
+    };
+
+    // Flagged send: every recipient (BCC included — the envelope is
+    // the routing layer, not the visible headers) asks for a report.
+    let dsn_rcpts = rcpt_to(&submissions[0]);
+    assert_eq!(dsn_rcpts.len(), 2);
+    for rcpt in &dsn_rcpts {
+        assert_eq!(rcpt["parameters"]["NOTIFY"], json!("SUCCESS,FAILURE"));
+    }
+
+    // Unflagged send: the historical plain envelope, no parameters.
+    let plain_rcpts = rcpt_to(&submissions[1]);
+    assert_eq!(plain_rcpts.len(), 2);
+    for rcpt in &plain_rcpts {
+        assert!(rcpt.get("parameters").is_none());
+    }
 }
 
 #[tokio::test]

@@ -1003,6 +1003,21 @@ pub struct OutgoingEmail {
     /// outbox rows from before this field deserialising cleanly.
     #[serde(default)]
     pub request_read_receipt: bool,
+    /// Ask the mail infrastructure for a delivery confirmation
+    /// (RFC 3461 DSN, #461).  When set, the SMTP layer attaches
+    /// `NOTIFY=SUCCESS,FAILURE` to every `RCPT TO`, and the JMAP
+    /// layer puts the same parameters on the submission envelope,
+    /// so the receiving server mails back a
+    /// `message/delivery-status` report once the message lands in
+    /// (or bounces from) each recipient's mailbox.  Unlike the
+    /// read receipt above this is answered by the *server*, not
+    /// the recipient's client — but it's still best-effort: the
+    /// server must advertise the DSN extension, and when it
+    /// doesn't we degrade to a plain send rather than failing.
+    /// `#[serde(default)]` keeps queued outbox rows from before
+    /// this field deserialising cleanly.
+    #[serde(default)]
+    pub request_delivery_receipt: bool,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body

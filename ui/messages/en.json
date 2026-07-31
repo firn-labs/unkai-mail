@@ -212,6 +212,11 @@
   "compose_read_receipt_title": "Request a read receipt from the recipients — their mail client may decline or ignore the request",
   "compose_read_receipt_title_active": "A read receipt will be requested — click to turn off",
 
+  "compose_delivery_receipt": "Delivery confirmation",
+  "compose_delivery_receipt_active": "Confirmation requested",
+  "compose_delivery_receipt_title": "Ask the mail server to confirm delivery to each recipient's mailbox — only works when the server supports delivery status notifications",
+  "compose_delivery_receipt_title_active": "A delivery confirmation will be requested — click to turn off",
+
   "mail_view_mdn_banner": "{sender} asked for a read receipt for this message.",
   "mail_view_mdn_send": "Send receipt",
   "mail_view_mdn_sending": "Sending…",

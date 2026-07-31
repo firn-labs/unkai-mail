@@ -8,12 +8,17 @@ use lettre::message::{
         HeaderValue,
     },
 };
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::transport::smtp::client::{Tls, TlsParameters};
+use lettre::transport::smtp::authentication::{Credentials, DEFAULT_MECHANISMS};
+use lettre::transport::smtp::client::{AsyncSmtpConnection, Tls, TlsParameters};
+use lettre::transport::smtp::commands::{Data, Ehlo, Mail, Rcpt};
+use lettre::transport::smtp::extension::{
+    ClientId, Extension, MailBodyParameter, MailParameter, RcptParameter,
+};
 use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use rustls_pki_types::ServerName;
+use std::time::Duration;
 use tokio_rustls::TlsConnector;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use unkai_core::crypto::CryptoBridge;
 use unkai_core::error::UnkaiError;
 use unkai_core::models::{OutgoingEmail, TrustedCert};
@@ -29,6 +34,16 @@ use unkai_core::tls;
 pub struct SmtpClient {
     /// The underlying async SMTP transport (lettre).
     transport: AsyncSmtpTransport<Tokio1Executor>,
+    /// Connection parameters retained for the delivery-confirmation
+    /// path (#461).  Lettre's pooled transport hardcodes empty
+    /// `RCPT TO` parameter lists, so a send that requests an
+    /// RFC 3461 DSN has to open and drive its own
+    /// [`AsyncSmtpConnection`] — which needs everything `connect`
+    /// was originally called with.
+    host: String,
+    port: u16,
+    credentials: Credentials,
+    tls_params: TlsParameters,
 }
 
 impl SmtpClient {
@@ -66,16 +81,16 @@ impl SmtpClient {
             AsyncSmtpTransport::<Tokio1Executor>::relay(host)
                 .map_err(|e| UnkaiError::Network(format!("Failed to create SMTP relay: {e}")))?
                 .port(port)
-                .tls(Tls::Wrapper(tls_params))
-                .credentials(credentials)
+                .tls(Tls::Wrapper(tls_params.clone()))
+                .credentials(credentials.clone())
                 .build()
         } else {
             debug!("Using STARTTLS (port {port})");
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
                 .map_err(|e| UnkaiError::Network(format!("Failed to create STARTTLS relay: {e}")))?
                 .port(port)
-                .tls(Tls::Required(tls_params))
-                .credentials(credentials)
+                .tls(Tls::Required(tls_params.clone()))
+                .credentials(credentials.clone())
                 .build()
         };
 
@@ -87,7 +102,13 @@ impl SmtpClient {
 
         info!("SMTP connection established and authenticated");
 
-        Ok(Self { transport })
+        Ok(Self {
+            transport,
+            host: host.to_string(),
+            port,
+            credentials,
+            tls_params,
+        })
     }
 
     /// Send an email message.
@@ -194,11 +215,18 @@ impl SmtpClient {
             wants_pgp_encrypt || wants_smime_encrypt || wants_smime_sign || wants_pgp_sign;
         if !any_crypto {
             // Plaintext path — historical behaviour, no MIME wrapping.
+            // (envelope + formatted bytes is exactly what lettre's
+            // `AsyncTransport::send` derives from a `Message`
+            // internally, so routing through `submit_raw` changes
+            // nothing for the non-DSN case.)
             let message = build_outgoing_message(email)?;
-            self.transport
-                .send(message)
-                .await
-                .map_err(|e| UnkaiError::Protocol(format!("Failed to send email: {e}")))?;
+            self.submit_raw(
+                message.envelope(),
+                &message.formatted(),
+                email.request_delivery_receipt,
+                "Failed to send email",
+            )
+            .await?;
             info!("Email sent successfully to {:?}", email.to);
             return Ok(());
         }
@@ -219,10 +247,13 @@ impl SmtpClient {
             // recipient like a plaintext send).
             let outer_bytes = wrap_as_pgp_mime_signed(email, bridge)?;
             let envelope = envelope_from_email_include_bcc(email)?;
-            self.transport
-                .send_raw(&envelope, &outer_bytes)
-                .await
-                .map_err(|e| UnkaiError::Protocol(format!("Failed to send signed email: {e}")))?;
+            self.submit_raw(
+                &envelope,
+                &outer_bytes,
+                email.request_delivery_receipt,
+                "Failed to send signed email",
+            )
+            .await?;
             info!("Signed email sent successfully to {:?}", email.to);
             return Ok(());
         }
@@ -233,12 +264,13 @@ impl SmtpClient {
             // sign-only path, so BCC rides the same envelope.
             let outer_bytes = wrap_as_smime_signed(email, bridge)?;
             let envelope = envelope_from_email_include_bcc(email)?;
-            self.transport
-                .send_raw(&envelope, &outer_bytes)
-                .await
-                .map_err(|e| {
-                    UnkaiError::Protocol(format!("Failed to send S/MIME signed email: {e}"))
-                })?;
+            self.submit_raw(
+                &envelope,
+                &outer_bytes,
+                email.request_delivery_receipt,
+                "Failed to send S/MIME signed email",
+            )
+            .await?;
             info!("S/MIME signed email sent successfully to {:?}", email.to);
             return Ok(());
         }
@@ -272,16 +304,17 @@ impl SmtpClient {
             },
         ) in planned.iter().enumerate()
         {
-            self.transport
-                .send_raw(envelope, wire_bytes)
-                .await
-                .map_err(|e| {
-                    UnkaiError::Protocol(format!(
-                        "Failed to send encrypted envelope {}/{}: {e}",
-                        idx + 1,
-                        envelope_count
-                    ))
-                })?;
+            self.submit_raw(
+                envelope,
+                wire_bytes,
+                email.request_delivery_receipt,
+                &format!(
+                    "Failed to send encrypted envelope {}/{}",
+                    idx + 1,
+                    envelope_count
+                ),
+            )
+            .await?;
         }
 
         info!(
@@ -290,6 +323,220 @@ impl SmtpClient {
         );
         Ok(())
     }
+
+    /// Submit one SMTP transaction (envelope + wire bytes), routing by
+    /// whether the sender asked for a delivery confirmation (#461).
+    ///
+    /// The plain route hands the bytes to lettre's pooled transport —
+    /// byte-for-byte what every send did before #461.  The DSN route
+    /// can't use the pool (lettre's connection layer hardcodes empty
+    /// `RCPT TO` parameter lists), so it drives a dedicated
+    /// connection via [`Self::send_raw_requesting_dsn`].
+    ///
+    /// `ctx` prefixes any error so each caller keeps its historical
+    /// message ("Failed to send signed email: …" etc.).
+    async fn submit_raw(
+        &self,
+        envelope: &Envelope,
+        bytes: &[u8],
+        request_dsn: bool,
+        ctx: &str,
+    ) -> Result<(), UnkaiError> {
+        if request_dsn {
+            self.send_raw_requesting_dsn(envelope, bytes, ctx).await
+        } else {
+            self.transport
+                .send_raw(envelope, bytes)
+                .await
+                .map(|_| ())
+                .map_err(|e| UnkaiError::Protocol(format!("{ctx}: {e}")))
+        }
+    }
+
+    /// Send raw wire bytes requesting an RFC 3461 delivery status
+    /// notification (`NOTIFY=SUCCESS,FAILURE`) for every recipient.
+    ///
+    /// DSN requests ride as parameters on the `RCPT TO` command, and
+    /// lettre 0.11's `AsyncSmtpTransport` gives us no way to set them
+    /// — so this path opens its own [`AsyncSmtpConnection`] and
+    /// replays the same dance the transport does internally: connect
+    /// (implicit TLS on 465, STARTTLS otherwise), authenticate, then
+    /// MAIL FROM / RCPT TO / DATA with our parameters attached.
+    ///
+    /// Best-effort by design: when the server doesn't advertise the
+    /// `DSN` extension the transaction proceeds *without* the NOTIFY
+    /// parameters (sending them anyway would be a syntax error per
+    /// RFC 3461 §3.1) — the mail always goes out, mirroring how a
+    /// read-receipt request can be ignored on the recipient side.
+    async fn send_raw_requesting_dsn(
+        &self,
+        envelope: &Envelope,
+        bytes: &[u8],
+        ctx: &str,
+    ) -> Result<(), UnkaiError> {
+        // EHLO name + timeout mirror the pooled transport's defaults.
+        let client_id = ClientId::default();
+        let timeout = Some(Duration::from_secs(60));
+
+        let mut conn = if self.port == 465 {
+            AsyncSmtpConnection::connect_tokio1(
+                (self.host.as_str(), self.port),
+                timeout,
+                &client_id,
+                Some(self.tls_params.clone()),
+                None,
+            )
+            .await
+            .map_err(|e| UnkaiError::Network(format!("{ctx}: SMTP connect failed: {e}")))?
+        } else {
+            let mut conn = AsyncSmtpConnection::connect_tokio1(
+                (self.host.as_str(), self.port),
+                timeout,
+                &client_id,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| UnkaiError::Network(format!("{ctx}: SMTP connect failed: {e}")))?;
+            // `starttls` errors when the server doesn't offer it —
+            // the same hard requirement `Tls::Required` enforces on
+            // the pooled transport.  Never fall back to cleartext.
+            conn.starttls(self.tls_params.clone(), &client_id)
+                .await
+                .map_err(|e| UnkaiError::Network(format!("{ctx}: STARTTLS failed: {e}")))?;
+            conn
+        };
+
+        match self
+            .dsn_transaction(&mut conn, envelope, bytes, &client_id)
+            .await
+        {
+            Ok(()) => {
+                // Best-effort QUIT — the mail is already accepted, a
+                // hiccup while saying goodbye is not a send failure.
+                let _ = conn.quit().await;
+                Ok(())
+            }
+            Err(e) => {
+                // Drop the connection without QUIT so a half-done
+                // transaction can't linger (mirrors lettre's own
+                // abort-on-error handling).
+                conn.abort().await;
+                Err(UnkaiError::Protocol(format!("{ctx}: {e}")))
+            }
+        }
+    }
+
+    /// The MAIL FROM / RCPT TO / DATA exchange of the DSN path.
+    /// Split out so the caller can uniformly abort the connection on
+    /// any error.  Lettre's `command()` returns `Err` for every
+    /// non-2xx/3xx reply, so each `?` here is a protocol-level abort.
+    async fn dsn_transaction(
+        &self,
+        conn: &mut AsyncSmtpConnection,
+        envelope: &Envelope,
+        bytes: &[u8],
+        client_id: &ClientId,
+    ) -> Result<(), UnkaiError> {
+        conn.auth(DEFAULT_MECHANISMS, &self.credentials)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("SMTP authentication failed: {e}")))?;
+
+        // Lettre's `ServerInfo` only models the extensions it uses
+        // itself (STARTTLS / AUTH / 8BITMIME / SMTPUTF8) and silently
+        // drops the rest — so `supports_feature` can never answer
+        // "does this server do DSN?".  Re-issue EHLO and scan the raw
+        // reply lines instead; re-EHLO before MAIL is legal (RFC 5321
+        // §4.1.4, it just resets the session state we haven't used yet).
+        let ehlo = conn
+            .command(Ehlo::new(client_id.clone()))
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("EHLO failed: {e}")))?;
+        let supports_dsn = ehlo_advertises_dsn(ehlo.message());
+        if !supports_dsn {
+            warn!(
+                host = %self.host,
+                "SMTP server does not advertise the DSN extension — \
+                 sending without the delivery-confirmation request"
+            );
+        }
+
+        // Mirror the SMTPUTF8 / 8BITMIME negotiation lettre's own
+        // `send` performs (its `ServerInfo` does track those two).
+        let mut mail_params = Vec::new();
+        if envelope_has_non_ascii_addresses(envelope) {
+            if !conn.server_info().supports_feature(Extension::SmtpUtfEight) {
+                return Err(UnkaiError::Protocol(
+                    "Envelope contains non-ascii addresses but the server does not support SMTPUTF8"
+                        .into(),
+                ));
+            }
+            mail_params.push(MailParameter::SmtpUtfEight);
+        }
+        if !bytes.is_ascii() {
+            if !conn.server_info().supports_feature(Extension::EightBitMime) {
+                return Err(UnkaiError::Protocol(
+                    "Message contains non-ascii bytes but the server does not support 8BITMIME"
+                        .into(),
+                ));
+            }
+            mail_params.push(MailParameter::Body(MailBodyParameter::EightBitMime));
+        }
+
+        conn.command(Mail::new(envelope.from().cloned(), mail_params))
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("MAIL FROM rejected: {e}")))?;
+        for rcpt in envelope.to() {
+            let params = if supports_dsn {
+                dsn_notify_params()
+            } else {
+                Vec::new()
+            };
+            conn.command(Rcpt::new(rcpt.clone(), params))
+                .await
+                .map_err(|e| UnkaiError::Protocol(format!("RCPT TO <{rcpt}> rejected: {e}")))?;
+        }
+        conn.command(Data)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("DATA rejected: {e}")))?;
+        conn.message(bytes)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Message body rejected: {e}")))?;
+        Ok(())
+    }
+}
+
+/// The `RCPT TO` parameters of a delivery-confirmation request
+/// (RFC 3461 §4.1): report when the message reaches the recipient's
+/// mailbox (`SUCCESS`) and keep failure reporting explicit
+/// (`FAILURE`).  `DELAY` is deliberately omitted — transient
+/// queue-delay notices read as noise next to the "did it arrive?"
+/// question the compose toggle asks.
+fn dsn_notify_params() -> Vec<RcptParameter> {
+    vec![RcptParameter::Other {
+        keyword: "NOTIFY".into(),
+        value: Some("SUCCESS,FAILURE".into()),
+    }]
+}
+
+/// Scan a raw EHLO reply for the `DSN` keyword (RFC 3461 §3).
+///
+/// The first reply line is the server's greeting (domain plus free
+/// text — skipped so a host like `dsn.example.com` can't
+/// false-positive); every later line is one extension keyword,
+/// optionally followed by parameters.  `DSN` takes none, so an exact
+/// case-insensitive match is the whole test.
+fn ehlo_advertises_dsn<'a>(lines: impl Iterator<Item = &'a str>) -> bool {
+    lines.skip(1).any(|l| l.trim().eq_ignore_ascii_case("DSN"))
+}
+
+/// Replicates lettre's private `Envelope::has_non_ascii_addresses`
+/// for the hand-driven DSN transaction: SMTPUTF8 is only needed when
+/// a reverse-path or forward-path address itself carries non-ascii
+/// characters.
+fn envelope_has_non_ascii_addresses(envelope: &Envelope) -> bool {
+    envelope.from().is_some_and(|a| !a.to_string().is_ascii())
+        || envelope.to().iter().any(|a| !a.to_string().is_ascii())
 }
 
 /// Build a lettre `TlsParameters` for `host`, threading per-account
@@ -1733,6 +1980,7 @@ mod tests {
             encryption_mode: Some("pgp".into()),
             signing_enabled: false,
             request_read_receipt: false,
+            request_delivery_receipt: false,
         }
     }
 
@@ -2515,6 +2763,48 @@ mod tests {
             .and_then(|h| h.as_text())
             .expect("outer wrapper must carry the header");
         assert_eq!(dnt.trim(), "alice@example.com");
+    }
+
+    // ── Delivery confirmations / DSN (#461) ────────────────────
+
+    use super::{dsn_notify_params, ehlo_advertises_dsn};
+
+    #[test]
+    fn dsn_notify_params_render_on_rcpt_command() {
+        // The exact bytes the DSN path puts on the wire for each
+        // recipient — RFC 3461 §4.1 `NOTIFY` esmtp-param, rendered
+        // through lettre's `Rcpt` command Display impl.
+        let addr: super::Address = "bob@example.com".parse().expect("valid address");
+        let cmd = super::Rcpt::new(addr, dsn_notify_params()).to_string();
+        assert_eq!(cmd, "RCPT TO:<bob@example.com> NOTIFY=SUCCESS,FAILURE\r\n");
+    }
+
+    #[test]
+    fn ehlo_scan_detects_dsn_keyword() {
+        // Keyword match is case-insensitive and tolerant of the
+        // parameterised lines other extensions emit.
+        let lines = [
+            "mail.example.com at your service",
+            "SIZE 35882577",
+            "8BITMIME",
+            "dsn",
+            "SMTPUTF8",
+        ];
+        assert!(ehlo_advertises_dsn(lines.iter().copied()));
+    }
+
+    #[test]
+    fn ehlo_scan_ignores_greeting_and_lookalikes() {
+        // "DSN" in the greeting line (e.g. a hostname) must not
+        // count, and neither does a keyword that merely starts with
+        // the letters.
+        let lines = [
+            "DSN.example.com welcomes you",
+            "8BITMIME",
+            "DSNX",
+            "SIZE 100",
+        ];
+        assert!(!ehlo_advertises_dsn(lines.iter().copied()));
     }
 
     fn mdn_reply() -> MdnReply {

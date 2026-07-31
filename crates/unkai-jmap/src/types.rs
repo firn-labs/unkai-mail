@@ -40,6 +40,16 @@ pub struct SessionAccount {
     pub name: String,
     pub is_personal: bool,
     pub is_read_only: bool,
+    /// Capability objects for this account, keyed by capability URI
+    /// (RFC 8620 §2).  Deliberately loose-typed: the only thing we
+    /// dip into is `urn:ietf:params:jmap:submission` →
+    /// `submissionExtensions`, to learn whether the server's
+    /// outbound relay implements ESMTP DSN before we put RFC 3461
+    /// parameters on a submission envelope (#461).  Modelling every
+    /// capability shape here would be dead weight.  Defaulted so
+    /// minimal servers (and our test mock) may omit it.
+    #[serde(default)]
+    pub account_capabilities: HashMap<String, serde_json::Value>,
 }
 
 // ── Request / Response envelope (RFC 8620 §3) ──────────────────

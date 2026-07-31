@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{info, warn};
 use unkai_core::error::UnkaiError;
 use unkai_core::models::{Email, EmailEnvelope, Folder, OutgoingEmail, priority_from_headers};
 use unkai_core::url::ensure_https;
@@ -1014,6 +1014,32 @@ impl JmapClient {
             draft["header:Disposition-Notification-To:asText"] = json!(email.from);
         }
 
+        // #461 — RFC 3461 delivery-confirmation request.  RFC 8621 §7
+        // lets every envelope address carry SMTP parameters verbatim,
+        // and the session's submission capability tells us up front
+        // whether the outbound relay implements DSN
+        // (`submissionExtensions`, RFC 8621 §1.3).  When it doesn't,
+        // degrade to a plain envelope rather than letting the server
+        // reject the submission — the same best-effort contract as
+        // the SMTP path.
+        let with_dsn = email.request_delivery_receipt && self.submission_supports_dsn();
+        if email.request_delivery_receipt && !with_dsn {
+            warn!(
+                "JMAP server does not advertise the DSN submission extension — \
+                 sending without the delivery-confirmation request"
+            );
+        }
+        let rcpt_to: Vec<Value> = all_rcpt
+            .iter()
+            .map(|e| {
+                if with_dsn {
+                    json!({ "email": e, "parameters": { "NOTIFY": "SUCCESS,FAILURE" } })
+                } else {
+                    json!({ "email": e })
+                }
+            })
+            .collect();
+
         // Build the batched request: create email + submit it.
         let resp = self
             .call(vec![
@@ -1035,7 +1061,7 @@ impl JmapClient {
                                 "identityId": identity_id,
                                 "envelope": {
                                     "mailFrom": { "email": email.from },
-                                    "rcptTo": all_rcpt.iter().map(|e| json!({ "email": e })).collect::<Vec<_>>(),
+                                    "rcptTo": rcpt_to,
                                 },
                             },
                         },
@@ -1098,6 +1124,29 @@ impl JmapClient {
     }
 
     // ── Internal helpers ───────────────────────────────────────
+
+    /// Whether this account's submission capability advertises the
+    /// ESMTP `DSN` extension (#461).
+    ///
+    /// RFC 8621 §1.3: the `urn:ietf:params:jmap:submission`
+    /// capability object carries `submissionExtensions`, a map of
+    /// ESMTP keyword → argument list for every extension the
+    /// server's outbound relay accepts envelope parameters for.
+    /// Only when `DSN` appears there is it legal to put RFC 3461
+    /// `NOTIFY` parameters on a submission envelope — servers may
+    /// reject envelopes carrying parameters they didn't advertise.
+    fn submission_supports_dsn(&self) -> bool {
+        self.session
+            .accounts
+            .get(&self.account_id)
+            .and_then(|acc| {
+                acc.account_capabilities
+                    .get("urn:ietf:params:jmap:submission")
+            })
+            .and_then(|cap| cap.get("submissionExtensions"))
+            .and_then(|ext| ext.as_object())
+            .is_some_and(|exts| exts.keys().any(|k| k.eq_ignore_ascii_case("DSN")))
+    }
 
     /// Find the JMAP mailbox ID for a given folder name.
     async fn find_mailbox_id(&self, folder: &str) -> Result<String, UnkaiError> {
