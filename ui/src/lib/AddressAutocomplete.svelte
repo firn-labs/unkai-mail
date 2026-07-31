@@ -74,6 +74,11 @@
     /** Class for the underlying `<input>` — override when the field
      *  sits in a denser layout than the compose form. */
     inputClass?: string
+    /** Fired after a suggestion pick has committed into `value` —
+     *  lets the caller react to the pick specifically (e.g. the mail
+     *  search closes its advanced panel and runs the search) without
+     *  conflating it with ordinary typing. */
+    onpick?: () => void
   }
   let {
     value = $bindable(''),
@@ -81,6 +86,7 @@
     id = '',
     pickMode = 'append-rfc',
     inputClass = 'input w-full px-3 py-2 text-sm rounded-lg',
+    onpick,
   }: Props = $props()
 
   // ── Dropdown state ─────────────────────────────────────────
@@ -276,6 +282,7 @@
   function pick(s: Suggestion) {
     if (s.kind === 'contact') pickContact(s.contact, s.email.value)
     else pickList(s.list)
+    onpick?.()
   }
 
   function onKeydown(e: KeyboardEvent) {
