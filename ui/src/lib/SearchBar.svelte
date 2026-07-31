@@ -10,6 +10,7 @@
    */
 
   import { onMount, onDestroy } from 'svelte'
+  import Icon from './Icon.svelte'
   import SearchInput from './SearchInput.svelte'
   import { displayFolderName } from './unifiedFolders'
   import { m } from '../paraglide/messages'
@@ -51,7 +52,7 @@
   let unread = $state(false)
   let flagged = $state(false)
   let hasAttachment = $state(false)
-  let showHints = $state(false)
+  let showHelp = $state(false)
   let inputEl: HTMLInputElement | null = $state(null)
 
   // Debounce keystrokes — we don't want to hit the DB on every
@@ -96,6 +97,9 @@
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
+      // While the syntax-help popup is open, Escape belongs to it —
+      // the global handler closes it; don't also clear the query.
+      if (showHelp) return
       if (query || unread || flagged || hasAttachment) {
         query = ''
         unread = false
@@ -124,17 +128,22 @@
   function insertOperator(op: string) {
     const suffix = query.endsWith(' ') || query.length === 0 ? '' : ' '
     query = `${query}${suffix}${op}`
+    showHelp = false
     inputEl?.focus()
     scheduleSearch()
   }
 
   // Ctrl+F focuses the search input. We preventDefault so the browser's
-  // built-in page-find dialog doesn't open on top of us.
+  // built-in page-find dialog doesn't open on top of us.  Escape closes
+  // the syntax-help popup from anywhere while it's open.
   function handleGlobalKey(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
       e.preventDefault()
       inputEl?.focus()
       inputEl?.select()
+    } else if (e.key === 'Escape' && showHelp) {
+      e.preventDefault()
+      showHelp = false
     }
   }
 
@@ -180,42 +189,29 @@
 <div class="border-b glass-panel p-2 space-y-1.5" data-tour="search">
   <!-- Row 1: search input — uses the shared `SearchInput` so the
        magnifier / clear-X chrome stays in sync with every other
-       "Search …" surface in the app.  The operator-hint dropdown
-       rides along as a child snippet, anchored to SearchInput's
-       relative wrapper. -->
-  <SearchInput
-    bind:inputEl
-    bind:value={query}
-    placeholder="Search mail  (Ctrl+F)"
-    ariaLabel="Search mail"
-    onkeydown={onKeydown}
-    onfocus={() => (showHints = true)}
-    onblur={() => setTimeout(() => (showHints = false), 150)}
-  >
-    {#if showHints && query.length === 0}
-      <!-- Operator hint dropdown — shown while focused + empty -->
-      <div
-        class="absolute left-0 right-0 top-full mt-1 z-40 glass-float rounded-xl p-2 text-xs space-y-0.5"
-      >
-        <div class="font-semibold text-surface-500 mb-1">
-          {m.search_tips_header()}
-        </div>
-        {#each searchTips as tip (tip.example)}
-          <div
-            role="button"
-            tabindex="-1"
-            class="cursor-pointer hover:bg-primary-500/10 transition-colors duration-150 ease-out px-1.5 py-0.5 rounded-lg"
-            onmousedown={(e) => {
-              e.preventDefault()
-              insertOperator(tip.insert)
-            }}
-          >
-            <code class="font-mono">{tip.example}</code> — {tip.hint()}
-          </div>
-        {/each}
-      </div>
-    {/if}
-  </SearchInput>
+       "Search …" surface in the app — plus the syntax-help trigger.
+       The operator documentation lives in a modal popup (below)
+       rather than a focus-anchored dropdown, which used to overlap
+       the mail list under the glass chrome. -->
+  <div class="flex items-center gap-1.5">
+    <SearchInput
+      bind:inputEl
+      bind:value={query}
+      placeholder="Search mail  (Ctrl+F)"
+      ariaLabel="Search mail"
+      onkeydown={onKeydown}
+      class="w-full flex-1 min-w-0"
+    />
+    <button
+      type="button"
+      class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center shrink-0"
+      onclick={() => (showHelp = true)}
+      title={m.search_help_button()}
+      aria-label={m.search_help_button()}
+    >
+      <Icon name="help" size={14} />
+    </button>
+  </div>
 
   <!-- Row 2: scope selector on its own line below the input. -->
   <div class="flex items-center gap-1.5">
@@ -275,3 +271,56 @@
     </div>
   {/if}
 </div>
+
+{#if showHelp}
+  <!-- Search-syntax documentation popup.  Standard modal shape:
+       dimmed backdrop + glass-float card, dismissed by outside-click,
+       Escape (global handler above), or the X button.  The operator
+       rows stay clickable — picking one inserts it into the query
+       and closes the popup. -->
+  <div
+    class="fixed inset-0 flex items-center justify-center bg-black/50"
+    style="z-index: 50"
+    role="dialog"
+    aria-modal="true"
+    aria-label={m.search_tips_header()}
+    tabindex="-1"
+    onmousedown={(e) => {
+      if (e.target === e.currentTarget) showHelp = false
+    }}
+  >
+    <div class="glass-float rounded-2xl w-[28rem] max-w-full p-5">
+      <div class="flex items-start justify-between gap-2 mb-1">
+        <h3 class="text-base font-semibold text-on-glass">
+          {m.search_tips_header()}
+        </h3>
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          onclick={() => (showHelp = false)}
+          title={m.search_help_close()}
+          aria-label={m.search_help_close()}
+        >
+          <Icon name="close" size={14} />
+        </button>
+      </div>
+      <p class="text-xs text-on-glass-muted mb-3">
+        {m.search_help_intro()}
+      </p>
+      <div class="space-y-0.5 text-sm">
+        {#each searchTips as tip (tip.example)}
+          <button
+            type="button"
+            class="w-full text-left flex items-baseline gap-2 cursor-pointer hover:bg-primary-500/10 transition-colors duration-150 ease-out px-2 py-1 rounded-lg"
+            onclick={() => insertOperator(tip.insert)}
+          >
+            <code class="font-mono text-xs shrink-0 text-on-glass">
+              {tip.example}
+            </code>
+            <span class="text-xs text-on-glass-muted">{tip.hint()}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+  </div>
+{/if}

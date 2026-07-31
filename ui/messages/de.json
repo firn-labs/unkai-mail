@@ -522,6 +522,9 @@
   "search_tip_before": "vor einem Datum gesendet",
   "search_tip_on": "an diesem Tag gesendet (oder Monat: on:2026-03)",
   "search_tip_in": "nur in diesem Ordner (in:anywhere für alle)",
+  "search_help_button": "Hilfe zur Suchsyntax",
+  "search_help_intro": "Klicke auf einen Operator, um ihn in das Suchfeld einzufügen. Operatoren lassen sich mit Freitext und untereinander kombinieren.",
+  "search_help_close": "Schließen",
 
   "talk_view_search_placeholder": "Räume durchsuchen",
   "talk_view_no_matches": "Keine Talk-Räume passen zu dieser Suche.",
