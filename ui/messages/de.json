@@ -213,6 +213,11 @@
   "compose_read_receipt_title": "Lesebestätigung von den Empfängern anfordern — deren Mailprogramm kann die Anfrage ablehnen oder ignorieren",
   "compose_read_receipt_title_active": "Eine Lesebestätigung wird angefordert — klicken zum Ausschalten",
 
+  "compose_delivery_receipt": "Zustellbestätigung",
+  "compose_delivery_receipt_active": "Bestätigung angefordert",
+  "compose_delivery_receipt_title": "Den Mailserver bitten, die Zustellung ins Postfach jedes Empfängers zu bestätigen — funktioniert nur, wenn der Server Zustellstatus-Benachrichtigungen unterstützt",
+  "compose_delivery_receipt_title_active": "Eine Zustellbestätigung wird angefordert — klicken zum Ausschalten",
+
   "mail_view_mdn_banner": "{sender} bittet um eine Lesebestätigung für diese Nachricht.",
   "mail_view_mdn_send": "Bestätigung senden",
   "mail_view_mdn_sending": "Wird gesendet…",

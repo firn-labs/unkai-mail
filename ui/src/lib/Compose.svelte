@@ -1063,6 +1063,17 @@
   // and most recipients' clients let them decline anyway.
   let requestReadReceipt = $state(false)
 
+  // Delivery-confirmation request toggle (#461, RFC 3461 DSN).
+  // When on, the send path asks the mail server for a delivery
+  // status notification per recipient (NOTIFY=SUCCESS,FAILURE on
+  // the SMTP envelope; the same parameters on a JMAP submission).
+  // Unlike the read receipt above, the answer comes from the
+  // *server* once the mail lands in the recipient's mailbox — not
+  // from the recipient's client — but it's equally best-effort:
+  // servers that don't implement DSN deliver the mail without a
+  // report, so the toggle never blocks a send.
+  let requestDeliveryReceipt = $state(false)
+
   // #341 — when the sending account has opted into "Unlock
   // automatically" we hide the inline passphrase input entirely
   // and let the backend resolve the passphrase from the OS
@@ -2282,6 +2293,8 @@
           signing_enabled: cryptoStack === 'pgp' && (encryptEnabled || signOnlyEnabled),
           // #416: ask the recipient's client to send a read receipt.
           request_read_receipt: requestReadReceipt,
+          // #461: ask the receiving server for a delivery confirmation.
+          request_delivery_receipt: requestDeliveryReceipt,
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list
@@ -2990,16 +3003,19 @@
   </button>
 {/snippet}
 
-<!-- Options tab panel — per-send options (#416).  Same `.rt-btn`
-     shape as the Attach / Meetings panels.  The read-receipt toggle
-     asks the recipient's client to confirm display; the tooltip
-     manages expectations up front — receipts are advisory and many
-     clients decline or ignore the request entirely. -->
+<!-- Options tab panel — per-send options (#416 / #461).  Same
+     `.rt-btn` shape as the Attach / Meetings panels.  The
+     read-receipt toggle asks the recipient's client to confirm
+     display; the delivery-confirmation toggle asks the *server* to
+     confirm the mail reached the mailbox (RFC 3461 DSN).  Both
+     tooltips manage expectations up front — receipts are advisory
+     (clients decline or ignore them) and delivery reports need the
+     server to support DSN. -->
 {#snippet optionsTabContent()}
   <button
     type="button"
     class="rt-btn"
-    class:active={requestReadReceipt}
+    class:is-active={requestReadReceipt}
     title={requestReadReceipt
       ? m.compose_read_receipt_title_active()
       : m.compose_read_receipt_title()}
@@ -3009,6 +3025,21 @@
     <span class="rt-btn-icon"><Icon name="read" size={20} /></span>
     <span class="rt-btn-label">
       {requestReadReceipt ? m.compose_read_receipt_active() : m.compose_read_receipt()}
+    </span>
+  </button>
+  <button
+    type="button"
+    class="rt-btn"
+    class:is-active={requestDeliveryReceipt}
+    title={requestDeliveryReceipt
+      ? m.compose_delivery_receipt_title_active()
+      : m.compose_delivery_receipt_title()}
+    aria-pressed={requestDeliveryReceipt}
+    onclick={() => (requestDeliveryReceipt = !requestDeliveryReceipt)}
+  >
+    <span class="rt-btn-icon"><Icon name="success" size={20} /></span>
+    <span class="rt-btn-label">
+      {requestDeliveryReceipt ? m.compose_delivery_receipt_active() : m.compose_delivery_receipt()}
     </span>
   </button>
 {/snippet}
@@ -3107,7 +3138,7 @@
   <button
     type="button"
     class="rt-btn"
-    class:active={encryptEnabled}
+    class:is-active={encryptEnabled}
     title={encryptEnabled
       ? m.compose_crypto_encrypt_title_active()
       : m.compose_crypto_encrypt_title()}
@@ -3141,7 +3172,7 @@
   <button
     type="button"
     class="rt-btn"
-    class:active={signOnlyEnabled}
+    class:is-active={signOnlyEnabled}
     title={signOnlyEnabled
       ? m.compose_crypto_sign_title_active()
       : m.compose_crypto_sign_title()}

@@ -648,6 +648,7 @@ pub(crate) fn build_draft_outgoing(
         encryption_mode: None,
         signing_enabled: false,
         request_read_receipt: false,
+        request_delivery_receipt: false,
     }
 }
 
