@@ -74,11 +74,6 @@
     /** Class for the underlying `<input>` — override when the field
      *  sits in a denser layout than the compose form. */
     inputClass?: string
-    /** Fired after a suggestion pick has committed into `value` —
-     *  lets the caller react to the pick specifically (e.g. the mail
-     *  search closes its advanced panel and runs the search) without
-     *  conflating it with ordinary typing. */
-    onpick?: () => void
   }
   let {
     value = $bindable(''),
@@ -86,7 +81,6 @@
     id = '',
     pickMode = 'append-rfc',
     inputClass = 'input w-full px-3 py-2 text-sm rounded-lg',
-    onpick,
   }: Props = $props()
 
   // ── Dropdown state ─────────────────────────────────────────
@@ -282,7 +276,6 @@
   function pick(s: Suggestion) {
     if (s.kind === 'contact') pickContact(s.contact, s.email.value)
     else pickList(s.list)
-    onpick?.()
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -373,7 +366,15 @@
           aria-selected={i === activeIndex}
           class="flex items-center gap-3 px-3 py-2 cursor-pointer text-sm
                  {i === activeIndex ? 'bg-primary-500/15' : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
-          onmousedown={(e) => { e.preventDefault(); pick(s) }}
+          onmousedown={(e) => {
+            // stopPropagation: pick() unmounts this row synchronously,
+            // so any document-level outside-click listener (the mail
+            // search's advanced panel) would later see a detached
+            // target and misread the pick as an outside click.
+            e.preventDefault()
+            e.stopPropagation()
+            pick(s)
+          }}
           onmouseenter={() => (activeIndex = i)}
         >
           {#if s.kind === 'contact'}

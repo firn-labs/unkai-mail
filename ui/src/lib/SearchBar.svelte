@@ -299,10 +299,11 @@
   }
 
   /** Commit from the popout: close it and search NOW.  Wired to the
-   *  panel's search button and to contact picks in the From / To
-   *  autocomplete.  `tick()` first — a pick lands in the query via
-   *  the advFrom/advTo → query effect chain, so firing synchronously
-   *  would search the stale query. */
+   *  panel's search button — and ONLY the button: picking a contact
+   *  in From / To keeps the panel open so the user can go on filling
+   *  fields (the debounced live search follows along regardless).
+   *  `tick()` so any pending field→query effect flushes before the
+   *  fire. */
   async function commitSearch() {
     showAdvanced = false
     await tick()
@@ -346,6 +347,12 @@
     if (!showAdvanced) return
     const handler = (e: MouseEvent) => {
       const t = e.target as Node | null
+      // A mousedown target that's no longer in the document was an
+      // inner widget that unmounted itself mid-click (autocomplete
+      // suggestion rows do this) — containment can't be checked on a
+      // detached node, and treating it as "outside" closed the panel
+      // on every contact pick.  Inside until proven otherwise.
+      if (t && !t.isConnected) return
       if (t && barEl?.contains(t)) return
       showAdvanced = false
     }
@@ -469,7 +476,6 @@
           pickMode="replace-address"
           inputClass="input w-full px-2 py-1 text-sm rounded-lg"
           placeholder={m.search_adv_person_placeholder()}
-          onpick={() => void commitSearch()}
         />
       </div>
       <div>
@@ -485,7 +491,6 @@
           pickMode="replace-address"
           inputClass="input w-full px-2 py-1 text-sm rounded-lg"
           placeholder={m.search_adv_person_placeholder()}
-          onpick={() => void commitSearch()}
         />
       </div>
 
