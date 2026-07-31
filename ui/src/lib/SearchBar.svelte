@@ -437,37 +437,38 @@
       class="absolute left-0 right-0 top-full mt-1 z-40 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-xl shadow-lg p-3 space-y-2"
       aria-label={m.search_adv_toggle()}
     >
-      <div class="grid grid-cols-2 gap-2">
-        <div>
-          <label
-            for="search-adv-from"
-            class="block text-xs text-surface-500 mb-0.5"
-          >
-            {m.search_adv_from()}
-          </label>
-          <AddressAutocomplete
-            id="search-adv-from"
-            bind:value={advFrom}
-            pickMode="replace-address"
-            inputClass="input w-full px-2 py-1 text-sm rounded-lg"
-            placeholder={m.search_adv_person_placeholder()}
-          />
-        </div>
-        <div>
-          <label
-            for="search-adv-to"
-            class="block text-xs text-surface-500 mb-0.5"
-          >
-            {m.search_adv_to()}
-          </label>
-          <AddressAutocomplete
-            id="search-adv-to"
-            bind:value={advTo}
-            pickMode="replace-address"
-            inputClass="input w-full px-2 py-1 text-sm rounded-lg"
-            placeholder={m.search_adv_person_placeholder()}
-          />
-        </div>
+      <!-- From / To stacked full-width: names and addresses need the
+           room, and the autocomplete dropdown anchors better to a
+           wide field. -->
+      <div>
+        <label
+          for="search-adv-from"
+          class="block text-xs text-surface-500 mb-0.5"
+        >
+          {m.search_adv_from()}
+        </label>
+        <AddressAutocomplete
+          id="search-adv-from"
+          bind:value={advFrom}
+          pickMode="replace-address"
+          inputClass="input w-full px-2 py-1 text-sm rounded-lg"
+          placeholder={m.search_adv_person_placeholder()}
+        />
+      </div>
+      <div>
+        <label
+          for="search-adv-to"
+          class="block text-xs text-surface-500 mb-0.5"
+        >
+          {m.search_adv_to()}
+        </label>
+        <AddressAutocomplete
+          id="search-adv-to"
+          bind:value={advTo}
+          pickMode="replace-address"
+          inputClass="input w-full px-2 py-1 text-sm rounded-lg"
+          placeholder={m.search_adv_person_placeholder()}
+        />
       </div>
 
       <div>
