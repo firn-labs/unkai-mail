@@ -45,6 +45,11 @@ ignore = [
   "RUSTSEC-2025-0052", # async-std
   "RUSTSEC-2024-0370", # proc-macro-error
   "RUSTSEC-2026-0097", # rand 0.7 / 0.8
+  # quick-xml < 0.41 DoS advisories — only the transitive 0.37/0.38
+  # copies via tauri-winrt-notification and plist remain; they parse
+  # locally generated XML only. Our own workspace dep is on 0.41.
+  "RUSTSEC-2026-0194", # quick-xml (quadratic dup-attr check)
+  "RUSTSEC-2026-0195", # quick-xml (unbounded ns alloc)
   # rsa Marvin timing attack (CVE-2023-49092) via pgp — no upstream
   # fix; not exploitable without a remote decryption-timing oracle.
   "RUSTSEC-2023-0071", # rsa (Marvin)
