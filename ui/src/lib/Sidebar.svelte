@@ -215,7 +215,10 @@
     >()
     for (const item of payload) {
       if (target.name === item.folder) continue // move-to-self
-      const key = `${item.accountId} ${item.folder}`
+      // NUL separator — the one byte that can't legally appear in
+      // an account id or IMAP folder name, so composite keys can't
+      // collide (`"a" + "b/c"` vs `"a/b" + "c"`).
+      const key = `${item.accountId}\0${item.folder}`
       const existing = groups.get(key)
       if (existing) existing.uids.push(item.uid)
       else
@@ -858,7 +861,7 @@
         tabindex="0"
         class="group w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors duration-150 ease-out
           {selectedFolder === folder.name
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : dragOverFolder === folder.name
               ? 'bg-primary-500/20 ring-2 ring-primary-500'
               : 'hover:bg-primary-500/10'}"
@@ -933,8 +936,12 @@
   <!-- `py-1` reserves space inside the scroll container so the
        drag-hover `ring-2` on the topmost folder row (typically
        Inbox) doesn't get clipped where its outer stroke would
-       otherwise sit at the very top edge of `overflow-y-auto`. -->
-  <nav class="flex-1 overflow-y-auto px-2 py-1">
+       otherwise sit at the very top edge of `overflow-y-auto`.
+       `space-y-0.5` keeps a hairline gap between rows — the hover
+       and selected fills are the same translucent primary tint, so
+       flush rows would visually merge into one blob when the row
+       adjacent to the selected one is hovered (#465). -->
+  <nav class="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
     {#if unified}
       <!-- Unified mode surfaces three global views: All Inboxes
            (existing), All Sent (#322), All Drafts (#322).  Sent and
@@ -945,7 +952,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === 'INBOX'
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder('INBOX')}
       >
@@ -973,7 +980,7 @@
         <button
           class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
             {selectedFolder === OUTBOX_FOLDER
-              ? 'bg-primary-500/10 text-primary-500 font-medium'
+              ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
               : 'hover:bg-primary-500/10'}"
           onclick={() => onselectfolder(OUTBOX_FOLDER)}
         >
@@ -995,7 +1002,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_DRAFTS_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_DRAFTS_FOLDER)}
       >
@@ -1010,7 +1017,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_SENT_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_SENT_FOLDER)}
       >
@@ -1025,7 +1032,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_ARCHIVE_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_ARCHIVE_FOLDER)}
       >
@@ -1040,7 +1047,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_JUNK_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_JUNK_FOLDER)}
       >
@@ -1055,7 +1062,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_TRASH_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_TRASH_FOLDER)}
       >
