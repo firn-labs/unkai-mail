@@ -27,6 +27,13 @@
     uid: number
     folder: string
     from: string
+    /** `To:` recipients as `"Name <addr>"` display strings (#417) —
+     *  same shape as `from`.  Feeds the participant-overlap check
+     *  that gates the subject-based thread merges below.  Absent
+     *  for cached rows that pre-date the v44 migration; those rows
+     *  simply never merge via the subject fallback until a re-sync
+     *  heals them (reference-based threading is unaffected). */
+    to_addrs?: string[]
     subject: string
     date: string      // RFC 3339 string (serde serialises DateTime<Utc> this way)
     is_read: boolean
@@ -71,6 +78,21 @@
      *  date on each row.  `null` for plain mail and for
      *  envelopes whose body hasn't been fetched yet. */
     protection?: string | null
+    /** Local-only pin state (#414).  Pinned rows (and the threads
+     *  they belong to) sort above everything else. */
+    is_pinned?: boolean
+    /** Sender-declared priority from the `X-Priority:` /
+     *  `Importance:` headers (#414): `'high'` / `'low'`, absent =
+     *  normal. */
+    priority?: string | null
+    /** User-set priority override (#414): `'high'` / `'normal'` /
+     *  `'low'`, absent = untouched.  Wins over `priority` for the
+     *  badge. */
+    priority_override?: string | null
+    /** Pending reminder time in unix-epoch seconds (#415), absent =
+     *  no reminder.  Local-only like the pin; the backend clears it
+     *  once the reminder fires. */
+    reminder_at?: number | null
   }
 
   /** Slim account row used to render the account label on each row in
@@ -229,6 +251,67 @@
     return /^(re|fwd?|aw|wg|sv)\s*(\[\d+\])?\s*:/i.test(subject || '')
   }
 
+  // ── Participant-overlap gate for the subject fallback (#417) ──
+  // A matching canonical subject alone over-groups: two unrelated
+  // "Invoice" mails from different senders used to collapse into
+  // one thread.  Both subject-merge passes below now additionally
+  // require the two buckets to share at least one participant
+  // (sender or recipient).  Reference-based threading (thread_id /
+  // References) is untouched — it stays the authoritative path.
+
+  /** The user's own account addresses, lowercased.  Excluded from
+   *  participant sets because every mail in the mailbox shares
+   *  "me" as sender or recipient — leaving them in would make any
+   *  two same-subject mails overlap and defeat the gate. */
+  const ownAddresses = $derived(
+    new Set(
+      accounts
+        .map((a) => (a.email || '').trim().toLowerCase())
+        .filter((s) => s.length > 0),
+    ),
+  )
+
+  /** Bare lowercase address out of a `"Name <addr>"` display string. */
+  function bareAddress(display: string): string {
+    return parseFromHeader(display).email.toLowerCase()
+  }
+
+  /** Every distinct sender + recipient across a bucket's members,
+   *  minus the user's own addresses.  Recomputed on demand so a
+   *  bucket that just absorbed another automatically widens its
+   *  participant set for later comparisons. */
+  function bucketParticipants(arr: EmailEnvelope[]): Set<string> {
+    const out = new Set<string>()
+    for (const env of arr) {
+      const from = bareAddress(env.from)
+      if (from && !ownAddresses.has(from)) out.add(from)
+      for (const t of env.to_addrs ?? []) {
+        const a = bareAddress(t)
+        if (a && !ownAddresses.has(a)) out.add(a)
+      }
+    }
+    return out
+  }
+
+  /** True when the two buckets share at least one non-own
+   *  participant.  Deliberately strict about missing data: a bucket
+   *  whose participant set is empty (pre-#417 cached rows with no
+   *  recipient data, or self-sent mail) never passes — a wrong
+   *  merge is confusing and sticky, while a missed merge heals on
+   *  the next sync once recipient data lands. */
+  function participantsOverlap(
+    a: EmailEnvelope[],
+    b: EmailEnvelope[],
+  ): boolean {
+    const pa = bucketParticipants(a)
+    if (pa.size === 0) return false
+    const pb = bucketParticipants(b)
+    for (const p of pb) {
+      if (pa.has(p)) return true
+    }
+    return false
+  }
+
   /** Thread keys we've already pulled the full membership for from
    *  the cache (#334).  Reset on folder change.  Used to skip the
    *  per-expand IPC round-trip on a thread the user has already
@@ -292,6 +375,11 @@
     isSibling: boolean
     isLastSibling: boolean
     threadKey: string
+    /** True for every row inside the pinned block at the top of the
+     *  list (#414 follow-up) — including expanded siblings of a
+     *  pinned thread.  Drives the "Pinned" section header and the
+     *  divider where the section ends. */
+    pinnedSection?: boolean
   }
 
   /** Stable identity key for an envelope across the bound list.  UID
@@ -311,12 +399,25 @@
     // affected-envelopes lookup) still has a stable handle to key
     // off; nothing groups by it because the keys are all distinct.
     if (!conversationView) {
-      const rows: RenderRow[] = envelopes.map((env) => ({
+      // #414: pinned rows first (stable within each partition, so
+      // date order is preserved on both sides of the split).  Done
+      // here — at render time — rather than by re-sorting
+      // `envelopes`, because the pagination cursor logic
+      // (`paginationWindow`) needs the array's date order intact:
+      // a pinned old message hoisted to the front of `envelopes`
+      // would otherwise become the "smallest UID in the window"
+      // anchor and make `loadOlder` skip everything between.
+      const ordered = [
+        ...envelopes.filter((e) => e.is_pinned),
+        ...envelopes.filter((e) => !e.is_pinned),
+      ]
+      const rows: RenderRow[] = ordered.map((env) => ({
         env,
         siblingCount: 0,
         isSibling: false,
         isLastSibling: false,
         threadKey: `__solo:${env.account_id}:${env.uid}`,
+        pinnedSection: !!env.is_pinned,
       }))
       // Each envelope is its own one-member "bucket" so consumers
       // that read `threadMembersByEnv` (Archive's sweep-the-thread
@@ -344,31 +445,36 @@
       arr.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
     }
 
-    // JWZ-style subject-based merge pass (#277).  Some servers
-    // rewrite Message-IDs on delivery (local-SMTP test rigs and
-    // a few Exchange configs we've seen) so the inbox copy
-    // anchors a different ID than the reply's `In-Reply-To`
-    // points at.  Standard practice in conversation groupers is
-    // to fall back to subject matching when the header chain
-    // breaks — Unkai does the same.
+    // JWZ-style subject-based merge pass (#277, gated on
+    // participants since #417).  Some servers rewrite Message-IDs
+    // on delivery (local-SMTP test rigs and a few conservative
+    // gateway configs we've seen) so the inbox copy anchors a
+    // different ID than the reply's `In-Reply-To` points at.
+    // Standard practice in conversation groupers is to fall back
+    // to subject matching when the header chain breaks — Unkai
+    // does the same, but only folds a reply into a root it also
+    // shares a participant with.
     //
     // For every reply-shaped bucket head (`Re:` / `Fwd:` / …),
     // look for another bucket whose head has the same canonical
-    // subject; merge the reply bucket into the older bucket.
+    // subject AND whose participants overlap; merge the reply
+    // bucket into that bucket.
     //
-    // `byCanonicalRoot` indexes the *non-reply* heads
-    // (potential thread roots) so the lookup is O(1) per
-    // bucket.  The 4-char floor avoids cascading merges on
-    // trivial subjects like `"hi"`.
-    const byCanonicalRoot = new Map<string, string>() // canon → group key
+    // `byCanonicalRoot` indexes ALL *non-reply* heads (potential
+    // thread roots) per canonical subject — keeping every
+    // candidate (not just the first, as pre-#417) lets the
+    // participant check pick the RIGHT "Invoice" root instead of
+    // blindly taking whichever appeared first.  The 4-char floor
+    // still avoids matching on trivial subjects like `"hi"`.
+    const byCanonicalRoot = new Map<string, string[]>() // canon → root group keys
     for (const [key, arr] of groups) {
       const head = arr[arr.length - 1] // oldest in bucket = candidate root
       if (!head || isReplyOrForward(head.subject)) continue
       const canon = canonicalSubject(head.subject)
       if (canon.length < 4) continue
-      // Ties: first non-reply bucket wins; later collisions
-      // stay separate to avoid mass merges on common subjects.
-      if (!byCanonicalRoot.has(canon)) byCanonicalRoot.set(canon, key)
+      const keys = byCanonicalRoot.get(canon)
+      if (keys) keys.push(key)
+      else byCanonicalRoot.set(canon, [key])
     }
     // `keyRedirect` maps a now-merged-away key to its merge
     // target so the seen-key bookkeeping below still resolves
@@ -382,8 +488,18 @@
       if (!head || !isReplyOrForward(head.subject)) continue
       const canon = canonicalSubject(head.subject)
       if (canon.length < 4) continue
-      const targetKey = byCanonicalRoot.get(canon)
-      if (!targetKey || targetKey === key) continue
+      const candidates = byCanonicalRoot.get(canon)
+      if (!candidates) continue
+      // #417: first same-subject root the reply also shares a
+      // participant with wins; no overlap anywhere → stays its
+      // own thread.
+      const targetKey = candidates.find(
+        (c) =>
+          c !== key &&
+          !mergedAway.has(c) &&
+          participantsOverlap(groups.get(c) ?? [], arr),
+      )
+      if (!targetKey) continue
       // Move every envelope into the target bucket.
       const target = groups.get(targetKey)
       if (!target) continue
@@ -396,39 +512,47 @@
     }
     for (const key of mergedAway) groups.delete(key)
 
-    // Orphan-reply merge pass (#289).  The pass above only fires
-    // when there's a non-reply head to anchor the canonical-subject
-    // group on.  When the original got archived or deleted on the
-    // server, every remaining bucket head is a reply (`Re: Foo`) and
-    // none of them get picked as the byCanonicalRoot anchor, so
-    // two genuinely-same-thread reply buckets stay separate even
-    // though their canonical subjects match.  Fix: walk the
-    // surviving buckets, and for any canonical subject that appears
-    // on multiple reply-shaped heads, pick the *oldest* bucket
-    // (largest internal date span — the one most likely to be the
-    // closest-to-root surviving copy) as the anchor and fold the
-    // rest into it.  Same ≥4-char floor; we still skip canon
-    // subjects that already won an anchor in the first pass, so
-    // trivial subjects never cascade.
-    const orphanAnchor = new Map<string, string>() // canon → group key
+    // Orphan-reply merge pass (#289, participant-gated since #417).
+    // The pass above only fires when there's a non-reply head to
+    // anchor the canonical-subject group on.  When the original got
+    // archived or deleted on the server, every remaining bucket
+    // head is a reply (`Re: Foo`), so two genuinely-same-thread
+    // reply buckets stay separate even though their canonical
+    // subjects match.  Fix: walk the surviving buckets, and for any
+    // canonical subject appearing on multiple reply-shaped heads,
+    // cluster the ones that share a participant — the *oldest*
+    // bucket of a cluster (the closest-to-root surviving copy)
+    // becomes its anchor.  Same ≥4-char floor.
+    //
+    // Pre-#417 this pass skipped canons that already had a pass-1
+    // root, because without a participant check a second merge
+    // opportunity meant a cascade risk on common subjects.  The
+    // overlap gate now provides that safety, so orphaned reply
+    // pairs cluster even when an *unrelated* root shares their
+    // subject — each cluster keyed by who's actually in it.
+    const orphanAnchors = new Map<string, string[]>() // canon → cluster anchor keys
     for (const [key, arr] of groups) {
       const head = arr[arr.length - 1]
       if (!head || !isReplyOrForward(head.subject)) continue
       const canon = canonicalSubject(head.subject)
       if (canon.length < 4) continue
-      if (byCanonicalRoot.has(canon)) continue // pass-1 already handled this canon
-      const existing = orphanAnchor.get(canon)
+      const anchors = orphanAnchors.get(canon)
+      if (!anchors) {
+        orphanAnchors.set(canon, [key])
+        continue
+      }
+      // #417: join the first existing cluster this bucket shares a
+      // participant with; none → start a new cluster for this canon.
+      const existing = anchors.find(
+        (a) => groups.has(a) && participantsOverlap(groups.get(a)!, arr),
+      )
       if (!existing) {
-        orphanAnchor.set(canon, key)
+        anchors.push(key)
         continue
       }
       // Pick the bucket whose oldest member is older — that's the
       // surviving anchor; merge the other into it.
-      const existingArr = groups.get(existing)
-      if (!existingArr) {
-        orphanAnchor.set(canon, key)
-        continue
-      }
+      const existingArr = groups.get(existing)!
       const existingOldest = new Date(
         existingArr[existingArr.length - 1].date,
       ).getTime()
@@ -444,7 +568,7 @@
       )
       groups.delete(mergeKey)
       keyRedirect.set(mergeKey, anchorKey)
-      orphanAnchor.set(canon, anchorKey)
+      anchors[anchors.indexOf(existing)] = anchorKey
     }
 
     /** Resolve an envelope's natural threadKey through the
@@ -461,7 +585,13 @@
       }
       return key
     }
-    const out: RenderRow[] = []
+    // #414: emit whole thread blocks (head + expanded siblings)
+    // and partition pinned blocks to the front afterwards.  A
+    // thread counts as pinned when *any* member is pinned — the
+    // user's pin must survive newer replies arriving and becoming
+    // the visible head.  Block-level partitioning (not row-level)
+    // keeps expanded siblings glued to their head.
+    const blocks: { pinned: boolean; rows: RenderRow[] }[] = []
     const seen = new Set<string>()
     for (const env of envelopes) {
       const key = effectiveKey(env)
@@ -493,16 +623,18 @@
         }
       }
       const totalCount = Math.max(group.length, cachedTotal)
-      out.push({
-        env: head,
-        siblingCount: totalCount - 1,
-        isSibling: false,
-        isLastSibling: false,
-        threadKey: key,
-      })
+      const blockRows: RenderRow[] = [
+        {
+          env: head,
+          siblingCount: totalCount - 1,
+          isSibling: false,
+          isLastSibling: false,
+          threadKey: key,
+        },
+      ]
       if (expandedThreads.has(key)) {
         for (let i = 0; i < siblings.length; i++) {
-          out.push({
+          blockRows.push({
             env: siblings[i],
             siblingCount: 0,
             isSibling: true,
@@ -511,7 +643,12 @@
           })
         }
       }
+      blocks.push({ pinned: group.some((g) => g.is_pinned), rows: blockRows })
     }
+    const out: RenderRow[] = [
+      ...blocks.filter((b) => b.pinned),
+      ...blocks.filter((b) => !b.pinned),
+    ].flatMap((b) => b.rows.map((r) => ({ ...r, pinnedSection: b.pinned })))
     // Build a side-map from envelope identity to its post-merge
     // bucket (#289 follow-up).  `affectedEnvelopes` consults this
     // when the user drags or right-clicks a thread head so the
@@ -1417,6 +1554,8 @@
   function openContextMenu(e: MouseEvent, env: EmailEnvelope) {
     e.preventDefault()
     contextMenu = { x: e.clientX, y: e.clientY, env }
+    // #415: fresh menu, fresh custom-reminder input.
+    reminderCustomValue = ''
   }
 
   function closeContextMenu() {
@@ -1516,6 +1655,145 @@
       env.is_read = !next
     }
   }
+
+  // ── Flag / pin / priority (#414) ──────────────────────────────
+  // Same optimistic shape as toggleEnvelopeRead: mutate the row
+  // in place (the `$state` proxy re-derives `threadView`, so a
+  // pin toggle re-sorts the visible list immediately), then let
+  // the backend call catch up; revert on failure.
+
+  /** The priority the badge should show: the user's override wins
+   *  over the sender-declared header value; `'normal'` (explicit
+   *  or implied by absence) renders no badge. */
+  function effectivePriority(env: EmailEnvelope): 'high' | 'low' | null {
+    const p = env.priority_override ?? env.priority
+    return p === 'high' || p === 'low' ? p : null
+  }
+
+  async function toggleEnvelopeFlagged(env: EmailEnvelope) {
+    const next = !env.is_starred
+    env.is_starred = next
+    closeContextMenu()
+    try {
+      await invoke('set_message_flagged', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        flagged: next,
+      })
+    } catch (e) {
+      console.warn('set_message_flagged failed:', e)
+      env.is_starred = !next
+    }
+  }
+
+  async function toggleEnvelopePinned(env: EmailEnvelope) {
+    const next = !env.is_pinned
+    env.is_pinned = next
+    closeContextMenu()
+    try {
+      await invoke('set_message_pinned', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        pinned: next,
+      })
+    } catch (e) {
+      console.warn('set_message_pinned failed:', e)
+      env.is_pinned = !next
+    }
+  }
+
+  async function setEnvelopePriority(
+    env: EmailEnvelope,
+    priority: 'high' | 'normal' | 'low',
+  ) {
+    const prev = env.priority_override
+    env.priority_override = priority
+    closeContextMenu()
+    try {
+      await invoke('set_message_priority', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        priority,
+      })
+    } catch (e) {
+      console.warn('set_message_priority failed:', e)
+      env.priority_override = prev
+    }
+  }
+
+  // ── Message reminders (#415) ───────────────────────────────────
+
+  /** Value of the custom `datetime-local` input in the context
+   *  menu's reminder section.  Reset whenever a menu opens so a
+   *  half-typed time from one mail doesn't leak into the next. */
+  let reminderCustomValue = $state('')
+
+  /** Quick-choice fire times, computed at render time so "In 1
+   *  hour" is relative to when the user opens the menu. */
+  function reminderPresets(): { label: string; when: number }[] {
+    const now = new Date()
+    const tomorrow = new Date(now)
+    tomorrow.setDate(now.getDate() + 1)
+    tomorrow.setHours(9, 0, 0, 0)
+    return [
+      {
+        label: m.mail_reminder_in_1h(),
+        when: Math.floor(now.getTime() / 1000) + 3600,
+      },
+      {
+        label: m.mail_reminder_in_3h(),
+        when: Math.floor(now.getTime() / 1000) + 3 * 3600,
+      },
+      {
+        label: m.mail_reminder_tomorrow(),
+        when: Math.floor(tomorrow.getTime() / 1000),
+      },
+    ]
+  }
+
+  /** Local-time render of a stored reminder moment for the row
+   *  marker tooltip and the "set for …" line in the menu. */
+  function formatReminderTime(sec: number): string {
+    return new Date(sec * 1000).toLocaleString(undefined, {
+      dateStyle: 'short',
+      timeStyle: 'short',
+    })
+  }
+
+  /** Set (or clear, with `null`) the reminder on a message.
+   *  Optimistic like the pin toggle — the row marker updates
+   *  immediately and rolls back if the cache write fails. */
+  async function setEnvelopeReminder(env: EmailEnvelope, when: number | null) {
+    const prev = env.reminder_at
+    env.reminder_at = when
+    closeContextMenu()
+    try {
+      await invoke('set_message_reminder', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        remindAt: when,
+      })
+    } catch (e) {
+      console.warn('set_message_reminder failed:', e)
+      env.reminder_at = prev
+    }
+  }
+
+  /** Commit the custom `datetime-local` value.  Silently ignores
+   *  an empty / unparseable input; past times are allowed (the
+   *  scanner fires them on its next tick, which is the least
+   *  surprising reading of "remind me at a time that already
+   *  passed"). */
+  function setCustomReminder(env: EmailEnvelope) {
+    if (!reminderCustomValue) return
+    const t = new Date(reminderCustomValue).getTime()
+    if (!Number.isFinite(t)) return
+    void setEnvelopeReminder(env, Math.floor(t / 1000))
+  }
 </script>
 
 <div class="flex-1 flex flex-col min-w-0">
@@ -1535,8 +1813,20 @@
         {m.maillist_empty_in_folder({ folder: displayFolderName(folder) })}
       </div>
     {:else}
-      {#each renderRows as row (`${row.env.account_id}:${row.env.uid}:${row.isSibling ? 's' : 'h'}`)}
+      {#each renderRows as row, i (`${row.env.account_id}:${row.env.uid}:${row.isSibling ? 's' : 'h'}`)}
         {@const env = row.env}
+        <!-- Pinned-section chrome (#414 follow-up): a small label
+             above the pinned block and a tinted divider where it
+             ends, so the boundary between "kept on top" and the
+             normal date-sorted flow reads at a glance. -->
+        {#if row.pinnedSection && i === 0}
+          <div class="px-4 pt-2 pb-1 text-[11px] uppercase tracking-wider text-primary-500 flex items-center gap-1.5">
+            <Icon name="pin" size={11} />
+            <span>{m.mail_pinned_title()}</span>
+          </div>
+        {:else if !row.pinnedSection && i > 0 && renderRows[i - 1].pinnedSection}
+          <div class="border-b-2 border-primary-500/30" aria-hidden="true"></div>
+        {/if}
         {@const selected = selectedUid === env.uid && (!unified || selectedUid === env.uid)}
         {@const multi = isMulti(env.uid)}
         <!-- Sender avatar lookup (#305).  `env.from` is the raw
@@ -1624,15 +1914,17 @@
             role="button"
             tabindex="0"
             aria-pressed={selected}
-            class="w-full text-left {row.isSibling ? 'pl-12' : 'pl-3'} pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors cursor-pointer
+            class="w-full text-left {row.isSibling ? 'pl-12' : 'pl-3'} pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors duration-150 ease-out cursor-pointer
               {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
               {selected
-                ? 'bg-primary-500/10'
+                ? 'bg-primary-500/12 ring-1 ring-inset ring-primary-500/30'
                 : multi
                   ? 'bg-primary-500/15 hover:bg-primary-500/20'
-                  : !env.is_read
-                    ? 'bg-primary-500/4 dark:bg-primary-500/7 hover:bg-primary-500/10'
-                    : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+                  : env.is_starred
+                    ? 'bg-amber-500/10 hover:bg-amber-500/15'
+                    : !env.is_read
+                      ? 'bg-primary-500/4 dark:bg-primary-500/7 hover:bg-primary-500/10'
+                      : 'hover:bg-primary-500/10'}"
             draggable="true"
             ondragstart={(e) => onMailDragStart(e, env)}
             onclick={(e) => onRowClick(e, env)}
@@ -1714,9 +2006,65 @@
                         <span class="font-medium">Signed</span>
                       </span>
                     {/if}
+                    <!-- Priority badge (#414): sender-declared from
+                         the headers, or the user's override when
+                         set.  Normal renders nothing so ordinary
+                         mail keeps the date-only layout. -->
+                    {#if effectivePriority(env) === 'high'}
+                      <span
+                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400"
+                        title={m.mail_priority_high_badge()}
+                        aria-label={m.mail_priority_high_badge()}
+                      >
+                        <Icon name="important" size={11} />
+                        <span class="font-medium">{m.mail_priority_high()}</span>
+                      </span>
+                    {:else if effectivePriority(env) === 'low'}
+                      <span
+                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+                        title={m.mail_priority_low_badge()}
+                        aria-label={m.mail_priority_low_badge()}
+                      >
+                        <span class="font-medium">{m.mail_priority_low()}</span>
+                      </span>
+                    {/if}
                   </div>
                 </div>
                 <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate flex items-center gap-1.5">
+                  <!-- Pin + flag markers (#414) lead the subject —
+                       the same slot the reply icon uses, so a row
+                       with several markers reads as one icon strip. -->
+                  {#if env.is_pinned}
+                    <span
+                      class="shrink-0 inline-flex items-center text-primary-500"
+                      title={m.mail_pinned_title()}
+                      aria-label={m.mail_pinned_title()}
+                    >
+                      <Icon name="pin" size={14} />
+                    </span>
+                  {/if}
+                  {#if env.is_starred}
+                    <span
+                      class="shrink-0 inline-flex items-center text-amber-500"
+                      title={m.mail_flagged_title()}
+                      aria-label={m.mail_flagged_title()}
+                    >
+                      <Icon name="flag" size={14} />
+                    </span>
+                  {/if}
+                  {#if env.reminder_at}
+                    <span
+                      class="shrink-0 inline-flex items-center text-primary-500"
+                      title={m.mail_reminder_set_for({
+                        time: formatReminderTime(env.reminder_at),
+                      })}
+                      aria-label={m.mail_reminder_set_for({
+                        time: formatReminderTime(env.reminder_at),
+                      })}
+                    >
+                      <Icon name="snooze" size={14} />
+                    </span>
+                  {/if}
                   {#if answeredIconName(env)}
                     <span
                       class="shrink-0 inline-flex items-center text-primary-500"
@@ -1795,16 +2143,46 @@
                `pointer-events-none` on the wrapper while hidden
                keeps the layer click-through so the row's drag /
                click still work in the gap. -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="absolute right-1 bottom-3 flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity
                    group-hover:opacity-100 group-hover:pointer-events-auto
                    focus-within:opacity-100 focus-within:pointer-events-auto"
+            oncontextmenu={(e) => {
+              /* The cluster overlays the row while hovered, so a
+                 right-click here would otherwise bypass the row's
+                 own oncontextmenu and fall through to the app-level
+                 "Refresh" fallback menu (#198).  Re-route it to the
+                 same mail context menu the row opens — right-click
+                 and hover affordances must never drift apart. */
+              openContextMenu(e, env)
+            }}
           >
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
-              title={env.is_read ? 'Mark as unread' : 'Mark as read'}
-              aria-label={env.is_read ? 'Mark as unread' : 'Mark as read'}
+              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm {env.is_starred ? 'text-amber-500' : ''}"
+              title={env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
+              aria-label={env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
+              onclick={(e) => {
+                e.stopPropagation()
+                void toggleEnvelopeFlagged(env)
+              }}
+            ><Icon name="flag" size={16} /></button>
+            <button
+              type="button"
+              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm {env.is_pinned ? 'text-primary-500' : ''}"
+              title={env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
+              aria-label={env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
+              onclick={(e) => {
+                e.stopPropagation()
+                void toggleEnvelopePinned(env)
+              }}
+            ><Icon name="pin" size={16} /></button>
+            <button
+              type="button"
+              class="w-7 h-7 rounded-lg flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
+              title={env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
+              aria-label={env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
               onclick={(e) => {
                 e.stopPropagation()
                 void toggleEnvelopeRead(env)
@@ -1812,9 +2190,9 @@
             ><Icon name={env.is_read ? 'unread' : 'read'} size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
-              title="Move to folder"
-              aria-label="Move to folder"
+              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
+              title={m.maillist_action_move()}
+              aria-label={m.maillist_action_move()}
               onclick={(e) => {
                 e.stopPropagation()
                 quickMove(env)
@@ -1822,9 +2200,9 @@
             ><Icon name="move-to-folder" size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
-              title="Delete"
-              aria-label="Delete"
+              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+              title={m.maillist_action_delete()}
+              aria-label={m.maillist_action_delete()}
               onclick={(e) => {
                 e.stopPropagation()
                 void quickDelete(env)
@@ -1877,7 +2255,7 @@
        before the action handler runs. `role="menu"` keeps screen
        readers oriented. -->
   <div
-    class="fixed z-50 min-w-45 py-1 rounded-md shadow-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 text-sm"
+    class="fixed z-50 min-w-45 py-1 rounded-xl glass-float text-sm"
     style="top: {contextMenu.y}px; left: {contextMenu.x}px;"
     role="menu"
     tabindex="-1"
@@ -1910,11 +2288,39 @@
       <Icon name={contextMenu.env.is_read ? 'unread' : 'read'} size={16} />
       <span>
         {#if groupSize > 1}
-          Mark {groupSize} as {contextMenu.env.is_read ? 'unread' : 'read'}
+          {contextMenu.env.is_read
+            ? m.maillist_action_mark_group_unread({ count: groupSize })
+            : m.maillist_action_mark_group_read({ count: groupSize })}
         {:else}
-          {contextMenu.env.is_read ? 'Mark as unread' : 'Mark as read'}
+          {contextMenu.env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
         {/if}
       </span>
+    </button>
+    <!-- Flag + pin toggles (#414).  Deliberately single-row (they
+         act on the right-clicked row, not the multi-select group) —
+         both states are per-message judgements, unlike the bulk
+         read/delete triage gestures above. -->
+    <button
+      type="button"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      onclick={() => {
+        if (!contextMenu) return
+        void toggleEnvelopeFlagged(contextMenu.env)
+      }}
+    >
+      <Icon name="flag" size={16} />
+      <span>{contextMenu.env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}</span>
+    </button>
+    <button
+      type="button"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      onclick={() => {
+        if (!contextMenu) return
+        void toggleEnvelopePinned(contextMenu.env)
+      }}
+    >
+      <Icon name="pin" size={16} />
+      <span>{contextMenu.env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}</span>
     </button>
     <button
       type="button"
@@ -1928,12 +2334,104 @@
       <Icon name="move-to-folder" size={16} />
       <span>
         {#if moveGroupSize > 1}
-          Move {moveGroupSize} messages to folder…
+          {m.maillist_action_move_group({ count: moveGroupSize })}
         {:else}
-          Move to folder…
+          {m.maillist_action_move()}
         {/if}
       </span>
     </button>
+    <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+    <!-- Priority picker (#414): a label row plus three inline
+         choice buttons rather than a nested submenu — compact and
+         one click, matching the menu's flat structure.  The active
+         value highlights; picking one stores it as the user's
+         override (including "Normal", which is how a sender's
+         "high" gets downgraded). -->
+    <div class="px-3 py-1.5 flex items-center gap-2">
+      <Icon name="important" size={16} />
+      <span>{m.mail_priority_label()}</span>
+      <div class="ml-auto inline-flex rounded-lg overflow-hidden border border-surface-200 dark:border-surface-700">
+        {#each [
+          { value: 'high' as const, label: m.mail_priority_high() },
+          { value: 'normal' as const, label: m.mail_priority_normal() },
+          { value: 'low' as const, label: m.mail_priority_low() },
+        ] as opt (opt.value)}
+          {@const active =
+            (effectivePriority(contextMenu.env) ?? 'normal') === opt.value}
+          <button
+            type="button"
+            class="px-2 py-0.5 text-xs {active
+              ? 'bg-primary-500 text-white'
+              : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+            onclick={() => {
+              if (!contextMenu) return
+              void setEnvelopePriority(contextMenu.env, opt.value)
+            }}
+          >{opt.label}</button>
+        {/each}
+      </div>
+    </div>
+    <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+    <!-- Reminder section (#415): label row, three quick choices,
+         and a custom date-time input — flat and inline like the
+         priority picker above, no nested submenu.  When a reminder
+         is already pending the label row shows its time and a
+         Remove affordance instead of duplicating the pickers'
+         job. -->
+    <div class="px-3 py-1.5">
+      <div class="flex items-center gap-2">
+        <Icon name="snooze" size={16} />
+        <span>{m.mail_reminder_label()}</span>
+        {#if contextMenu.env.reminder_at}
+          <button
+            type="button"
+            class="ml-auto text-xs text-red-500 hover:underline"
+            onclick={() => {
+              if (!contextMenu) return
+              void setEnvelopeReminder(contextMenu.env, null)
+            }}
+          >{m.mail_reminder_remove()}</button>
+        {/if}
+      </div>
+      {#if contextMenu.env.reminder_at}
+        <p class="mt-1 text-[11px] text-surface-500">
+          {m.mail_reminder_set_for({
+            time: formatReminderTime(contextMenu.env.reminder_at),
+          })}
+        </p>
+      {/if}
+      <div class="mt-1.5 inline-flex rounded-lg overflow-hidden border border-surface-200 dark:border-surface-700">
+        {#each reminderPresets() as preset (preset.label)}
+          <button
+            type="button"
+            class="px-2 py-0.5 text-xs hover:bg-surface-200 dark:hover:bg-surface-800"
+            onclick={() => {
+              if (!contextMenu) return
+              void setEnvelopeReminder(contextMenu.env, preset.when)
+            }}
+          >{preset.label}</button>
+        {/each}
+      </div>
+      <div class="mt-1.5 flex items-center gap-1">
+        <input
+          type="datetime-local"
+          class="input flex-1 text-xs px-2 py-1 rounded-lg"
+          bind:value={reminderCustomValue}
+          aria-label={m.mail_reminder_custom_label()}
+        />
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          title={m.mail_reminder_set_custom()}
+          aria-label={m.mail_reminder_set_custom()}
+          disabled={!reminderCustomValue}
+          onclick={() => {
+            if (!contextMenu) return
+            setCustomReminder(contextMenu.env)
+          }}
+        ><Icon name="save-draft" size={14} /></button>
+      </div>
+    </div>
     <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
     <button
       type="button"
@@ -1959,9 +2457,9 @@
       <Icon name="delete" size={16} />
       <span>
         {#if groupSize > 1}
-          Delete {groupSize} messages
+          {m.maillist_action_delete_group({ count: groupSize })}
         {:else}
-          Delete
+          {m.maillist_action_delete()}
         {/if}
       </span>
     </button>

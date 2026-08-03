@@ -40,6 +40,16 @@ pub struct SessionAccount {
     pub name: String,
     pub is_personal: bool,
     pub is_read_only: bool,
+    /// Capability objects for this account, keyed by capability URI
+    /// (RFC 8620 §2).  Deliberately loose-typed: the only thing we
+    /// dip into is `urn:ietf:params:jmap:submission` →
+    /// `submissionExtensions`, to learn whether the server's
+    /// outbound relay implements ESMTP DSN before we put RFC 3461
+    /// parameters on a submission envelope (#461).  Modelling every
+    /// capability shape here would be dead weight.  Defaulted so
+    /// minimal servers (and our test mock) may omit it.
+    #[serde(default)]
+    pub account_capabilities: HashMap<String, serde_json::Value>,
 }
 
 // ── Request / Response envelope (RFC 8620 §3) ──────────────────
@@ -196,6 +206,26 @@ pub struct JmapEmail {
     /// Attachment parts.
     #[serde(default)]
     pub attachments: Vec<BodyPart>,
+    /// Raw priority headers (#414), requested via RFC 8621 §4.1.3
+    /// header-form properties (`header:X-Priority:asText` etc.).
+    /// The wire key is the full property name, so these need
+    /// explicit renames rather than the struct's camelCase rule.
+    #[serde(default, rename = "header:X-Priority:asText")]
+    pub header_x_priority: Option<String>,
+    #[serde(default, rename = "header:Importance:asText")]
+    pub header_importance: Option<String>,
+    #[serde(default, rename = "header:X-MSMail-Priority:asText")]
+    pub header_msmail_priority: Option<String>,
+    /// Read-receipt request header (RFC 8098, #416) — requested by
+    /// the full-message fetch only.
+    #[serde(default, rename = "header:Disposition-Notification-To:asText")]
+    pub header_disposition_notification_to: Option<String>,
+    /// Raw top-level `Content-Type:` (#416) — requested by the
+    /// envelope fetch so incoming `multipart/report;
+    /// report-type=disposition-notification` receipts can be
+    /// spotted without pulling bodies.
+    #[serde(default, rename = "header:Content-Type:asText")]
+    pub header_content_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

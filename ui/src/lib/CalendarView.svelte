@@ -1240,7 +1240,7 @@
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
   <!-- Header -->
   <div
-    class="flex items-center justify-between px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+    class="flex items-center justify-between px-6 py-3 border-b glass-panel"
   >
     <div class="flex items-center gap-3">
       <h2 class="text-xl font-semibold">Calendar</h2>
@@ -1305,7 +1305,7 @@
             Calendars
           </span>
           <button
-            class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700 disabled:opacity-50"
+            class="w-5 h-5 rounded-lg flex items-center justify-center text-surface-500 hover:bg-primary-500/10 disabled:opacity-50"
             title="New calendar"
             aria-label="New calendar"
             disabled={calendarOpBusy || accounts.length === 0}
@@ -1413,7 +1413,7 @@
              with the events. -->
         <div class="flex items-center justify-center gap-2 px-3 py-2 border-b border-surface-200 dark:border-surface-700">
           <button
-            class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+            class="p-1.5 rounded-lg text-surface-600 dark:text-surface-300 hover:bg-primary-500/10 transition-colors"
             onclick={prevWeek}
             aria-label="Previous week"
             title="Previous week"
@@ -1421,7 +1421,7 @@
             <Icon name="nav-backward" size={18} />
           </button>
           <button
-            class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+            class="p-1.5 rounded-lg text-surface-600 dark:text-surface-300 hover:bg-primary-500/10 transition-colors"
             onclick={goToToday}
             aria-label="Jump to today"
             title="Jump to today"
@@ -1429,7 +1429,7 @@
             <Icon name="today" size={18} />
           </button>
           <button
-            class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+            class="p-1.5 rounded-lg text-surface-600 dark:text-surface-300 hover:bg-primary-500/10 transition-colors"
             onclick={nextWeek}
             aria-label="Next week"
             title="Next week"
@@ -1447,7 +1447,7 @@
                for that day stacked directly underneath — the standard
                "all-day events live with their date" layout. -->
           <div
-            class="grid sticky top-0 z-10 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+            class="grid sticky top-0 z-10 border-b glass-panel"
             style="grid-template-columns: 56px repeat(7, minmax(0, 1fr));"
           >
             <div></div>
@@ -1593,7 +1593,7 @@
                      about to create. -->
                 {#if overlay}
                   <div
-                    class="absolute left-0.5 right-0.5 rounded-md bg-primary-500/40 border border-primary-500 pointer-events-none"
+                    class="absolute left-0.5 right-0.5 rounded-lg bg-primary-500/40 border border-primary-500 pointer-events-none"
                     style="top: {overlay.topPx}px; height: {overlay.heightPx}px;"
                   ></div>
                 {/if}
@@ -1643,7 +1643,7 @@
                     !showTime || (!!locationLabel && !showLocationFull)}
                   <div
                     data-event-id={p.event.id}
-                    class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight flex flex-col {compactCentered ? 'justify-center' : 'justify-start'} {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
+                    class="ev-block ev-timed absolute rounded-lg text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight flex flex-col {compactCentered ? 'justify-center' : 'justify-start'} {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
                     style="--ev-color: {eventColor(p.event)}; top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px);"
                     title={`${p.event.summary || '(no title)'} — ${fmtTime(p.event.start)}–${fmtTime(p.event.end)}${p.event.location ? ` @ ${p.event.location}` : ''}`}
                     role="button"
@@ -1723,7 +1723,7 @@
                            event editor. -->
                       <button
                         type="button"
-                        class="absolute bottom-1 right-1 w-6 h-6 rounded-md flex items-center justify-center bg-primary-500 text-white shadow hover:bg-primary-600 z-10"
+                        class="absolute bottom-1 right-1 w-6 h-6 rounded-lg flex items-center justify-center bg-primary-500 text-white shadow hover:bg-primary-600 z-10"
                         title={`Join meeting (${meetingUrl})`}
                         aria-label="Join meeting"
                         onmousedown={(ev) => ev.stopPropagation()}
@@ -1759,7 +1759,7 @@
 
         {#if syncErrors.length > 0}
           <div
-            class="mx-6 my-2 p-3 rounded-md border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-950 text-xs text-red-700 dark:text-red-200 shrink-0"
+            class="mx-6 my-2 p-3 rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-950 text-xs text-red-700 dark:text-red-200 shrink-0"
           >
             <p class="font-semibold mb-1">Some calendars failed to sync:</p>
             <ul class="list-disc list-inside space-y-0.5">
@@ -1801,7 +1801,7 @@
      at the click point, z-60 so it sits above modal overlays. -->
 {#if calendarContextMenu}
   <div
-    class="fixed z-60 min-w-44 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    class="fixed z-60 min-w-44 rounded-xl glass-float py-1 text-sm"
     style="left: {Math.min(calendarContextMenu.x, window.innerWidth - 200)}px; top: {Math.min(calendarContextMenu.y, window.innerHeight - 150)}px;"
     role="menu"
     tabindex="-1"
@@ -1848,7 +1848,7 @@
     tabindex="-1"
     onmousedown={(e) => { if (e.target === e.currentTarget) newCalendarForm = null }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+    <div class="glass-float rounded-2xl w-96 max-w-full p-5">
       <h3 class="text-base font-semibold mb-3">New calendar</h3>
 
       <!-- Account picker: only meaningful with more than one
@@ -1876,7 +1876,7 @@
       <input
         id="new-cal-name"
         type="text"
-        class="input w-full text-sm px-2 py-1.5 rounded-md mb-3"
+        class="input w-full text-sm px-2 py-1.5 rounded-lg mb-3"
         placeholder="Work, Family, …"
         bind:value={newCalendarForm.displayName}
         disabled={calendarOpBusy}
@@ -1941,7 +1941,7 @@
     tabindex="-1"
     onmousedown={(e) => { if (e.target === e.currentTarget) colorPicker = null }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+    <div class="glass-float rounded-2xl w-96 max-w-full p-5">
       <h3 class="text-base font-semibold mb-1">Change color</h3>
       <p class="text-xs text-surface-500 mb-4">
         For <span class="font-medium text-surface-700 dark:text-surface-300">{colorPicker.calendar.display_name}</span>
@@ -2006,7 +2006,7 @@
     tabindex="-1"
     onmousedown={(e) => { if (e.target === e.currentTarget) deleteCalendarConfirm = null }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+    <div class="glass-float rounded-2xl w-96 max-w-full p-5">
       <h3 class="text-base font-semibold mb-2">Delete calendar?</h3>
       <p class="text-sm text-surface-700 dark:text-surface-300 mb-4">
         Delete <span class="font-medium">{deleteCalendarConfirm.display_name}</span> and every event in it?

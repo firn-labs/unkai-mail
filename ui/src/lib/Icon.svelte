@@ -57,6 +57,11 @@
     // NotDone is the same circle + check with a diagonal slash
     // for the "Mark as not done" toggle.
     | 'not-done'
+    // v8 — per-mail pin (#414)
+    | 'pin'
+    // v9 — AI settings category (#439): the sparkles metaphor
+    // most desktop apps use for AI surfaces.
+    | 'ai'
 </script>
 
 <script lang="ts">
@@ -85,6 +90,7 @@
   import Snooze from './icons/Snooze.svelte'
   import Flag from './icons/Flag.svelte'
   import Star from './icons/Star.svelte'
+  import Pin from './icons/Pin.svelte'
   import Search from './icons/Search.svelte'
   import Filter from './icons/Filter.svelte'
   import Sort from './icons/Sort.svelte'
@@ -179,6 +185,8 @@
   import ShieldImageBlocked from './icons/ShieldImageBlocked.svelte'
   // v6
   import Close from './icons/Close.svelte'
+  // v9
+  import Ai from './icons/Ai.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -216,6 +224,7 @@
     'snooze': Snooze,
     'flag': Flag,
     'star': Star,
+    'pin': Pin,
     'search': Search,
     'filter': Filter,
     'sort': Sort,
@@ -306,6 +315,7 @@
     'respond-with-meeting': RespondWithMeeting,
     'shield-image-blocked': ShieldImageBlocked,
     'close': Close,
+    'ai': Ai,
   }
   const Cmp = $derived(map[name])
 </script>
