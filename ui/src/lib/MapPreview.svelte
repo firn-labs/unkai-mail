@@ -52,7 +52,7 @@
   )
 </script>
 
-<div class="rounded-md overflow-hidden border border-surface-200 dark:border-surface-700">
+<div class="rounded-lg overflow-hidden border border-surface-200 dark:border-surface-700">
   {#if caption}
     <div class="px-3 py-2 text-xs text-surface-600 dark:text-surface-300 bg-surface-100 dark:bg-surface-800 truncate" title={caption}>
       {caption}

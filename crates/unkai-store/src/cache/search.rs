@@ -27,14 +27,24 @@
 //! - `is:unread`         → filter `is_read = 0`
 //! - `is:read`           → filter `is_read = 1`
 //! - `is:flagged`        → filter `is_starred = 1`
+//! - `after:2026-01-31`  → sent on or after that date (`since:` alias)
+//! - `before:2026-01-31` → sent strictly before that date
+//! - `on:2026-01-31`     → sent within that day
+//! - `in:Sent`           → only that folder (`folder:` alias);
+//!   `in:anywhere` widens a folder-scoped search back to all folders
 //! - plain words         → match in any indexed column
+//!
+//! Date operands accept `YYYY-MM-DD`, `YYYY/MM/DD`, `DD.MM.YYYY`,
+//! and the coarser `YYYY-MM` / `YYYY` (which mean the whole month /
+//! year — `on:2026-03` is all of March). Dates are interpreted in
+//! the user's local timezone, matching what the mail list displays.
 //!
 //! Operators combine with AND semantics. Everything after a known
 //! operator up to the next whitespace is the operand, unless the
 //! operand is a double-quoted phrase — then we keep going until the
 //! closing quote.
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use rusqlite::{ToSql, params_from_iter};
 use serde::{Deserialize, Serialize};
 
@@ -98,6 +108,15 @@ pub struct SearchHit {
     /// FTS5 `snippet()` output with `<mark>…</mark>` around matches.
     /// Empty string when the query is purely filter-based.
     pub snippet: String,
+    /// Kebab-case `unkai_crypto::Protection` for the hit, same
+    /// sourcing as the envelope read paths: `COALESCE(b.protection,
+    /// m.protection)` (#440).  Consumers that surface snippets to
+    /// third parties (the MCP mail tools) need this to know when a
+    /// snippet was cut from decrypted E2E-encrypted plaintext —
+    /// the FTS index stores whatever `message_bodies` holds, which
+    /// for auto-unlock accounts is the decrypted text.  `None` =
+    /// plain message or body not fetched yet.
+    pub protection: Option<String>,
 }
 
 impl Cache {
@@ -124,7 +143,8 @@ impl Cache {
         let mut sql = String::from(
             "SELECT m.account_id, m.folder, m.uid, m.from_addr, m.subject,
                     m.internal_date, m.is_read, m.is_starred,
-                    COALESCE(b.has_attachments, 0) AS has_attachments,",
+                    COALESCE(b.has_attachments, 0) AS has_attachments,
+                    COALESCE(b.protection, m.protection) AS protection,",
         );
         let mut params: Vec<Box<dyn ToSql>> = Vec::new();
 
@@ -166,7 +186,18 @@ impl Cache {
             sql.push_str(" AND m.account_id = ?");
             params.push(Box::new(acc.clone()));
         }
-        if let Some(f) = &scope.folder {
+        // Folder: an explicit `in:`/`folder:` operator beats the UI
+        // scope selector (typing it is the more deliberate act), and
+        // `in:anywhere` drops the restriction entirely. The operator
+        // path matches case-insensitively because users type `in:sent`
+        // while IMAP reports `Sent`; the scope path stays exact since
+        // it carries a folder name the app itself supplied.
+        if let Some(f) = &parsed.folder {
+            sql.push_str(" AND m.folder = ? COLLATE NOCASE");
+            params.push(Box::new(f.clone()));
+        } else if let Some(f) = &scope.folder
+            && !parsed.folder_any
+        {
             sql.push_str(" AND m.folder = ?");
             params.push(Box::new(f.clone()));
         }
@@ -179,11 +210,21 @@ impl Cache {
         if filters.has_attachment {
             sql.push_str(" AND COALESCE(b.has_attachments, 0) = 1");
         }
-        if let Some(from) = filters.date_from {
+        // Date bounds: UI-filter bounds and operator bounds (`after:` /
+        // `before:` / `on:`) intersect — every source only ever narrows.
+        let date_from = match (filters.date_from, parsed.date_from) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        let date_to = match (filters.date_to, parsed.date_to) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if let Some(from) = date_from {
             sql.push_str(" AND m.internal_date >= ?");
             params.push(Box::new(from));
         }
-        if let Some(to) = filters.date_to {
+        if let Some(to) = date_to {
             sql.push_str(" AND m.internal_date <= ?");
             params.push(Box::new(to));
         }
@@ -220,7 +261,8 @@ impl Cache {
                 is_read: r.get::<_, i64>(6)? != 0,
                 is_starred: r.get::<_, i64>(7)? != 0,
                 has_attachments: r.get::<_, i64>(8)? != 0,
-                snippet: r.get(9)?,
+                protection: r.get(9)?,
+                snippet: r.get(10)?,
             })
         })?;
 
@@ -250,6 +292,29 @@ pub(crate) struct ParsedQuery {
     is_unread: Option<bool>,
     is_flagged: Option<bool>,
     has_attachment: Option<bool>,
+    /// Inclusive epoch bounds from `after:` / `before:` / `on:`.
+    /// Repeated date operators intersect (later bounds only ever
+    /// tighten), matching the parser's overall AND semantics.
+    date_from: Option<i64>,
+    date_to: Option<i64>,
+    /// Folder named via `in:` / `folder:` — overrides the UI scope's
+    /// folder because typing an operator is the more explicit intent.
+    folder: Option<String>,
+    /// `in:anywhere` — drop the folder restriction entirely, even a
+    /// scope-supplied one. Wins over `folder` above.
+    folder_any: bool,
+}
+
+impl ParsedQuery {
+    /// Tighten the lower date bound (keep the later of the two).
+    fn tighten_from(&mut self, v: i64) {
+        self.date_from = Some(self.date_from.map_or(v, |cur| cur.max(v)));
+    }
+
+    /// Tighten the upper date bound (keep the earlier of the two).
+    fn tighten_to(&mut self, v: i64) {
+        self.date_to = Some(self.date_to.map_or(v, |cur| cur.min(v)));
+    }
 }
 
 impl ParsedQuery {
@@ -390,12 +455,148 @@ fn apply_operator(
             "flagged" | "starred" | "important" => out.is_flagged = Some(true),
             _ => {}
         },
+        // Date operators. `after:` is on-or-after (the named day counts),
+        // `before:` is strictly-before — together `after:X before:Y` is
+        // the half-open range [X, Y). An unparseable operand falls back
+        // to free text below, same as unknown operators.
+        "after" | "since" => match parse_date_period(&operand) {
+            Some(p) => out.tighten_from(p.start_epoch()),
+            None => push_fallback(out, op, &operand),
+        },
+        "before" => match parse_date_period(&operand) {
+            Some(p) => out.tighten_to(p.start_epoch() - 1),
+            None => push_fallback(out, op, &operand),
+        },
+        "on" => match parse_date_period(&operand) {
+            Some(p) => {
+                out.tighten_from(p.start_epoch());
+                out.tighten_to(p.end_epoch());
+            }
+            None => push_fallback(out, op, &operand),
+        },
+        // Folder scoping. `in:anywhere` (or `all`/`any`) widens back
+        // out to every folder; anything else names a folder to search.
+        "in" | "folder" => {
+            if matches!(
+                operand.to_ascii_lowercase().as_str(),
+                "anywhere" | "all" | "any"
+            ) {
+                out.folder_any = true;
+            } else if !operand.is_empty() {
+                out.folder = Some(operand);
+            }
+        }
         // Unknown operator — fall back to a free-text atom so the
         // user's typing still does something useful.
-        _ => {
-            let rebuilt = format!("{op}:{operand}");
-            out.fts_atoms.push(fts_term(&rebuilt));
+        _ => push_fallback(out, op, &operand),
+    }
+}
+
+/// Rebuild an `op:value` token as a free-text atom. Used both for
+/// unknown operators and for known operators with operands we can't
+/// interpret (e.g. a half-typed date) — we never reject user input.
+fn push_fallback(out: &mut ParsedQuery, op: &str, operand: &str) {
+    let rebuilt = format!("{op}:{operand}");
+    out.fts_atoms.push(fts_term(&rebuilt));
+}
+
+// ── Date operands ───────────────────────────────────────────────
+
+/// The calendar period a date operand names — a day, a whole month,
+/// or a whole year. Public so the IMAP search-criterion builder in
+/// the app crate can reuse the exact same operand grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DatePeriod {
+    /// First day of the period.
+    pub start: NaiveDate,
+    /// First day *after* the period (exclusive end).
+    pub next_start: NaiveDate,
+}
+
+impl DatePeriod {
+    /// Inclusive epoch-seconds start: local midnight of `start`.
+    pub fn start_epoch(&self) -> i64 {
+        local_midnight_epoch(self.start)
+    }
+
+    /// Inclusive epoch-seconds end: one second before local midnight
+    /// of `next_start`.
+    pub fn end_epoch(&self) -> i64 {
+        local_midnight_epoch(self.next_start) - 1
+    }
+}
+
+/// Epoch seconds of local midnight on `date`. On DST transitions
+/// where midnight doesn't exist or exists twice, take the earliest
+/// valid interpretation — being off by an hour twice a year beats
+/// dropping the operator on the floor.
+fn local_midnight_epoch(date: NaiveDate) -> i64 {
+    let midnight = date.and_hms_opt(0, 0, 0).expect("00:00:00 is valid");
+    Local
+        .from_local_datetime(&midnight)
+        .earliest()
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|| Utc.from_utc_datetime(&midnight).timestamp())
+}
+
+/// Parse a date operand into the period it names.
+///
+/// Accepted forms:
+/// - `YYYY-MM-DD` / `YYYY/MM/DD` — one day
+/// - `DD.MM.YYYY`                — one day (common European order)
+/// - `YYYY-MM` / `YYYY/MM`       — the whole month
+/// - `YYYY`                      — the whole year
+///
+/// Returns `None` for anything else (including out-of-range dates)
+/// so callers can fall back to treating the token as free text.
+pub fn parse_date_period(s: &str) -> Option<DatePeriod> {
+    let s = s.trim();
+    if s.contains('.') {
+        // DD.MM.YYYY
+        let mut it = s.split('.');
+        let (d, m, y) = (it.next()?, it.next()?, it.next()?);
+        if it.next().is_some() {
+            return None;
         }
+        let date = NaiveDate::from_ymd_opt(y.parse().ok()?, m.parse().ok()?, d.parse().ok()?)?;
+        return Some(DatePeriod {
+            start: date,
+            next_start: date.succ_opt()?,
+        });
+    }
+
+    let parts: Vec<&str> = s.split(['-', '/']).collect();
+    match parts.as_slice() {
+        [y] => {
+            let year: i32 = y.parse().ok()?;
+            // Require a plausible 4-digit year — a bare `in:2026` should
+            // parse, but `before:5` is more likely a typo than year 5.
+            if !(1000..=9999).contains(&year) {
+                return None;
+            }
+            Some(DatePeriod {
+                start: NaiveDate::from_ymd_opt(year, 1, 1)?,
+                next_start: NaiveDate::from_ymd_opt(year + 1, 1, 1)?,
+            })
+        }
+        [y, m] => {
+            let (year, month): (i32, u32) = (y.parse().ok()?, m.parse().ok()?);
+            let start = NaiveDate::from_ymd_opt(year, month, 1)?;
+            let next_start = if month == 12 {
+                NaiveDate::from_ymd_opt(year + 1, 1, 1)?
+            } else {
+                NaiveDate::from_ymd_opt(year, month + 1, 1)?
+            };
+            Some(DatePeriod { start, next_start })
+        }
+        [y, m, d] => {
+            let date = NaiveDate::from_ymd_opt(y.parse().ok()?, m.parse().ok()?, d.parse().ok()?)?;
+            Some(DatePeriod {
+                start: date,
+                next_start: date.succ_opt()?,
+            })
+        }
+        _ => None,
     }
 }
 
@@ -472,6 +673,12 @@ mod tests {
             protection: None,
             signature_status: None,
             signer_fingerprint: None,
+            is_pinned: false,
+            reminder_at: None,
+            priority: None,
+            priority_override: None,
+            mdn_requested_to: None,
+            mdn_handled: None,
         }
     }
 
@@ -522,6 +729,103 @@ mod tests {
         assert_eq!(p.fts_atoms[1], "urgent*");
     }
 
+    /// Local noon on the given day, as the UTC instant the cache
+    /// stores. Noon keeps the tests timezone-proof: whatever offset
+    /// the machine runs, noon local is safely inside the local day
+    /// the date operators resolve against.
+    fn local_noon(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+        let naive = NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        Local
+            .from_local_datetime(&naive)
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn parse_date_periods() {
+        let day = parse_date_period("2026-01-31").unwrap();
+        assert_eq!(day.start, NaiveDate::from_ymd_opt(2026, 1, 31).unwrap());
+        assert_eq!(day.next_start, NaiveDate::from_ymd_opt(2026, 2, 1).unwrap());
+
+        // Alternative separators and the European day-first order all
+        // name the same day.
+        assert_eq!(parse_date_period("2026/01/31"), Some(day));
+        assert_eq!(parse_date_period("31.01.2026"), Some(day));
+
+        let month = parse_date_period("2026-03").unwrap();
+        assert_eq!(month.start, NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
+        assert_eq!(
+            month.next_start,
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()
+        );
+
+        let year = parse_date_period("2026").unwrap();
+        assert_eq!(year.start, NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+        assert_eq!(
+            year.next_start,
+            NaiveDate::from_ymd_opt(2027, 1, 1).unwrap()
+        );
+
+        // Nonsense stays unparsed so the caller can treat it as text.
+        assert_eq!(parse_date_period("tomorrow"), None);
+        assert_eq!(parse_date_period("2026-13-01"), None);
+        assert_eq!(parse_date_period("5"), None);
+    }
+
+    #[test]
+    fn parse_date_operators() {
+        let p = parse_query("after:2026-01-01 before:2026-02-01");
+        assert!(p.fts_atoms.is_empty());
+        let jan = parse_date_period("2026-01-01").unwrap();
+        let feb = parse_date_period("2026-02-01").unwrap();
+        assert_eq!(p.date_from, Some(jan.start_epoch()));
+        // `before:` is strictly-before → upper bound ends the moment
+        // the named day starts.
+        assert_eq!(p.date_to, Some(feb.start_epoch() - 1));
+    }
+
+    #[test]
+    fn parse_on_month_covers_whole_month() {
+        let p = parse_query("on:2026-03");
+        let march = parse_date_period("2026-03").unwrap();
+        assert_eq!(p.date_from, Some(march.start_epoch()));
+        assert_eq!(p.date_to, Some(march.end_epoch()));
+    }
+
+    #[test]
+    fn parse_repeated_date_operators_intersect() {
+        // Two lower bounds → the later one wins (AND semantics).
+        let p = parse_query("after:2026-01-01 after:2026-06-01");
+        let june = parse_date_period("2026-06-01").unwrap();
+        assert_eq!(p.date_from, Some(june.start_epoch()));
+    }
+
+    #[test]
+    fn parse_invalid_date_falls_back_to_text() {
+        let p = parse_query("before:lunch");
+        assert_eq!(p.date_to, None);
+        assert_eq!(p.fts_atoms, vec!["\"before:lunch\""]);
+    }
+
+    #[test]
+    fn parse_folder_operators() {
+        let p = parse_query("in:Sent");
+        assert_eq!(p.folder.as_deref(), Some("Sent"));
+        assert!(!p.folder_any);
+
+        let p = parse_query("folder:\"Project X\" budget");
+        assert_eq!(p.folder.as_deref(), Some("Project X"));
+        assert_eq!(p.fts_atoms, vec!["budget*"]);
+
+        let p = parse_query("in:anywhere");
+        assert!(p.folder_any);
+        assert_eq!(p.folder, None);
+    }
+
     #[test]
     fn search_matches_subject_and_body() {
         let cache = open();
@@ -550,6 +854,41 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].subject, "Budget planning Q2");
         assert!(hits[0].snippet.contains("<mark>"));
+    }
+
+    #[test]
+    fn search_hit_carries_protection() {
+        // #440: consumers that hand snippets to third parties (the
+        // MCP mail tools) decide redaction from the hit itself, so
+        // the body row's protection has to ride along.
+        let cache = open();
+        let mut encrypted = email(1, "INBOX", "Plans", "the secret rendezvous point", "a@x.de");
+        encrypted.protection = Some("encrypted".into());
+        cache.upsert_message(&encrypted).unwrap();
+        cache
+            .upsert_message(&email(2, "INBOX", "Plans", "the public agenda", "b@x.de"))
+            .unwrap();
+
+        let hits = cache
+            .search_emails("plans", &SearchScope::default(), &SearchFilters::default())
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        let by_uid = |uid| hits.iter().find(|h| h.uid == uid).unwrap();
+        assert_eq!(by_uid(1).protection.as_deref(), Some("encrypted"));
+        assert_eq!(by_uid(2).protection, None);
+
+        // Pure-filter queries go through the no-FTS branch — the
+        // column must be projected there too.
+        let filters = SearchFilters {
+            unread_only: true,
+            ..Default::default()
+        };
+        let hits = cache
+            .search_emails("", &SearchScope::default(), &filters)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        let by_uid = |uid| hits.iter().find(|h| h.uid == uid).unwrap();
+        assert_eq!(by_uid(1).protection.as_deref(), Some("encrypted"));
     }
 
     #[test]
@@ -593,6 +932,75 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].from.contains("alice"));
+    }
+
+    #[test]
+    fn search_operators_combine_with_and() {
+        // Multiple operators (the advanced-search panel emits e.g.
+        // `from:… subject:…`) must intersect — a hit has to satisfy
+        // every operator, not any one of them.
+        let cache = open();
+        cache
+            .upsert_message(&email(
+                1,
+                "INBOX",
+                "Status report",
+                "body",
+                "alice@example.com",
+            ))
+            .unwrap();
+        cache
+            .upsert_message(&email(
+                2,
+                "INBOX",
+                "Lunch plans",
+                "body",
+                "alice@example.com",
+            ))
+            .unwrap();
+        cache
+            .upsert_message(&email(
+                3,
+                "INBOX",
+                "Status report",
+                "body",
+                "bob@example.com",
+            ))
+            .unwrap();
+
+        // Bare-word operands, typed by hand.
+        let hits = cache
+            .search_emails(
+                "from:alice subject:report",
+                &SearchScope::default(),
+                &SearchFilters::default(),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1, "bare operands must AND");
+        assert_eq!(hits[0].uid, 1);
+
+        // Full-address operand — what a contact pick in the advanced
+        // panel commits into `from:`.
+        let hits = cache
+            .search_emails(
+                "from:alice@example.com subject:report",
+                &SearchScope::default(),
+                &SearchFilters::default(),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1, "address operand must AND with subject");
+        assert_eq!(hits[0].uid, 1);
+
+        // Operator + state filter + free text all intersect too.
+        let hits = cache
+            .search_emails(
+                "report from:bob",
+                &SearchScope::default(),
+                &SearchFilters::default(),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1, "free text must AND with operators");
+        assert_eq!(hits[0].uid, 3);
     }
 
     #[test]
@@ -699,5 +1107,80 @@ mod tests {
         // (`now - uid seconds`), so it's the newer message.
         assert_eq!(hits[0].uid, 1);
         assert_eq!(hits[1].uid, 2);
+    }
+
+    /// Three messages spread across three months, searched with every
+    /// date-operator shape.
+    #[test]
+    fn search_date_operators() {
+        let cache = open();
+        let dates = [
+            (1, local_noon(2026, 1, 15)),
+            (2, local_noon(2026, 2, 15)),
+            (3, local_noon(2026, 3, 15)),
+        ];
+        for (uid, date) in dates {
+            let mut e = email(uid, "INBOX", "monthly report", "body", "a@x.de");
+            e.date = date;
+            cache.upsert_message(&e).unwrap();
+        }
+
+        let uids = |query: &str| -> Vec<u32> {
+            let mut hits: Vec<u32> = cache
+                .search_emails(query, &SearchScope::default(), &SearchFilters::default())
+                .unwrap()
+                .into_iter()
+                .map(|h| h.uid)
+                .collect();
+            hits.sort_unstable();
+            hits
+        };
+
+        assert_eq!(uids("report after:2026-02-01"), vec![2, 3]);
+        assert_eq!(uids("report before:2026-02-01"), vec![1]);
+        assert_eq!(uids("report on:2026-02-15"), vec![2]);
+        assert_eq!(uids("report on:2026-02"), vec![2]);
+        assert_eq!(uids("report after:2026-01-20 before:2026-03-01"), vec![2]);
+        // Date operators also work with no text at all (pure-filter
+        // branch, no FTS join).
+        assert_eq!(uids("on:2026-03"), vec![3]);
+    }
+
+    #[test]
+    fn search_in_operator_overrides_scope() {
+        let cache = open();
+        cache
+            .upsert_message(&email(1, "INBOX", "Alpha", "hello", "a@x.de"))
+            .unwrap();
+        cache
+            .upsert_message(&email(2, "Sent", "Alpha", "hello", "a@x.de"))
+            .unwrap();
+
+        let inbox_scope = SearchScope {
+            account_id: Some("acc".into()),
+            folder: Some("INBOX".into()),
+            limit: 10,
+        };
+
+        // `in:` beats the scope's folder — lower-case operand matches
+        // the real folder name case-insensitively.
+        let hits = cache
+            .search_emails("alpha in:sent", &inbox_scope, &SearchFilters::default())
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].folder, "Sent");
+
+        // `in:anywhere` widens a folder-scoped search to all folders.
+        let hits = cache
+            .search_emails("alpha in:anywhere", &inbox_scope, &SearchFilters::default())
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+
+        // Without either operator the scope still applies.
+        let hits = cache
+            .search_emails("alpha", &inbox_scope, &SearchFilters::default())
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].folder, "INBOX");
     }
 }

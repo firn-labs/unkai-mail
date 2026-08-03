@@ -82,6 +82,38 @@
     /** Hex fingerprint of the verified signer.  Only present when
      *  `signature_status === "valid"`. */
     signer_fingerprint?: string | null
+    /** Local-only pin state (#414), overlaid from the cache by the
+     *  fetch paths. */
+    is_pinned?: boolean
+    /** Sender-declared priority from the `X-Priority:` /
+     *  `Importance:` headers (#414): `'high'` / `'low'`, absent =
+     *  normal. */
+    priority?: string | null
+    /** User-set priority override (#414): `'high'` / `'normal'` /
+     *  `'low'`.  Wins over `priority` for the badge. */
+    priority_override?: string | null
+    /** RFC 5322 Message-ID (#277), bracket-free.  Used here to look
+     *  up sent-mail receipt status (#416). */
+    message_id?: string | null
+    /** `Disposition-Notification-To:` value (#416) — the sender
+     *  asked for a read receipt, addressed to this mailbox.  Absent
+     *  for ordinary mail (and suppressed by the backend when it
+     *  points at the reading account's own address). */
+    mdn_requested_to?: string | null
+    /** What already happened about that request (#416): `'sent'` |
+     *  `'declined'`, absent = not yet decided.  Local-only overlay
+     *  from the cache — keeps the banner from asking twice. */
+    mdn_handled?: string | null
+  }
+
+  /** Receipt-tracking state for a sent mail (#416), from the
+   *  `get_receipt_status` IPC.  `disposition: null` = requested but
+   *  nothing back yet. */
+  interface SentReceiptStatus {
+    requested_at: number
+    disposition: string | null
+    disposition_at: number | null
+    reporter: string | null
   }
 
   interface Props {
@@ -89,6 +121,28 @@
     folder?: string
     uid: number | null
     onread?: (uid: number) => void
+    /** Fire after the flag / pin / priority toggles (#414) commit so
+        the parent can mutate the matching MailList envelope in place
+        — same plumbing as `onread`.  MailList re-derives its row
+        order from the mutation, so a pin flip re-sorts the list
+        without a refetch. */
+    onflagchanged?: (uid: number, flagged: boolean) => void
+    onpinchanged?: (uid: number, pinned: boolean) => void
+    onprioritychanged?: (uid: number, priority: string | null) => void
+    /** Live mirror of the open message's mail-list row (#414
+        follow-up).  When present, the flag / pin / priority toggles
+        render from THIS instead of the locally-fetched `email` copy,
+        so a toggle made in the list while the message is open
+        updates the reading-pane buttons immediately.  The parent
+        passes the same envelope object MailList mutates
+        optimistically; `null` (standalone windows, no matching row)
+        falls back to `email`'s own fields. */
+    listState?: {
+      is_starred?: boolean
+      is_pinned?: boolean
+      priority?: string | null
+      priority_override?: string | null
+    } | null
     onreply?: (mail: Email & { uid: number }) => void
     onreplyall?: (mail: Email & { uid: number }) => void
     onforward?: (mail: Email & { uid: number }) => void
@@ -179,6 +233,10 @@
     folder = 'INBOX',
     uid,
     onread,
+    onflagchanged,
+    onpinchanged,
+    onprioritychanged,
+    listState = null,
     onreply,
     onreplyall,
     onforward,
@@ -519,6 +577,11 @@
     // without re-prompting; opening a different message starts a
     // fresh session.
     sessionPassphrase = ''
+    // #416 — read-receipt state is strictly per-message.
+    mdnMode = null
+    mdnBusy = false
+    mdnError = ''
+    receiptStatus = null
     // #341 — refresh the "Unlock automatically" mirror for the
     // account this message belongs to.  Done in parallel with the
     // cache + IMAP fetches below so the auto-decrypt attempt that
@@ -660,6 +723,73 @@
         console.warn('mark_as_read failed:', e)
       }
     }
+
+    // #416 — read receipts, both directions, after the message is
+    // confirmed displayed (this is the "displayed" moment RFC 8098's
+    // disposition reports).
+    if (email && id === accountId && f === folder && u === uid) {
+      // Incoming request: resolve the user's never/ask/always policy.
+      // `never` leaves mdnMode as-is (banner condition never true);
+      // `ask` arms the banner; `always` fires the receipt silently.
+      if (email.mdn_requested_to && !email.mdn_handled) {
+        try {
+          const settings = await invoke<{ mdn_response_mode?: string }>('get_app_settings')
+          if (id === accountId && f === folder && u === uid) {
+            mdnMode = settings?.mdn_response_mode ?? 'ask'
+            if (mdnMode === 'always') void respondMdn(false, true)
+          }
+        } catch (e: any) {
+          // Settings unavailable — fall back to asking; sending
+          // silently without a confirmed policy is the one wrong move.
+          console.warn('get_app_settings failed (receipt banner):', e)
+          mdnMode = 'ask'
+        }
+      }
+      // Outgoing status: does this mail have a tracked receipt
+      // request?  Only ever non-null for mail we sent with the
+      // Compose toggle on, so the chip stays absent everywhere else.
+      if (email.message_id) {
+        try {
+          const status = await invoke<SentReceiptStatus | null>('get_receipt_status', {
+            accountId: id,
+            messageId: email.message_id,
+          })
+          if (id === accountId && f === folder && u === uid) receiptStatus = status
+        } catch (e: any) {
+          console.warn('get_receipt_status failed:', e)
+        }
+      }
+    }
+  }
+
+  // ── Read receipts (#416) ──────────────────────────────────────
+  /** Response policy for the open message: `'ask'` arms the banner,
+   *  `'always'` already fired, `'never'`/`null` render nothing. */
+  let mdnMode = $state<string | null>(null)
+  let mdnBusy = $state(false)
+  let mdnError = $state('')
+  /** Sent-mail receipt tracking for the open message, when it asked
+   *  for one. */
+  let receiptStatus = $state<SentReceiptStatus | null>(null)
+
+  /** Send (or decline) the read receipt for the open message.
+   *  `automatic` marks the receipt as policy-fired (`Always` mode)
+   *  so the MDN itself reports `automatic-action` per RFC 8098. */
+  async function respondMdn(decline: boolean, automatic = false) {
+    if (!email || uid == null || mdnBusy) return
+    mdnBusy = true
+    mdnError = ''
+    try {
+      await invoke('respond_mdn_request', { accountId, folder, uid, decline, automatic })
+      // Mirror the backend's mdn_handled stamp so the banner drops
+      // without a refetch.
+      if (email) email.mdn_handled = decline ? 'declined' : 'sent'
+    } catch (e: any) {
+      console.warn('respond_mdn_request failed:', e)
+      mdnError = formatError(e) || 'Failed to send the read receipt'
+    } finally {
+      mdnBusy = false
+    }
   }
 
   /** Toggle the read state from the toolbar. Optimistic: flip the
@@ -681,6 +811,93 @@
     } catch (e: any) {
       console.warn('set_message_read failed:', e)
       if (email) email.is_read = !next
+    }
+  }
+
+  // ── Flag / pin / priority (#414) ──────────────────────────────
+  // Same optimistic shape as toggleRead: flip the local state so
+  // the button/badge updates instantly, invoke the backend, revert
+  // on failure, and notify the parent so the MailList row follows.
+  //
+  // Display state prefers the live `listState` row over the
+  // locally-fetched `email` copy — the list row is the one both
+  // surfaces mutate optimistically, so rendering from it keeps the
+  // toolbar in sync with toggles made in the mail list while this
+  // message is open.
+
+  const shownFlagged = $derived(listState?.is_starred ?? email?.is_starred ?? false)
+  const shownPinned = $derived(listState?.is_pinned ?? email?.is_pinned ?? false)
+
+  async function toggleFlagged() {
+    if (!email || uid == null) return
+    const next = !shownFlagged
+    // Notify the parent BEFORE the backend call — the toolbar
+    // renders from the list row, and the flag IPC includes an IMAP
+    // round-trip, so waiting for it would visibly lag the button.
+    email.is_starred = next
+    onflagchanged?.(uid, next)
+    try {
+      await invoke('set_message_flagged', { accountId, folder, uid, flagged: next })
+    } catch (e: any) {
+      console.warn('set_message_flagged failed:', e)
+      if (email) email.is_starred = !next
+      onflagchanged?.(uid, !next)
+    }
+  }
+
+  async function togglePinned() {
+    if (!email || uid == null) return
+    const next = !shownPinned
+    email.is_pinned = next
+    onpinchanged?.(uid, next)
+    try {
+      await invoke('set_message_pinned', { accountId, folder, uid, pinned: next })
+    } catch (e: any) {
+      console.warn('set_message_pinned failed:', e)
+      if (email) email.is_pinned = !next
+      onpinchanged?.(uid, !next)
+    }
+  }
+
+  /** Popover for the priority picker.  Uses the project's standard
+   *  outside-click dismissal idiom: the document listener is
+   *  registered one tick after open so the click that opened the
+   *  menu doesn't immediately dismiss it. */
+  let priorityMenuOpen = $state(false)
+  $effect(() => {
+    if (!priorityMenuOpen) return
+    const close = () => (priorityMenuOpen = false)
+    const t = setTimeout(() => document.addEventListener('mousedown', close), 0)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('mousedown', close)
+    }
+  })
+
+  /** The priority the badge/menu should reflect: user override
+   *  first, then the sender-declared header value; `'normal'`
+   *  renders no badge.  Reads the whole tuple from `listState`
+   *  when present (never mixes the two sources — a cleared
+   *  override in the list must not fall back to a stale one on
+   *  the fetched copy). */
+  function effectivePriority(): 'high' | 'low' | null {
+    const src = listState ?? email
+    const p = src?.priority_override ?? src?.priority
+    return p === 'high' || p === 'low' ? p : null
+  }
+
+  async function setPriority(priority: 'high' | 'normal' | 'low') {
+    if (!email || uid == null) return
+    const prev = (listState ?? email)?.priority_override ?? null
+    email.priority_override = priority
+    onprioritychanged?.(uid, priority)
+    priorityMenuOpen = false
+    try {
+      await invoke('set_message_priority', { accountId, folder, uid, priority })
+    } catch (e: any) {
+      console.warn('set_message_priority failed:', e)
+      if (email) email.priority_override = prev
+      onprioritychanged?.(uid, prev)
     }
   }
 
@@ -2002,9 +2219,85 @@
   {:else if email}
     <!-- Email header -->
     <div class="p-6 border-b border-surface-200 dark:border-surface-700">
-      <div class="flex items-start justify-between mb-2 gap-4">
-        <h2 class="text-xl font-semibold">{email.subject || '(no subject)'}</h2>
+      <!-- `flex-wrap` (#454): on a narrow pane the badge/date cluster
+           drops below the subject instead of clipping past the
+           pane's right edge (the cluster is shrink-0 by design so
+           the date never squashes). -->
+      <div class="flex flex-wrap items-start justify-between mb-2 gap-x-4 gap-y-1">
+        <h2 class="text-xl font-semibold flex items-center gap-2 min-w-0">
+          {#if shownPinned}
+            <span
+              class="shrink-0 inline-flex items-center text-primary-500"
+              title={m.mail_pinned_title()}
+              aria-label={m.mail_pinned_title()}
+            ><Icon name="pin" size={18} /></span>
+          {/if}
+          <span class="min-w-0">{email.subject || '(no subject)'}</span>
+        </h2>
         <div class="flex items-center gap-3 shrink-0">
+          <!-- Priority badge (#414): the user's override wins over
+               the sender-declared header value; normal shows
+               nothing. -->
+          {#if effectivePriority() === 'high'}
+            <span
+              class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400"
+              title={m.mail_priority_high_badge()}
+            >
+              <Icon name="important" size={12} />
+              <span class="font-medium">{m.mail_priority_high()}</span>
+            </span>
+          {:else if effectivePriority() === 'low'}
+            <span
+              class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+              title={m.mail_priority_low_badge()}
+            >
+              <span class="font-medium">{m.mail_priority_low()}</span>
+            </span>
+          {/if}
+          <!-- #416 — sent-mail receipt status.  Only ever present for
+               mail this client sent with "request read receipt" on
+               (the status lookup is keyed on tracked Message-IDs).
+               Green once a "displayed" report came back; neutral
+               while pending — and the pending tooltip manages
+               expectations, since recipients can decline and the
+               receipt may simply never arrive. -->
+          {#if receiptStatus}
+            {#if receiptStatus.disposition === 'displayed'}
+              <span
+                class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-success-500/15 text-success-600 dark:text-success-400"
+                title={receiptStatus.reporter ?? ''}
+              >
+                <Icon name="read" size={12} />
+                <span class="font-medium">
+                  {m.mail_view_receipt_read({
+                    date: formatFullDate(
+                      new Date(
+                        (receiptStatus.disposition_at ?? receiptStatus.requested_at) * 1000,
+                      ).toISOString(),
+                    ),
+                  })}
+                </span>
+              </span>
+            {:else if receiptStatus.disposition == null}
+              <span
+                class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+                title={m.mail_view_receipt_requested_title()}
+              >
+                <Icon name="read" size={12} />
+                <span class="font-medium">{m.mail_view_receipt_requested()}</span>
+              </span>
+            {:else}
+              <!-- Any non-"displayed" disposition (deleted, processed,
+                   …) — report receipt without claiming it was read. -->
+              <span
+                class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+                title={receiptStatus.disposition}
+              >
+                <Icon name="read" size={12} />
+                <span class="font-medium">{m.mail_view_receipt_received()}</span>
+              </span>
+            {/if}
+          {/if}
           <span class="text-sm text-surface-500">{formatFullDate(email.date)}</span>
         </div>
       </div>
@@ -2031,7 +2324,7 @@
              input + button on a second row so the user reads the
              "what's going on" copy before reaching for the field. -->
         <div
-          class="mt-2 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
+          class="mt-2 rounded-lg border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
         >
           <!-- Explanation copy uses the same muted surface tone as
                the From-line in the header so the badge reads as
@@ -2044,7 +2337,7 @@
           <div class="flex items-center gap-2">
             <input
               type="password"
-              class="input text-sm px-2 py-1.5 rounded-md flex-1"
+              class="input text-sm px-2 py-1.5 rounded-lg flex-1"
               placeholder="PGP passphrase"
               bind:value={decryptPassphrase}
               disabled={decrypting}
@@ -2095,7 +2388,13 @@
          of the reply/forward/mark-read cluster — a draft is the user's
          own unfinished work, so re-opening it in Compose is the only
          gesture that makes sense. -->
-    <div class="flex items-center gap-2 px-6 py-2 border-b border-surface-200 dark:border-surface-700 text-sm">
+    <!-- `flex-wrap` (#454): the reading pane absorbs all the shrink
+         when the window narrows (the sidebar + list columns are
+         fixed-width), and the app shell clips overflow — without
+         wrapping, the right-side buttons (move / archive / delete)
+         silently vanish with no way to scroll them back. Wrapping
+         keeps every action visible on a second row instead. -->
+    <div class="flex flex-wrap items-center gap-2 px-6 py-2 border-b glass-panel text-sm">
       <!-- Toolbar action buttons (#179): icon-only with hover
            tooltips.  Labels live in `title` + `aria-label` so the
            strip stays compact and the visual rhythm is uniform.
@@ -2158,6 +2457,57 @@
           title={email.is_read ? 'Mark this message as unread' : 'Mark this message as read'}
           aria-label={email.is_read ? 'Mark as unread' : 'Mark as read'}
         ><Icon name={email.is_read ? 'unread' : 'read'} size={16} /></button>
+        <!-- Flag / pin / priority (#414).  Flag + pin keep their
+             icon lit while active so the toolbar doubles as the
+             state indicator; priority opens a three-option
+             popover anchored to the button. -->
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-amber-500/15 hover:text-amber-500 hover:border-amber-500/40 {shownFlagged ? 'text-amber-500 border-amber-500/40' : ''}"
+          onclick={toggleFlagged}
+          title={shownFlagged ? m.mail_action_unflag() : m.mail_action_flag()}
+          aria-label={shownFlagged ? m.mail_action_unflag() : m.mail_action_flag()}
+        ><Icon name="flag" size={16} /></button>
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 {shownPinned ? 'text-primary-500 border-primary-500/40' : ''}"
+          onclick={togglePinned}
+          title={shownPinned ? m.mail_action_unpin() : m.mail_action_pin()}
+          aria-label={shownPinned ? m.mail_action_unpin() : m.mail_action_pin()}
+        ><Icon name="pin" size={16} /></button>
+        <div class="relative">
+          <button
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 {effectivePriority() === 'high' ? 'text-red-500 border-red-500/40' : ''}"
+            onclick={() => (priorityMenuOpen = !priorityMenuOpen)}
+            title={m.mail_priority_label()}
+            aria-label={m.mail_priority_label()}
+          ><Icon name="important" size={16} /></button>
+          {#if priorityMenuOpen}
+            <!-- Stop mousedown from reaching the document-level
+                 dismiss listener so the option handlers get to
+                 run before the menu unmounts. -->
+            <div
+              class="absolute right-0 top-full mt-1 z-50 min-w-32 py-1 rounded-xl glass-float text-sm"
+              role="menu"
+              tabindex="-1"
+              onmousedown={(e) => e.stopPropagation()}
+            >
+              {#each [
+                { value: 'high' as const, label: m.mail_priority_high() },
+                { value: 'normal' as const, label: m.mail_priority_normal() },
+                { value: 'low' as const, label: m.mail_priority_low() },
+              ] as opt (opt.value)}
+                {@const active = (effectivePriority() ?? 'normal') === opt.value}
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 {active ? 'text-primary-500 font-medium' : ''}"
+                  onclick={() => void setPriority(opt.value)}
+                >
+                  {#if active}<Icon name="success" size={14} />{:else}<span class="w-3.5"></span>{/if}
+                  <span>{opt.label}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       {/if}
       <div class="flex-1"></div>
       {#if !inStandaloneWindow && email && uid != null}
@@ -2242,7 +2592,7 @@
             {@const isMarkdown = isMarkdownAttachment(att)}
             {@const menuOpen = openMenuFor === att.part_id}
             {@const emoji = attachmentEmoji(att)}
-            <li class="relative flex items-center gap-2 pl-3 pr-1 py-1.5 rounded-md bg-surface-100 dark:bg-surface-800 text-sm">
+            <li class="relative flex items-center gap-2 pl-3 pr-1 py-1.5 rounded-lg bg-surface-100 dark:bg-surface-800 text-sm">
               {#if emoji}
                 <span class="text-base">{emoji}</span>
               {:else}
@@ -2365,7 +2715,7 @@
                 ></button>
                 <div
                   role="menu"
-                  class="absolute right-0 top-full mt-1 z-50 min-w-52 rounded-md shadow-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 py-1 text-sm"
+                  class="absolute right-0 top-full mt-1 z-50 min-w-52 rounded-xl glass-float py-1 text-sm"
                 >
                   {#if isOffice}
                     <button
@@ -2413,6 +2763,36 @@
             </li>
           {/each}
         </ul>
+      </div>
+    {/if}
+
+    <!-- #416 — read-receipt request banner (Ask mode).  Same amber
+         advisory shape as the remote-images banner, but rendered
+         outside the HTML-only branch because the request rides on
+         plain-text mail just as often.  Disappears the moment the
+         user picks either side (the response stamps `mdn_handled`),
+         and never renders under the Never / Always policies. -->
+    {#if email.mdn_requested_to && !email.mdn_handled && mdnMode === 'ask'}
+      <div
+        class="flex flex-wrap items-center gap-3 px-6 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-700 text-sm text-amber-800 dark:text-amber-300"
+      >
+        <span class="shrink-0 inline-flex items-center gap-2">
+          <Icon name="read" size={18} />
+          {m.mail_view_mdn_banner({ sender: getSenderAddress(email.from) })}
+        </span>
+        <button
+          class="btn btn-sm preset-outlined-surface-500"
+          disabled={mdnBusy}
+          onclick={() => void respondMdn(false)}
+        >{mdnBusy ? m.mail_view_mdn_sending() : m.mail_view_mdn_send()}</button>
+        <button
+          class="btn btn-sm preset-outlined-surface-500"
+          disabled={mdnBusy}
+          onclick={() => void respondMdn(true)}
+        >{m.mail_view_mdn_decline()}</button>
+        {#if mdnError}
+          <span class="text-xs text-error-500">{mdnError}</span>
+        {/if}
       </div>
     {/if}
 
@@ -2515,7 +2895,7 @@
         if (e.key === 'Escape') unsafeLinkPrompt = null
       }}
     >
-      <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-md max-w-full mx-4 p-6 space-y-4">
+      <div class="glass-float rounded-2xl w-md max-w-full mx-4 p-6 space-y-4">
         <div class="flex items-start gap-3">
           <span class="text-2xl" aria-hidden="true">⚠️</span>
           <div class="flex-1 min-w-0">

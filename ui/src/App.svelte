@@ -12,6 +12,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './lib/ncSources'
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import DOMPurify from 'dompurify'
   import {
@@ -26,6 +27,7 @@
   import MailView from './lib/MailView.svelte'
   import AccountSetup from './lib/AccountSetup.svelte'
   import AccountSettings, { type SettingsCategory } from './lib/AccountSettings.svelte'
+  import WelcomeTour from './lib/WelcomeTour.svelte'
   import LockScreen from './lib/LockScreen.svelte'
   import Compose, {
     type Attachment as ComposeAttachment,
@@ -403,6 +405,13 @@
     is_read: boolean
     is_starred: boolean
     account_id: string
+    /** #414 — pin + priority state, mirrored so MailView's
+     *  toggles can update the matching list row in place. */
+    is_pinned?: boolean
+    priority?: string | null
+    priority_override?: string | null
+    /** #415 — pending reminder time (unix seconds). */
+    reminder_at?: number | null
   }
   let mailListEnvelopes = $state<MailListEnvelope[]>([])
   /** Mirror of MailList's post-merge thread membership map (#289
@@ -591,6 +600,35 @@
     subject: string
   }
 
+  /** `message-reminder` event payload (#415).  The reminder loop on
+   *  the Rust side fires this once a per-message reminder elapses
+   *  (clearing the stored time afterwards, so it fires exactly
+   *  once — including reminders that came due while the app was
+   *  closed, which fire on the first scan after launch). */
+  type MessageReminder = {
+    accountId: string
+    folder: string
+    uid: number
+    from: string
+    subject: string
+  }
+
+  /** `notification-clicked` event payload (#415).  Rust emits this
+   *  after focusing the main window when the user clicks a
+   *  new-mail / reminder toast that references a message. */
+  type NotificationClick = {
+    accountId: string
+    folder: string
+    uid: number
+  }
+
+  /** Message identity a toast can deep-link to on click (#415). */
+  type ToastMailRef = {
+    accountId: string
+    folder: string
+    uid: number
+  }
+
   /** `mail-flags-updated` event payload (#255 follow-up).  Backend
    *  fires this whenever the cached `\Seen` / `\Flagged` /
    *  `\Answered` flags change — either Compose's post-send
@@ -714,7 +752,10 @@
    *  swallowed — no toast, no UI block. */
   async function sweepNextcloudTempFiles() {
     try {
-      const accounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      // Office temp files only exist on real Nextclouds (#413).
+      const accounts = (
+        await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+      ).filter(isNextcloudSource)
       for (const a of accounts) {
         try {
           await invoke('office_sweep_temp', { ncId: a.id })
@@ -733,17 +774,23 @@
     )
   }
 
-  async function fireToast(title: string, body: string) {
-    // On Linux the native command sends through `notify-rust` with
-    // the `DesktopEntry` hint set, so notifications land in the
-    // notification center / history (GNOME Shell, KDE Plasma).  The
-    // command returns `false` on non-Linux platforms so we fall
-    // through to the Tauri plugin, whose macOS / Windows backends
-    // already wire in the right OS hooks.
+  async function fireToast(title: string, body: string, mailRef?: ToastMailRef) {
+    // On Linux and Windows the native command owns the toast so it
+    // can attach a click handler (#415): clicking a toast that
+    // carries `mailRef` focuses the window and opens that message
+    // (routed back via the `notification-clicked` event).  On Linux
+    // it additionally sets the `DesktopEntry` hint so notifications
+    // land in the notification center / history (GNOME Shell, KDE
+    // Plasma).  The command returns `false` where the native path
+    // isn't wired (macOS) so we fall through to the Tauri plugin —
+    // toast still shows, click does nothing there.
     try {
       const handled = await invoke<boolean>('send_native_notification', {
         title,
         body,
+        accountId: mailRef?.accountId,
+        folder: mailRef?.folder,
+        uid: mailRef?.uid,
       })
       if (handled) return
     } catch (err) {
@@ -861,7 +908,11 @@
     recentBurst.push(now)
 
     if (recentBurst.length <= 3) {
-      void fireToast(payload.from || 'New mail', payload.subject || '(no subject)')
+      void fireToast(payload.from || 'New mail', payload.subject || '(no subject)', {
+        accountId: payload.account_id,
+        folder: payload.folder,
+        uid: payload.uid,
+      })
       return
     }
 
@@ -873,6 +924,22 @@
       void fireToast('Unkai Mail', `${count} new messages`)
       pendingSummaryTimer = null
     }, 600)
+  }
+
+  /** A per-message reminder elapsed (#415).  Deliberately NOT gated
+   *  on `shouldNotify()` — the new-mail toast toggle mutes ambient
+   *  notifications, but a reminder is something the user explicitly
+   *  asked for, so it always fires.  The toast carries the mail ref,
+   *  so clicking it focuses the window and opens the message. */
+  function handleMessageReminder(payload: MessageReminder) {
+    // The backend cleared `reminder_at` when it fired — re-read the
+    // cache so the row's reminder marker disappears.
+    refreshToken++
+    void fireToast(
+      m.mail_reminder_toast_title({ subject: payload.subject || '(no subject)' }),
+      payload.from,
+      { accountId: payload.accountId, folder: payload.folder, uid: payload.uid },
+    )
   }
 
   async function loadAppPrefs() {
@@ -976,9 +1043,25 @@
     let unlistenMailtoDeepLink: UnlistenFn | null = null
     let unlistenMailFlagsUpdated: UnlistenFn | null = null
     let unlistenOutboxUpdated: UnlistenFn | null = null
+    let unlistenMessageReminder: UnlistenFn | null = null
+    let unlistenNotificationClicked: UnlistenFn | null = null
     ;(async () => {
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
+      )
+      // #415: a per-message reminder elapsed — toast it (with a
+      // click-through back to the mail).
+      unlistenMessageReminder = await listen<MessageReminder>(
+        'message-reminder',
+        (e) => handleMessageReminder(e.payload),
+      )
+      // #415: the user clicked a new-mail / reminder toast.  Rust
+      // already focused this window (`show_main_window`) before
+      // emitting; all that's left is routing to the message.
+      unlistenNotificationClicked = await listen<NotificationClick>(
+        'notification-clicked',
+        (e) =>
+          openMailInMainView(e.payload.accountId, e.payload.folder, e.payload.uid),
       )
       // #255: backend fires this whenever the answered / read /
       // starred flag on a cached envelope changes (Compose's
@@ -1279,11 +1362,24 @@
       unlistenMailtoDeepLink?.()
       unlistenMailFlagsUpdated?.()
       unlistenOutboxUpdated?.()
+      unlistenMessageReminder?.()
+      unlistenNotificationClicked?.()
       if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     }
   })
 
-  async function checkAccounts() {
+  /** Re-read the account list from Rust and reconcile the shell
+   *  state that hangs off it (`accounts`, `activeAccountId`,
+   *  message selection).
+   *
+   *  `keepView` (#421): the Settings panel calls this the moment an
+   *  account is deleted so the always-mounted IconRail drops the
+   *  avatar immediately — but the user is still *in* Settings, so
+   *  that path must not yank them back to the inbox the way the
+   *  startup / setup-complete callers want. An empty list still
+   *  routes to the setup wizard regardless — with zero accounts
+   *  there is nothing left for Settings to manage. */
+  async function checkAccounts(opts: { keepView?: boolean } = {}) {
     try {
       const list = await invoke<Account[]>('get_accounts')
       accounts = list
@@ -1309,8 +1405,20 @@
             return a.id.localeCompare(b.id)
           })
           activeAccountId = sorted[0].id
+          // The account the selection was scoped to is gone (deleted
+          // from Settings, #421) — folder names, UIDs, and search
+          // queries are all per-account, so reset them the same way
+          // an explicit account switch does. On first launch this
+          // just rewrites the defaults.
+          selectedFolder = 'INBOX'
+          selectedUid = null
+          selectedMessageAccountId = null
+          selectedMessageFolder = null
+          searchQuery = ''
+          searchScope = {}
+          searchFilters = {}
         }
-        currentView = 'inbox'
+        if (!opts.keepView) currentView = 'inbox'
       } else {
         activeAccountId = null
         currentView = 'setup'
@@ -1430,13 +1538,22 @@
       void openMailInStandaloneWindow(accId, folder, uid)
       return
     }
+    openMailInMainView(accId, folder, uid)
+  }
+
+  /** Flip the main window over to the inbox at a specific message.
+   *  Shared by the Notes `mail://` in-view path above and the
+   *  notification-click deep-link (#415) — the latter always opens
+   *  in-view (Rust already focused this window; spawning a second
+   *  window from a toast click would be disorienting). */
+  function openMailInMainView(accId: string, folder: string, uid: number): void {
     currentView = 'inbox'
     unifiedMode = false
     activeAccountId = accId
     selectedFolder = folder
     selectedUid = uid
     selectedMessageAccountId = accId
-    // Notes deep-links flip out of unified mode, so the row's folder
+    // Deep-links flip out of unified mode, so the row's folder
     // matches `selectedFolder` — no override needed.
     selectedMessageFolder = null
     searchQuery = ''
@@ -1472,10 +1589,61 @@
   })
 
   async function onSetupComplete() {
+    // Whether this wizard run was the true first launch (no account
+    // existed before it) — captured before `checkAccounts()` mutates
+    // the list.  Adding a *second* account also routes through the
+    // wizard, and that flow must never re-trigger the welcome tour.
+    const wasFirstRun = accounts.length === 0
     // After adding an account, refresh the account list so we pick
     // up the new account's ID, then switch to the inbox.
     await checkAccounts()
+    // The wizard can also connect a Nextcloud account now (#413) —
+    // re-aggregate capabilities so the IconRail lights up the
+    // integration icons straight away instead of after a restart.
+    await refreshNextcloudCapabilities()
     currentView = 'inbox'
+    // Guided welcome tour (#420): fires once, right after the very
+    // first setup completes.  Awaiting the capability refresh above
+    // matters — the tour's Nextcloud step spotlights the rail icons,
+    // which only mount once `ncCaps` is populated.
+    if (wasFirstRun && !tourCompleted()) showTour = true
+  }
+
+  // ── Guided welcome tour (#420) ──────────────────────────────
+  // Completion is a machine-local `localStorage` flag on purpose:
+  // one-shot "seen it" markers shouldn't ride the settings bundle
+  // between machines (see the curation note in settingsBundle.ts),
+  // and a fresh install showing the tour once per machine is the
+  // behaviour we want anyway.
+  const TOUR_COMPLETED_KEY = 'unkai.tourCompleted'
+  let showTour = $state(false)
+
+  function tourCompleted(): boolean {
+    try {
+      return localStorage.getItem(TOUR_COMPLETED_KEY) !== null
+    } catch {
+      // Storage unavailable → we couldn't remember a completion
+      // either, so suppress the tour rather than replay it on
+      // every launch.
+      return true
+    }
+  }
+
+  /** Single exit path for finish *and* skip — both remember. */
+  function closeTour() {
+    showTour = false
+    try {
+      localStorage.setItem(TOUR_COMPLETED_KEY, '1')
+    } catch {
+      /* storage unavailable — the tour just won't be remembered */
+    }
+  }
+
+  /** Replay from Settings → General.  The tour's anchors live in
+      the mail view, so hop back to the inbox before starting. */
+  function replayTour() {
+    currentView = 'inbox'
+    showTour = true
   }
 
   function selectMessage(uid: number, accountId?: string, folder?: string) {
@@ -1525,6 +1693,38 @@
     if (idx >= 0 && !mailListEnvelopes[idx].is_read) {
       mailListEnvelopes[idx].is_read = true
     }
+  }
+
+  // Live mirror of the open message's list row (#414 follow-up).
+  // MailView renders its toggle buttons from this instead of only
+  // its own fetched copy, so a flag / pin / priority / read change
+  // made in the mail LIST while the message is open updates the
+  // reading-pane buttons immediately — without it they'd stay stale
+  // until the user re-opened the message.  The objects are the same
+  // ones MailList mutates optimistically, so `$derived` re-fires on
+  // every toggle.
+  const selectedListState = $derived(
+    selectedUid == null
+      ? null
+      : (mailListEnvelopes.find((e) => e.uid === selectedUid) ?? null),
+  )
+
+  // MailView's flag / pin / priority toggles (#414).  Same shape as
+  // `onMessageRead`: mutate the bound envelope in place — no
+  // refreshToken bump, so nothing races the user's next click.
+  // MailList re-derives its row order from the mutation, which is
+  // how a pin flip from the reading pane re-sorts the list.
+  function onMessageFlagChanged(uid: number, flagged: boolean) {
+    const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
+    if (idx >= 0) mailListEnvelopes[idx].is_starred = flagged
+  }
+  function onMessagePinChanged(uid: number, pinned: boolean) {
+    const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
+    if (idx >= 0) mailListEnvelopes[idx].is_pinned = pinned
+  }
+  function onMessagePriorityChanged(uid: number, priority: string | null) {
+    const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
+    if (idx >= 0) mailListEnvelopes[idx].priority_override = priority
   }
 
   /** The currently shown message has been archived or deleted on the
@@ -2797,7 +2997,9 @@
     try {
       let ncId = ''
       try {
-        const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+        const list = (
+          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        ).filter(isNextcloudSource)
         if (list.length === 0) {
           alert('Connect a Nextcloud account first (Settings → Nextcloud).')
           return null
@@ -3170,7 +3372,9 @@
     // the event, so we surface that and bail.
     let ncId = ''
     try {
-      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      const list = (
+          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert(
           'Connect a Nextcloud account first (Settings → Nextcloud) so this event has a calendar to land in.',
@@ -3258,7 +3462,9 @@
   ) {
     let ncId = ''
     try {
-      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      const list = (
+          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert('Connect a Nextcloud account first (Settings → Nextcloud).')
         return
@@ -3317,7 +3523,9 @@
   async function onSaveMailAsNote(mail: OpenMail & { body_html?: string | null }) {
     let ncId = ''
     try {
-      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      const list = (
+          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert('Connect a Nextcloud account first (Settings → Nextcloud).')
         return
@@ -3446,8 +3654,10 @@
         <AccountSettings
           onclose={goToInbox}
           onaddaccount={goToSetup}
+          onaccountschanged={() => void checkAccounts({ keepView: true })}
           onappprefschanged={(p) => (appPrefs = p)}
           onnextcloudchanged={refreshNextcloudCapabilities}
+          onreplaytour={replayTour}
           bind:activeCategory={settingsCategory}
         />
       </div>
@@ -3512,6 +3722,7 @@
            returning nothing. -->
       <div
         class="flex flex-col shrink-0 border-r border-surface-200 dark:border-surface-700"
+        data-tour="mail-list"
         use:resizableSidebar={{ key: 'mail.listColumn', defaultWidth: 320, min: 240, max: 600 }}
       >
         {#if selectedFolder !== OUTBOX_FOLDER}
@@ -3591,7 +3802,11 @@
           autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
           linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
           threadMemberUids={currentThreadMemberUids}
+          listState={selectedListState}
           onread={onMessageRead}
+          onflagchanged={onMessageFlagChanged}
+          onpinchanged={onMessagePinChanged}
+          onprioritychanged={onMessagePriorityChanged}
           onreply={onReply}
           onreplyall={onReplyAll}
           onforward={onForward}
@@ -3650,6 +3865,15 @@
         ondraftexpunged={onDraftExpunged}
       />
     {/each}
+
+    <!-- Guided welcome tour (#420).  Mounted inside the post-setup
+         shell so its anchors (rail, sidebar, mail-list column) are
+         guaranteed to exist while it's up.  It covers the viewport
+         and swallows pointer events, so the app is inert until the
+         user finishes or skips. -->
+    {#if showTour}
+      <WelcomeTour onclose={closeTour} />
+    {/if}
   </div>
 {/if}
 
@@ -3680,7 +3904,7 @@
     onkeydown={(e) => e.key === 'Escape' && resolveForwardPrompt(false)}
   >
     <div
-      class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl"
+      class="card p-5 max-w-sm w-[90%] glass-float rounded-2xl"
     >
       <h2 id="forward-attachments-title" class="text-base font-semibold mb-2">
         {m.compose_forward_attachments_title()}
@@ -3734,7 +3958,7 @@
     onkeydown={(e) => e.key === 'Escape' && resolveDecryptPrompt(null)}
   >
     <div
-      class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl"
+      class="card p-5 max-w-sm w-[90%] glass-float rounded-2xl"
     >
       <h2 id="decrypt-prompt-title" class="text-base font-semibold mb-2">
         {pendingDecryptPrompt.kind === 'forward'
@@ -3766,7 +3990,7 @@
         <input
           id="decrypt-prompt-passphrase"
           type="password"
-          class="input w-full px-3 py-2 text-sm rounded-md mb-2"
+          class="input w-full px-3 py-2 text-sm rounded-lg mb-2"
           bind:value={pendingDecryptPrompt.value}
           disabled={pendingDecryptPrompt.busy}
           autocomplete="off"
@@ -3837,7 +4061,7 @@
   <div
     role="menu"
     tabindex="-1"
-    class="fixed z-50 min-w-44 rounded-md shadow-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 py-1 text-sm"
+    class="fixed z-50 min-w-44 rounded-xl glass-float py-1 text-sm"
     style="left: {appContextMenu.x}px; top: {appContextMenu.y}px"
     onmousedown={(e) => e.stopPropagation()}
   >

@@ -43,6 +43,9 @@ jobs:
   quality-gate:
     name: Quality gate
     uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      checks: write # rustsec/audit-check publishes its result as a check run
 
   codeql:
     name: CodeQL

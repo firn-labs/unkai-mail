@@ -270,7 +270,7 @@
 <div class="relative">
   <input
     bind:this={inputEl}
-    class="input rounded-md w-full"
+    class="input rounded-lg w-full"
     value={street}
     {placeholder}
     aria-label={placeholder || 'Street'}
@@ -287,7 +287,7 @@
   {#if open}
     <div
       bind:this={listEl}
-      class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-md shadow-lg"
+      class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-lg shadow-lg"
       role="listbox"
     >
       {#if loading && suggestions.length === 0}
@@ -302,7 +302,7 @@
             aria-selected={i === activeIndex}
             class="w-full text-left flex items-start gap-2 px-3 py-2 text-sm cursor-pointer {i === activeIndex
               ? 'bg-primary-500/15'
-              : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+              : 'hover:bg-primary-500/10'}"
             onmousedown={(e) => {
               e.preventDefault()
               e.stopPropagation()

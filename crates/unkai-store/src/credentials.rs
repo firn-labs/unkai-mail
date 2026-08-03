@@ -58,6 +58,22 @@ const SMIME_CERT_SERVICE: &str = "unkai-mail-smime-private-cert";
 /// entry without touching the cert blob.
 const SMIME_PASSPHRASE_SERVICE: &str = "unkai-mail-smime-passphrase";
 
+/// Keychain service name for the MCP server's bearer token (#438).
+/// Own service so revoking the AI integration can't touch mail or
+/// Nextcloud credentials and vice versa.  Unlike every service
+/// above this one is *not* per-account — the MCP server is a
+/// single app-wide endpoint — so the entry is keyed by a fixed
+/// user string instead of an account UUID.
+///
+/// The token is the only secret in the MCP surface and the
+/// keychain is the only place it ever persists: it is never
+/// written into `AppSettings` and therefore never enters the
+/// Nextcloud settings-sync bundle.
+const MCP_TOKEN_SERVICE: &str = "unkai-mail-mcp";
+
+/// Fixed keychain "user" for the app-wide MCP bearer token.
+const MCP_TOKEN_USER: &str = "bearer-token";
+
 fn entry(account_id: &str) -> Result<Entry, UnkaiError> {
     Entry::new(IMAP_SERVICE, account_id)
         .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))
@@ -141,6 +157,67 @@ pub fn delete_nextcloud_password(nc_id: &str) -> Result<(), UnkaiError> {
         }
         Err(e) => Err(UnkaiError::Storage(format!(
             "failed to delete NC password: {e}"
+        ))),
+    }
+}
+
+// ── MCP server bearer token (#438) ─────────────────────────────
+//
+// Same shape as the password APIs above, minus the per-account
+// keying: one app-wide token gates the localhost MCP endpoint.
+
+fn mcp_token_entry() -> Result<Entry, UnkaiError> {
+    Entry::new(MCP_TOKEN_SERVICE, MCP_TOKEN_USER)
+        .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))
+}
+
+/// Store (or overwrite) the MCP bearer token.  Generating a new
+/// token invalidates the old one by definition — there is exactly
+/// one valid token at a time.
+pub fn store_mcp_token(token: &str) -> Result<(), UnkaiError> {
+    mcp_token_entry()?
+        .set_password(token)
+        .map_err(|e| UnkaiError::Storage(format!("failed to store MCP token: {e}")))?;
+    info!("Stored MCP bearer token in OS keychain");
+    Ok(())
+}
+
+/// Retrieve the MCP bearer token, or `Ok(None)` when the user has
+/// never generated one (or has revoked it).  A missing token is a
+/// normal state — the server still runs but rejects every request
+/// with 401 until a token exists — so unlike the password getters
+/// this doesn't map "no entry" to an error.
+pub fn get_mcp_token() -> Result<Option<String>, UnkaiError> {
+    match mcp_token_entry()?.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to read MCP token: {e}"
+        ))),
+    }
+}
+
+/// Non-erroring existence probe for the settings UI — same shape
+/// as [`has_pgp_passphrase`].
+pub fn has_mcp_token() -> Result<bool, UnkaiError> {
+    Ok(get_mcp_token()?.is_some())
+}
+
+/// Remove the MCP bearer token; no-op if missing.  Revoking cuts
+/// off every connected client immediately (the server compares
+/// against the in-memory copy the caller clears alongside this).
+pub fn delete_mcp_token() -> Result<(), UnkaiError> {
+    match mcp_token_entry()?.delete_credential() {
+        Ok(()) => {
+            info!("Deleted MCP bearer token");
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            debug!("No MCP token to delete (ok)");
+            Ok(())
+        }
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to delete MCP token: {e}"
         ))),
     }
 }

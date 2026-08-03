@@ -1,5 +1,7 @@
 //! Core domain models shared across all Unkai crates.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -212,10 +214,70 @@ pub struct AppSettings {
     /// the inbox at that message).
     #[serde(default)]
     pub notes_mail_open_in_view: bool,
+    /// How to react when an incoming message carries a
+    /// `Disposition-Notification-To:` read-receipt request
+    /// (RFC 8098, #416).  `Ask` (default) surfaces a banner in the
+    /// reading pane offering to send or decline the receipt;
+    /// `Always` sends one automatically the first time the message
+    /// is displayed; `Never` suppresses the banner entirely and
+    /// sends nothing.  Read receipts leak reading behaviour to the
+    /// sender, so nothing is ever sent without this setting or an
+    /// explicit per-message click authorising it.
+    #[serde(default)]
+    pub mdn_response_mode: MdnResponseMode,
+    /// Master toggle for the local MCP (Model Context Protocol)
+    /// server (#438).  When on, a localhost-only streamable-HTTP
+    /// endpoint exposes the enabled tools to the user's own AI
+    /// client (BYO model — Unkai never ships or calls an LLM
+    /// itself).  Default **off**: an extra network listener, even
+    /// a loopback one guarded by a bearer token, is something the
+    /// user should consciously opt into.
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    /// TCP port the MCP server binds on `127.0.0.1` (#438).  The
+    /// default sits in the dynamic/private range (49152–65535) so
+    /// no IANA-registered service collides with it out of the box.
+    /// `0` asks the OS for an ephemeral port — mainly useful for
+    /// tests; real clients want a stable address, so the settings
+    /// UI keeps users in the fixed range.
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
+    /// Per-tool enablement overrides for the MCP server (#438),
+    /// keyed by stable tool id (e.g. `"ping"`, later
+    /// `"search_messages"`).  A missing key falls back to the
+    /// tool's class default: **read** tools default on, **write**
+    /// tools default off — reads are how an AI client is useful at
+    /// all, while anything that mutates state is an explicit
+    /// opt-in.  Enforced server-side at `tools/call`, not just
+    /// filtered from `tools/list`.
+    ///
+    /// Note the bearer token itself is *never* stored here (or
+    /// anywhere in `AppSettings`) — it lives in the OS keychain
+    /// and therefore never rides along in the Nextcloud
+    /// settings-sync bundle.
+    #[serde(default)]
+    pub mcp_tool_enablement: HashMap<String, bool>,
+    /// Whether MCP tool responses may include the plaintext of
+    /// PGP/S-MIME-encrypted messages (#439).  The local store can
+    /// hold decrypted bodies (auto-unlock accounts), but handing
+    /// end-to-end-encrypted content to an AI agent defeats the
+    /// point of E2E — so bodies whose `protection` marks them
+    /// encrypted are redacted from tool responses and search
+    /// snippets unless the user flips this on.  Default **off**;
+    /// enforced by the mail tools (#440).
+    #[serde(default)]
+    pub mcp_expose_decrypted_content: bool,
 }
 
 fn default_logo_style() -> String {
     "storm".to_string()
+}
+
+/// Default MCP server port (#438).  Chosen from the dynamic/private
+/// range so nothing IANA-registered squats on it; arbitrary beyond
+/// that.
+fn default_mcp_port() -> u16 {
+    52226
 }
 
 /// Default UI-scale multiplier (#191).  1.0 means "as designed".
@@ -268,6 +330,21 @@ pub enum ThemeMode {
     Dark,
 }
 
+/// Response policy for incoming read-receipt requests (RFC 8098,
+/// #416).  Lowercase on the wire (`"never"` / `"ask"` / `"always"`)
+/// to match the JSON-over-IPC convention `ThemeMode` set.  `Ask` is
+/// the default: receipts disclose reading behaviour, so the user
+/// stays in the loop per message unless they explicitly opt into
+/// `Always` (or shut the whole thing off with `Never`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MdnResponseMode {
+    Never,
+    #[default]
+    Ask,
+    Always,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -318,6 +395,19 @@ impl Default for AppSettings {
             // the editor.  Flipping this on routes the click
             // through the main view-switch instead.
             notes_mail_open_in_view: false,
+            // Ask per message (#416) — read receipts disclose
+            // reading behaviour, so nothing is sent without the
+            // user's say-so.
+            mdn_response_mode: MdnResponseMode::Ask,
+            // MCP server off until the user opts in (#438); port
+            // from the dynamic range; empty map = per-class
+            // defaults (reads on, writes off) apply.
+            mcp_enabled: false,
+            mcp_port: default_mcp_port(),
+            mcp_tool_enablement: HashMap::new(),
+            // Encrypted mail stays redacted from AI tool
+            // responses until the user explicitly opts in (#439).
+            mcp_expose_decrypted_content: false,
         }
     }
 }
@@ -487,6 +577,16 @@ pub struct EmailEnvelope {
     pub uid: u32,
     pub folder: String,
     pub from: String,
+    /// `To:` recipients formatted as `"Name <addr>"` display strings —
+    /// same shape as `from` (#417).  Lifted from the ENVELOPE / JMAP
+    /// `to` property at fetch time so the conversation grouper can
+    /// require overlapping *participants* (not just a matching
+    /// subject) before folding two reference-less mails into one
+    /// thread.  Empty for cached rows that pre-date the v44 schema
+    /// migration; those heal on the next envelope sync or full-message
+    /// fetch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub to_addrs: Vec<String>,
     pub subject: String,
     pub date: DateTime<Utc>,
     pub is_read: bool,
@@ -572,6 +672,91 @@ pub struct EmailEnvelope {
     /// column on first full open) and for plain-text mail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protection: Option<String>,
+    /// Local-only "keep this at the top of the list" state (#414).
+    /// No IMAP/JMAP equivalent exists, so the flag never leaves the
+    /// cache: protocol clients always produce `false`, the cache
+    /// read paths fill in the stored value, and envelope re-fetches
+    /// can't clobber it (the upsert leaves the column alone).
+    /// `#[serde(default)]` keeps older cached payloads parsing
+    /// cleanly.
+    #[serde(default)]
+    pub is_pinned: bool,
+    /// Sender-declared message priority parsed from the
+    /// `X-Priority:` / `Importance:` headers at fetch time (#414):
+    /// `"high"` or `"low"`.  `None` = normal priority (the
+    /// overwhelmingly common case) — kept sparse so the cache
+    /// column stays NULL for ordinary mail.  See
+    /// [`priority_from_headers`] for the mapping rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    /// User-set priority for this message (#414): `"high"`,
+    /// `"normal"`, or `"low"`.  Local-only — like `is_pinned`,
+    /// there is no server-side equivalent, so it lives purely in
+    /// the cache and wins over the header-derived `priority` when
+    /// both are present (`"normal"` is a real value here precisely
+    /// so the user can downgrade a sender's "high" back to
+    /// nothing).  `None` = user never touched it; display falls
+    /// back to `priority`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_override: Option<String>,
+    /// Unix-epoch seconds at which the user asked to be reminded
+    /// about this message (#415).  Local-only — like `is_pinned`,
+    /// there is no server-side equivalent, so protocol clients
+    /// always produce `None` and the cache read paths fill in the
+    /// stored value.  The background scanner clears it back to
+    /// `None` once the reminder has fired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_at: Option<i64>,
+    /// Wire-only marker (#416): the envelope's top-level
+    /// `Content-Type:` is `multipart/report;
+    /// report-type=disposition-notification` — i.e. this message IS
+    /// a read receipt some recipient sent back to us.  Stamped by
+    /// the protocol clients from the same HEADER.FIELDS /
+    /// header-property slice the protection check uses, and
+    /// consumed by the sync path to fetch + parse the report body
+    /// and update the matching sent-mail receipt record.  Never
+    /// persisted: cache read paths always produce `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_mdn_report: bool,
+}
+
+/// Map the sender-declared priority headers to our two-value
+/// priority scale (#414).
+///
+/// Checked in order — first header that yields a value wins:
+///
+/// 1. `X-Priority:` — the de-facto numeric convention: `1`/`2` mean
+///    high, `4`/`5` mean low, `3` is normal.  Values often carry a
+///    trailing label (`"1 (Highest)"`), so only the leading digit is
+///    read.
+/// 2. `Importance:` (RFC 2156) and its `X-MSMail-Priority:` twin —
+///    the word forms `high` / `low` (`normal` maps to `None`).
+///
+/// Returns `"high"` / `"low"`, or `None` for normal / absent /
+/// unparseable — so ordinary mail stays out of the cache column
+/// entirely.
+pub fn priority_from_headers(
+    x_priority: Option<&str>,
+    importance: Option<&str>,
+    msmail_priority: Option<&str>,
+) -> Option<String> {
+    if let Some(v) = x_priority {
+        match v.trim().chars().next() {
+            Some('1') | Some('2') => return Some("high".into()),
+            Some('4') | Some('5') => return Some("low".into()),
+            _ => {}
+        }
+    }
+    for v in [importance, msmail_priority].into_iter().flatten() {
+        let v = v.trim();
+        if v.eq_ignore_ascii_case("high") || v.eq_ignore_ascii_case("urgent") {
+            return Some("high".into());
+        }
+        if v.eq_ignore_ascii_case("low") || v.eq_ignore_ascii_case("non-urgent") {
+            return Some("low".into());
+        }
+    }
+    None
 }
 
 /// Represents an email message.
@@ -638,6 +823,41 @@ pub struct Email {
     /// so the user can compare against the expected sender.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer_fingerprint: Option<String>,
+    /// Local-only pin state (#414).  Mirrors the field on
+    /// `EmailEnvelope`; protocol fetch paths always produce
+    /// `false` and the cache / IPC layer stamps the stored value.
+    #[serde(default)]
+    pub is_pinned: bool,
+    /// Sender-declared priority from the `X-Priority:` /
+    /// `Importance:` headers (#414): `"high"` / `"low"`, `None` =
+    /// normal.  Mirrors the field on `EmailEnvelope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    /// User-set priority override (#414).  Local-only; mirrors the
+    /// field on `EmailEnvelope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_override: Option<String>,
+    /// Pending reminder time in unix-epoch seconds (#415).
+    /// Local-only; mirrors the field on `EmailEnvelope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_at: Option<i64>,
+    /// The sender's `Disposition-Notification-To:` header value
+    /// (RFC 8098, #416) — present means "please tell me when this
+    /// was read", naming the address the receipt should go to.
+    /// Parsed by the full-message fetch paths and persisted on the
+    /// envelope row so a cache-served open still knows to offer
+    /// the receipt banner.  `None` = no receipt requested (the
+    /// overwhelmingly common case).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mdn_requested_to: Option<String>,
+    /// What the user (or their `Always`/`Never` policy) already did
+    /// about this message's receipt request (#416): `"sent"` or
+    /// `"declined"`.  Local-only like `is_pinned` — there is no
+    /// wire equivalent, protocol clients always produce `None`, and
+    /// the cache overlay fills in the stored value.  Drives the
+    /// banner's "don't ask twice" behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mdn_handled: Option<String>,
 }
 
 /// Metadata for one attachment on a received email.
@@ -771,6 +991,33 @@ pub struct OutgoingEmail {
     /// preserve the historical plaintext behaviour.
     #[serde(default)]
     pub signing_enabled: bool,
+    /// Ask recipients for a read receipt (RFC 8098, #416).  When
+    /// set, the SMTP layer stamps `Disposition-Notification-To:`
+    /// with the sender's own address on the outgoing message, and
+    /// the send pipeline records the sent Message-ID so an
+    /// incoming `message/disposition-notification` reply can be
+    /// matched back to this mail and surfaced as "read" status.
+    /// Advisory only — most clients let their user ignore or
+    /// decline the request, so absence of a receipt never means
+    /// the mail went unread.  `#[serde(default)]` keeps queued
+    /// outbox rows from before this field deserialising cleanly.
+    #[serde(default)]
+    pub request_read_receipt: bool,
+    /// Ask the mail infrastructure for a delivery confirmation
+    /// (RFC 3461 DSN, #461).  When set, the SMTP layer attaches
+    /// `NOTIFY=SUCCESS,FAILURE` to every `RCPT TO`, and the JMAP
+    /// layer puts the same parameters on the submission envelope,
+    /// so the receiving server mails back a
+    /// `message/delivery-status` report once the message lands in
+    /// (or bounces from) each recipient's mailbox.  Unlike the
+    /// read receipt above this is answered by the *server*, not
+    /// the recipient's client — but it's still best-effort: the
+    /// server must advertise the DSN extension, and when it
+    /// doesn't we degrade to a plain send rather than failing.
+    /// `#[serde(default)]` keeps queued outbox rows from before
+    /// this field deserialising cleanly.
+    #[serde(default)]
+    pub request_delivery_receipt: bool,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body
@@ -810,7 +1057,38 @@ pub struct Attachment {
     pub content_id: Option<String>,
 }
 
-/// A persistent Nextcloud connection.
+/// Which kind of groupware source a [`NextcloudAccount`] record
+/// describes (#413).
+///
+/// Historically the record only ever meant "a Nextcloud server".
+/// Contacts/calendars can now also come from a plain CardDAV/CalDAV
+/// server on a different host than the mail or Nextcloud account, or
+/// from a purely local store with no remote at all. Those sources
+/// reuse this record (and every sync command, cache table and view
+/// keyed on `nextcloud_account_id`) rather than duplicating the whole
+/// pipeline — the `kind` tells each code path which parts apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DavSourceKind {
+    /// A full Nextcloud connection (Login Flow v2, OCS capabilities,
+    /// Talk/Files/Notes/… on top of DAV). The default so records
+    /// stored before this field existed keep their meaning.
+    #[default]
+    Nextcloud,
+    /// A generic CardDAV/CalDAV server. Only contact/calendar sync
+    /// applies; DAV collection homes are stored explicitly in
+    /// `carddav_home` / `caldav_home` instead of being derived from
+    /// Nextcloud's `/remote.php/dav/...` layout.
+    Dav,
+    /// No remote at all — contacts/calendars live only in the local
+    /// encrypted cache. Sync commands are no-ops; writes skip the
+    /// server round-trip and mint synthetic hrefs/etags.
+    Local,
+}
+
+/// A persistent groupware connection: a Nextcloud server, a generic
+/// CardDAV/CalDAV server, or a purely local contact/calendar store
+/// (see [`DavSourceKind`]).
 ///
 /// One `NextcloudAccount` can be shared across multiple mail accounts —
 /// users often have several email identities but a single Nextcloud
@@ -826,16 +1104,21 @@ pub struct Attachment {
 pub struct NextcloudAccount {
     /// Stable UUID; used as the keychain account key for the app password.
     pub id: String,
-    /// Base URL of the Nextcloud server, e.g. `https://cloud.example.com`.
-    /// Stored without trailing slash.
+    /// Base URL of the server, e.g. `https://cloud.example.com`.
+    /// Stored without trailing slash. Empty string for
+    /// [`DavSourceKind::Local`] sources (there is no server).
     pub server_url: String,
-    /// Nextcloud login name returned by Login Flow v2. Often differs from
-    /// the user's email — it's whatever NC uses to identify the user.
+    /// Login name. For Nextcloud this is what Login Flow v2 returned
+    /// (often differs from the user's email); for generic DAV it's
+    /// the HTTP Basic username. Empty for local sources.
     pub username: String,
     /// Optional pretty name shown in the UI — pulled from
-    /// `/ocs/v2.php/cloud/user` after login when available.
+    /// `/ocs/v2.php/cloud/user` after login when available, or
+    /// user-chosen for DAV/local sources.
     pub display_name: Option<String>,
-    /// What the server supports, snapshotted at connect time.
+    /// What the server supports, snapshotted at connect time. For
+    /// DAV/local sources this is synthesised from which of
+    /// contacts/calendars the user enabled.
     pub capabilities: Option<NextcloudCapabilities>,
     /// User-trusted self-signed cert fingerprints (#253).  Same
     /// shape as `Account::trusted_certs` for IMAP/SMTP — every
@@ -849,6 +1132,34 @@ pub struct NextcloudAccount {
     /// without this field deserialise cleanly.
     #[serde(default)]
     pub trusted_certs: Vec<TrustedCert>,
+    /// What this record actually is — see [`DavSourceKind`] (#413).
+    /// Defaults to `Nextcloud` so pre-existing rows keep working.
+    #[serde(default)]
+    pub kind: DavSourceKind,
+    /// Absolute CardDAV addressbook-home URL for `kind == Dav`
+    /// sources, resolved via RFC 6764 well-known discovery at add
+    /// time. `None` for Nextcloud (derived from the server layout)
+    /// and local sources.
+    #[serde(default)]
+    pub carddav_home: Option<String>,
+    /// Absolute CalDAV calendar-home URL for `kind == Dav` sources.
+    /// Same story as `carddav_home`.
+    #[serde(default)]
+    pub caldav_home: Option<String>,
+}
+
+impl NextcloudAccount {
+    /// True when this source has no remote — writes stay in the
+    /// local cache and sync is a no-op.
+    pub fn is_local(&self) -> bool {
+        self.kind == DavSourceKind::Local
+    }
+
+    /// True when this source is a real Nextcloud (OCS capabilities,
+    /// Talk/Files/Notes endpoints, `/remote.php/dav/...` layout).
+    pub fn is_nextcloud(&self) -> bool {
+        self.kind == DavSourceKind::Nextcloud
+    }
 }
 
 /// Boolean flags for which Nextcloud apps the connected server offers.

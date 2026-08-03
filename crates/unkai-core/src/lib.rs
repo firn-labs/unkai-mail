@@ -2,6 +2,7 @@
 
 pub mod crypto;
 pub mod error;
+pub mod mail_util;
 pub mod models;
 pub mod tls;
 pub mod url;

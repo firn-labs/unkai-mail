@@ -407,7 +407,7 @@
          deciding whether to enable encryption at all.  Off by
          default; when on, exposes a numeric "retries" field
          whose empty / zero value means unlimited. -->
-    <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-3 {keyEncryptionEnabled ? '' : 'opacity-50 pointer-events-none select-none'}">
+    <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4 space-y-3 {keyEncryptionEnabled ? '' : 'opacity-50 pointer-events-none select-none'}">
       <div class="flex items-start gap-3">
         <Toggle
           checked={wipePolicy.enabled}
@@ -436,7 +436,7 @@
             type="number"
             min="1"
             placeholder="Unlimited"
-            class="input w-32 text-sm px-3 py-1.5 rounded-md"
+            class="input w-32 text-sm px-3 py-1.5 rounded-lg"
             bind:value={wipeMaxAttemptsRaw}
             onchange={onWipeMaxAttemptsChange}
             disabled={!wipePolicy.enabled || wipeSaving}
@@ -461,7 +461,7 @@
            enrollment below still works and is the recommended
            path on those systems. -->
       {#if webauthnAvailable}
-        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
+        <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4">
           <h3 class="font-medium mb-2">Add a hardware key</h3>
           <p class="text-xs text-surface-500 mb-3">
             You'll be asked to authenticate (touch your security key, scan
@@ -471,7 +471,7 @@
           <div class="flex items-center gap-2">
             <input
               type="text"
-              class="input flex-1 text-sm px-3 py-1.5 rounded-md"
+              class="input flex-1 text-sm px-3 py-1.5 rounded-lg"
               placeholder="Label — e.g. “YubiKey 5C”, “MacBook Touch ID”"
               bind:value={newLabel}
               disabled={anyBusy}
@@ -484,7 +484,7 @@
           </div>
         </div>
       {:else}
-        <div class="rounded-md border border-warning-500/40 bg-warning-500/10 p-4 text-sm text-warning-700 dark:text-warning-300">
+        <div class="rounded-lg border border-warning-500/40 bg-warning-500/10 p-4 text-sm text-warning-700 dark:text-warning-300">
           <p class="font-medium mb-1">Hardware-key registration is unavailable on this build.</p>
           <p class="text-xs">
             The webview Tauri uses on Linux (<code>libwebkit2gtk</code>) doesn't
@@ -498,7 +498,7 @@
       {/if}
 
       {#if !hasPassphrase || passphraseEditing}
-        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
+        <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-4">
           <h3 class="font-medium mb-2">
             {hasPassphrase ? 'Change recovery passphrase' : 'Add a recovery passphrase'}
           </h3>
@@ -512,7 +512,7 @@
           <div class="space-y-2">
             <input
               type="password"
-              class="input w-full text-sm px-3 py-1.5 rounded-md"
+              class="input w-full text-sm px-3 py-1.5 rounded-lg"
               placeholder="Passphrase (8+ characters)"
               bind:value={passphraseValue}
               disabled={anyBusy}
@@ -520,7 +520,7 @@
             />
             <input
               type="password"
-              class="input w-full text-sm px-3 py-1.5 rounded-md"
+              class="input w-full text-sm px-3 py-1.5 rounded-lg"
               placeholder="Confirm passphrase"
               bind:value={passphraseConfirm}
               disabled={anyBusy}
@@ -555,7 +555,7 @@
             No unlock methods registered yet.
           </p>
         {:else if status}
-          <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-md border border-surface-200 dark:border-surface-700">
+          <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-lg border border-surface-200 dark:border-surface-700">
             {#each status.credentials as c (c.credentialId)}
               <li class="flex items-center gap-3 p-3">
                 <span class="shrink-0 text-surface-600 dark:text-surface-300" aria-hidden="true">

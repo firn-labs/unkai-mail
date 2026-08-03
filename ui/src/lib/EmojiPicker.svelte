@@ -81,8 +81,11 @@
   })
 </script>
 
+<!-- Deliberately opaque, not .glass-float: the picker renders inside
+     glass modals (Sidebar's icon picker, Compose via RichTextEditor),
+     and stacking a second backdrop-filter layer there is off-limits. -->
 <div
-  class="{widthClass} bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg flex flex-col"
+  class="{widthClass} bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-xl shadow-lg flex flex-col"
 >
   {#if allowClear}
     <div class="px-2 pt-2 pb-1 border-b border-surface-200 dark:border-surface-700">
@@ -120,7 +123,7 @@
     --emoji-padding: 0.25rem;
     --indicator-color: var(--color-primary-500);
     --input-border-color: var(--color-surface-300);
-    --input-border-radius: 0.375rem;
+    --input-border-radius: 0.5rem;
     --input-padding: 0.375rem 0.5rem;
     --num-columns: 8;
     --outline-color: var(--color-primary-500);

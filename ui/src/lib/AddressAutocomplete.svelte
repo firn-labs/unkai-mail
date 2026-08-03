@@ -12,6 +12,11 @@
    * the field ready for the next address. Factoring it into one
    * component beats duplicating the plumbing three times.
    *
+   * The mail search's advanced panel reuses the same dropdown for its
+   * From / To builder fields via `pickMode="replace-address"` — same
+   * contacts, same avatars, but a pick commits a single bare email
+   * address instead of appending an RFC-formatted recipient.
+   *
    * # What the backend does vs. what we do
    *
    * The Rust `search_contacts` command does the LIKE query over the
@@ -53,8 +58,30 @@
     value: string
     placeholder?: string
     id?: string
+    /** How picking a suggestion commits into the field:
+     *  - `'append-rfc'` (default, the compose behaviour): append
+     *    `"Display Name" <addr>, ` after the existing addresses so
+     *    the user keeps typing the next recipient.
+     *  - `'replace-address'`: the field holds ONE value and a pick
+     *    replaces it with the bare email address — used by the mail
+     *    search's From / To builder fields, where the value becomes
+     *    a `from:` / `to:` operator operand (bare address matches
+     *    the FTS index; the RFC form's quotes and angle brackets
+     *    would fight the query grammar).  Mailing-list suggestions
+     *    are hidden in this mode — a list expands to many addresses,
+     *    which a single-operand operator can't hold. */
+    pickMode?: 'append-rfc' | 'replace-address'
+    /** Class for the underlying `<input>` — override when the field
+     *  sits in a denser layout than the compose form. */
+    inputClass?: string
   }
-  let { value = $bindable(''), placeholder = '', id = '' }: Props = $props()
+  let {
+    value = $bindable(''),
+    placeholder = '',
+    id = '',
+    pickMode = 'append-rfc',
+    inputClass = 'input w-full px-3 py-2 text-sm rounded-lg',
+  }: Props = $props()
 
   // ── Dropdown state ─────────────────────────────────────────
   /** A suggestion row — either an individual contact (`kind:
@@ -89,14 +116,20 @@
    *  `list_contact_groups` is available — we filter client-side
    *  on every keystroke so the dropdown stays snappy. */
   let allLists = $state<MailingListSuggestion[]>([])
-  void invoke<MailingListSuggestion[]>('list_mailing_lists')
-    .then((rows) => {
-      // Backend already excludes "Use as mailing list = off"
-      // categories; the per-row hide swatch (manual / team
-      // sources) is the remaining filter we apply here.
-      allLists = rows.filter((m) => !m.hiddenFromAutocomplete)
-    })
-    .catch((e) => console.warn('list_mailing_lists failed', e))
+  // svelte-ignore state_referenced_locally — `pickMode` is a
+  // configuration prop that never changes after mount; reading it
+  // once at init to gate the fetch is deliberate.
+  if (pickMode !== 'replace-address') {
+    // Lists never surface in replace-address mode, so skip the IPC.
+    void invoke<MailingListSuggestion[]>('list_mailing_lists')
+      .then((rows) => {
+        // Backend already excludes "Use as mailing list = off"
+        // categories; the per-row hide swatch (manual / team
+        // sources) is the remaining filter we apply here.
+        allLists = rows.filter((m) => !m.hiddenFromAutocomplete)
+      })
+      .catch((e) => console.warn('list_mailing_lists failed', e))
+  }
 
   // 150ms debounce keeps the UI snappy without firing a DB query on
   // every keystroke of a fast typer. The timer is a setTimeout handle
@@ -131,9 +164,12 @@
       // they're typically a handful per user, so a substring
       // scan beats round-tripping a dedicated IPC.
       const q = query.toLowerCase()
-      const listHits = allLists
-        .filter((m) => m.name.toLowerCase().includes(q))
-        .slice(0, LIMIT)
+      const listHits =
+        pickMode === 'replace-address'
+          ? []
+          : allLists
+              .filter((m) => m.name.toLowerCase().includes(q))
+              .slice(0, LIMIT)
       // Mailing-list hits stay first (typing a list name is
       // almost always intent to address the bundle), then
       // individual contacts.  The standard mail-client
@@ -168,7 +204,12 @@
   }
 
   function onInput() {
-    const { token } = currentToken(value)
+    // In replace-address mode the whole value is one query — there
+    // are no comma-separated tokens to peel apart.
+    const token =
+      pickMode === 'replace-address'
+        ? value.trim()
+        : currentToken(value).token
     if (debounceTimer !== null) window.clearTimeout(debounceTimer)
     debounceTimer = window.setTimeout(() => runSearch(token), DEBOUNCE_MS)
   }
@@ -189,6 +230,14 @@
   }
 
   function pickContact(c: Contact, email: string) {
+    if (pickMode === 'replace-address') {
+      if (!email) return
+      value = email
+      suggestions = []
+      open = false
+      inputEl?.focus()
+      return
+    }
     const { prefix } = currentToken(value)
     const formatted = formatAddress(c, email)
     if (!formatted) return
@@ -293,7 +342,8 @@
     {placeholder}
     bind:this={inputEl}
     bind:value
-    class="input w-full px-3 py-2 text-sm rounded-md"
+    class={inputClass}
+    aria-label={placeholder}
     oninput={onInput}
     onkeydown={onKeydown}
     onblur={onBlur}
@@ -307,7 +357,7 @@
     <ul
       class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto
              bg-surface-50 dark:bg-surface-900 border border-surface-300
-             dark:border-surface-700 rounded-md shadow-lg"
+             dark:border-surface-700 rounded-lg shadow-lg"
       role="listbox"
     >
       {#each suggestions as s, i (s.kind === 'contact' ? `${s.contact.id}::${s.email.value}` : s.list.id)}
@@ -316,7 +366,15 @@
           aria-selected={i === activeIndex}
           class="flex items-center gap-3 px-3 py-2 cursor-pointer text-sm
                  {i === activeIndex ? 'bg-primary-500/15' : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
-          onmousedown={(e) => { e.preventDefault(); pick(s) }}
+          onmousedown={(e) => {
+            // stopPropagation: pick() unmounts this row synchronously,
+            // so any document-level outside-click listener (the mail
+            // search's advanced panel) would later see a detached
+            // target and misread the pick as an outside click.
+            e.preventDefault()
+            e.stopPropagation()
+            pick(s)
+          }}
           onmouseenter={() => (activeIndex = i)}
         >
           {#if s.kind === 'contact'}

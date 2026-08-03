@@ -24,6 +24,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import NextcloudConnect from './NextcloudConnect.svelte'
   import Toggle from './Toggle.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
@@ -79,10 +80,71 @@
   let smtpHost = $state('')
   let smtpPort = $state(587)    // 587 = standard SMTP submission port
   let useJmap = $state(false)
+  // JMAP session base URL. Filled by a provider preset that ships
+  // one; left empty otherwise (the backend stores Option<String>).
+  let jmapUrl = $state('')
   // Optional plain-text signature appended below new messages from
   // this account. Empty string = no signature; the backend stores it
   // as Option<String>.
   let signature = $state('')
+
+  // ── Provider presets (#413) ─────────────────────────────────
+  // A hardcoded pick-list of well-known providers so discovery
+  // isn't the only path to working server settings. Mirrors the
+  // Rust `ProviderPreset` shape.
+  interface ProviderPreset {
+    id: string
+    display_name: string
+    domains: string[]
+    imap_host: string
+    imap_port: number
+    imap_tls: boolean
+    smtp_host: string
+    smtp_port: number
+    smtp_tls: boolean
+    jmap_url: string | null
+    hint: 'app-password' | 'enable-remote-access' | null
+  }
+  let presets = $state<ProviderPreset[]>([])
+  // 'auto' = no preset picked; run network discovery on email blur.
+  let selectedPresetId = $state('auto')
+  /** True when the preset was matched from the typed email domain
+   *  rather than picked by hand — an auto-match may be revised when
+   *  the email changes; an explicit pick is sticky. */
+  let presetAutoApplied = $state(false)
+  const activePreset = $derived(
+    presets.find((p) => p.id === selectedPresetId) ?? null,
+  )
+
+  $effect(() => {
+    invoke<ProviderPreset[]>('list_provider_presets')
+      .then((list) => (presets = list))
+      .catch((e) => console.warn('list_provider_presets failed:', e))
+  })
+
+  /** Copy a preset's connection settings into the form. Overwrites
+   *  the host/port fields on purpose — picking a provider by name is
+   *  an explicit "use these settings" request, unlike background
+   *  discovery which only fills blanks. */
+  function applyPreset(id: string, auto = false) {
+    selectedPresetId = id
+    presetAutoApplied = auto
+    if (id === 'auto') {
+      discoveryHint = null
+      return
+    }
+    const p = presets.find((x) => x.id === id)
+    if (!p) return
+    imapHost = p.imap_host
+    imapPort = p.imap_port
+    smtpHost = p.smtp_host
+    smtpPort = p.smtp_port
+    jmapUrl = p.jmap_url ?? ''
+    useJmap = !!p.jmap_url
+    discoveryHint = m.account_setup_provider_hint_applied({
+      provider: p.display_name,
+    })
+  }
 
   // ── Step navigation ─────────────────────────────────────────
   // Step metadata drives the numbered progress indicator + the
@@ -95,8 +157,13 @@
     { title: () => m.account_setup_step_your_information(), icon: 'address-book' },
     { title: () => m.account_setup_step_imap(), icon: 'email-envelope' },
     { title: () => m.account_setup_step_smtp(), icon: 'sent' },
+    { title: () => m.account_setup_step_nextcloud(), icon: 'cloud' },
+    { title: () => m.account_setup_step_dav(), icon: 'calendar' },
   ]
   const totalSteps = steps.length
+  /** Index of the step where `submit()` persists the mail account.
+   *  Everything after it runs against an already-saved account. */
+  const submitStep = 2
 
   function nextStep() {
     error = ''
@@ -122,7 +189,222 @@
 
   function handleCancel() {
     if (!canCancel) return
+    // Once the mail account is saved (i.e. the user is on the
+    // optional Nextcloud step), closing the wizard must land in the
+    // normal "account exists" flow, not the pre-setup cancel path —
+    // the parent needs to reload the account list either way.
+    if (accountCreated) {
+      oncomplete()
+      return
+    }
     oncancel?.()
+  }
+
+  // ── Optional Nextcloud step (#413) ──────────────────────────
+  // The mail account is persisted at the end of the SMTP step; the
+  // last step offers the Nextcloud Login Flow v2 connect that used
+  // to live only in Settings. Skipping is always possible.
+  interface NcCapabilitiesLite {
+    caldav: boolean
+    carddav: boolean
+    tasks?: boolean
+  }
+  interface NcAccountLite {
+    id: string
+    server_url: string
+    username: string
+    display_name?: string | null
+    capabilities?: NcCapabilitiesLite | null
+  }
+  /** True once `add_account` succeeded — the wizard's remaining
+   *  steps are optional extras on top of a saved account. */
+  let accountCreated = $state(false)
+  let ncAccount = $state<NcAccountLite | null>(null)
+
+  function onNcConnected(acct: NcAccountLite) {
+    ncAccount = acct
+    // First-time sync (#318): a freshly-connected NC has no local
+    // contacts/calendars yet — kick the initial pulls off in the
+    // background so the integration views aren't empty when the
+    // user lands in the app. Fire-and-forget: failures show up in
+    // the Settings sync rows, not here.
+    void seedInitialSync(acct)
+  }
+
+  // ── Contacts & Calendar source step (#413) ──────────────────
+  // Lets contacts/calendars come from somewhere other than the
+  // Nextcloud account: a separate CardDAV/CalDAV server, or a
+  // purely local store. "skip" is the default — with a Nextcloud
+  // connected there's usually nothing extra to configure.
+  type DavChoice = 'skip' | 'dav' | 'local'
+  let davChoice = $state<DavChoice>('skip')
+  let davDisplayName = $state('')
+  let davServerUrl = $state('')
+  let davUsername = $state('')
+  let davPassword = $state('')
+  let davUseContacts = $state(true)
+  let davUseCalendars = $state(true)
+  let davSaving = $state(false)
+  let davError = $state('')
+  /** Set once a source was added successfully — locks the step
+   *  into its confirmation state. */
+  let davConfigured = $state<{ kind: 'dav' | 'local'; name: string } | null>(null)
+
+  // Self-signed cert support for the DAV form — same probe →
+  // fingerprint prompt → retry flow the IMAP submit and the
+  // Nextcloud connect card use (#253). Scoped state so trusting a
+  // DAV cert can't cross-fire the IMAP flow's `submit()` retry.
+  let davTrustedCerts = $state<TrustedCert[]>([])
+  let davPendingCert = $state<ProbedCert | null>(null)
+
+  /** Host + port of the typed DAV server URL, https/443 defaults —
+   *  the target `probe_server_certificate` needs. */
+  function davHostPort(): { host: string; port: number } | null {
+    const url = davServerUrl.trim()
+    const normalised = /^https?:\/\//.test(url) ? url : `https://${url}`
+    try {
+      const u = new URL(normalised)
+      return {
+        host: u.hostname,
+        port: u.port ? Number.parseInt(u.port, 10) : 443,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  async function handleDavCertError() {
+    davPendingCert = null
+    const target = davHostPort()
+    if (!target) {
+      davError = m.nextcloud_connect_error_parse_url()
+      return
+    }
+    try {
+      davPendingCert = await invoke<ProbedCert>('probe_server_certificate', {
+        host: target.host,
+        port: target.port,
+      })
+    } catch (e: any) {
+      davError = m.account_setup_cert_probe_failed({
+        reason: formatError(e) || m.nextcloud_connect_unknown_error(),
+      })
+    }
+  }
+
+  function trustDavPendingCert() {
+    if (!davPendingCert) return
+    // Trust the whole probed chain, not just the leaf — same
+    // rationale as the IMAP prompt (chain reorders / leaf reissues
+    // shouldn't re-prompt).
+    const addedAt = Math.floor(Date.now() / 1000)
+    const host = davPendingCert.host
+    const additions: TrustedCert[] = davPendingCert.chain.map((entry) => ({
+      der: entry.der,
+      sha256: entry.sha256,
+      host,
+      added_at: addedAt,
+    }))
+    davTrustedCerts = [...davTrustedCerts, ...additions]
+    davPendingCert = null
+    void addDavSource()
+  }
+
+  async function addDavSource() {
+    davError = ''
+    if (!davUseContacts && !davUseCalendars) {
+      davError = m.account_setup_dav_validation_kinds()
+      return
+    }
+    if (
+      davChoice === 'dav' &&
+      (!davServerUrl.trim() || !davUsername.trim() || !davPassword)
+    ) {
+      davError = m.account_setup_dav_validation_server()
+      return
+    }
+    davSaving = true
+    try {
+      if (davChoice === 'dav') {
+        const name = davDisplayName.trim() || davServerUrl.trim()
+        const acct = await invoke<{ id: string }>('add_dav_account', {
+          displayName: name,
+          serverUrl: davServerUrl.trim(),
+          username: davUsername.trim(),
+          password: davPassword,
+          useContacts: davUseContacts,
+          useCalendars: davUseCalendars,
+          // Grows when the user accepts a self-signed cert via the
+          // prompt below; the backend persists it on the account so
+          // every later sync pins the same chain.
+          trustedCerts: davTrustedCerts.length > 0 ? davTrustedCerts : null,
+        })
+        // First pull in the background so the views aren't empty —
+        // same posture as the Nextcloud step (#318).
+        if (davUseContacts) {
+          void invoke('sync_nextcloud_contacts', { ncId: acct.id }).catch((e) =>
+            console.warn('initial CardDAV sync failed:', e),
+          )
+        }
+        if (davUseCalendars) {
+          void invoke('sync_nextcloud_calendars', { ncId: acct.id }).catch((e) =>
+            console.warn('initial CalDAV sync failed:', e),
+          )
+        }
+        davConfigured = { kind: 'dav', name }
+      } else {
+        const name = davDisplayName.trim() || m.account_setup_dav_local_default_name()
+        await invoke('add_local_dav_account', {
+          displayName: name,
+          useContacts: davUseContacts,
+          useCalendars: davUseCalendars,
+        })
+        davConfigured = { kind: 'local', name }
+      }
+    } catch (e: any) {
+      const msg = formatError(e) || m.account_setup_dav_add_failed()
+      // TLS trust failure on the DAV server → probe + fingerprint
+      // prompt instead of a raw error (local stores never hit this
+      // branch — they make no network calls).
+      if (davChoice === 'dav' && looksLikeCertError(msg)) {
+        davError = ''
+        void handleDavCertError()
+      } else {
+        davError = msg
+      }
+    } finally {
+      davSaving = false
+    }
+  }
+
+  async function seedInitialSync(acct: NcAccountLite) {
+    const caps = acct.capabilities
+    if (!caps) return
+    const jobs: Promise<unknown>[] = []
+    if (caps.carddav) {
+      jobs.push(invoke('sync_nextcloud_contacts', { ncId: acct.id }))
+    }
+    if (caps.caldav) {
+      jobs.push(invoke('sync_nextcloud_calendars', { ncId: acct.id }))
+    }
+    await Promise.allSettled(jobs)
+    // Task lists piggy-back on CalDAV but need their own discovery
+    // + per-list sync round-trip (#92).
+    if (caps.tasks && caps.caldav) {
+      try {
+        const lists = await invoke<{ id: string }[]>(
+          'sync_nextcloud_task_lists',
+          { ncId: acct.id },
+        )
+        await Promise.allSettled(
+          lists.map((l) =>
+            invoke('sync_nextcloud_tasks', { ncId: acct.id, listId: l.id }),
+          ),
+        )
+      } catch (e) {
+        console.warn('initial task-list sync failed:', e)
+      }
+    }
   }
 
   // ── Auto-fill server settings from email domain ─────────────
@@ -143,12 +425,31 @@
     smtp_host: string
     smtp_port: number
     smtp_tls: boolean
-    source: 'autoconfig-domain' | 'autoconfig-ispdb' | 'srv'
+    source: 'autoconfig-domain' | 'autoconfig-ispdb' | 'srv' | 'preset'
   }
 
   async function autoFillServers() {
     if (!email.includes('@')) return
     const domain = email.split('@')[1]
+    // A hand-picked preset wins over anything the email domain says —
+    // the user explicitly chose it. Auto-matched presets get
+    // re-evaluated so changing the address to another provider's
+    // domain doesn't leave stale settings behind.
+    if (selectedPresetId !== 'auto' && !presetAutoApplied) return
+    const matched = presets.find((p) =>
+      p.domains.includes(domain.trim().toLowerCase()),
+    )
+    if (matched) {
+      applyPreset(matched.id, true)
+      return
+    }
+    if (presetAutoApplied) {
+      // Previous auto-match no longer applies — fall back to
+      // discovery below (it only fills blank fields, so nothing
+      // the user typed is lost).
+      selectedPresetId = 'auto'
+      presetAutoApplied = false
+    }
     discoveryHint = null
     discovering = true
     try {
@@ -168,7 +469,9 @@
             ? m.account_setup_discovery_label_provider()
             : found.source === 'autoconfig-ispdb'
               ? m.account_setup_discovery_label_ispdb()
-              : m.account_setup_discovery_label_srv()
+              : found.source === 'preset'
+                ? m.account_setup_discovery_label_preset()
+                : m.account_setup_discovery_label_srv()
         discoveryHint = m.account_setup_discovery_hint_found({ source: label })
         return
       }
@@ -315,6 +618,7 @@
           smtp_host: smtpHost.trim(),
           smtp_port: smtpPort,
           use_jmap: useJmap,
+          jmap_url: jmapUrl.trim() || null,
           signature: signature.trim() || null,
           folder_icons: [],
           // `trustedCerts` already carries `added_at` from when the
@@ -324,8 +628,12 @@
         password,
       })
 
-      // Success! Tell the parent component to switch to inbox
-      oncomplete()
+      // Success! The mail account exists now — move on to the
+      // optional Nextcloud step instead of closing the wizard.
+      // `oncomplete` fires when the user finishes or skips it.
+      accountCreated = true
+      error = ''
+      step = submitStep + 1
     } catch (e: any) {
       const msg = formatError(e) || m.account_setup_save_failed()
       if (looksLikeCertError(msg)) {
@@ -379,12 +687,12 @@
          padding so the corner-anchored "×" button doesn't crowd
          the step indicator below it. -->
     <div
-      class="card relative p-6 {canCancel ? 'pt-10' : ''} bg-surface-100 dark:bg-surface-800 rounded-xl shadow-lg"
+      class="card relative p-6 {canCancel ? 'pt-10' : ''} glass-float rounded-2xl"
     >
       {#if canCancel}
         <button
           type="button"
-          class="absolute top-1 right-1 p-1.5 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
+          class="absolute top-1 right-1 p-1.5 rounded-lg text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
           onclick={handleCancel}
           aria-label={m.account_setup_close_label()}
           title={m.account_setup_close_title()}
@@ -451,7 +759,7 @@
                 type="text"
                 bind:value={displayName}
                 placeholder={m.account_setup_account_name_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
               />
             </div>
             <span class="block text-xs text-surface-500 mt-1">
@@ -468,7 +776,7 @@
                 type="text"
                 bind:value={personName}
                 placeholder={m.account_setup_your_name_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
               />
             </div>
             <span class="block text-xs text-surface-500 mt-1">
@@ -485,7 +793,7 @@
                 type="email"
                 bind:value={email}
                 placeholder={m.account_setup_email_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
                 onblur={autoFillServers}
                 disabled={discovering}
               />
@@ -502,6 +810,28 @@
               </span>
             {/if}
           </label>
+
+          <!-- Provider pick-list (#413).  Picking a known provider
+               copies its published server settings into the IMAP/SMTP
+               steps — discovery is no longer the only path.  The
+               fields on the next steps stay editable, so manual
+               override always works. -->
+          <label class="block mb-4">
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_provider_label()}</span>
+            <select
+              class="select w-full mt-1 px-3 py-2 text-sm rounded-lg"
+              bind:value={selectedPresetId}
+              onchange={() => applyPreset(selectedPresetId)}
+            >
+              <option value="auto">{m.account_setup_provider_auto()}</option>
+              {#each presets as p (p.id)}
+                <option value={p.id}>{p.display_name}</option>
+              {/each}
+            </select>
+            <span class="block text-xs text-surface-500 mt-1">
+              {m.account_setup_provider_hint()}
+            </span>
+          </label>
         </div>
 
       <!-- Step 1: IMAP settings -->
@@ -510,6 +840,16 @@
           <p class="text-sm text-surface-500 mb-4">
             {m.account_setup_imap_explainer()}
           </p>
+          <!-- Preset-specific requirement (#413): some providers ship
+               with remote access off, or reject the normal account
+               password over IMAP.  Surface that *before* the user
+               types credentials that can't work. -->
+          {#if activePreset?.hint === 'enable-remote-access'}
+            <div class="text-xs text-surface-600 dark:text-surface-400 mb-4 p-3 rounded-lg border border-warning-500/40 bg-warning-500/5 flex items-start gap-2">
+              <span class="mt-0.5"><Icon name="warning" size={14} /></span>
+              <span>{m.account_setup_provider_hint_enable_remote_access({ provider: activePreset.display_name })}</span>
+            </div>
+          {/if}
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_imap_server_label()}</span>
             <div class="relative mt-1">
@@ -520,7 +860,7 @@
                 type="text"
                 bind:value={imapHost}
                 placeholder={m.account_setup_imap_server_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
               />
             </div>
           </label>
@@ -529,7 +869,7 @@
             <input
               type="number"
               bind:value={imapPort}
-              class="input w-full mt-1 px-3 py-2 rounded-md"
+              class="input w-full mt-1 px-3 py-2 rounded-lg"
             />
           </label>
           <label class="block mb-4">
@@ -542,13 +882,18 @@
                 type="password"
                 bind:value={password}
                 placeholder={m.account_setup_password_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
                 autocomplete="current-password"
               />
             </div>
             <span class="block text-xs text-surface-500 mt-1">
               {m.account_setup_password_hint()}
             </span>
+            {#if activePreset?.hint === 'app-password'}
+              <span class="block text-xs text-warning-600 dark:text-warning-400 mt-1">
+                {m.account_setup_provider_hint_app_password({ provider: activePreset.display_name })}
+              </span>
+            {/if}
           </label>
         </div>
 
@@ -568,7 +913,7 @@
                 type="text"
                 bind:value={smtpHost}
                 placeholder={m.account_setup_smtp_server_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                class="input w-full pl-8 pr-3 py-2 rounded-lg"
               />
             </div>
           </label>
@@ -577,13 +922,13 @@
             <input
               type="number"
               bind:value={smtpPort}
-              class="input w-full mt-1 px-3 py-2 rounded-md"
+              class="input w-full mt-1 px-3 py-2 rounded-lg"
             />
           </label>
 
           <!-- JMAP toggle.  A modern protocol some servers offer
                in addition to (or instead of) IMAP/SMTP. -->
-          <div class="flex items-center justify-between gap-3 mb-4 p-3 rounded-md bg-surface-200/50 dark:bg-surface-700/40">
+          <div class="flex items-center justify-between gap-3 mb-4 p-3 rounded-lg bg-surface-200/50 dark:bg-surface-700/40">
             <div class="flex items-start gap-2 min-w-0">
               <span class="text-primary-500 mt-0.5"><Icon name="sync" size={16} /></span>
               <div class="min-w-0">
@@ -623,11 +968,215 @@
             </span>
           </div>
         </div>
+
+      <!-- Step 3: optional Nextcloud connect (#413).  Reached only
+           after `add_account` succeeded — the shared NextcloudConnect
+           card drives the Login Flow v2; the backend persists the
+           account itself. -->
+      {:else if step === 3}
+        <div>
+          <p class="text-sm text-surface-500 mb-4">
+            {m.account_setup_nextcloud_explainer()}
+          </p>
+          {#if ncAccount}
+            <div class="mb-4 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-sm text-surface-700 dark:text-surface-300 flex items-start gap-2">
+              <span class="text-success-500 mt-0.5"><Icon name="success" size={16} /></span>
+              <span>
+                {m.account_setup_nextcloud_connected({
+                  user: ncAccount.display_name ?? ncAccount.username,
+                  server: ncAccount.server_url,
+                })}
+              </span>
+            </div>
+          {:else}
+            <NextcloudConnect onconnected={onNcConnected} />
+          {/if}
+        </div>
+
+      <!-- Step 4: contacts & calendar source (#413).  Optional like
+           the Nextcloud step; "no extra source" is the default. -->
+      {:else if step === 4}
+        <div>
+          <p class="text-sm text-surface-500 mb-4">
+            {m.account_setup_dav_explainer()}
+          </p>
+
+          {#if davConfigured}
+            <div class="mb-4 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-sm text-surface-700 dark:text-surface-300 flex items-start gap-2">
+              <span class="text-success-500 mt-0.5"><Icon name="success" size={16} /></span>
+              <span>
+                {#if davConfigured.kind === 'dav'}
+                  {m.account_setup_dav_added_dav({ name: davConfigured.name })}
+                {:else}
+                  {m.account_setup_dav_added_local({ name: davConfigured.name })}
+                {/if}
+              </span>
+            </div>
+          {:else}
+            <!-- Source choice -->
+            <div class="space-y-2 mb-4">
+              {#each [
+                { value: 'skip', label: m.account_setup_dav_option_skip(), hint: m.account_setup_dav_option_skip_hint() },
+                { value: 'dav', label: m.account_setup_dav_option_dav(), hint: m.account_setup_dav_option_dav_hint() },
+                { value: 'local', label: m.account_setup_dav_option_local(), hint: m.account_setup_dav_option_local_hint() },
+              ] as opt (opt.value)}
+                <label class="flex items-start gap-2 p-3 rounded-lg cursor-pointer border transition-colors {davChoice === opt.value
+                  ? 'border-primary-500/60 bg-primary-500/5'
+                  : 'border-surface-300 dark:border-surface-600 hover:bg-surface-200/40 dark:hover:bg-surface-700/30'}">
+                  <input
+                    type="radio"
+                    class="radio mt-0.5"
+                    name="dav-source-choice"
+                    value={opt.value}
+                    bind:group={davChoice}
+                  />
+                  <span class="min-w-0">
+                    <span class="block text-sm font-medium text-surface-700 dark:text-surface-200">{opt.label}</span>
+                    <span class="block text-xs text-surface-500">{opt.hint}</span>
+                  </span>
+                </label>
+              {/each}
+            </div>
+
+            {#if davChoice !== 'skip'}
+              <label class="block mb-3">
+                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_display_name_label()}</span>
+                <input
+                  type="text"
+                  bind:value={davDisplayName}
+                  placeholder={m.account_setup_dav_display_name_placeholder()}
+                  class="input w-full mt-1 px-3 py-2 rounded-lg"
+                />
+              </label>
+            {/if}
+
+            {#if davChoice === 'dav'}
+              <label class="block mb-3">
+                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_server_url_label()}</span>
+                <input
+                  type="text"
+                  bind:value={davServerUrl}
+                  placeholder="https://dav.example.com"
+                  class="input w-full mt-1 px-3 py-2 rounded-lg"
+                />
+              </label>
+              <label class="block mb-3">
+                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_username_label()}</span>
+                <input
+                  type="text"
+                  bind:value={davUsername}
+                  class="input w-full mt-1 px-3 py-2 rounded-lg"
+                />
+              </label>
+              <label class="block mb-3">
+                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_password_label()}</span>
+                <input
+                  type="password"
+                  bind:value={davPassword}
+                  class="input w-full mt-1 px-3 py-2 rounded-lg"
+                  autocomplete="current-password"
+                />
+              </label>
+            {/if}
+
+            {#if davChoice !== 'skip'}
+              <div class="flex items-center gap-6 mb-4">
+                <div class="flex items-center gap-2">
+                  <Toggle bind:checked={davUseContacts} label={m.account_setup_dav_use_contacts()} />
+                  <span class="text-sm text-surface-700 dark:text-surface-300">{m.account_setup_dav_use_contacts()}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <Toggle bind:checked={davUseCalendars} label={m.account_setup_dav_use_calendars()} />
+                  <span class="text-sm text-surface-700 dark:text-surface-300">{m.account_setup_dav_use_calendars()}</span>
+                </div>
+              </div>
+
+              {#if davError}
+                <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-lg flex items-start gap-2">
+                  <span class="mt-0.5"><Icon name="error" size={16} /></span>
+                  <span>{davError}</span>
+                </div>
+              {/if}
+
+              <!-- Self-signed cert trust prompt (#253) — same shape
+                   as the IMAP step's, but backed by DAV-scoped state
+                   so trusting retries addDavSource, not submit(). -->
+              {#if davPendingCert}
+                <div class="mb-4 p-4 rounded-lg border border-warning-500/40 bg-warning-500/5">
+                  <p class="text-sm font-medium mb-1 flex items-center gap-2">
+                    <Icon name="lock" size={16} />
+                    {m.account_setup_cert_title()}
+                  </p>
+                  <p class="text-xs text-surface-500 mb-3">
+                    {m.account_setup_dav_cert_explainer()}
+                  </p>
+                  <p class="text-xs mb-1"><span class="text-surface-500">{m.account_setup_cert_host_label()}</span> <span class="font-mono">{davPendingCert.host}</span></p>
+                  <div class="text-xs mb-3">
+                    <p class="text-surface-500 mb-1">
+                      {#if davPendingCert.chain.length === 1}
+                        {m.account_setup_cert_fingerprint_one()}
+                      {:else if davPendingCert.chain.length === 2}
+                        {m.account_setup_cert_fingerprint_many({ n: 1 })}
+                      {:else}
+                        {m.account_setup_cert_fingerprint_many_plural({ n: davPendingCert.chain.length - 1 })}
+                      {/if}
+                    </p>
+                    <ul class="space-y-1">
+                      {#each davPendingCert.chain as entry, i (entry.sha256)}
+                        <li class="font-mono break-all">
+                          <span class="text-surface-500">{i === 0 ? 'leaf:' : `int${i}:`}</span>
+                          {entry.sha256}
+                        </li>
+                      {/each}
+                    </ul>
+                  </div>
+                  <div class="flex gap-2">
+                    <button
+                      type="button"
+                      class="btn btn-sm preset-filled-primary-500"
+                      onclick={trustDavPendingCert}
+                    >{m.account_setup_cert_button_trust()}</button>
+                    <button
+                      type="button"
+                      class="btn btn-sm preset-outlined-surface-500"
+                      onclick={() => (davPendingCert = null)}
+                    >{m.account_setup_cert_button_cancel()}</button>
+                  </div>
+                </div>
+              {/if}
+
+              {#if davTrustedCerts.length > 0 && !davPendingCert}
+                <div class="mb-4 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
+                  <Icon name="verified" size={14} />
+                  {#if davTrustedCerts.length === 1}
+                    {m.account_setup_cert_trusting_one()}
+                  {:else}
+                    {m.account_setup_cert_trusting_many({ n: davTrustedCerts.length })}
+                  {/if}
+                </div>
+              {/if}
+
+              <button
+                class="btn preset-filled-primary-500 flex items-center gap-1"
+                onclick={addDavSource}
+                disabled={davSaving}
+              >
+                {#if davSaving}
+                  <Icon name="loading" size={14} />
+                  {m.account_setup_dav_button_adding()}
+                {:else}
+                  <Icon name="plus" size={14} />
+                  {m.account_setup_dav_button_add()}
+                {/if}
+              </button>
+            {/if}
+          {/if}
+        </div>
       {/if}
 
       <!-- Error message -->
       {#if error}
-        <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-md flex items-start gap-2">
+        <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-lg flex items-start gap-2">
           <span class="mt-0.5"><Icon name="error" size={16} /></span>
           <span>{error}</span>
         </div>
@@ -639,7 +1188,7 @@
            compare against their server, then chooses whether to
            trust it for this account. -->
       {#if pendingCert}
-        <div class="mb-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
+        <div class="mb-4 p-4 rounded-lg border border-warning-500/40 bg-warning-500/5">
           <p class="text-sm font-medium mb-1 flex items-center gap-2">
             <Icon name="lock" size={16} />
             {m.account_setup_cert_title()}
@@ -683,7 +1232,7 @@
       {/if}
 
       {#if trustedCerts.length > 0 && !pendingCert}
-        <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
+        <div class="mb-4 p-3 rounded-lg border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
           <Icon name="verified" size={14} />
           {#if trustedCerts.length === 1}
             {m.account_setup_cert_trusting_one()}
@@ -693,9 +1242,12 @@
         </div>
       {/if}
 
-      <!-- Navigation buttons -->
+      <!-- Navigation buttons.  Back is hidden on the Nextcloud step:
+           the mail account is already saved at that point, so going
+           "back" into the credential steps would suggest edits that
+           won't be re-submitted. -->
       <div class="flex justify-between mt-6">
-        {#if step > 0}
+        {#if step > 0 && step <= submitStep}
           <button class="btn preset-outlined-surface-500 flex items-center gap-1" onclick={prevStep}>
             <Icon name="arrow-left" size={14} />
             {m.account_setup_button_back()}
@@ -704,12 +1256,12 @@
           <div></div>
         {/if}
 
-        {#if step < totalSteps - 1}
+        {#if step < submitStep}
           <button class="btn preset-filled-primary-500 flex items-center gap-1" onclick={nextStep}>
             {m.account_setup_button_next()}
             <Icon name="arrow-right" size={14} />
           </button>
-        {:else}
+        {:else if step === submitStep}
           <button
             class="btn preset-filled-primary-500 flex items-center gap-1"
             onclick={submit}
@@ -722,6 +1274,29 @@
               <Icon name="add-account" size={14} />
               {m.account_setup_button_add_account()}
             {/if}
+          </button>
+        {:else if step < totalSteps - 1}
+          <button
+            class="btn preset-filled-primary-500 flex items-center gap-1"
+            onclick={() => {
+              error = ''
+              step++
+            }}
+          >
+            {#if ncAccount}
+              {m.account_setup_button_next()}
+            {:else}
+              {m.account_setup_button_skip()}
+            {/if}
+            <Icon name="arrow-right" size={14} />
+          </button>
+        {:else}
+          <button
+            class="btn preset-filled-primary-500 flex items-center gap-1"
+            onclick={() => oncomplete()}
+          >
+            <Icon name="success" size={14} />
+            {m.account_setup_button_finish()}
           </button>
         {/if}
       </div>
@@ -738,7 +1313,7 @@
     height: 16rem;
     min-height: 16rem;
     border: 1px solid var(--color-surface-300);
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
     overflow: hidden;
     display: flex;
     flex-direction: column;

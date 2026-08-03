@@ -1334,6 +1334,198 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX smime_certs_by_email
         ON smime_certs (email);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v39 → v40: per-message pin + priority state (#414).
+    //
+    // Three columns on `messages`, one per new organizational state:
+    //
+    //   * `is_pinned` — local-only "keep at the top of the list"
+    //     toggle.  No IMAP/JMAP equivalent exists, so like
+    //     `replied_kind` it is never written by the envelope upsert
+    //     path — only the user-action setter touches it, and a
+    //     background re-fetch can't clobber it.  Default 0 so
+    //     existing rows roll forward unpinned.
+    //
+    //   * `priority` — sender-declared priority parsed from the
+    //     `X-Priority:` / `Importance:` headers at envelope-fetch
+    //     time: `'high'` / `'low'`, NULL = normal.  Refreshed by
+    //     the upsert path with the same COALESCE guard the
+    //     threading headers use, so an older fetch path that
+    //     didn't parse the headers can't wipe a value we already
+    //     extracted.  NULL for pre-migration rows until the next
+    //     re-fetch (or forever, for ordinary mail — the column is
+    //     intentionally sparse).
+    //
+    //   * `priority_override` — the user's own priority choice:
+    //     `'high'` / `'normal'` / `'low'`, NULL = untouched.
+    //     Local-only like `is_pinned`; wins over `priority` at
+    //     read time.  `'normal'` is a stored value (not NULL) so
+    //     the user can explicitly downgrade a sender's "high".
+    //
+    // The pin-aware index mirrors `messages_by_folder_date` with
+    // `is_pinned DESC` in front: the mail-list query now orders by
+    // pin state first so pinned rows can never age out of the
+    // newest-N window, and this index lets SQLite satisfy that
+    // ordering with a plain index scan, no sort step.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages
+        ADD COLUMN priority TEXT;
+    ALTER TABLE messages
+        ADD COLUMN priority_override TEXT;
+
+    CREATE INDEX messages_by_folder_pinned_date
+        ON messages (account_id, folder, is_pinned DESC, internal_date DESC);
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v40 → v41: separate CardDAV/CalDAV providers + local store
+    // (#413).
+    //
+    // The `nextcloud_accounts` record generalises into "any
+    // groupware source":
+    //
+    //   * `kind` — 'nextcloud' (default, all pre-existing rows),
+    //     'dav' (a generic CardDAV/CalDAV server on some other
+    //     host), or 'local' (no remote at all; contacts/calendars
+    //     live only in this cache).
+    //
+    //   * `carddav_home` / `caldav_home` — absolute collection-home
+    //     URLs for 'dav' rows, resolved once via RFC 6764
+    //     well-known discovery when the source is added.  NULL for
+    //     'nextcloud' rows (the home is derived from the server's
+    //     `/remote.php/dav/...` layout on every sync) and for
+    //     'local' rows.
+    //
+    // Reusing this table — rather than adding a parallel
+    // `dav_accounts` one — keeps every existing sync command,
+    // cache table and UI view working unchanged: they are all
+    // keyed by `nextcloud_account_id`, which now simply identifies
+    // any groupware source.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE nextcloud_accounts
+        ADD COLUMN kind TEXT NOT NULL DEFAULT 'nextcloud';
+    ALTER TABLE nextcloud_accounts
+        ADD COLUMN carddav_home TEXT;
+    ALTER TABLE nextcloud_accounts
+        ADD COLUMN caldav_home TEXT;
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v41 → v42: per-message reminders (#415).
+    //
+    // `reminder_at` — unix-epoch seconds at which the user asked to
+    // be re-surfaced about this message.  Local-only user state with
+    // no IMAP/JMAP equivalent, so — exactly like `is_pinned` /
+    // `priority_override` (#414) — the envelope-upsert path never
+    // writes it: only the user-action setter and the fired-reminder
+    // clear touch the column.  NULL = no reminder (the
+    // overwhelmingly common case), keeping the column sparse and
+    // the partial index below tiny.
+    //
+    // Persisting the fire time here is what makes reminders survive
+    // an app restart: the scanner asks "any row with reminder_at <=
+    // now?" on every tick, so a reminder that elapsed while the app
+    // was closed fires on the first tick after the next launch.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN reminder_at INTEGER;
+
+    CREATE INDEX messages_by_reminder
+        ON messages (reminder_at)
+        WHERE reminder_at IS NOT NULL;
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v42 → v43: read receipts / MDN (RFC 8098, #416).
+    //
+    // Two columns on `messages` for the *incoming* side:
+    //
+    //   * `mdn_requested_to` — the sender's
+    //     `Disposition-Notification-To:` header value, i.e. "please
+    //     tell me when this was read" plus the address the receipt
+    //     should go to.  Header-derived like `priority`, so the
+    //     full-message upsert refreshes it with the same COALESCE
+    //     guard.  NULL = no receipt requested (almost all mail).
+    //
+    //   * `mdn_handled` — what already happened about that request:
+    //     'sent' or 'declined', NULL = not yet decided.  Local-only
+    //     user state exactly like `is_pinned` / `reminder_at`: no
+    //     wire equivalent, the upsert paths never write it, only
+    //     the receipt-response setter does.  This is what stops the
+    //     reading pane from asking twice.
+    //
+    // And one table for the *outgoing* side — receipts we asked
+    // for.  A row is created at SMTP-send time (keyed on the sent
+    // mail's Message-ID, bracket-free per the #277 convention) and
+    // patched when a `message/disposition-notification` reply
+    // arrives naming that ID:
+    //
+    //   * `disposition` NULL = requested, nothing back yet;
+    //     'displayed' / 'deleted' / … = what the recipient's client
+    //     reported.  `reporter` is the address that confirmed, when
+    //     the report named one.
+    //
+    // Deliberately NOT a column on `messages`: the sent copy lands
+    // in the Sent folder via a server-side APPEND and its UID is
+    // unknown at send time — the Message-ID is the only stable key
+    // both sides of the round-trip share.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN mdn_requested_to TEXT;
+    ALTER TABLE messages
+        ADD COLUMN mdn_handled TEXT;
+
+    CREATE TABLE sent_receipts (
+        account_id     TEXT NOT NULL,
+        message_id     TEXT NOT NULL,
+        requested_at   INTEGER NOT NULL,
+        disposition    TEXT,
+        disposition_at INTEGER,
+        reporter       TEXT,
+        PRIMARY KEY (account_id, message_id)
+    );
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v43 → v44: `To:` recipients on cached envelopes (#417).
+    //
+    // The conversation grouper's subject fallback (the merge pass
+    // that rescues threads whose References/Message-ID chain broke
+    // in transit) used to match on normalized subject alone, which
+    // over-grouped unrelated mail sharing a common subject
+    // ("Invoice", "Meeting"). The fix requires overlapping
+    // *participants* too — and participants need the recipient
+    // list, which until now only existed on `message_bodies` rows
+    // (i.e. after the user opened the message).
+    //
+    // One nullable JSON-array column, same display-string shape as
+    // `message_bodies.to_addrs` (v1 → v2). NULL = unknown (row
+    // pre-dates this migration and its body was never fetched), so
+    // the column stays sparse and the upsert's COALESCE guard can
+    // tell "no data" apart from "no recipients".
+    //
+    // Back-fill from `message_bodies` where a body was already
+    // cached — that's the "re-thread existing messages on
+    // migration" half of #417. Rows without a cached body heal
+    // lazily: the next envelope sync of the folder re-fetches the
+    // newest window with the recipient slot populated, and opening
+    // a message stamps it via the full-message upsert.
+    r#"
+    ALTER TABLE messages
+        ADD COLUMN to_addrs TEXT;
+
+    UPDATE messages
+    SET to_addrs = (
+        SELECT b.to_addrs FROM message_bodies b
+        WHERE b.account_id = messages.account_id
+          AND b.folder     = messages.folder
+          AND b.uid        = messages.uid
+          AND b.to_addrs IS NOT NULL
+          AND b.to_addrs != '[]'
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

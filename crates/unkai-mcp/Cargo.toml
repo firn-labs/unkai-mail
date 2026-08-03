@@ -1,0 +1,54 @@
+[package]
+name = "unkai-mcp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+unkai-core.workspace = true
+unkai-store.workspace = true
+# The mail tools (#440): create_draft builds MIME via unkai-smtp's
+# message builder and APPENDs it over unkai-imap.  Both are
+# internal workspace crates — no new external dependencies.
+unkai-imap.workspace = true
+unkai-smtp.workspace = true
+# The groupware tools (#441): calendar reads/writes + free-busy,
+# contact search/create, Talk rooms, and the meeting-invite
+# composite.  All internal workspace crates — no new external
+# dependencies.
+unkai-caldav.workspace = true
+unkai-carddav.workspace = true
+unkai-nextcloud.workspace = true
+# Fresh UIDs for events/contacts and local-source etags — same
+# workspace version the Tauri layer uses.
+uuid.workspace = true
+# Timestamp parameters (RFC 3339) and the invite card's date line.
+# Was dev-only before #441.
+chrono.workspace = true
+rmcp.workspace = true
+axum.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+# CancellationToken for clean server shutdown when the master
+# toggle flips off.  Already in the workspace tree (unkai-imap
+# uses the `compat` half); here we only need the default `sync`
+# surface.
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# BoxFuture for the type-erased tool handlers in the registry —
+# same workspace version the protocol crates already use.
+futures.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+# Token generation: 32 CSPRNG bytes → base64url.  Both crates are
+# already workspace deps (SQLCipher master key / keychain blobs).
+getrandom.workspace = true
+base64.workspace = true
+keyring.workspace = true
+
+[dev-dependencies]
+# Plain HTTP client for the integration tests that poke the
+# running server (auth rejection, Host/Origin validation, locked
+# vault).  Workspace version, rustls-only feature set.
+reqwest.workspace = true

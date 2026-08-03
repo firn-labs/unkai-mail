@@ -23,25 +23,28 @@ use unkai_caldav::{
     create_calendar as caldav_create_calendar, create_event as caldav_create_event,
     create_task as caldav_create_task, delete_calendar as caldav_delete_calendar,
     delete_event as caldav_delete_event, delete_task as caldav_delete_task,
-    list_calendars as caldav_list_calendars, list_task_lists as caldav_list_task_lists,
+    list_calendars_at as caldav_list_calendars_at, list_task_lists as caldav_list_task_lists,
     nc_principal_home as caldav_nc_principal_home,
     probe_calendar_writable as caldav_probe_writable, query_free_busy as caldav_query_free_busy,
-    sync_calendar as caldav_sync_calendar, sync_tasks as caldav_sync_tasks,
-    update_calendar as caldav_update_calendar, update_event as caldav_update_event,
-    update_task as caldav_update_task,
+    resolve_calendar_home as caldav_resolve_calendar_home, sync_calendar as caldav_sync_calendar,
+    sync_tasks as caldav_sync_tasks, update_calendar as caldav_update_calendar,
+    update_event as caldav_update_event, update_task as caldav_update_task,
 };
 use unkai_carddav::{
     Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
-    delete_contact as carddav_delete_contact, list_addressbooks, sync_addressbook,
+    delete_contact as carddav_delete_contact, list_addressbooks_at,
+    resolve_addressbook_home as carddav_resolve_addressbook_home, sync_addressbook,
     update_contact as carddav_update_contact,
 };
 use unkai_core::UnkaiError;
 use unkai_core::models::{
-    Account, AppSettings, CalendarEvent, Contact, CustomTheme, Email, EmailEnvelope, EventAttendee,
-    EventReminder, Folder, NextcloudAccount, OutgoingEmail, Task, TaskList,
+    Account, AppSettings, CalendarEvent, Contact, CustomTheme, DavSourceKind, Email, EmailEnvelope,
+    EventAttendee, EventReminder, Folder, NextcloudAccount, NextcloudCapabilities, OutgoingEmail,
+    Task, TaskList,
 };
 use unkai_imap::ImapClient;
 use unkai_jmap::JmapClient;
+use unkai_mcp::{McpServer, McpServerStatus};
 use unkai_nextcloud::{
     FileEntry, LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
 };
@@ -49,7 +52,7 @@ use unkai_smtp::{SmtpClient, build_outgoing_message};
 use unkai_store::cache::{
     CalendarEventRow, CalendarEventServerHandle, CalendarRow, ContactRow, ContactServerHandle,
     PgpKeySource, PgpPublicKeyRow, SearchFilters, SearchHit, SearchScope, SmimeCertRow,
-    SmimeCertSource, SyncState,
+    SmimeCertSource, SyncState, parse_date_period,
 };
 use unkai_store::{
     Cache, account_store, app_settings, credentials, link_check, nextcloud_store, settings_bundle,
@@ -186,8 +189,56 @@ fn get_notification_icon_path(state: State<'_, NotificationIconPath>) -> String 
     state.0.to_string_lossy().into_owned()
 }
 
-/// Linux-only: send a desktop notification through libnotify with
-/// the `DesktopEntry` + `Category` hints set, so the notification
+/// `notification-clicked` event payload (#415): the identity
+/// triple of the message a clicked notification refers to.  The
+/// frontend routes it through the same in-view open path the Notes
+/// `mail://` deep-link uses.  Window focus happens on the Rust
+/// side (`show_main_window`) before the event is emitted, because
+/// JS `setFocus()` from a background window is unreliable on
+/// Windows (`SetForegroundWindow` lock).
+#[cfg(any(target_os = "linux", windows))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationClickPayload {
+    account_id: String,
+    folder: String,
+    uid: u32,
+}
+
+/// Assemble the optional deep-link target from the three optional
+/// IPC args (#415).  All-or-nothing: a notification either
+/// references a concrete message (new-mail and reminder toasts) or
+/// it's informational (burst summaries) and clicking it does
+/// nothing.
+#[cfg(any(target_os = "linux", windows))]
+fn notification_click_target(
+    account_id: Option<String>,
+    folder: Option<String>,
+    uid: Option<u32>,
+) -> Option<NotificationClickPayload> {
+    match (account_id, folder, uid) {
+        (Some(account_id), Some(folder), Some(uid)) => Some(NotificationClickPayload {
+            account_id,
+            folder,
+            uid,
+        }),
+        _ => None,
+    }
+}
+
+/// Focus the main window and tell the frontend which message the
+/// clicked notification referred to (#415).  Shared by the Linux
+/// action handler and the Windows toast-activation callback.
+#[cfg(any(target_os = "linux", windows))]
+fn handle_notification_click(app: &AppHandle, payload: &NotificationClickPayload) {
+    let _ = show_main_window(app);
+    if let Err(e) = app.emit("notification-clicked", payload) {
+        tracing::warn!("failed to emit notification-clicked event: {e}");
+    }
+}
+
+/// Linux: send a desktop notification through libnotify with the
+/// `DesktopEntry` + `Category` hints set, so the notification
 /// daemon (GNOME Shell / KDE Plasma / mako / dunst) tracks it under
 /// our app identity and keeps it in its notification center.
 ///
@@ -197,17 +248,28 @@ fn get_notification_icon_path(state: State<'_, NotificationIconPath>) -> String 
 /// notification history. Wrapping the builder ourselves with the
 /// hints set is enough to make them persist.
 ///
+/// #415: when the caller identifies a message (`account_id` +
+/// `folder` + `uid`), the notification carries a default action
+/// and a detached thread waits for the daemon's click callback —
+/// clicking the toast then focuses the main window and deep-links
+/// to that message via the `notification-clicked` event.
+///
 /// Returns `Ok(true)` when the call succeeded so the JS side can
 /// fall back to the regular plugin if anything goes wrong (e.g.
 /// no notification daemon running).
 #[cfg(target_os = "linux")]
 #[tauri::command]
 fn send_native_notification(
+    app: AppHandle,
     title: String,
     body: String,
+    account_id: Option<String>,
+    folder: Option<String>,
+    uid: Option<u32>,
     icon: State<'_, NotificationIconPath>,
 ) -> Result<bool, UnkaiError> {
     use notify_rust::{Hint, Notification};
+    let target = notification_click_target(account_id, folder, uid);
     let mut n = Notification::new();
     n.summary(&title)
         .body(&body)
@@ -218,18 +280,91 @@ fn send_native_notification(
     if !icon_path.is_empty() {
         n.icon(&icon_path);
     }
-    n.show()
-        .map(|_| true)
-        .map_err(|e| UnkaiError::Other(format!("notify-rust failed: {e}")))
+    if target.is_some() {
+        // "default" is the reserved XDG action id daemons fire when
+        // the user clicks the notification body itself — no visible
+        // button is rendered for it.  Daemons without action support
+        // simply never invoke it; the toast still shows.
+        n.action("default", "Open");
+    }
+    let handle = n
+        .show()
+        .map_err(|e| UnkaiError::Other(format!("notify-rust failed: {e}")))?;
+    if let Some(payload) = target {
+        // `wait_for_action` parks until the notification is
+        // activated or closed — one short-lived OS thread per live
+        // toast is fine at desktop notification volumes.
+        std::thread::spawn(move || {
+            handle.wait_for_action(move |action| {
+                if action == "default" {
+                    handle_notification_click(&app, &payload);
+                }
+            });
+        });
+    }
+    Ok(true)
 }
 
-/// Stub on non-Linux platforms — the JS side is expected to fall
-/// back to `sendNotification` from the Tauri plugin when this
-/// returns `Ok(false)`. Keeps the JS branch code platform-agnostic
-/// without needing to ask the OS layer about the platform.
-#[cfg(not(target_os = "linux"))]
+/// Windows: send the toast through WinRT directly (the same
+/// backend the notification plugin uses underneath) so we can
+/// attach an activation callback — the plugin exposes no desktop
+/// click event, and without the callback a clicked toast does
+/// nothing (#415).  The explicit AUMID matches the one
+/// `set_app_user_model_id` registers at process startup, so toasts
+/// attribute to "Unkai Mail" either way.
+///
+/// Returns `Ok(false)` when the WinRT call fails so the JS side
+/// falls back to the plugin — the toast still shows, only the
+/// click deep-link is lost.
+#[cfg(windows)]
 #[tauri::command]
-fn send_native_notification(_title: String, _body: String) -> Result<bool, UnkaiError> {
+fn send_native_notification(
+    app: AppHandle,
+    title: String,
+    body: String,
+    account_id: Option<String>,
+    folder: Option<String>,
+    uid: Option<u32>,
+    icon: State<'_, NotificationIconPath>,
+) -> Result<bool, UnkaiError> {
+    use tauri_winrt_notification::{IconCrop, Toast};
+
+    let target = notification_click_target(account_id, folder, uid);
+    let mut toast = Toast::new("com.unkai.mail").title(&title).text1(&body);
+    if !icon.0.as_os_str().is_empty() {
+        toast = toast.icon(&icon.0, IconCrop::Square, "Unkai Mail");
+    }
+    if let Some(payload) = target {
+        toast = toast.on_activated(move |_action| {
+            handle_notification_click(&app, &payload);
+            Ok(())
+        });
+    }
+    match toast.show() {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            tracing::warn!("winrt toast failed, falling back to the plugin: {e}");
+            Ok(false)
+        }
+    }
+}
+
+/// Stub on the remaining desktop platform (macOS) — the JS side
+/// falls back to `sendNotification` from the Tauri plugin when
+/// this returns `Ok(false)`.  Click deep-linking (#415) isn't
+/// wired there yet: the plugin exposes no desktop click event and
+/// the OS-level notification delegate it would take is a
+/// follow-up.  The unused message args keep the IPC payload shape
+/// identical across platforms.
+#[cfg(not(any(target_os = "linux", windows)))]
+#[tauri::command]
+fn send_native_notification(
+    _title: String,
+    _body: String,
+    _account_id: Option<String>,
+    _folder: Option<String>,
+    _uid: Option<u32>,
+) -> Result<bool, UnkaiError> {
     Ok(false)
 }
 
@@ -414,6 +549,13 @@ async fn discover_account_settings(
     }
 }
 
+/// The hardcoded provider table for the wizard's pick-list (#413).
+/// Pure data, no I/O — safe to call any time.
+#[tauri::command]
+fn list_provider_presets() -> Vec<unkai_discovery::ProviderPreset> {
+    unkai_discovery::presets::all()
+}
+
 /// One cert in a probed chain — DER bytes plus its SHA-256
 /// fingerprint formatted for display. The frontend uses `der` to
 /// build a `TrustedCert` entry and `sha256` to render the
@@ -575,6 +717,9 @@ async fn poll_nextcloud_login(
         // sync hits the server with the same fingerprint pinning.
         // Empty by default for the public-CA case (#253).
         trusted_certs: trust_setup,
+        kind: unkai_core::models::DavSourceKind::Nextcloud,
+        carddav_home: None,
+        caldav_home: None,
     };
     nextcloud_store::upsert_account(global_cache()?, account.clone())?;
     Ok(Some(account))
@@ -597,6 +742,11 @@ fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, UnkaiError> {
 #[tauri::command]
 async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccount, UnkaiError> {
     let mut account = load_nextcloud_account(&nc_id)?;
+    // DAV/local sources have no OCS capabilities endpoint (#413) —
+    // their synthetic snapshot was fixed at add time.
+    if !account.is_nextcloud() {
+        return Ok(account);
+    }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     match fetch_capabilities(
         &account.server_url,
@@ -630,6 +780,11 @@ async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccoun
 #[tauri::command]
 async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
+    // No OCS profile on DAV/local sources (#413) — callers fall
+    // back to the first mail account's address.
+    if !account.is_nextcloud() {
+        return Ok(None);
+    }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     match unkai_nextcloud::user::fetch_current_user(
         &account.server_url,
@@ -683,7 +838,12 @@ fn update_nextcloud_account_trusted_certs(
 /// block removal.
 #[tauri::command]
 fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    credentials::delete_nextcloud_password(&id)?;
+    // Best-effort: local-only sources (#413) never had a keychain
+    // entry, and a missing entry shouldn't block removing an
+    // otherwise-dead account record either way.
+    if let Err(e) = credentials::delete_nextcloud_password(&id) {
+        tracing::warn!("failed to delete keychain entry for '{id}' (continuing): {e}");
+    }
     if let Err(e) = cache.wipe_nextcloud_contacts(&id) {
         tracing::warn!("failed to wipe contacts for NC account '{id}': {e}");
     }
@@ -695,6 +855,183 @@ fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), U
     }
     nextcloud_store::remove_account(&cache, &id)
 }
+
+// ── Separate CardDAV/CalDAV sources + local store (#413) ────────
+//
+// Contacts and calendars no longer have to come from the mail
+// account's Nextcloud. `add_dav_account` connects a generic
+// CardDAV/CalDAV server (RFC 6764 home discovery, HTTP Basic auth,
+// app password in the keychain); `add_local_dav_account` registers a
+// source with no remote at all. Both reuse the `NextcloudAccount`
+// record + cache keying (see `DavSourceKind`), so every existing
+// sync command and view picks them up without special cases beyond
+// the kind checks.
+
+/// Synthetic capability snapshot for DAV/local sources: only the
+/// contact/calendar bits the user actually enabled, everything
+/// Nextcloud-specific off so no integration icon lights up dead.
+fn dav_capabilities(use_contacts: bool, use_calendars: bool) -> NextcloudCapabilities {
+    NextcloudCapabilities {
+        version: None,
+        talk: false,
+        files: false,
+        caldav: use_calendars,
+        carddav: use_contacts,
+        office: false,
+        notes: false,
+        tasks: false,
+    }
+}
+
+/// Connect a generic CardDAV/CalDAV server (#413).
+///
+/// Resolves the collection homes up front (RFC 6764 well-known →
+/// principal → home-set, with sensible fallbacks for pasted DAV
+/// paths) so a bad URL or password fails *here*, in the setup UI,
+/// instead of silently on the first background sync. The password
+/// goes to the OS keychain under the same service Nextcloud app
+/// passwords use, keyed by the new account id.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
+async fn add_dav_account(
+    display_name: String,
+    server_url: String,
+    username: String,
+    password: String,
+    use_contacts: bool,
+    use_calendars: bool,
+    trusted_certs: Option<Vec<unkai_core::models::TrustedCert>>,
+    cache: State<'_, Cache>,
+) -> Result<NextcloudAccount, UnkaiError> {
+    if !use_contacts && !use_calendars {
+        return Err(UnkaiError::Other(
+            "enable at least one of contacts or calendars".into(),
+        ));
+    }
+    let server = server_url.trim().trim_end_matches('/').to_string();
+    if server.is_empty() {
+        return Err(UnkaiError::Other("server URL must not be empty".into()));
+    }
+    // Tolerate a bare hostname the same way the Nextcloud connect
+    // card does.
+    let server = if server.starts_with("http://") || server.starts_with("https://") {
+        server
+    } else {
+        format!("https://{server}")
+    };
+    let trust = trusted_certs.unwrap_or_default();
+
+    // The two resolution ladders are independent — run them
+    // concurrently so the wizard spinner lasts one discovery chain,
+    // not the sum of both.
+    let (carddav_home, caldav_home) = tokio::join!(
+        async {
+            if use_contacts {
+                carddav_resolve_addressbook_home(&server, &username, &password, &trust)
+                    .await
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        },
+        async {
+            if use_calendars {
+                caldav_resolve_calendar_home(&server, &username, &password, &trust)
+                    .await
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+    );
+    let carddav_home = carddav_home?;
+    let caldav_home = caldav_home?;
+
+    // `#dav` suffix keeps the id from colliding with a Nextcloud
+    // connection to the same server/user (their id is `server#user`).
+    let id = format!("{server}#{username}#dav");
+    credentials::store_nextcloud_password(&id, &password)?;
+
+    let account = NextcloudAccount {
+        id,
+        server_url: server,
+        username,
+        display_name: Some(display_name),
+        capabilities: Some(dav_capabilities(use_contacts, use_calendars)),
+        trusted_certs: trust,
+        kind: DavSourceKind::Dav,
+        carddav_home,
+        caldav_home,
+    };
+    nextcloud_store::upsert_account(&cache, account.clone())?;
+    Ok(account)
+}
+
+/// Register a purely local contacts/calendar store (#413) — no
+/// remote, no credentials. Seeds one addressbook and/or calendar so
+/// the views have somewhere to write from the first click.
+#[tauri::command]
+fn add_local_dav_account(
+    display_name: String,
+    use_contacts: bool,
+    use_calendars: bool,
+    cache: State<'_, Cache>,
+) -> Result<NextcloudAccount, UnkaiError> {
+    if !use_contacts && !use_calendars {
+        return Err(UnkaiError::Other(
+            "enable at least one of contacts or calendars".into(),
+        ));
+    }
+    let id = format!("local#{}", uuid::Uuid::new_v4());
+
+    let account = NextcloudAccount {
+        id: id.clone(),
+        server_url: String::new(),
+        username: String::new(),
+        display_name: Some(display_name),
+        capabilities: Some(dav_capabilities(use_contacts, use_calendars)),
+        trusted_certs: Vec::new(),
+        kind: DavSourceKind::Local,
+        carddav_home: None,
+        caldav_home: None,
+    };
+    nextcloud_store::upsert_account(&cache, account.clone())?;
+
+    if use_contacts {
+        // An empty delta registers the addressbook's sync-state row,
+        // which is what `list_nextcloud_addressbooks` and the
+        // contacts view key their book lists on.
+        if let Err(e) = cache.apply_contact_delta(
+            &id,
+            LOCAL_ADDRESSBOOK_NAME,
+            Some("Contacts"),
+            &[],
+            &[],
+            None,
+            None,
+        ) {
+            tracing::warn!("failed to seed local addressbook for '{id}': {e}");
+        }
+    }
+    if use_calendars {
+        let row = CalendarRow {
+            path: format!("local://{}/", uuid::Uuid::new_v4()),
+            display_name: "Calendar".to_string(),
+            color: None,
+            ctag: None,
+            hidden: false,
+            muted: false,
+            read_only: false,
+        };
+        if let Err(e) = cache.insert_calendar(&id, &row) {
+            tracing::warn!("failed to seed local calendar for '{id}': {e}");
+        }
+    }
+    Ok(account)
+}
+
+/// Collection name for the single addressbook a local source gets.
+const LOCAL_ADDRESSBOOK_NAME: &str = "local";
 
 /// Open an arbitrary URL in the system's default browser.
 ///
@@ -2018,6 +2355,12 @@ async fn sync_nextcloud_task_lists(
     cache: State<'_, Cache>,
 ) -> Result<Vec<TaskList>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
+    // Task lists are a Nextcloud-app feature (#413) — DAV/local
+    // sources never advertise the capability, so return empty
+    // rather than probing a layout that doesn't exist.
+    if !account.is_nextcloud() {
+        return Ok(Vec::new());
+    }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let lists = caldav_list_task_lists(
         &nc_id,
@@ -2058,6 +2401,10 @@ async fn sync_nextcloud_tasks(
     cache: State<'_, Cache>,
 ) -> Result<Vec<Task>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
+    // See sync_nextcloud_task_lists — no Tasks app outside Nextcloud.
+    if !account.is_nextcloud() {
+        return cache.list_tasks_for_account(&nc_id).map_err(Into::into);
+    }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let cached = cache
         .get_task_list(&list_id)?
@@ -2394,10 +2741,24 @@ async fn sync_nextcloud_contacts(
         .into_iter()
         .find(|a| a.id == nc_id)
         .ok_or_else(|| UnkaiError::Other(format!("no Nextcloud account with id '{nc_id}'")))?;
+
+    let mut report = SyncContactsReport {
+        nc_account_id: nc_id.clone(),
+        books_synced: 0,
+        upserted: 0,
+        deleted: 0,
+        errors: Vec::new(),
+    };
+
+    // A local-only source has nothing to sync with (#413) — the
+    // cache *is* the source of truth. Empty report, no error.
+    if account.is_local() {
+        return Ok(report);
+    }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
-    let books = list_addressbooks(
-        &account.server_url,
+    let books = list_addressbooks_at(
+        &carddav_home_of(&account),
         &account.username,
         &app_password,
         &account.trusted_certs,
@@ -2409,14 +2770,6 @@ async fn sync_nextcloud_contacts(
         nc_id
     );
 
-    let mut report = SyncContactsReport {
-        nc_account_id: nc_id.clone(),
-        books_synced: 0,
-        upserted: 0,
-        deleted: 0,
-        errors: Vec::new(),
-    };
-
     for book in books {
         // Prior token (if any) makes the REPORT incremental; missing
         // state means first sync and the CardDAV layer handles that.
@@ -2426,8 +2779,12 @@ async fn sync_nextcloud_contacts(
             .flatten()
             .and_then(|s| s.sync_token);
 
+        // Base for resolving hrefs in the sync response. For a
+        // generic DAV source the typed server URL may carry a path
+        // (e.g. https://host/dav.php), so use the collection's own
+        // origin; for Nextcloud the server URL already is an origin.
         let delta = match sync_addressbook(
-            &account.server_url,
+            &url_origin(&book.path),
             &book.path,
             &account.username,
             &app_password,
@@ -3142,22 +3499,12 @@ async fn create_contact(
     cache: State<'_, Cache>,
 ) -> Result<Contact, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let parsed = input_to_parsed(&uid, &input);
     let vcard = build_vcard(&parsed);
 
-    let outcome = carddav_create_contact(
-        &account.server_url,
-        &addressbook_url,
-        &account.username,
-        &app_password,
-        &uid,
-        &vcard,
-        &account.trusted_certs,
-    )
-    .await?;
+    let outcome = dav_create_contact_for(&account, &addressbook_url, &uid, &vcard).await?;
 
     let row = parsed_to_row(&outcome.href, &outcome.etag, &uid, &parsed, vcard);
     cache
@@ -3179,7 +3526,6 @@ async fn update_contact(
 ) -> Result<Contact, UnkaiError> {
     let handle = load_contact_handle(&cache, &contact_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
     // Merge the form fields over the existing parsed vCard so fields
     // the edit form doesn't surface (addresses, birthday, urls, note,
@@ -3303,15 +3649,7 @@ async fn update_contact(
     }
     let vcard = build_vcard(&parsed);
 
-    let outcome = carddav_update_contact(
-        &handle.href,
-        &account.username,
-        &app_password,
-        &handle.etag,
-        &vcard,
-        &account.trusted_certs,
-    )
-    .await?;
+    let outcome = dav_update_contact_for(&account, &handle.href, &handle.etag, &vcard).await?;
 
     let row = parsed_to_row(
         &outcome.href,
@@ -3339,16 +3677,8 @@ async fn update_contact(
 async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     let handle = load_contact_handle(&cache, &contact_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
-    carddav_delete_contact(
-        &handle.href,
-        &account.username,
-        &app_password,
-        &handle.etag,
-        &account.trusted_certs,
-    )
-    .await?;
+    dav_delete_contact_for(&account, &handle.href, &handle.etag).await?;
 
     cache
         .delete_contact_by_id(&contact_id)
@@ -3571,7 +3901,6 @@ where
 {
     let handle = load_contact_handle(cache, contact_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
     let mut parsed = match unkai_carddav::parse_vcard(&handle.vcard_raw) {
         Ok(p) => p,
         Err(_) => ParsedVcard {
@@ -3585,15 +3914,7 @@ where
         return Ok(());
     }
     let vcard = build_vcard(&parsed);
-    let outcome = carddav_update_contact(
-        &handle.href,
-        &account.username,
-        &app_password,
-        &handle.etag,
-        &vcard,
-        &account.trusted_certs,
-    )
-    .await?;
+    let outcome = dav_update_contact_for(&account, &handle.href, &handle.etag, &vcard).await?;
     let row = parsed_to_row(
         &outcome.href,
         &outcome.etag,
@@ -3921,7 +4242,6 @@ async fn create_contact_group(
     cache: State<'_, Cache>,
 ) -> Result<ContactGroupView, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let parsed = ParsedVcard {
@@ -3948,16 +4268,7 @@ async fn create_contact_group(
         ..Default::default()
     };
     let vcard = build_vcard(&parsed);
-    let outcome = carddav_create_contact(
-        &account.server_url,
-        &addressbook_url,
-        &account.username,
-        &app_password,
-        &uid,
-        &vcard,
-        &account.trusted_certs,
-    )
-    .await?;
+    let outcome = dav_create_contact_for(&account, &addressbook_url, &uid, &vcard).await?;
     let row = parsed_to_row(&outcome.href, &outcome.etag, &uid, &parsed, vcard);
     cache
         .upsert_single_contact(&nc_id, &addressbook_name, &row)
@@ -3987,7 +4298,6 @@ async fn update_contact_group(
 ) -> Result<ContactGroupView, UnkaiError> {
     let handle = load_contact_handle(&cache, &group_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
     let mut parsed = match unkai_carddav::parse_vcard(&handle.vcard_raw) {
         Ok(p) => p,
@@ -4014,15 +4324,7 @@ async fn update_contact_group(
             .collect();
     }
     let vcard = build_vcard(&parsed);
-    let outcome = carddav_update_contact(
-        &handle.href,
-        &account.username,
-        &app_password,
-        &handle.etag,
-        &vcard,
-        &account.trusted_certs,
-    )
-    .await?;
+    let outcome = dav_update_contact_for(&account, &handle.href, &handle.etag, &vcard).await?;
     let row = parsed_to_row(
         &outcome.href,
         &outcome.etag,
@@ -4066,15 +4368,7 @@ async fn update_contact_group(
 async fn delete_contact_group(group_id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     let handle = load_contact_handle(&cache, &group_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
-    carddav_delete_contact(
-        &handle.href,
-        &account.username,
-        &app_password,
-        &handle.etag,
-        &account.trusted_certs,
-    )
-    .await?;
+    dav_delete_contact_for(&account, &handle.href, &handle.etag).await?;
     cache
         .delete_contact_by_id(&group_id)
         .map_err(UnkaiError::from)?;
@@ -4379,9 +4673,18 @@ struct AddressbookSummary {
 #[tauri::command]
 async fn list_nextcloud_addressbooks(nc_id: String) -> Result<Vec<AddressbookSummary>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
+    // A local source has exactly the one addressbook seeded at add
+    // time (#413) — nothing to probe.
+    if account.is_local() {
+        return Ok(vec![AddressbookSummary {
+            path: format!("local://{nc_id}/{LOCAL_ADDRESSBOOK_NAME}"),
+            name: LOCAL_ADDRESSBOOK_NAME.to_string(),
+            display_name: Some("Contacts".to_string()),
+        }]);
+    }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let books: Vec<Addressbook> = list_addressbooks(
-        &account.server_url,
+    let books: Vec<Addressbook> = list_addressbooks_at(
+        &carddav_home_of(&account),
         &account.username,
         &app_password,
         &account.trusted_certs,
@@ -4462,9 +4765,28 @@ struct SyncCalendarsReport {
 #[tauri::command]
 async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
+    // Local sources: the cache list *is* the calendar list (#413).
+    if account.is_local() {
+        return global_cache().and_then(|cache| {
+            Ok(cache
+                .list_calendars(&nc_id)?
+                .into_iter()
+                .map(|c| CalendarSummary {
+                    id: c.id,
+                    nextcloud_account_id: c.nextcloud_account_id,
+                    display_name: c.display_name,
+                    color: c.color,
+                    last_synced_at: c.last_synced_at,
+                    hidden: c.hidden,
+                    muted: c.muted,
+                    read_only: c.read_only,
+                })
+                .collect())
+        });
+    }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let calendars: Vec<CaldavCalendar> = caldav_list_calendars(
-        &account.server_url,
+    let calendars: Vec<CaldavCalendar> = caldav_list_calendars_at(
+        &caldav_home_of(&account),
         &account.username,
         &app_password,
         &account.trusted_certs,
@@ -4514,11 +4836,25 @@ async fn sync_nextcloud_calendars(
     cache: State<'_, Cache>,
 ) -> Result<SyncCalendarsReport, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
+
+    // A local-only source has nothing to sync with (#413) — the
+    // cache *is* the source of truth. Empty report, no error.
+    if account.is_local() {
+        return Ok(SyncCalendarsReport {
+            nc_account_id: nc_id,
+            calendars_synced: 0,
+            upserted: 0,
+            deleted: 0,
+            errors: Vec::new(),
+        });
+    }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     // ── Phase 1: discovery + reconcile the calendar list ────────
-    let mut server_calendars = caldav_list_calendars(
-        &account.server_url,
+    // Generic DAV sources carry an explicit (RFC 6764-resolved)
+    // calendar home; Nextcloud derives it from the server layout.
+    let mut server_calendars = caldav_list_calendars_at(
+        &caldav_home_of(&account),
         &account.username,
         &app_password,
         &account.trusted_certs,
@@ -4636,8 +4972,11 @@ async fn sync_nextcloud_calendars(
             .flatten()
             .and_then(|s| s.sync_token);
 
+        // Origin of the collection itself — see the CardDAV twin for
+        // why this isn't `account.server_url` (generic DAV base URLs
+        // can carry a path).
         let delta = match caldav_sync_calendar(
-            &account.server_url,
+            &url_origin(&cal.path),
             &cal.path,
             &account.username,
             &app_password,
@@ -4753,22 +5092,26 @@ async fn create_nextcloud_calendar(
     cache: State<'_, Cache>,
 ) -> Result<CalendarSummary, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
-    let server = account.server_url.trim_end_matches('/');
-    let home = format!("{server}/remote.php/dav/calendars/{}/", account.username);
     let slug = uuid::Uuid::new_v4().to_string();
-
-    let url = caldav_create_calendar(
-        &home,
-        &account.username,
-        &app_password,
-        &slug,
-        &display_name,
-        color.as_deref(),
-        &account.trusted_certs,
-    )
-    .await?;
+    let url = if account.is_local() {
+        // No server to MKCALENDAR against (#413) — the synthetic
+        // path only has to be unique per (account, calendar).
+        format!("local://{slug}/")
+    } else {
+        let app_password = credentials::get_nextcloud_password(&nc_id)?;
+        let home = caldav_home_of(&account);
+        caldav_create_calendar(
+            &home,
+            &account.username,
+            &app_password,
+            &slug,
+            &display_name,
+            color.as_deref(),
+            &account.trusted_certs,
+        )
+        .await?
+    };
 
     // Seed the cache so the sidebar paints the new calendar
     // instantly. `ctag` / `sync_token` land on the next full sync —
@@ -4816,17 +5159,21 @@ async fn update_nextcloud_calendar(
         .get_calendar_server_path(&calendar_id)?
         .ok_or_else(|| UnkaiError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
-    caldav_update_calendar(
-        &path,
-        &account.username,
-        &app_password,
-        display_name.as_deref(),
-        color.as_deref(),
-        &account.trusted_certs,
-    )
-    .await?;
+    // Local calendars have no server to PROPPATCH (#413) — the
+    // cache metadata update below is the whole operation.
+    if !account.is_local() {
+        let app_password = credentials::get_nextcloud_password(&nc_id)?;
+        caldav_update_calendar(
+            &path,
+            &account.username,
+            &app_password,
+            display_name.as_deref(),
+            color.as_deref(),
+            &account.trusted_certs,
+        )
+        .await?;
+    }
 
     cache.update_calendar_metadata(&calendar_id, display_name.as_deref(), color.as_deref())?;
     Ok(())
@@ -4845,15 +5192,18 @@ async fn delete_nextcloud_calendar(
         .get_calendar_server_path(&calendar_id)?
         .ok_or_else(|| UnkaiError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
-    caldav_delete_calendar(
-        &path,
-        &account.username,
-        &app_password,
-        &account.trusted_certs,
-    )
-    .await?;
+    // Local calendars only exist in the cache (#413).
+    if !account.is_local() {
+        let app_password = credentials::get_nextcloud_password(&nc_id)?;
+        caldav_delete_calendar(
+            &path,
+            &account.username,
+            &app_password,
+            &account.trusted_certs,
+        )
+        .await?;
+    }
     cache.remove_calendar(&calendar_id)?;
     Ok(())
 }
@@ -5271,29 +5621,26 @@ async fn create_calendar_event(
                 ))
             })?;
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let event = input_to_calendar_event(&uid, &input);
-    let (organizer_email, organizer_name) =
-        resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await;
+    // Local sources can't (and needn't) ask an OCS endpoint who the
+    // organizer is (#413) — fall back to the account-derived line.
+    let (organizer_email, organizer_name) = if account.is_local() {
+        organizer_local(&account)
+    } else {
+        let app_password = credentials::get_nextcloud_password(&nc_id)?;
+        resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await
+    };
     let ics = caldav_build_ics(&event, Some(&organizer_email), organizer_name.as_deref());
 
     // `calendar_path` from the cache is already an absolute URL —
     // `unkai-caldav::discovery` resolves it via `absolute_url` before
     // storing. Don't re-prefix the server origin or the PUT goes to
     // `https://hosthttps://host/...`.
-    let outcome = caldav_create_event(
-        &account.server_url,
-        &calendar_path,
-        &account.username,
-        &app_password,
-        &uid,
-        &ics,
-        &account.trusted_certs,
-    )
-    .await
-    .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
+    let outcome = dav_create_event_for(&account, &calendar_path, &uid, &ics)
+        .await
+        .inspect_err(|e| flag_calendar_read_only_on_forbidden(&app, &cache, &calendar_id, e))?;
 
     let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
     cache.upsert_single_event(&calendar_id, &row)?;
@@ -5320,15 +5667,22 @@ async fn update_calendar_event(
 ) -> Result<CalendarEvent, UnkaiError> {
     let handle = load_event_handle(&cache, &event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
     let mut event = input_to_calendar_event(&handle.uid, &input);
     // Preserve recurrence info the editor doesn't surface — losing it
     // would silently demote a recurring series back to a singleton.
     event.recurrence_id = handle.recurrence_id;
 
-    let (organizer_email, organizer_name) =
-        resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await;
+    // Only a real Nextcloud has the OCS profile endpoint behind
+    // `resolve_organizer` — local sources have no keychain entry at
+    // all, and generic DAV servers would just eat a dead request
+    // (#413).
+    let (organizer_email, organizer_name) = if account.is_nextcloud() {
+        let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+        resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await
+    } else {
+        organizer_local(&account)
+    };
     let ics = caldav_build_ics(&event, Some(&organizer_email), organizer_name.as_deref());
     // Use the etag-aware retry helper so a concurrent edit on
     // another device (NC web, phone) doesn't surface to the
@@ -5444,7 +5798,16 @@ async fn get_attendee_availability(
     cache: State<'_, Cache>,
 ) -> Result<Vec<AttendeeAvailability>, UnkaiError> {
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    // Sharees lookup + free-busy are Nextcloud OCS/scheduling
+    // features. Non-Nextcloud sources (#413) skip every network
+    // step below (the sharees gate keeps `nc_match` at None) and
+    // degrade to the local-cache scan — the empty password is
+    // never sent anywhere.
+    let app_password = if account.is_nextcloud() {
+        credentials::get_nextcloud_password(&nc_id)?
+    } else {
+        String::new()
+    };
 
     // Pre-load the local-cache events once so the per-attendee
     // scan loop doesn't repeat the SQL + expansion work.
@@ -5465,20 +5828,25 @@ async fn get_attendee_availability(
         }
 
         // Step 1: sharees lookup.  Soft-fail (None) on errors so a
-        // single bad lookup doesn't blank out the planner.
-        let nc_match = match unkai_nextcloud::find_user_by_email(
-            &account.server_url,
-            &account.username,
-            &app_password,
-            &email,
-            &account.trusted_certs,
-        )
-        .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::info!("sharees lookup for '{email}' failed: {e}");
-                None
+        // single bad lookup doesn't blank out the planner.  Skipped
+        // entirely for non-Nextcloud sources (#413) — no OCS there.
+        let nc_match = if !account.is_nextcloud() {
+            None
+        } else {
+            match unkai_nextcloud::find_user_by_email(
+                &account.server_url,
+                &account.username,
+                &app_password,
+                &email,
+                &account.trusted_certs,
+            )
+            .await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::info!("sharees lookup for '{email}' failed: {e}");
+                    None
+                }
             }
         };
 
@@ -5791,20 +6159,24 @@ async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result
     };
     let handle = load_event_handle(&cache, &event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
-    // Use the silent variant — without `Schedule-Reply: F`,
-    // Sabre's attendee-side DELETE handler emits a spurious
-    // `METHOD:REPLY;PARTSTAT=DECLINED` to the organiser.  The
-    // organiser already sent CANCEL; mailing them a decline
-    // back is just noise (and confusing).
-    unkai_caldav::delete_event_silent(
-        &handle.href,
-        &account.username,
-        &app_password,
-        &handle.etag,
-        &account.trusted_certs,
-    )
-    .await?;
+    // A cancelled invite living on a local calendar only exists in
+    // the cache — the delete below is the whole dismissal (#413).
+    if !account.is_local() {
+        let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+        // Use the silent variant — without `Schedule-Reply: F`,
+        // Sabre's attendee-side DELETE handler emits a spurious
+        // `METHOD:REPLY;PARTSTAT=DECLINED` to the organiser.  The
+        // organiser already sent CANCEL; mailing them a decline
+        // back is just noise (and confusing).
+        unkai_caldav::delete_event_silent(
+            &handle.href,
+            &account.username,
+            &app_password,
+            &handle.etag,
+            &account.trusted_certs,
+        )
+        .await?;
+    }
     cache.delete_event_by_id(&event_id)?;
     Ok(())
 }
@@ -5991,7 +6363,15 @@ async fn respond_to_invite(
                 ))
             })?;
     let account = load_nextcloud_account(&nc_id)?;
-    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    // Local calendars record the RSVP in the cache but there is no
+    // server-side iTIP broker, so no REPLY email reaches the
+    // organiser (#413). The empty password is never sent anywhere —
+    // every network call below is skipped or no-ops for local.
+    let app_password = if account.is_local() {
+        String::new()
+    } else {
+        credentials::get_nextcloud_password(&nc_id)?
+    };
 
     // Build the candidate-identity list, in priority order:
     //   1. The card's hint (transport-derived, most likely
@@ -6016,19 +6396,25 @@ async fn respond_to_invite(
             candidates.push(h.to_string());
         }
     }
-    let nc_profile_email = match unkai_nextcloud::user::fetch_current_user(
-        &account.server_url,
-        &account.username,
-        &app_password,
-        &account.trusted_certs,
-    )
-    .await
-    {
-        Ok(p) => p.email,
-        Err(e) => {
-            tracing::warn!("RSVP: NC user-profile lookup failed ({e})");
-            None
+    let nc_profile_email = if account.is_nextcloud() {
+        match unkai_nextcloud::user::fetch_current_user(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            &account.trusted_certs,
+        )
+        .await
+        {
+            Ok(p) => p.email,
+            Err(e) => {
+                tracing::warn!("RSVP: NC user-profile lookup failed ({e})");
+                None
+            }
         }
+    } else {
+        // Generic DAV / local sources have no OCS profile endpoint
+        // (#413); the mail-account addresses below cover identity.
+        None
     };
     if let Some(e) = nc_profile_email.as_deref() {
         candidates.push(e.to_string());
@@ -6207,16 +6593,8 @@ async fn respond_to_invite(
                 "NEEDS-ACTION",
                 false,
             );
-            let first = caldav_create_event(
-                &account.server_url,
-                &calendar_path,
-                &account.username,
-                &app_password,
-                &event.id,
-                &step1_body,
-                &account.trusted_certs,
-            )
-            .await?;
+            let first =
+                dav_create_event_for(&account, &calendar_path, &event.id, &step1_body).await?;
 
             // Step 2 — update keyed on the etag we just got, with
             // the user's chosen PARTSTAT + SCHEDULE-FORCE-SEND.
@@ -6228,15 +6606,7 @@ async fn respond_to_invite(
                 &partstat,
                 true,
             );
-            let out = caldav_update_event(
-                &first.href,
-                &account.username,
-                &app_password,
-                &first.etag,
-                &step2_body,
-                &account.trusted_certs,
-            )
-            .await?;
+            let out = dav_update_event_for(&account, &first.href, &first.etag, &step2_body).await?;
             body_put = step2_body;
             out
         }
@@ -6334,7 +6704,6 @@ async fn get_event_partstat_for_user(
 
     // Build the candidate list — same shape as respond_to_invite.
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
-    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
     let mut candidates: Vec<String> = Vec::new();
     if let Some(h) = attendee_hint.as_deref() {
         let h = h.trim();
@@ -6342,13 +6711,18 @@ async fn get_event_partstat_for_user(
             candidates.push(h.to_string());
         }
     }
-    if let Ok(profile) = unkai_nextcloud::user::fetch_current_user(
-        &account.server_url,
-        &account.username,
-        &app_password,
-        &account.trusted_certs,
-    )
-    .await
+    // Profile lookup only exists on a real Nextcloud (#413) — for
+    // DAV/local sources the mail-account addresses below carry the
+    // identity matching.
+    if account.is_nextcloud()
+        && let Ok(app_password) = credentials::get_nextcloud_password(&handle.nextcloud_account_id)
+        && let Ok(profile) = unkai_nextcloud::user::fetch_current_user(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            &account.trusted_certs,
+        )
+        .await
         && let Some(email) = profile.email
     {
         candidates.push(email);
@@ -6398,6 +6772,15 @@ async fn update_event_with_etag_retry(
 ) -> Result<(unkai_caldav::WriteOutcome, CalendarEventServerHandle), UnkaiError> {
     let handle = load_event_handle(cache, event_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    // Local events can't race another client — no etag dance, just
+    // mint the next revision (#413).
+    if account.is_local() {
+        let outcome = unkai_caldav::WriteOutcome {
+            href: handle.href.clone(),
+            etag: uuid::Uuid::new_v4().to_string(),
+        };
+        return Ok((outcome, handle));
+    }
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
     match caldav_update_event(
@@ -6458,6 +6841,11 @@ async fn delete_event_with_etag_retry(
     handle: &CalendarEventServerHandle,
 ) -> Result<(), UnkaiError> {
     let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    // Local events only exist in the cache — the caller's
+    // `delete_event_by_id` is the whole delete (#413).
+    if nc_account.is_local() {
+        return Ok(());
+    }
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
     match caldav_delete_event(
@@ -6518,6 +6906,11 @@ async fn refresh_calendar_cache(
     calendar_path: &str,
 ) -> Result<(), UnkaiError> {
     let account = load_nextcloud_account(nc_id)?;
+    // Nothing to refresh for a local-only source (#413) — the cache
+    // is already the freshest state there is.
+    if account.is_local() {
+        return Ok(());
+    }
     let app_password = credentials::get_nextcloud_password(nc_id)?;
     // Look up the local calendar id by path so we can fetch its
     // sync token and apply the delta against it.
@@ -6536,7 +6929,7 @@ async fn refresh_calendar_cache(
         .flatten()
         .and_then(|s| s.sync_token);
     let delta = caldav_sync_calendar(
-        &account.server_url,
+        &url_origin(&cal.path),
         &cal.path,
         &account.username,
         &app_password,
@@ -6882,6 +7275,191 @@ fn load_contact_handle(cache: &Cache, contact_id: &str) -> Result<ContactServerH
                 "contact '{contact_id}' is not in the local cache — refresh and try again"
             ))
         })
+}
+
+// ── DAV write wrappers with local-store branching (#413) ────────
+//
+// Every contact/event write used to be a bare CardDAV/CalDAV call.
+// A `Local` source has no server, so these wrappers centralise the
+// branch: local writes skip the round-trip and mint a synthetic
+// href (unique per resource, `local://`-shaped so nothing mistakes
+// it for a real URL) plus a fresh etag per revision — the shared
+// cache upsert paths downstream don't change at all. Remote sources
+// (Nextcloud and generic DAV alike) go through the original protocol
+// calls; generic DAV works unmodified because collection paths are
+// stored absolute and auth is plain HTTP Basic.
+
+/// `scheme://host[:port]` of an absolute URL — the base DAV hrefs
+/// get resolved against. Falls back to the input (trimmed) when it
+/// doesn't parse, which matches the old pass-the-server-url
+/// behaviour for Nextcloud origins.
+fn url_origin(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(u) => {
+            let mut origin = format!("{}://{}", u.scheme(), u.host_str().unwrap_or_default());
+            if let Some(port) = u.port() {
+                origin.push_str(&format!(":{port}"));
+            }
+            origin
+        }
+        Err(_) => url.trim_end_matches('/').to_string(),
+    }
+}
+
+/// Resolved CardDAV addressbook-home URL for any remote source
+/// (#413): generic DAV records store the RFC 6764-resolved home;
+/// Nextcloud derives it from the fixed server layout. Never called
+/// for local sources (they have no home).
+fn carddav_home_of(account: &NextcloudAccount) -> String {
+    match &account.carddav_home {
+        Some(home) => home.clone(),
+        None => format!(
+            "{}/remote.php/dav/addressbooks/users/{}/",
+            account.server_url.trim_end_matches('/'),
+            account.username
+        ),
+    }
+}
+
+/// CalDAV twin of [`carddav_home_of`].
+fn caldav_home_of(account: &NextcloudAccount) -> String {
+    match &account.caldav_home {
+        Some(home) => home.clone(),
+        None => format!(
+            "{}/remote.php/dav/calendars/{}/",
+            account.server_url.trim_end_matches('/'),
+            account.username
+        ),
+    }
+}
+
+fn local_vcf_outcome(collection_url: &str, uid: &str) -> unkai_carddav::WriteOutcome {
+    unkai_carddav::WriteOutcome {
+        href: format!("{}/{uid}.vcf", collection_url.trim_end_matches('/')),
+        etag: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+fn local_ics_outcome(collection_url: &str, uid: &str) -> unkai_caldav::WriteOutcome {
+    unkai_caldav::WriteOutcome {
+        href: format!("{}/{uid}.ics", collection_url.trim_end_matches('/')),
+        etag: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+async fn dav_create_contact_for(
+    account: &NextcloudAccount,
+    addressbook_url: &str,
+    uid: &str,
+    vcard: &str,
+) -> Result<unkai_carddav::WriteOutcome, UnkaiError> {
+    if account.is_local() {
+        return Ok(local_vcf_outcome(addressbook_url, uid));
+    }
+    let app_password = credentials::get_nextcloud_password(&account.id)?;
+    carddav_create_contact(
+        &account.server_url,
+        addressbook_url,
+        &account.username,
+        &app_password,
+        uid,
+        vcard,
+        &account.trusted_certs,
+    )
+    .await
+}
+
+async fn dav_update_contact_for(
+    account: &NextcloudAccount,
+    href: &str,
+    etag: &str,
+    vcard: &str,
+) -> Result<unkai_carddav::WriteOutcome, UnkaiError> {
+    if account.is_local() {
+        // Same href, fresh etag — the revision marker only matters
+        // for optimistic concurrency, which a single local store
+        // doesn't need, but keeping it fresh keeps the cache rows
+        // shaped exactly like remote ones.
+        return Ok(unkai_carddav::WriteOutcome {
+            href: href.to_string(),
+            etag: uuid::Uuid::new_v4().to_string(),
+        });
+    }
+    let app_password = credentials::get_nextcloud_password(&account.id)?;
+    carddav_update_contact(
+        href,
+        &account.username,
+        &app_password,
+        etag,
+        vcard,
+        &account.trusted_certs,
+    )
+    .await
+}
+
+async fn dav_delete_contact_for(
+    account: &NextcloudAccount,
+    href: &str,
+    etag: &str,
+) -> Result<(), UnkaiError> {
+    if account.is_local() {
+        return Ok(());
+    }
+    let app_password = credentials::get_nextcloud_password(&account.id)?;
+    carddav_delete_contact(
+        href,
+        &account.username,
+        &app_password,
+        etag,
+        &account.trusted_certs,
+    )
+    .await
+}
+
+async fn dav_create_event_for(
+    account: &NextcloudAccount,
+    calendar_path: &str,
+    uid: &str,
+    ics: &str,
+) -> Result<unkai_caldav::WriteOutcome, UnkaiError> {
+    if account.is_local() {
+        return Ok(local_ics_outcome(calendar_path, uid));
+    }
+    let app_password = credentials::get_nextcloud_password(&account.id)?;
+    caldav_create_event(
+        &account.server_url,
+        calendar_path,
+        &account.username,
+        &app_password,
+        uid,
+        ics,
+        &account.trusted_certs,
+    )
+    .await
+}
+
+async fn dav_update_event_for(
+    account: &NextcloudAccount,
+    href: &str,
+    etag: &str,
+    ics: &str,
+) -> Result<unkai_caldav::WriteOutcome, UnkaiError> {
+    if account.is_local() {
+        return Ok(unkai_caldav::WriteOutcome {
+            href: href.to_string(),
+            etag: uuid::Uuid::new_v4().to_string(),
+        });
+    }
+    let app_password = credentials::get_nextcloud_password(&account.id)?;
+    caldav_update_event(
+        href,
+        &account.username,
+        &app_password,
+        etag,
+        ics,
+        &account.trusted_certs,
+    )
+    .await
 }
 
 // ── IMAP commands ───────────────────────────────────────────────
@@ -7230,6 +7808,36 @@ struct FolderPollOutcome {
     flag_changes: u32,
 }
 
+/// #416: parse raw message bytes as an incoming read receipt and, on
+/// a match, patch the tracked sent-mail request it answers.  Shared
+/// by the IMAP and JMAP poll branches — both hand us the same
+/// wire-format RFC 5322 bytes.  An untracked `Original-Message-ID`
+/// (a receipt for mail sent from another client, or from before the
+/// feature) is logged at debug and dropped: there is nothing local
+/// it could update.
+fn apply_mdn_report(cache: &Cache, account_id: &str, raw: &[u8]) {
+    let Some(report) = unkai_imap::parse_mdn_report(raw) else {
+        return;
+    };
+    match cache.record_receipt_disposition(
+        account_id,
+        &report.original_message_id,
+        &report.disposition,
+        report.reporter.as_deref(),
+    ) {
+        Ok(true) => tracing::info!(
+            "Read receipt recorded for Message-ID '{}' (disposition: {})",
+            report.original_message_id,
+            report.disposition,
+        ),
+        Ok(false) => tracing::debug!(
+            "Ignoring read receipt for untracked Message-ID '{}'",
+            report.original_message_id,
+        ),
+        Err(e) => tracing::warn!("record_receipt_disposition failed: {e}"),
+    }
+}
+
 /// Fetch+cache+reconcile for one (account, folder) pair.
 ///
 /// Shared code path for interactive refreshes and background polling.
@@ -7260,6 +7868,29 @@ async fn poll_folder(
 
         if let Err(e) = cache.upsert_envelopes_for_account(account_id, &envelopes) {
             tracing::warn!("cache.upsert_envelopes (JMAP) failed: {e}");
+        }
+
+        // #416: incoming read receipts.  Same shape as the IMAP
+        // branch below — gated on a pending request existing, scoped
+        // to newly-arrived envelopes only.
+        if cache
+            .has_pending_receipt_requests(account_id)
+            .unwrap_or(false)
+        {
+            let report_uids: Vec<u32> = envelopes
+                .iter()
+                .filter(|e| e.is_mdn_report)
+                .filter(|e| prior_highest.is_some_and(|p| e.uid > p))
+                .map(|e| e.uid)
+                .collect();
+            for uid in report_uids {
+                match client.fetch_raw_message(folder, uid).await {
+                    Ok(raw) => apply_mdn_report(cache, account_id, &raw),
+                    Err(e) => {
+                        tracing::warn!("MDN report fetch (JMAP) UID {uid} failed: {e}");
+                    }
+                }
+            }
         }
 
         let new_envelopes: Vec<EmailEnvelope> = envelopes
@@ -7415,6 +8046,35 @@ async fn poll_folder(
                 background_decrypt_new(&mut client, account_id, folder, &new_encrypted, cache).await
             }
         };
+
+    // #416: incoming read receipts.  A newly-arrived
+    // `multipart/report; report-type=disposition-notification`
+    // envelope is a receipt some recipient sent back — fetch its
+    // body over the still-open session and patch the tracked
+    // sent-mail request it answers.  Gated on the account having at
+    // least one request still pending, so users who never ask for
+    // receipts never pay the extra body fetches; scoped to
+    // strictly-new UIDs with the same `prior_highest` /
+    // rotation-skip semantics the background decrypt uses.
+    if !uidvalidity_rotated
+        && cache
+            .has_pending_receipt_requests(account_id)
+            .unwrap_or(false)
+    {
+        let report_uids: Vec<u32> = batch
+            .envelopes
+            .iter()
+            .filter(|e| e.is_mdn_report)
+            .filter(|e| prior_highest.is_some_and(|p| e.uid > p))
+            .map(|e| e.uid)
+            .collect();
+        for uid in report_uids {
+            match client.fetch_raw_message(folder, uid).await {
+                Ok(raw) => apply_mdn_report(cache, account_id, &raw),
+                Err(e) => tracing::warn!("MDN report fetch UID {uid} failed: {e}"),
+            }
+        }
+    }
 
     let _ = client.logout().await;
 
@@ -7574,6 +8234,91 @@ async fn fetch_message(
     }
 }
 
+/// Resolve an incoming read-receipt request (#416): either send the
+/// RFC 8098 `message/disposition-notification` reply, or record that
+/// the user declined.  Called by MailView's receipt banner (Ask
+/// mode) and fired automatically on message open under the Always
+/// policy (`automatic: true`, which the receipt reports as
+/// `automatic-action` so the sender knows a policy, not the reader,
+/// confirmed).
+///
+/// The receipt goes out via SMTP with a null reverse-path regardless
+/// of the account's retrieval protocol — JMAP's structured
+/// submission object can't express the `multipart/report` shape, and
+/// every account carries SMTP submission settings.
+///
+/// `mdn_handled` is stamped only after the send succeeded, so a
+/// failed send leaves the banner up for a retry.
+#[tauri::command]
+async fn respond_mdn_request(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    decline: bool,
+    automatic: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    if decline {
+        cache.set_mdn_handled(&account_id, &folder, uid, "declined")?;
+        return Ok(());
+    }
+
+    let account = load_account(&cache, &account_id)?;
+    // The banner only renders on an open message, so the body (and
+    // with it the parsed request header) is always cached by now.
+    let email = cache
+        .get_message(&account_id, &folder, uid)?
+        .ok_or_else(|| {
+            UnkaiError::Other("Message is not cached — open it before sending a receipt".into())
+        })?;
+    let to = email
+        .mdn_requested_to
+        .clone()
+        .ok_or_else(|| UnkaiError::Protocol("Message did not request a read receipt".into()))?;
+
+    let from = if account.display_name.is_empty() {
+        account.email.clone()
+    } else {
+        format!("{} <{}>", account.display_name, account.email)
+    };
+    let reply = unkai_smtp::MdnReply {
+        from,
+        to,
+        original_message_id: email.message_id.clone(),
+        original_subject: email.subject.clone(),
+        automatic,
+    };
+
+    let password = credentials::get_imap_password(&account_id)?;
+    let smtp = SmtpClient::connect(
+        &account.smtp_host,
+        account.smtp_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await?;
+    smtp.send_mdn(&reply).await?;
+
+    cache.set_mdn_handled(&account_id, &folder, uid, "sent")?;
+    Ok(())
+}
+
+/// Receipt-tracking state for one sent mail (#416), by Message-ID.
+/// `None` = this mail never asked for a receipt, so MailView renders
+/// no chip.  A row with `disposition: null` renders as "requested,
+/// nothing back yet"; `"displayed"` as read.
+#[tauri::command]
+async fn get_receipt_status(
+    account_id: String,
+    message_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Option<unkai_store::SentReceiptStatus>, UnkaiError> {
+    cache
+        .get_receipt_status(&account_id, &message_id)
+        .map_err(Into::into)
+}
+
 async fn fetch_message_inner(
     account_id: &str,
     folder: &str,
@@ -7582,7 +8327,7 @@ async fn fetch_message_inner(
 ) -> Result<Email, UnkaiError> {
     let account = load_account(cache, account_id)?;
 
-    let email = if uses_jmap(&account) {
+    let mut email = if uses_jmap(&account) {
         let client = connect_jmap(&account).await?;
         client.fetch_message(folder, uid, account_id).await?
     } else {
@@ -7591,6 +8336,32 @@ async fn fetch_message_inner(
         let _ = client.logout().await;
         email
     };
+
+    // #414/#415/#416: pin + priority-override + reminder +
+    // receipt-handled are local-only cache state the wire fetch can't
+    // know — overlay from the cached envelope row so MailView
+    // reflects them even on a fresh network fetch.  (The upsert
+    // below leaves those columns alone either way.)
+    if let Ok(Some((is_pinned, priority_override, reminder_at, mdn_handled))) =
+        cache.envelope_local_state(account_id, folder, uid)
+    {
+        email.is_pinned = is_pinned;
+        email.priority_override = priority_override;
+        email.reminder_at = reminder_at;
+        email.mdn_handled = mdn_handled;
+    }
+
+    // #416: a receipt request pointing back at the reading account's
+    // own address is meaningless (our own sent copy, or a
+    // self-addressed mail) — suppress it so the reading pane never
+    // offers to send a receipt to ourselves.
+    if email
+        .mdn_requested_to
+        .as_deref()
+        .is_some_and(|dnt| addresses_match(dnt, &account.email))
+    {
+        email.mdn_requested_to = None;
+    }
 
     // Single transactional write-through: envelope + body together so the
     // two can never drift on a partial failure.
@@ -7816,6 +8587,19 @@ async fn decrypt_message(
                 if let Ok(Some(env)) = cache.get_message(&account_id, &folder, uid) {
                     decrypted.is_read = env.is_read;
                     decrypted.is_starred = env.is_starred;
+                    // #414: local-only state, same overlay reason.
+                    decrypted.is_pinned = env.is_pinned;
+                    decrypted.priority_override = env.priority_override;
+                    // #416: same overlay + self-request suppression
+                    // as the network path below.
+                    decrypted.mdn_handled = env.mdn_handled;
+                }
+                if decrypted
+                    .mdn_requested_to
+                    .as_deref()
+                    .is_some_and(|dnt| addresses_match(dnt, &account.email))
+                {
+                    decrypted.mdn_requested_to = None;
                 }
                 if let Err(e) = cache.upsert_message(&decrypted) {
                     tracing::warn!("cache.upsert_message after offline decrypt failed: {e}");
@@ -7858,6 +8642,29 @@ async fn decrypt_message(
     // is_read=true when it has no IMAP / JMAP context.
     decrypted.is_read = envelope_email.is_read;
     decrypted.is_starred = envelope_email.is_starred;
+    // #414/#415/#416: pin + priority-override + reminder +
+    // receipt-handled live only in the cache; the server-side
+    // envelope fetch above can't carry them.
+    if let Ok(Some((is_pinned, priority_override, reminder_at, mdn_handled))) =
+        cache.envelope_local_state(&account_id, &folder, uid)
+    {
+        decrypted.is_pinned = is_pinned;
+        decrypted.priority_override = priority_override;
+        decrypted.reminder_at = reminder_at;
+        decrypted.mdn_handled = mdn_handled;
+    }
+
+    // #416: same self-request suppression as `fetch_message_inner` —
+    // our own sent copies carry our own address in
+    // `Disposition-Notification-To`, and a receipt to ourselves is
+    // meaningless.
+    if decrypted
+        .mdn_requested_to
+        .as_deref()
+        .is_some_and(|dnt| addresses_match(dnt, &account.email))
+    {
+        decrypted.mdn_requested_to = None;
+    }
 
     if let Err(e) = cache.upsert_message(&decrypted) {
         tracing::warn!("cache.upsert_message after decrypt failed: {e}");
@@ -8207,6 +9014,100 @@ async fn set_message_read(
     };
     let _ = client.logout().await;
     result
+}
+
+/// Toggle the flag state of a message (#414) — the mail-triage
+/// "mark this as important / needs attention" gesture.
+///
+/// Same shape as [`set_message_read`]: optimistic cache write first
+/// so the UI flips instantly, then the server round-trip propagates
+/// IMAP `\Flagged` / JMAP `$flagged`.  The flag is the one state of
+/// the #414 trio that DOES sync to the server, so other clients see
+/// it; if the network call fails, the next flag-refresh reconcile
+/// pass pulls the cache back in line with the server.
+#[tauri::command]
+async fn set_message_flagged(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    flagged: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    if let Err(e) = cache.mark_envelope_starred(&account_id, &folder, uid, flagged) {
+        tracing::warn!("cache flag update failed: {e}");
+    }
+
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        return client.set_flagged(&folder, uid, flagged).await;
+    }
+
+    let mut client = connect_imap(&account).await?;
+    let result = client.set_flagged(&folder, uid, flagged).await;
+    let _ = client.logout().await;
+    result
+}
+
+/// Toggle the local-only pin state of a message (#414).  Pinned
+/// messages sort above everything else in the mail list.  No server
+/// half — pins have no IMAP/JMAP equivalent, so the cache write IS
+/// the whole operation and this command never touches the network.
+#[tauri::command]
+async fn set_message_pinned(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    pinned: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    cache
+        .mark_envelope_pinned(&account_id, &folder, uid, pinned)
+        .map_err(|e| UnkaiError::Other(format!("cache pin update failed: {e}")))
+}
+
+/// Set or clear the user's priority override on a message (#414).
+/// `priority` is `"high"` / `"normal"` / `"low"`, or `None` to drop
+/// the override and fall back to the sender-declared header value.
+/// Local-only, like the pin.
+#[tauri::command]
+async fn set_message_priority(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    priority: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    // Validate here rather than trusting the IPC payload — the value
+    // lands in a column the list UI renders from directly.
+    if let Some(p) = priority.as_deref()
+        && !matches!(p, "high" | "normal" | "low")
+    {
+        return Err(UnkaiError::Other(format!("invalid priority '{p}'")));
+    }
+    cache
+        .set_envelope_priority(&account_id, &folder, uid, priority.as_deref())
+        .map_err(|e| UnkaiError::Other(format!("cache priority update failed: {e}")))
+}
+
+/// Set or clear a per-message reminder (#415).  `remind_at` is
+/// unix-epoch seconds at which the reminder should fire, or `None`
+/// to remove a pending reminder.  Local-only like the pin — the
+/// cache write IS the whole operation; the background scanner
+/// (`check_message_reminders_inner`) picks the row up once its
+/// time elapses, and the DB persistence is what lets a reminder
+/// survive an app restart.
+#[tauri::command]
+async fn set_message_reminder(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    remind_at: Option<i64>,
+    cache: State<'_, Cache>,
+) -> Result<(), UnkaiError> {
+    cache
+        .set_message_reminder(&account_id, &folder, uid, remind_at)
+        .map_err(|e| UnkaiError::Other(format!("cache reminder update failed: {e}")))
 }
 
 /// Remove a message from a folder.
@@ -9263,6 +10164,28 @@ async fn run_send_pipeline(
         smtp.send(email).await?;
     }
 
+    // #416: the mail asked for a read receipt — remember the sent
+    // Message-ID (lettre stamped it during `build_outgoing_message`)
+    // so an incoming `message/disposition-notification` can be
+    // matched back to this mail and surfaced as receipt status.
+    // Recorded only after the SMTP send succeeded: a failed send
+    // stays in the outbox and will re-run this pipeline with a
+    // *fresh* Message-ID, and a pending row for never-sent mail
+    // would hold the receipt-scan gate open for nothing.
+    if email.request_read_receipt
+        && let Some(mid) = extract_message_id(&raw)
+    {
+        // sent_receipts keys on the bracket-free form (#277).
+        let mid = mid
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string();
+        if let Err(e) = cache.record_receipt_request(&account.id, &mid) {
+            tracing::warn!("record_receipt_request failed: {e}");
+        }
+    }
+
     // Best-effort APPEND to Sent (same behaviour as before #276):
     // the user's mail is already out, a failure here is logged
     // but doesn't roll the send back.
@@ -9624,33 +10547,31 @@ struct SavedDraft {
 
 /// Pull the `Message-ID` header value out of a raw RFC 822 message.
 ///
-/// Returns the bare bracketed form (e.g. `<uuid@host>`) so the
-/// caller can hand it straight to `find_uid_by_message_id`, which
-/// SEARCHes on the literal header value the IMAP server stored.
-///
-/// Tolerant of casing variants (`Message-ID:` / `Message-Id:` /
-/// `message-id:`) since RFC 5322 header field names are case-
-/// insensitive. Folded continuation lines aren't expected for
-/// Message-ID values (lettre emits a single short line) but the
-/// scanner stops at the first match and bails on the first blank
-/// line, which is the conventional header/body separator.
+/// Thin re-export shim: the implementation moved to
+/// `unkai_core::mail_util` (#440) so the MCP `create_draft` tool
+/// can share it.
 fn extract_message_id(raw: &[u8]) -> Option<String> {
-    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
-    let headers = std::str::from_utf8(&raw[..header_end]).ok()?;
-    for line in headers.split("\r\n") {
-        let prefix_len = if line.len() >= "Message-ID:".len()
-            && line[..="Message-ID:".len() - 1].eq_ignore_ascii_case("Message-ID:")
-        {
-            "Message-ID:".len()
-        } else {
-            continue;
-        };
-        let value = line[prefix_len..].trim();
-        if !value.is_empty() {
-            return Some(value.to_string());
-        }
+    unkai_core::mail_util::extract_message_id(raw)
+}
+
+/// Reduce a `Name <addr@host>` mailbox (or a bare address) to the
+/// lowercased `addr@host` alone (#416).  Used to compare header
+/// addresses against the account's own address without caring about
+/// display names, quoting, or case.
+fn bare_address(value: &str) -> String {
+    let v = value.trim();
+    match (v.rfind('<'), v.rfind('>')) {
+        (Some(start), Some(end)) if start < end => v[start + 1..end].trim().to_lowercase(),
+        _ => v.trim_matches('"').trim().to_lowercase(),
     }
-    None
+}
+
+/// Do two mailbox strings name the same address (#416)?  Empty
+/// values never match — a malformed header shouldn't accidentally
+/// equal a malformed account entry.
+fn addresses_match(a: &str, b: &str) -> bool {
+    let (a, b) = (bare_address(a), bare_address(b));
+    !a.is_empty() && a == b
 }
 
 /// Save an in-progress message to the account's IMAP Drafts folder.
@@ -9992,33 +10913,12 @@ async fn expunge_draft_after_send(
 /// Same strategy as `pick_sent_folder`: prefer the IMAP `\Drafts`
 /// special-use attribute, fall back to common English / German / French
 /// names so accounts that haven't been synced yet still land in the
-/// right place.
+/// right place.  The heuristic itself lives in
+/// `unkai_core::mail_util` (#440) so the MCP `create_draft` tool
+/// shares it.
 fn pick_drafts_folder(account_id: &str, cache: &Cache) -> Option<String> {
     let folders = cache.get_folders(account_id).ok()?;
-
-    if let Some(by_attr) = folders.iter().find(|f| {
-        f.attributes
-            .iter()
-            .any(|a| a.eq_ignore_ascii_case("drafts") || a.eq_ignore_ascii_case("\\drafts"))
-    }) {
-        return Some(by_attr.name.clone());
-    }
-
-    const NAME_HINTS: &[&str] = &[
-        "drafts",
-        "draft",
-        "entwürfe",
-        "entwurf",
-        "brouillons",
-        "brouillon",
-    ];
-    folders
-        .iter()
-        .find(|f| {
-            let lower = f.name.to_lowercase();
-            NAME_HINTS.iter().any(|h| lower.contains(h))
-        })
-        .map(|f| f.name.clone())
+    unkai_core::mail_util::pick_drafts_folder(&folders)
 }
 
 /// Pick the most likely Sent folder name from the cached folder list.
@@ -10517,10 +11417,19 @@ async fn search_imap_server_older(
 /// We keep this much simpler than the FTS parser — IMAP SEARCH
 /// doesn't have rich boolean syntax and most servers only support
 /// a small subset of RFC 3501's operators. We emit a conjunction
-/// (implicit AND) of `TEXT`/`FROM`/`TO`/`SUBJECT` terms.
+/// (implicit AND) of `TEXT`/`FROM`/`TO`/`SUBJECT` terms, plus the
+/// RFC 3501 date criteria for the `after:`/`before:`/`on:` operators
+/// (the operand grammar is shared with the FTS parser via
+/// `unkai_store::cache::parse_date_period` so both tiers agree on
+/// what a date means).
+///
+/// `in:`/`folder:` tokens are dropped here — an IMAP SEARCH always
+/// runs inside the folder the frontend selected, so a folder operator
+/// can't be honoured server-side and must not degrade into a TEXT
+/// term that matches nothing.
 ///
 /// The result is a single string like:
-///   `SUBJECT "foo" FROM "alice" TEXT "budget"`
+///   `SUBJECT "foo" FROM "alice" SINCE 01-Jan-2026 TEXT "budget"`
 fn imap_search_criterion(query: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut free_text: Vec<String> = Vec::new();
@@ -10543,6 +11452,45 @@ fn imap_search_criterion(query: &str) -> String {
                 parts.push(format!("{k} \"{}\"", imap_quote(value)));
                 continue;
             }
+            match op.to_ascii_lowercase().as_str() {
+                // RFC 3501: SINCE is on-or-after, BEFORE is strictly-
+                // before — the same semantics the local FTS tier gives
+                // `after:`/`before:`. Both compare the server's internal
+                // date, date-only, so no timezone conversion applies.
+                "after" | "since" => {
+                    if let Some(p) = parse_date_period(value) {
+                        parts.push(format!("SINCE {}", imap_date(p.start)));
+                        continue;
+                    }
+                }
+                "before" => {
+                    if let Some(p) = parse_date_period(value) {
+                        parts.push(format!("BEFORE {}", imap_date(p.start)));
+                        continue;
+                    }
+                }
+                "on" => {
+                    if let Some(p) = parse_date_period(value) {
+                        // A one-day period maps to ON; a month/year
+                        // period becomes the equivalent SINCE+BEFORE
+                        // range (ON only takes a single day).
+                        if p.start.succ_opt() == Some(p.next_start) {
+                            parts.push(format!("ON {}", imap_date(p.start)));
+                        } else {
+                            parts.push(format!(
+                                "SINCE {} BEFORE {}",
+                                imap_date(p.start),
+                                imap_date(p.next_start)
+                            ));
+                        }
+                        continue;
+                    }
+                }
+                // Folder scoping is meaningless within a single-folder
+                // IMAP SEARCH — swallow the token entirely.
+                "in" | "folder" => continue,
+                _ => {}
+            }
         }
         let cleaned = token.trim_matches('"');
         if !cleaned.is_empty() {
@@ -10555,6 +11503,13 @@ fn imap_search_criterion(query: &str) -> String {
     }
 
     parts.join(" ")
+}
+
+/// Format a date as RFC 3501's `date-text` (`1-Jan-2026`). `%b` in
+/// chrono always emits the English month abbreviations RFC 3501
+/// expects, independent of system locale.
+fn imap_date(date: chrono::NaiveDate) -> String {
+    date.format("%-d-%b-%Y").to_string()
 }
 
 /// Split a query into tokens, keeping quoted phrases intact.
@@ -10585,6 +11540,53 @@ fn tokenize_imap_query(input: &str) -> Vec<String> {
 /// Escape `"` and `\` inside an IMAP quoted string (RFC 3501 §4.3).
 fn imap_quote(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod search_criterion_tests {
+    use super::imap_search_criterion;
+
+    #[test]
+    fn maps_field_and_text_terms() {
+        assert_eq!(
+            imap_search_criterion("from:alice budget"),
+            "FROM \"alice\" TEXT \"budget\""
+        );
+    }
+
+    #[test]
+    fn maps_date_operators() {
+        assert_eq!(
+            imap_search_criterion("after:2026-01-05"),
+            "SINCE 5-Jan-2026"
+        );
+        assert_eq!(
+            imap_search_criterion("before:2026-02-01"),
+            "BEFORE 1-Feb-2026"
+        );
+        assert_eq!(imap_search_criterion("on:31.01.2026"), "ON 31-Jan-2026");
+        // Month-long periods become a SINCE+BEFORE range — ON only
+        // accepts a single day.
+        assert_eq!(
+            imap_search_criterion("on:2026-03"),
+            "SINCE 1-Mar-2026 BEFORE 1-Apr-2026"
+        );
+    }
+
+    #[test]
+    fn unparseable_date_degrades_to_text() {
+        assert_eq!(
+            imap_search_criterion("before:lunch"),
+            "TEXT \"before:lunch\""
+        );
+    }
+
+    #[test]
+    fn folder_operator_is_dropped() {
+        // `in:` can't be honoured inside a single-folder SEARCH and
+        // must not turn into a TEXT term that matches nothing.
+        assert_eq!(imap_search_criterion("in:Sent budget"), "TEXT \"budget\"");
+    }
 }
 
 // ── Tray, window lifecycle, and background sync (Issue #16) ────
@@ -11266,6 +12268,91 @@ fn snooze_event_reminder(
         f.retain(|(u, _)| u != &uid);
     }
     Ok(())
+}
+
+// ── Message reminders (#415) ────────────────────────────────────
+//
+// Unlike calendar reminders — whose fire times derive from VALARMs
+// on cached events — a message reminder is a single user-chosen
+// moment persisted straight into the `messages.reminder_at` column.
+// That gives restart-survival for free: the scanner asks the DB
+// "anything elapsed?" on every tick, so a reminder that came due
+// while the app was closed fires (late) on the first tick after
+// the next launch instead of being lost.  No in-memory dedupe
+// state is needed either — firing *clears the column*, which is
+// the dedupe.
+
+/// Tick length for the message-reminder scanner.  Deliberately its
+/// own loop rather than riding `background_sync_loop`: the sync
+/// interval is user-configurable (and sync can be disabled
+/// entirely), but a reminder the user explicitly set should fire
+/// within moments of its chosen time regardless of how mail
+/// polling is configured.  The scan is one indexed SQL query, so a
+/// short fixed tick costs effectively nothing.
+const MESSAGE_REMINDER_TICK_SECS: u64 = 30;
+
+/// `message-reminder` event payload.  camelCase like the other
+/// reminder payloads; carries the same identity triple the
+/// notification deep-link uses plus enough envelope data for the
+/// frontend to word the toast without a cache round-trip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageReminderPayload {
+    account_id: String,
+    folder: String,
+    uid: u32,
+    from: String,
+    subject: String,
+}
+
+/// One scan: emit a `message-reminder` event for every elapsed
+/// reminder, then clear each fired row's `reminder_at`.  Clearing
+/// only happens after a successful emit — if the emit fails the
+/// row stays put and the next tick retries, which errs on the
+/// side of a duplicate toast over a silently lost reminder.
+async fn check_message_reminders_inner(app: &AppHandle) -> Result<(), UnkaiError> {
+    let now = chrono::Utc::now().timestamp();
+    let due = {
+        let cache = app.state::<Cache>();
+        cache
+            .due_message_reminders(now)
+            .map_err(|e| UnkaiError::Other(format!("due_message_reminders failed: {e}")))?
+    };
+    for r in due {
+        let payload = MessageReminderPayload {
+            account_id: r.account_id.clone(),
+            folder: r.folder.clone(),
+            uid: r.uid,
+            from: r.from,
+            subject: r.subject,
+        };
+        if let Err(e) = app.emit("message-reminder", &payload) {
+            tracing::warn!("failed to emit message-reminder event: {e}");
+            continue;
+        }
+        let cache = app.state::<Cache>();
+        if let Err(e) = cache.set_message_reminder(&r.account_id, &r.folder, r.uid, None) {
+            tracing::warn!(
+                "failed to clear fired reminder for {}/{}/{}: {e}",
+                r.account_id,
+                r.folder,
+                r.uid,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Dedicated fixed-cadence loop for message reminders.  Spawned
+/// once at setup, next to `background_sync_loop`.
+async fn message_reminder_loop(app: AppHandle) {
+    tracing::info!("message reminder loop started");
+    loop {
+        tokio::time::sleep(Duration::from_secs(MESSAGE_REMINDER_TICK_SECS)).await;
+        if let Err(e) = check_message_reminders_inner(&app).await {
+            tracing::warn!("check_message_reminders_inner failed: {e}");
+        }
+    }
 }
 
 /// Launch-time message-body prerender (#178).
@@ -12088,11 +13175,100 @@ async fn update_app_settings(
     new_settings: AppSettings,
     settings: State<'_, SharedSettings>,
     notify: State<'_, SettingsSyncNotify>,
+    mcp: State<'_, McpServer>,
 ) -> Result<(), UnkaiError> {
     app_settings::save_settings(&new_settings)?;
     *settings.write().await = new_settings;
     notify.0.notify_one();
+    // The MCP server reads `mcp_enabled` / `mcp_port` from these
+    // settings — reconcile so a toggle flip takes effect
+    // immediately, not on next launch (#438).
+    mcp.reconcile().await;
     Ok(())
+}
+
+// ── MCP server (#438) ──────────────────────────────────────────
+//
+// Token management + status for the AI settings page.  The
+// keychain (`unkai-mail-mcp` service) is the only place the
+// bearer token persists; the running server compares against an
+// in-memory copy, so generate/revoke update both in one step.
+
+/// Generate (or rotate) the MCP bearer token.  Returns the secret
+/// **once** — the frontend shows it a single time and never asks
+/// for it again; afterwards only `mcp_token_status` (a bool) is
+/// available.  Rotating invalidates the previous token instantly.
+#[tauri::command]
+async fn mcp_generate_token(mcp: State<'_, McpServer>) -> Result<String, UnkaiError> {
+    let token = unkai_mcp::auth::generate_token()?;
+    credentials::store_mcp_token(&token)?;
+    mcp.set_token(Some(token.clone())).await;
+    Ok(token)
+}
+
+/// Revoke the MCP bearer token: every connected client is cut off
+/// on its next request.  The server keeps running (if enabled)
+/// but answers 401 until a new token is generated.
+#[tauri::command]
+async fn mcp_revoke_token(mcp: State<'_, McpServer>) -> Result<(), UnkaiError> {
+    credentials::delete_mcp_token()?;
+    mcp.set_token(None).await;
+    Ok(())
+}
+
+/// Whether a bearer token currently exists.  Deliberately a bare
+/// bool — the secret itself is only ever returned by
+/// `mcp_generate_token`.
+#[tauri::command]
+async fn mcp_token_status() -> Result<bool, UnkaiError> {
+    credentials::has_mcp_token()
+}
+
+/// Live server status (running / bound port / endpoint URL /
+/// last start error) for the AI settings page.
+#[tauri::command]
+async fn mcp_server_status(mcp: State<'_, McpServer>) -> Result<McpServerStatus, UnkaiError> {
+    Ok(mcp.status().await)
+}
+
+/// One row of the AI settings page's per-tool toggle list: a
+/// registry descriptor plus the tool's *effective* enablement
+/// (explicit `mcp_tool_enablement` entry, or the class default —
+/// reads on, writes off).  Same snake_case wire shape as the
+/// other MCP views.
+#[derive(Debug, Clone, Serialize)]
+struct McpToolView {
+    id: &'static str,
+    category: &'static str,
+    /// `"read"` or `"write"` — drives the visual grouping and the
+    /// write-tool warning hints in the settings UI.
+    access: &'static str,
+    description: &'static str,
+    enabled: bool,
+}
+
+/// Every MCP tool this build knows about (#439).  The settings
+/// page renders whatever the registry advertises rather than a
+/// hardcoded list, so the tool surfaces landing in #440/#441
+/// appear in the UI without another frontend change.
+#[tauri::command]
+async fn mcp_list_tools(
+    settings: State<'_, SharedSettings>,
+) -> Result<Vec<McpToolView>, UnkaiError> {
+    let settings = settings.read().await;
+    Ok(unkai_mcp::registry::ToolRegistry::builtin()
+        .iter()
+        .map(|tool| McpToolView {
+            id: tool.descriptor.id,
+            category: tool.descriptor.category,
+            access: match tool.descriptor.access {
+                unkai_mcp::registry::ToolAccess::Read => "read",
+                unkai_mcp::registry::ToolAccess::Write => "write",
+            },
+            description: tool.descriptor.description,
+            enabled: unkai_mcp::registry::is_enabled(&settings, &tool.descriptor),
+        })
+        .collect())
 }
 
 // ── Settings backup & sync (#168) ──────────────────────────────
@@ -12170,11 +13346,17 @@ async fn apply_settings_bundle(
     json: String,
     cache: State<'_, Cache>,
     settings: State<'_, SharedSettings>,
+    mcp: State<'_, McpServer>,
 ) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
     let bundle = settings_bundle::parse(&json)?;
     let new_app_settings = bundle.app_settings.clone();
     let local_storage = settings_bundle::apply(&cache, bundle)?;
     *settings.write().await = new_app_settings;
+    // The imported bundle may flip `mcp_enabled` / `mcp_port`
+    // (#438).  Note the bearer token never travels in a bundle —
+    // a restored machine serves 401s until the user generates a
+    // fresh token here.
+    mcp.reconcile().await;
     Ok(local_storage)
 }
 
@@ -14367,6 +15549,18 @@ fn main() {
     let settings = app_settings::load_settings().unwrap_or_default();
     let shared_settings: SharedSettings = Arc::new(RwLock::new(settings));
 
+    // MCP server controller (#438).  Created up front (not in
+    // `.setup()`) so it can borrow clones of `cache` and
+    // `shared_settings` before the builder consumes them.  The
+    // token load is best-effort: a broken keychain shouldn't stop
+    // the app from booting, it just leaves the server answering
+    // 401 until the user re-generates a token.
+    let mcp_token = credentials::get_mcp_token().unwrap_or_else(|e| {
+        tracing::warn!("could not read MCP token from keychain: {e}");
+        None
+    });
+    let mcp_server = McpServer::new(cache.clone(), shared_settings.clone(), mcp_token);
+
     tauri::Builder::default()
         // single-instance MUST come before any plugin that cares
         // about second-launch argv (here: deep-link).  With the
@@ -14407,6 +15601,7 @@ fn main() {
         ))
         .manage(cache)
         .manage(shared_settings)
+        .manage(mcp_server)
         .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
         // Settings backup & sync (#168).  Frontend pushes its
         // localStorage snapshot on every settings change; the
@@ -14731,6 +15926,16 @@ fn main() {
                 background_sync_loop(bg_handle).await;
             });
 
+            // ── Message reminders (#415) ─────────────────────────
+            //
+            // Own fixed-cadence loop, deliberately NOT gated on the
+            // background-sync setting: a reminder the user set must
+            // fire on time even with mail polling turned off.
+            let reminder_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                message_reminder_loop(reminder_handle).await;
+            });
+
             // ── Launch-time prerender (#178) ─────────────────────
             //
             // Warm the message cache for the newest INBOX envelopes
@@ -14793,6 +15998,17 @@ fn main() {
                 urlhaus_refresh_worker(urlhaus_cache, urlhaus_settings).await;
             });
 
+            // MCP server (#438).  One reconcile at boot brings the
+            // listener up if `mcp_enabled` was saved on; afterwards
+            // the `update_app_settings` / `apply_settings_bundle`
+            // commands re-reconcile on every settings change, so no
+            // polling loop is needed.  Same clone-into-spawn shape
+            // as the workers above.
+            let mcp = app.state::<McpServer>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                mcp.reconcile().await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -14805,6 +16021,9 @@ fn main() {
             set_account_password,
             set_folder_icon,
             discover_account_settings,
+            list_provider_presets,
+            add_dav_account,
+            add_local_dav_account,
             probe_server_certificate,
             test_connection,
             fetch_envelopes,
@@ -14825,6 +16044,12 @@ fn main() {
             rename_folder,
             mark_as_read,
             set_message_read,
+            set_message_flagged,
+            set_message_pinned,
+            set_message_priority,
+            set_message_reminder,
+            respond_mdn_request,
+            get_receipt_status,
             send_email,
             list_outbox,
             list_all_outbox,
@@ -14976,6 +16201,11 @@ fn main() {
             // Issue #168: settings backup & sync.
             build_settings_bundle,
             apply_settings_bundle,
+            mcp_generate_token,
+            mcp_revoke_token,
+            mcp_token_status,
+            mcp_server_status,
+            mcp_list_tools,
             get_settings_sync_state,
             set_settings_sync_target,
             notify_settings_changed,

@@ -4,4 +4,4 @@
 //! and sending email messages via [`SmtpClient`].
 
 pub mod client;
-pub use client::{SmtpClient, build_outgoing_message};
+pub use client::{MdnReply, SmtpClient, build_mdn_report_bytes, build_outgoing_message};

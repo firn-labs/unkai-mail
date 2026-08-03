@@ -63,7 +63,9 @@ pub mod vcard;
 pub mod write;
 mod xml_util;
 
-pub use discovery::{Addressbook, list_addressbooks};
+pub use discovery::{
+    Addressbook, list_addressbooks, list_addressbooks_at, resolve_addressbook_home,
+};
 pub use sync::{RawContact, SyncDelta, sync_addressbook};
 pub use vcard::{
     ParsedVcard, VcardAddress, VcardEmail, VcardImpp, VcardPhone, VcardStructuredName, build_vcard,

@@ -471,7 +471,7 @@
     role="presentation"
   >
     <div
-      class="w-[860px] max-w-[95vw] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col"
+      class="w-[860px] max-w-[95vw] max-h-[90vh] glass-float rounded-2xl flex flex-col"
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}
       role="dialog"
@@ -502,9 +502,9 @@
             {@const density = aggregateBusy(day)}
             <button
               type="button"
-              class="rounded-md px-2 py-2 text-xs flex flex-col items-center gap-1 transition border {focused
+              class="rounded-lg px-2 py-2 text-xs flex flex-col items-center gap-1 transition border {focused
                 ? 'border-primary-500 bg-primary-500/10'
-                : 'border-surface-200 dark:border-surface-700 hover:bg-surface-100 dark:hover:bg-surface-800'}"
+                : 'border-surface-200 dark:border-surface-700 hover:bg-primary-500/10'}"
               onclick={() => focusDifferentDay(day)}
             >
               <span class="font-medium">{dayLabelFmt.format(day)}</span>
