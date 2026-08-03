@@ -195,11 +195,11 @@ impl Cache {
         if let Some(f) = &parsed.folder {
             sql.push_str(" AND m.folder = ? COLLATE NOCASE");
             params.push(Box::new(f.clone()));
-        } else if let Some(f) = &scope.folder {
-            if !parsed.folder_any {
-                sql.push_str(" AND m.folder = ?");
-                params.push(Box::new(f.clone()));
-            }
+        } else if let Some(f) = &scope.folder
+            && !parsed.folder_any
+        {
+            sql.push_str(" AND m.folder = ?");
+            params.push(Box::new(f.clone()));
         }
         if filters.unread_only {
             sql.push_str(" AND m.is_read = 0");

@@ -623,11 +623,7 @@ fn x509_name_to_string(name: &X509NameRef) -> String {
     let mut out = String::new();
     for entry in name.entries() {
         let short_name = entry.object().nid().short_name().unwrap_or("?");
-        let value = entry
-            .data()
-            .as_utf8()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|_| "?".to_string());
+        let value = entry.data().to_string().unwrap_or_else(|_| "?".to_string());
         out.push('/');
         out.push_str(short_name);
         out.push('=');
