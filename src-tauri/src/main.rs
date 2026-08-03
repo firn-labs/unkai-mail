@@ -892,6 +892,7 @@ fn dav_capabilities(use_contacts: bool, use_calendars: bool) -> NextcloudCapabil
 /// goes to the OS keychain under the same service Nextcloud app
 /// passwords use, keyed by the new account id.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
 async fn add_dav_account(
     display_name: String,
     server_url: String,

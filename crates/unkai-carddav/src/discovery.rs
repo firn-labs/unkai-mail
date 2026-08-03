@@ -292,12 +292,13 @@ fn extract_nested_href(xml: &str, prop: &str) -> Option<String> {
                 let name = local_name(&s);
                 if name == prop {
                     inside = true;
-                } else if inside && name == "href" {
-                    if let Ok(text) = read_text_until(&mut reader, "href") {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed.to_string());
-                        }
+                } else if inside
+                    && name == "href"
+                    && let Ok(text) = read_text_until(&mut reader, "href")
+                {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
                     }
                 }
             }
