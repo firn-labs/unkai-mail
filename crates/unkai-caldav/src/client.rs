@@ -33,6 +33,27 @@ pub fn build(trusted_certs: &[TrustedCert]) -> Result<Client, UnkaiError> {
         .map_err(|e| UnkaiError::Network(format!("failed to build CalDAV HTTP client: {e}")))
 }
 
+/// Same client as [`build`] but with automatic redirect following
+/// turned off (#413).
+///
+/// reqwest's default policy rewrites a redirected PROPFIND into a
+/// GET (per the usual 301/302/303 browser semantics), which breaks
+/// the RFC 6764 `/.well-known/caldav` bootstrap — those endpoints
+/// answer with a redirect to the real DAV context path and expect
+/// the client to repeat the *same* method there. Discovery follows
+/// the hops manually instead.
+pub fn build_no_redirect(trusted_certs: &[TrustedCert]) -> Result<Client, UnkaiError> {
+    let rustls_config = Arc::unwrap_or_clone(build_client_config(trusted_certs));
+    Client::builder()
+        .timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(15))
+        .user_agent(concat!("Unkai Mail CalDAV/", env!("CARGO_PKG_VERSION")))
+        .use_preconfigured_tls(rustls_config)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| UnkaiError::Network(format!("failed to build CalDAV HTTP client: {e}")))
+}
+
 /// PROPFIND with a given depth and XML body.
 ///
 /// Depth `0` queries the resource itself; `1` queries it and direct

@@ -244,7 +244,7 @@
     aria-label={ariaLabel}
     aria-haspopup="dialog"
     aria-expanded={open}
-    class="input w-full px-3 py-2 text-sm rounded-md text-left flex items-center justify-between gap-2"
+    class="input w-full px-3 py-2 text-sm rounded-lg text-left flex items-center justify-between gap-2"
     onclick={() => (open = !open)}
   >
     <span class={value ? '' : 'text-surface-400'}>
@@ -268,7 +268,7 @@
 
   {#if open}
     <div
-      class="absolute z-50 mt-1 w-[280px] rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg p-3"
+      class="absolute z-50 mt-1 w-[280px] rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg p-3"
       role="dialog"
       aria-label="Pick a date"
     >
@@ -289,20 +289,20 @@
           {#if mode === 'days'}
             <button
               type="button"
-              class="px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
+              class="px-2 py-1 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
               onclick={() => (mode = 'months')}
               aria-label="Pick month"
             >{monthLabelOnly}</button>
             <button
               type="button"
-              class="px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
+              class="px-2 py-1 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
               onclick={() => (mode = 'years')}
               aria-label="Pick year"
             >{yearLabelOnly}</button>
           {:else if mode === 'months'}
             <button
               type="button"
-              class="px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
+              class="px-2 py-1 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-800 text-sm font-medium"
               onclick={() => (mode = 'years')}
               aria-label="Pick year"
             >{yearLabelOnly}</button>
@@ -340,7 +340,7 @@
             {@const isSelected = sameDay(d, selected)}
             <button
               type="button"
-              class="text-sm h-8 rounded-md flex items-center justify-center {isSelected
+              class="text-sm h-8 rounded-lg flex items-center justify-center {isSelected
                 ? 'bg-primary-500 text-white font-semibold'
                 : isToday
                   ? 'border border-primary-500 text-primary-500'
@@ -367,7 +367,7 @@
               view.getFullYear() === selected.getFullYear()}
             <button
               type="button"
-              class="text-sm h-10 rounded-md flex items-center justify-center {isSelected
+              class="text-sm h-10 rounded-lg flex items-center justify-center {isSelected
                 ? 'bg-primary-500 text-white font-semibold'
                 : isToday
                   ? 'border border-primary-500 text-primary-500'
@@ -386,7 +386,7 @@
             {@const isSelected = y === selected.getFullYear()}
             <button
               type="button"
-              class="text-sm h-10 rounded-md flex items-center justify-center {isSelected
+              class="text-sm h-10 rounded-lg flex items-center justify-center {isSelected
                 ? 'bg-primary-500 text-white font-semibold'
                 : isToday
                   ? 'border border-primary-500 text-primary-500'

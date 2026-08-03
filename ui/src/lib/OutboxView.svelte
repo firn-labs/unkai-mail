@@ -353,7 +353,7 @@
            plain fire-and-forget retry). -->
       {#if passphrasePanelOpen}
         <div
-          class="mt-3 rounded-md border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
+          class="mt-3 rounded-lg border border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/30 p-3 flex flex-col gap-2"
         >
           <p class="text-sm text-surface-600 dark:text-surface-400">
             {m.outbox_passphrase_explain()}
@@ -361,7 +361,7 @@
           <div class="flex items-center gap-2">
             <input
               type="password"
-              class="input text-sm px-2 py-1.5 rounded-md flex-1"
+              class="input text-sm px-2 py-1.5 rounded-lg flex-1"
               placeholder={m.outbox_passphrase_input_placeholder()}
               bind:value={passphraseInput}
               disabled={busy}

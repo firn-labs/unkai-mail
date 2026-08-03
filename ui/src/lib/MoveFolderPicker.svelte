@@ -180,7 +180,7 @@
     if (e.target === e.currentTarget) onclose()
   }}
 >
-  <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col w-[420px] max-w-[90vw] max-h-[80vh]">
+  <div class="glass-float rounded-2xl flex flex-col w-[420px] max-w-[90vw] max-h-[80vh]">
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
       <h2 class="text-base font-semibold">Move to folder</h2>
       <button
@@ -193,7 +193,7 @@
     <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700">
       <input
         type="text"
-        class="input w-full text-sm px-2 py-1 rounded-md"
+        class="input w-full text-sm px-2 py-1 rounded-lg"
         placeholder="Filter folders…"
         bind:value={filterText}
       />
@@ -213,10 +213,10 @@
           {@const isCurrent = f.name === currentFolder}
           {@const glyph = folderIcon(f)}
           <button
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
               {isCurrent
                 ? 'bg-surface-200/50 dark:bg-surface-700/50'
-                : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                : 'hover:bg-primary-500/10'}"
             style:padding-left={`${0.75 + depth(f) * 1.25}rem`}
             disabled={isCurrent}
             onclick={() => onPickFolder(f.name)}

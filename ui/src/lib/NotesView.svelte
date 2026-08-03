@@ -31,6 +31,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
   import type { ComposeInitial } from './Compose.svelte'
@@ -184,7 +185,10 @@
 
   async function loadAccounts() {
     try {
-      const list = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      // Nextcloud-app feature — skip generic-DAV / local sources (#413).
+      const list = (
+        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+      ).filter(isNextcloudSource)
       accounts = list
       if (list.length >= 1 && !accountId) {
         accountId = list[0].id
@@ -906,7 +910,7 @@
          Layout mirrors the mail Sidebar (Compose at top, navigation
          tree below) so the two views feel coherent. -->
     <aside
-      class="shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col text-sm"
+      class="shrink-0 border-r glass-panel flex flex-col text-sm"
       use:resizableSidebar={{ key: 'notes.navSidebar', defaultWidth: 224, min: 160, max: 480 }}
     >
       <!-- Primary action — same shape + filled-primary preset as
@@ -1105,7 +1109,7 @@
       {#if accounts.length > 1}
         <div class="px-3 py-1.5 border-b border-surface-200 dark:border-surface-700">
           <select
-            class="select text-xs py-1 px-2 rounded-md w-full"
+            class="select text-xs py-1 px-2 rounded-lg w-full"
             value={accountId}
             onchange={(e) => selectAccount((e.currentTarget as HTMLSelectElement).value)}
           >
@@ -1143,7 +1147,7 @@
                 class="w-full text-left px-4 py-3 transition-colors
                   {selectedId === n.id
                     ? 'bg-primary-500/10'
-                    : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+                    : 'hover:bg-primary-500/10'}"
                 onclick={() => openNote(n)}
               >
                 <div class="flex items-center justify-between mb-1 gap-2">
@@ -1178,7 +1182,7 @@
               >
                 <button
                   type="button"
-                  class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
+                  class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
                   title="Move to folder"
                   aria-label="Move to folder"
                   onclick={(e) => {
@@ -1190,7 +1194,7 @@
                 </button>
                 <button
                   type="button"
-                  class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+                  class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
                   title="Delete"
                   aria-label="Delete"
                   onclick={(e) => {
@@ -1218,7 +1222,7 @@
           {#if open}
             <div class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
               <input
-                class="input flex-1 text-base font-semibold px-3 py-2 rounded-md"
+                class="input flex-1 text-base font-semibold px-3 py-2 rounded-lg"
                 placeholder="Title (optional — derived from the first line if empty)"
                 bind:value={draftTitle}
                 oninput={scheduleSave}
@@ -1297,7 +1301,7 @@
       if (e.target === e.currentTarget) movingNote = null
     }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col w-[420px] max-w-[90vw] max-h-[80vh]">
+    <div class="glass-float rounded-2xl flex flex-col w-[420px] max-w-[90vw] max-h-[80vh]">
       <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
         <h2 class="text-base font-semibold">Move to folder</h2>
         <button
@@ -1310,7 +1314,7 @@
       <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700">
         <input
           type="text"
-          class="input w-full text-sm px-2 py-1 rounded-md"
+          class="input w-full text-sm px-2 py-1 rounded-lg"
           placeholder="Filter folders…"
           bind:value={moveFilter}
         />
@@ -1326,10 +1330,10 @@
           <!-- Uncategorized first; disabled when the note is
                already there so the user can't move-to-self. -->
           <button
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
               {currentCat === ''
                 ? 'bg-surface-200/50 dark:bg-surface-700/50'
-                : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                : 'hover:bg-primary-500/10'}"
             disabled={currentCat === ''}
             onclick={() => pickMoveTarget('')}
             title={currentCat === '' ? 'Already uncategorized' : 'Move to Uncategorized'}
@@ -1350,10 +1354,10 @@
             {#each filteredPaths as path (path)}
               {@const isCurrent = path === currentCat}
               <button
-                class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
+                class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
                   {isCurrent
                     ? 'bg-surface-200/50 dark:bg-surface-700/50'
-                    : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                    : 'hover:bg-primary-500/10'}"
                 disabled={isCurrent}
                 onclick={() => pickMoveTarget(path)}
                 title={isCurrent ? 'Already in this folder' : `Move to ${path}`}
@@ -1376,7 +1380,7 @@
      sidebar's overflow:auto without getting clipped. -->
 {#if folderMenu}
   <div
-    class="fixed z-60 min-w-44 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    class="fixed z-60 min-w-44 rounded-xl glass-float py-1 text-sm"
     style="left: {Math.min(folderMenu.x, window.innerWidth - 200)}px; top: {Math.min(folderMenu.y, window.innerHeight - 80)}px;"
     role="menu"
     tabindex="-1"
@@ -1406,7 +1410,7 @@
       if (e.target === e.currentTarget) cancelRemoveFolder()
     }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-md shadow-xl p-5 max-w-md w-full mx-4 border border-surface-200 dark:border-surface-700">
+    <div class="glass-float rounded-2xl p-5 max-w-md w-full mx-4">
       <h2 class="text-base font-semibold mb-2">
         Remove folder "{folderDeleteConfirm.path}"?
       </h2>
@@ -1458,7 +1462,7 @@
   :global(.notes-side-row.is-drop-target) {
     background: rgba(var(--color-primary-500) r g b / 0.2);
     box-shadow: inset 0 0 0 2px var(--color-primary-500);
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
   }
   :global(.notes-side-row.is-active) {
     background: rgba(var(--color-primary-500) r g b / 0.15);
@@ -1497,7 +1501,7 @@
     width: 1.25rem;
     height: 1.25rem;
     flex-shrink: 0;
-    border-radius: 0.25rem;
+    border-radius: 0.5rem;
     color: var(--color-surface-500);
     background: transparent;
     border: none;
@@ -1532,7 +1536,7 @@
     width: calc(100% - 1rem);
     margin: 0.5rem 0.5rem 0;
     padding: 0.375rem 0.5rem;
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
     background: transparent;
     color: var(--color-primary-500);
     border: 1px dashed var(--color-surface-300);

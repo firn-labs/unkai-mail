@@ -47,7 +47,7 @@ pub use calendars::{
 pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 pub use notes::NotesSyncState;
 pub use pgp_keys::{PgpKeySource, PgpPublicKeyRow};
-pub use search::{SearchFilters, SearchHit, SearchScope};
+pub use search::{DatePeriod, SearchFilters, SearchHit, SearchScope, parse_date_period};
 pub use smime_certs::{SmimeCertRow, SmimeCertSource};
 pub use tasks::{CachedTaskList, TaskListSyncState};
 
@@ -64,6 +64,37 @@ use unkai_core::UnkaiError;
 use unkai_core::models::{Email, EmailEnvelope, Folder};
 
 use crate::cache::pool::SqlitePool;
+
+/// One elapsed message reminder (#415) — everything the
+/// notification path needs to describe the mail in a toast and
+/// deep-link back to it on click.  Produced by
+/// [`Cache::due_message_reminders`].
+#[derive(Debug, Clone)]
+pub struct DueMessageReminder {
+    pub account_id: String,
+    pub folder: String,
+    pub uid: u32,
+    pub from: String,
+    pub subject: String,
+}
+
+/// Receipt-tracking state for one sent mail that asked for a read
+/// receipt (RFC 8098, #416).  Produced by
+/// [`Cache::get_receipt_status`] and serialised straight over IPC —
+/// MailView renders the "receipt requested / read" chip from it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SentReceiptStatus {
+    /// Unix-epoch seconds when the mail was sent with the request.
+    pub requested_at: i64,
+    /// What came back: `"displayed"` / `"deleted"` / …, or `None`
+    /// while no receipt has arrived (which may be forever — the
+    /// request is advisory and most clients let users decline it).
+    pub disposition: Option<String>,
+    /// Unix-epoch seconds when the receipt arrived.
+    pub disposition_at: Option<i64>,
+    /// Address that confirmed, when the report named one.
+    pub reporter: Option<String>,
+}
 
 /// Errors specific to the cache layer. Converted to `UnkaiError::Storage`
 /// when crossing out of the crate so the rest of the app doesn't have to
@@ -306,6 +337,21 @@ impl Cache {
     /// (e.g. `account_store`) that needs a Cache to run unit tests
     /// against without touching the user's real config dir or the
     /// keychain.
+    /// Construct a cache handle that is permanently locked — the
+    /// pool is `None` and never opens.  Mirrors the state
+    /// `open_default` produces in FIDO-only mode before the unlock
+    /// IPC runs.  Only for tests that need to exercise
+    /// `CacheError::Locked` paths (e.g. unkai-mcp's "vault locked"
+    /// rejection) without touching the keychain envelope.
+    #[doc(hidden)]
+    pub fn locked_for_tests() -> Self {
+        Self {
+            pool: Arc::new(RwLock::new(None)),
+            path: PathBuf::from(":memory:"),
+            master_key_hex: Arc::new(RwLock::new(None)),
+        }
+    }
+
     pub fn open_in_memory() -> Result<Self, CacheError> {
         let pool = pool::open_memory_pool()?;
         let mut conn = pool.get()?;
@@ -598,6 +644,12 @@ impl Cache {
             // *is* refreshed because the IMAP `\Answered` flag is
             // authoritative for "did anyone (incl. another client)
             // answer this".
+            // Same reasoning keeps `is_pinned` and
+            // `priority_override` (#414) out of this statement
+            // entirely: both are local-only user state with no
+            // server-side source of truth, so the fetch path must
+            // never touch them.  The header-derived `priority` IS
+            // written, COALESCE-guarded like the threading headers.
             // `references_ids` is serialised to JSON before the
             // bind so SQLite stores a single TEXT cell (the same
             // shape we use for `attendees_json` etc.).  Empty
@@ -607,9 +659,10 @@ impl Cache {
                 "INSERT INTO messages
                    (account_id, folder, uid, from_addr, subject, internal_date,
                     is_read, is_starred, is_answered, cached_at,
-                    message_id, in_reply_to, references_ids, thread_id, protection)
+                    message_id, in_reply_to, references_ids, thread_id, protection,
+                    priority, to_addrs)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                         ?11, ?12, ?13, ?14, ?15)
+                         ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                    from_addr     = excluded.from_addr,
                    subject       = excluded.subject,
@@ -633,13 +686,34 @@ impl Cache {
                    -- post-decrypt label (\"signed-and-encrypted\") that a
                    -- later envelope re-fetch — which can only see the
                    -- top-level Content-Type — couldn't reproduce.
-                   protection    = COALESCE(excluded.protection, messages.protection)",
+                   protection    = COALESCE(excluded.protection, messages.protection),
+                   -- #414: header-derived priority.  COALESCE so a
+                   -- fetch path that didn't parse the priority
+                   -- headers can't wipe a value already extracted.
+                   priority      = COALESCE(excluded.priority, messages.priority),
+                   -- #417: recipient list, COALESCE-guarded like the
+                   -- threading headers — a path that didn't capture
+                   -- recipients (e.g. a JMAP server omitting `to`)
+                   -- can't wipe what an earlier fetch stored.
+                   to_addrs      = COALESCE(excluded.to_addrs, messages.to_addrs)",
             )?;
             for env in envelopes {
                 let refs_json: Option<String> = if env.references_ids.is_empty() {
                     None
                 } else {
                     serde_json::to_string(&env.references_ids).ok()
+                };
+                // #417: same empty-vector → NULL convention as
+                // `references_ids` so the column stays sparse and the
+                // COALESCE guard can distinguish "no data" from
+                // "captured, zero recipients" — both serialise the
+                // same here because a genuinely recipient-less mail
+                // (Bcc-only delivery) carries no threading signal
+                // anyway.
+                let to_json: Option<String> = if env.to_addrs.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(&env.to_addrs).ok()
                 };
                 let thread_id = Self::compute_thread_id(account_id, env);
                 stmt.execute(params![
@@ -658,6 +732,8 @@ impl Cache {
                     refs_json,
                     thread_id,
                     env.protection,
+                    env.priority,
+                    to_json,
                 ])?;
             }
         }
@@ -707,11 +783,16 @@ impl Cache {
                        AND m2.folder = ?2
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    COALESCE(b.protection, m.protection)
+                    COALESCE(b.protection, m.protection),
+                    m.is_pinned, m.priority, m.priority_override,
+                    m.reminder_at, m.to_addrs
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1 AND m.folder = ?2 AND m.pending_action IS NULL
-             ORDER BY m.internal_date DESC
+             -- #414: pinned rows first so they can never age out of
+             -- the newest-N window; served by
+             -- messages_by_folder_pinned_date without a sort step.
+             ORDER BY m.is_pinned DESC, m.internal_date DESC
              LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
@@ -742,6 +823,18 @@ impl Cache {
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
                 protection,
+                is_pinned: r.get::<_, i64>(15)? != 0,
+                priority: r.get(16)?,
+                priority_override: r.get(17)?,
+                reminder_at: r.get(18)?,
+                // #417: recipients, JSON-decoded like references_ids.
+                to_addrs: r
+                    .get::<_, Option<String>>(19)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
+                // #416: wire-only marker, never persisted.
+                is_mdn_report: false,
             })
         })?;
 
@@ -782,7 +875,9 @@ impl Cache {
                        AND m2.folder = ?2
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    COALESCE(b.protection, m.protection)
+                    COALESCE(b.protection, m.protection),
+                    m.is_pinned, m.priority, m.priority_override,
+                    m.reminder_at, m.to_addrs
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.account_id = ?1
@@ -819,6 +914,18 @@ impl Cache {
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
                 protection,
+                is_pinned: r.get::<_, i64>(15)? != 0,
+                priority: r.get(16)?,
+                priority_override: r.get(17)?,
+                reminder_at: r.get(18)?,
+                // #417: recipients, JSON-decoded like references_ids.
+                to_addrs: r
+                    .get::<_, Option<String>>(19)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
+                // #416: wire-only marker, never persisted.
+                is_mdn_report: false,
             })
         })?;
         let mut out = Vec::new();
@@ -826,6 +933,33 @@ impl Cache {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Look up the stable thread id of a single cached message
+    /// (#440).  Entry point for callers that hold a message ref
+    /// (`account_id`/`folder`/`uid`) and want the conversation it
+    /// belongs to via [`Cache::get_envelopes_by_thread`] — the MCP
+    /// `get_thread` tool being the first.  Runs the same
+    /// `thread_id` warm-up as [`Cache::get_envelopes`] so rows
+    /// cached before the #334 migration still resolve.  `Ok(None)`
+    /// = no such message in the cache.
+    pub fn get_thread_id(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<String>, CacheError> {
+        let _ = self.assign_pending_thread_ids(account_id, folder);
+        let conn = self.conn()?;
+        let thread_id = conn
+            .query_row(
+                "SELECT thread_id FROM messages
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![account_id, folder, uid as i64],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        Ok(thread_id.flatten())
     }
 
     /// Return the newest `limit` envelopes in `folder` whose body has
@@ -906,11 +1040,13 @@ impl Cache {
                        AND m2.folder = m.folder
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    COALESCE(b.protection, m.protection)
+                    COALESCE(b.protection, m.protection),
+                    m.is_pinned, m.priority, m.priority_override,
+                    m.reminder_at, m.to_addrs
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE m.folder = ?1 AND m.pending_action IS NULL
-             ORDER BY m.internal_date DESC
+             ORDER BY m.is_pinned DESC, m.internal_date DESC
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![folder, limit as i64], |r| {
@@ -941,6 +1077,18 @@ impl Cache {
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
                 protection,
+                is_pinned: r.get::<_, i64>(16)? != 0,
+                priority: r.get(17)?,
+                priority_override: r.get(18)?,
+                reminder_at: r.get(19)?,
+                // #417: recipients, JSON-decoded like references_ids.
+                to_addrs: r
+                    .get::<_, Option<String>>(20)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
+                // #416: wire-only marker, never persisted.
+                is_mdn_report: false,
             })
         })?;
 
@@ -996,11 +1144,13 @@ impl Cache {
                        AND m2.folder = m.folder
                        AND m2.thread_id = m.thread_id
                        AND m2.pending_action IS NULL) AS thread_total_count,
-                    COALESCE(b.protection, m.protection)
+                    COALESCE(b.protection, m.protection),
+                    m.is_pinned, m.priority, m.priority_override,
+                    m.reminder_at, m.to_addrs
              FROM messages m
              LEFT JOIN message_bodies b USING (account_id, folder, uid)
              WHERE ({where_clause}) AND m.pending_action IS NULL
-             ORDER BY m.internal_date DESC
+             ORDER BY m.is_pinned DESC, m.internal_date DESC
              LIMIT ?{limit_param}"
         );
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 * pairs.len() + 1);
@@ -1040,6 +1190,18 @@ impl Cache {
                 thread_id,
                 thread_total_count: thread_total_count.map(|n| n as u32),
                 protection,
+                is_pinned: r.get::<_, i64>(16)? != 0,
+                priority: r.get(17)?,
+                priority_override: r.get(18)?,
+                reminder_at: r.get(19)?,
+                // #417: recipients, JSON-decoded like references_ids.
+                to_addrs: r
+                    .get::<_, Option<String>>(20)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
+                // #416: wire-only marker, never persisted.
+                is_mdn_report: false,
             })
         })?;
 
@@ -1500,6 +1662,276 @@ impl Cache {
         Ok(())
     }
 
+    /// Set or clear the cached `is_starred` flag (#414) — the local
+    /// half of the user's flag toggle.  The caller propagates the
+    /// same change to the server (IMAP `\Flagged` / JMAP `$flagged`)
+    /// after this optimistic write, mirroring the
+    /// `mark_envelope_read` pattern.  No folder-counter bookkeeping
+    /// is needed here — unlike read state, flags don't feed a badge.
+    pub fn mark_envelope_starred(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        starred: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET is_starred = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, starred as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Set or clear the local-only pin state (#414).  Nothing to
+    /// propagate — pins have no server-side equivalent, so this
+    /// write IS the whole operation.
+    pub fn mark_envelope_pinned(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        pinned: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET is_pinned = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, pinned as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Set or clear the user's priority override (#414).  `priority`
+    /// is `"high"` / `"normal"` / `"low"`, or `None` to drop the
+    /// override entirely (display falls back to the header-derived
+    /// `priority` column).  Local-only, like the pin.
+    pub fn set_envelope_priority(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        priority: Option<&str>,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET priority_override = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, priority],
+        )?;
+        Ok(())
+    }
+
+    /// Set or clear the per-message reminder (#415).  `remind_at` is
+    /// unix-epoch seconds at which the reminder should fire, or
+    /// `None` to drop a pending reminder.  Local-only like the pin —
+    /// there is nothing to propagate, so this write IS the whole
+    /// operation.  The background scanner also calls this with
+    /// `None` to mark a reminder as fired.
+    pub fn set_message_reminder(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        remind_at: Option<i64>,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET reminder_at = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, remind_at],
+        )?;
+        Ok(())
+    }
+
+    /// Every message whose reminder time has elapsed (#415):
+    /// `reminder_at <= now`, tombstoned rows excluded.  No lower
+    /// bound on purpose — a reminder that elapsed while the app was
+    /// closed should fire (late) on the first scan after launch
+    /// rather than be silently dropped; that is the whole
+    /// restart-survival contract.  Served by the partial
+    /// `messages_by_reminder` index, so a mailbox with no pending
+    /// reminders answers this from an empty index.
+    pub fn due_message_reminders(&self, now: i64) -> Result<Vec<DueMessageReminder>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT account_id, folder, uid, from_addr, subject
+             FROM messages
+             WHERE reminder_at IS NOT NULL
+               AND reminder_at <= ?1
+               AND pending_action IS NULL
+             ORDER BY reminder_at ASC",
+        )?;
+        let rows = stmt.query_map(params![now], |r| {
+            Ok(DueMessageReminder {
+                account_id: r.get(0)?,
+                folder: r.get(1)?,
+                uid: r.get::<_, i64>(2)? as u32,
+                from: r.get(3)?,
+                subject: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Read the local-only organizational state for one cached
+    /// envelope (#414, #415, #416): `(is_pinned, priority_override,
+    /// reminder_at, mdn_handled)`.  Used by the full-message fetch
+    /// paths to overlay pin / override / reminder / receipt-handled
+    /// onto an `Email` that came off the wire — the protocols can't
+    /// know local state, and without the overlay a fresh network
+    /// fetch would render the message unpinned in the UI even
+    /// though the cache row still says otherwise.  `Ok(None)` when
+    /// the UID isn't cached (nothing local to overlay).
+    #[allow(clippy::type_complexity)]
+    pub fn envelope_local_state(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<(bool, Option<String>, Option<i64>, Option<String>)>, CacheError> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT is_pinned, priority_override, reminder_at, mdn_handled FROM messages
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![account_id, folder, uid as i64],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)? != 0,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    // ── Read receipts / MDN (#416) ─────────────────────────────
+
+    /// Record how the user (or their policy) resolved an incoming
+    /// read-receipt request: `"sent"` or `"declined"`.  Local-only
+    /// like the pin — this is what keeps the reading pane from
+    /// asking about the same message twice.
+    pub fn set_mdn_handled(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        handled: &str,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET mdn_handled = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, handled],
+        )?;
+        Ok(())
+    }
+
+    /// Track that a just-sent mail asked for a read receipt (#416).
+    /// Keyed on the sent Message-ID (bracket-free, #277 convention)
+    /// — the only identifier both the sent copy and a future
+    /// `message/disposition-notification` reply share.  Idempotent:
+    /// a retry of the same send updates the timestamp rather than
+    /// erroring.
+    pub fn record_receipt_request(
+        &self,
+        account_id: &str,
+        message_id: &str,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO sent_receipts (account_id, message_id, requested_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (account_id, message_id) DO UPDATE SET
+                requested_at = excluded.requested_at",
+            params![account_id, message_id, Utc::now().timestamp()],
+        )?;
+        Ok(())
+    }
+
+    /// Does this account have any receipt request still waiting for
+    /// an answer?  Cheap gate for the sync path: incoming
+    /// `multipart/report` bodies are only worth fetching while at
+    /// least one request could match, so accounts that never ask
+    /// for receipts never pay the extra fetches.
+    pub fn has_pending_receipt_requests(&self, account_id: &str) -> Result<bool, CacheError> {
+        let conn = self.conn()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sent_receipts
+             WHERE account_id = ?1 AND disposition IS NULL",
+            params![account_id],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Patch a receipt request with what an incoming
+    /// `message/disposition-notification` reported (#416).  Returns
+    /// `true` when a tracked request matched the report's
+    /// `Original-Message-ID`; `false` means the report referenced a
+    /// mail we never tracked (sent from another client, or before
+    /// this feature) and nothing was recorded.
+    pub fn record_receipt_disposition(
+        &self,
+        account_id: &str,
+        original_message_id: &str,
+        disposition: &str,
+        reporter: Option<&str>,
+    ) -> Result<bool, CacheError> {
+        let conn = self.conn()?;
+        let updated = conn.execute(
+            "UPDATE sent_receipts
+             SET disposition = ?3, disposition_at = ?4, reporter = ?5
+             WHERE account_id = ?1 AND message_id = ?2",
+            params![
+                account_id,
+                original_message_id,
+                disposition,
+                Utc::now().timestamp(),
+                reporter,
+            ],
+        )?;
+        Ok(updated > 0)
+    }
+
+    /// Receipt-tracking state for one sent mail, by Message-ID
+    /// (#416).  `Ok(None)` = this mail never asked for a receipt
+    /// (or was sent before the feature / from another client), so
+    /// MailView renders no chip at all.
+    pub fn get_receipt_status(
+        &self,
+        account_id: &str,
+        message_id: &str,
+    ) -> Result<Option<SentReceiptStatus>, CacheError> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT requested_at, disposition, disposition_at, reporter
+                 FROM sent_receipts
+                 WHERE account_id = ?1 AND message_id = ?2",
+                params![account_id, message_id],
+                |r| {
+                    Ok(SentReceiptStatus {
+                        requested_at: r.get(0)?,
+                        disposition: r.get(1)?,
+                        disposition_at: r.get(2)?,
+                        reporter: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     /// Bump a folder's `unread_count` by `delta` (positive to add,
     /// negative to subtract). Treats a `NULL` stored count as `0`.
     /// Used by the poll path to credit newly-arrived unread mail
@@ -1583,20 +2015,42 @@ impl Cache {
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
 
+        // #417: recipient list for the envelope row — empty → NULL
+        // (same convention as the envelope-batch upsert) so the
+        // COALESCE guard below can tell "no data" from "captured".
+        let env_to_json: Option<String> = if email.to.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&email.to).ok()
+        };
+
         // Envelope row — mirrors upsert_envelopes_for_account but inside
         // the same transaction as the body so the two can't drift.
         tx.execute(
             "INSERT INTO messages
                 (account_id, folder, uid, from_addr, subject, internal_date,
-                 is_read, is_starred, cached_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 is_read, is_starred, cached_at, priority, mdn_requested_to,
+                 to_addrs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                 from_addr     = excluded.from_addr,
                 subject       = excluded.subject,
                 internal_date = excluded.internal_date,
                 is_read       = excluded.is_read,
                 is_starred    = excluded.is_starred,
-                cached_at     = excluded.cached_at",
+                cached_at     = excluded.cached_at,
+                -- #414: full-message fetches parse the priority
+                -- headers too; COALESCE-guarded like the envelope
+                -- upsert so a path that didn't can't wipe the value.
+                priority      = COALESCE(excluded.priority, messages.priority),
+                -- #416: receipt request, header-derived like priority.
+                -- (`mdn_handled` is local-only and deliberately absent
+                -- from this statement, like is_pinned / reminder_at.)
+                mdn_requested_to = COALESCE(excluded.mdn_requested_to, messages.mdn_requested_to),
+                -- #417: a full-message fetch always knows the real
+                -- recipient list, so opening a message back-fills the
+                -- participant data pre-migration envelope rows lack.
+                to_addrs      = COALESCE(excluded.to_addrs, messages.to_addrs)",
             params![
                 email.account_id,
                 email.folder,
@@ -1610,6 +2064,9 @@ impl Cache {
                 email.is_read as i64,
                 email.is_starred as i64,
                 now,
+                email.priority,
+                email.mdn_requested_to,
+                env_to_json,
             ],
         )?;
 
@@ -1691,7 +2148,9 @@ impl Cache {
                         b.body_text, b.body_html, b.has_attachments,
                         b.to_addrs, b.cc_addrs, b.attachments,
                         m.message_id, m.in_reply_to, m.references_ids,
-                        b.protection, b.signature_status, b.signer_fingerprint
+                        b.protection, b.signature_status, b.signer_fingerprint,
+                        m.is_pinned, m.priority, m.priority_override,
+                        m.reminder_at, m.mdn_requested_to, m.mdn_handled
                  FROM messages m
                  INNER JOIN message_bodies b USING (account_id, folder, uid)
                  WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
@@ -1728,6 +2187,12 @@ impl Cache {
                         protection: r.get(14)?,
                         signature_status: r.get(15)?,
                         signer_fingerprint: r.get(16)?,
+                        is_pinned: r.get::<_, i64>(17)? != 0,
+                        priority: r.get(18)?,
+                        priority_override: r.get(19)?,
+                        reminder_at: r.get(20)?,
+                        mdn_requested_to: r.get(21)?,
+                        mdn_handled: r.get(22)?,
                     })
                 },
             )
@@ -2331,6 +2796,7 @@ mod tests {
             uid,
             folder: folder.to_string(),
             from: format!("sender-{uid}@example.com"),
+            to_addrs: vec![format!("Jane Smith <recipient-{uid}@example.com>")],
             subject: format!("Test subject {uid}"),
             date: Utc::now() - Duration::minutes(offset_min),
             is_read: false,
@@ -2344,6 +2810,11 @@ mod tests {
             thread_id: None,
             thread_total_count: None,
             protection: None,
+            is_pinned: false,
+            reminder_at: None,
+            priority: None,
+            priority_override: None,
+            is_mdn_report: false,
         }
     }
 
@@ -2379,6 +2850,42 @@ mod tests {
         assert_eq!(got[2].uid, 1);
     }
 
+    /// #417: the `To:` recipient list round-trips through the
+    /// envelope upsert, and the COALESCE guard keeps an earlier
+    /// capture alive when a later fetch path produced no recipients
+    /// (empty vector → NULL bind).
+    #[test]
+    fn to_addrs_roundtrip_and_coalesce_guard() {
+        let cache = open_test_cache();
+        let mut env = make_envelope(7, "INBOX", 5);
+        env.to_addrs = vec![
+            "Alex Morgan <alex@example.com>".to_string(),
+            "team@example.com".to_string(),
+        ];
+        cache
+            .upsert_envelopes_for_account("acc", std::slice::from_ref(&env))
+            .unwrap();
+
+        let got = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].to_addrs, env.to_addrs);
+
+        // Re-fetch that didn't capture recipients: must not wipe them.
+        env.to_addrs = Vec::new();
+        cache
+            .upsert_envelopes_for_account("acc", std::slice::from_ref(&env))
+            .unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert_eq!(
+            got[0].to_addrs,
+            vec![
+                "Alex Morgan <alex@example.com>".to_string(),
+                "team@example.com".to_string(),
+            ],
+            "empty re-fetch must not clobber stored recipients",
+        );
+    }
+
     #[test]
     fn upsert_refreshes_flags() {
         let cache = open_test_cache();
@@ -2397,6 +2904,198 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert!(got[0].is_read);
         assert!(got[0].is_starred);
+    }
+
+    /// #414: pinned envelopes sort above everything regardless of
+    /// date, and the local-only pin / priority-override state
+    /// survives an envelope re-fetch (which must never write those
+    /// columns).  The header-derived `priority` IS refreshed, but
+    /// COALESCE-guarded so a fetch that produced `None` can't wipe
+    /// an earlier value.
+    #[test]
+    fn pin_and_priority_roundtrip() {
+        let cache = open_test_cache();
+        let mut old_env = make_envelope(1, "INBOX", 60); // older
+        old_env.priority = Some("high".into());
+        let envs = vec![old_env, make_envelope(2, "INBOX", 5)];
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+
+        // Pin the *older* message and override its priority.
+        cache.mark_envelope_pinned("acc", "INBOX", 1, true).unwrap();
+        cache
+            .set_envelope_priority("acc", "INBOX", 1, Some("normal"))
+            .unwrap();
+
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        assert_eq!(got[0].uid, 1, "pinned row must sort first");
+        assert!(got[0].is_pinned);
+        assert_eq!(got[0].priority.as_deref(), Some("high"));
+        assert_eq!(got[0].priority_override.as_deref(), Some("normal"));
+
+        // A re-fetch without priority headers must clobber neither
+        // the pin, the override, nor the earlier header priority.
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        assert_eq!(got[0].uid, 1);
+        assert!(got[0].is_pinned);
+        assert_eq!(got[0].priority.as_deref(), Some("high"));
+        assert_eq!(got[0].priority_override.as_deref(), Some("normal"));
+
+        // Unpin + clear override → back to date order, no override.
+        cache
+            .mark_envelope_pinned("acc", "INBOX", 1, false)
+            .unwrap();
+        cache
+            .set_envelope_priority("acc", "INBOX", 1, None)
+            .unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        assert_eq!(got[0].uid, 2);
+        assert!(!got[1].is_pinned);
+        assert!(got[1].priority_override.is_none());
+    }
+
+    /// #414: the flag setter flips `is_starred` in place.
+    #[test]
+    fn starred_setter_roundtrip() {
+        let cache = open_test_cache();
+        let envs = vec![make_envelope(9, "INBOX", 1)];
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+
+        cache
+            .mark_envelope_starred("acc", "INBOX", 9, true)
+            .unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert!(got[0].is_starred);
+
+        cache
+            .mark_envelope_starred("acc", "INBOX", 9, false)
+            .unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert!(!got[0].is_starred);
+    }
+
+    /// #415: the reminder round-trip.  Setting a reminder surfaces
+    /// it on the envelope read, `due_message_reminders` only
+    /// returns rows whose time has elapsed, an envelope re-fetch
+    /// can't clobber the pending reminder, and clearing (what the
+    /// scanner does after firing) empties the due list.
+    #[test]
+    fn reminder_roundtrip() {
+        let cache = open_test_cache();
+        let envs = vec![make_envelope(1, "INBOX", 60), make_envelope(2, "INBOX", 5)];
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+
+        cache
+            .set_message_reminder("acc", "INBOX", 1, Some(1_000))
+            .unwrap();
+
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        let row = got.iter().find(|e| e.uid == 1).unwrap();
+        assert_eq!(row.reminder_at, Some(1_000));
+
+        // Not yet due …
+        assert!(cache.due_message_reminders(999).unwrap().is_empty());
+        // … due exactly at / after the stored moment, carrying the
+        // fields the notification needs.
+        let due = cache.due_message_reminders(1_000).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].uid, 1);
+        assert_eq!(due[0].account_id, "acc");
+        assert_eq!(due[0].folder, "INBOX");
+
+        // A background envelope re-fetch must leave the pending
+        // reminder alone (local-only column, like the pin).
+        cache.upsert_envelopes_for_account("acc", &envs).unwrap();
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        let row = got.iter().find(|e| e.uid == 1).unwrap();
+        assert_eq!(row.reminder_at, Some(1_000));
+
+        // Clearing (fired, or user removed it) empties the due list.
+        cache.set_message_reminder("acc", "INBOX", 1, None).unwrap();
+        assert!(cache.due_message_reminders(2_000).unwrap().is_empty());
+        let got = cache.get_envelopes("acc", "INBOX", 10).unwrap();
+        assert!(got.iter().all(|e| e.reminder_at.is_none()));
+    }
+
+    #[test]
+    fn sent_receipt_lifecycle() {
+        // #416: request → pending → disposition recorded → status.
+        let cache = open_test_cache();
+
+        assert!(!cache.has_pending_receipt_requests("acc").unwrap());
+        cache.record_receipt_request("acc", "mid-1@host").unwrap();
+        assert!(cache.has_pending_receipt_requests("acc").unwrap());
+
+        let status = cache
+            .get_receipt_status("acc", "mid-1@host")
+            .unwrap()
+            .expect("row must exist after request");
+        assert!(status.disposition.is_none());
+
+        // A report for an untracked Message-ID records nothing.
+        assert!(
+            !cache
+                .record_receipt_disposition("acc", "unknown@host", "displayed", None)
+                .unwrap()
+        );
+
+        // The matching report patches the row and clears the
+        // pending gate.
+        assert!(
+            cache
+                .record_receipt_disposition(
+                    "acc",
+                    "mid-1@host",
+                    "displayed",
+                    Some("reader@example.org"),
+                )
+                .unwrap()
+        );
+        assert!(!cache.has_pending_receipt_requests("acc").unwrap());
+        let status = cache
+            .get_receipt_status("acc", "mid-1@host")
+            .unwrap()
+            .expect("row must survive the patch");
+        assert_eq!(status.disposition.as_deref(), Some("displayed"));
+        assert_eq!(status.reporter.as_deref(), Some("reader@example.org"));
+        assert!(status.disposition_at.is_some());
+
+        // Other accounts never see acc's rows.
+        assert!(
+            cache
+                .get_receipt_status("other", "mid-1@host")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mdn_request_persists_and_handled_state_survives_refetch() {
+        // #416: the header-derived request lands via upsert_message;
+        // the local-only handled flag survives envelope re-fetches.
+        let cache = open_test_cache();
+        let mut email = make_email(1, "INBOX");
+        email.mdn_requested_to = Some("sender@example.org".into());
+        cache.upsert_message(&email).unwrap();
+
+        let got = cache.get_message("acc", "INBOX", 1).unwrap().unwrap();
+        assert_eq!(got.mdn_requested_to.as_deref(), Some("sender@example.org"));
+        assert_eq!(got.mdn_handled, None);
+
+        cache.set_mdn_handled("acc", "INBOX", 1, "sent").unwrap();
+        let (.., mdn_handled) = cache
+            .envelope_local_state("acc", "INBOX", 1)
+            .unwrap()
+            .expect("cached row");
+        assert_eq!(mdn_handled.as_deref(), Some("sent"));
+
+        // An envelope re-fetch (which knows nothing about MDN state)
+        // must clobber neither the request nor the handled flag.
+        let env = make_envelope(1, "INBOX", 0);
+        cache.upsert_envelopes_for_account("acc", &[env]).unwrap();
+        let got = cache.get_message("acc", "INBOX", 1).unwrap().unwrap();
+        assert_eq!(got.mdn_requested_to.as_deref(), Some("sender@example.org"));
+        assert_eq!(got.mdn_handled.as_deref(), Some("sent"));
     }
 
     fn make_email(uid: u32, folder: &str) -> Email {
@@ -2421,6 +3120,12 @@ mod tests {
             protection: None,
             signature_status: None,
             signer_fingerprint: None,
+            is_pinned: false,
+            reminder_at: None,
+            priority: None,
+            priority_override: None,
+            mdn_requested_to: None,
+            mdn_handled: None,
         }
     }
 

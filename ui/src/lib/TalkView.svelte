@@ -16,6 +16,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
@@ -91,7 +92,10 @@
 
   async function loadAccounts() {
     try {
-      const list = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      // Nextcloud-app feature — skip generic-DAV / local sources (#413).
+      const list = (
+        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+      ).filter(isNextcloudSource)
       accounts = list
       if (list.length === 1 && !accountId) {
         accountId = list[0].id
@@ -213,7 +217,7 @@
        search visually centered as the translated title length
        changes.  Same layout as SharesView / FilesView. -->
   <div
-    class="flex items-center gap-3 px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+    class="flex items-center gap-3 px-6 py-3 border-b glass-panel"
   >
     <div class="flex-1 min-w-0 flex justify-start">
       <h2 class="text-xl font-semibold truncate">Talk Rooms</h2>
@@ -290,7 +294,7 @@
       <p class="p-6 text-sm text-surface-500">{m.talk_view_no_matches()}</p>
     {:else}
       {#snippet roomRow(room: TalkRoom)}
-        <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800 {room.is_archived ? 'opacity-60' : ''}">
+        <li class="px-5 py-3 flex items-center gap-3 hover:bg-primary-500/10 {room.is_archived ? 'opacity-60' : ''}">
           <span class="flex-shrink-0 text-surface-600 dark:text-surface-300"><Icon name={roomTypeIcon(room.room_type)} size={20} /></span>
 
           <div class="flex-1 min-w-0">

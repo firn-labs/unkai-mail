@@ -805,13 +805,13 @@
 </script>
 
 <aside
-  class="shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col"
+  class="shrink-0 border-r glass-panel flex flex-col"
   use:resizableSidebar={{ key: 'mail.folderSidebar', defaultWidth: 224, min: 160, max: 480 }}
 >
   <!-- Compose CTA. Emoji makes the primary action visually anchored —
        matches Nick's ask for "nice emoji" on the button. -->
   <div class="p-3">
-    <button class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5" onclick={() => oncompose?.()}>
+    <button class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5" data-tour="compose" onclick={() => oncompose?.()}>
       <Icon name="compose" size={16} /> Compose
     </button>
   </div>
@@ -840,7 +840,7 @@
         <!-- svelte-ignore a11y_autofocus -->
         <input
           type="text"
-          class="input flex-1 text-sm px-2 py-1 rounded-md"
+          class="input flex-1 text-sm px-2 py-1 rounded-lg"
           bind:value={renameValue}
           disabled={folderOpBusy}
           autofocus
@@ -856,12 +856,12 @@
       <div
         role="button"
         tabindex="0"
-        class="group w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm cursor-pointer transition-colors
+        class="group w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors duration-150 ease-out
           {selectedFolder === folder.name
             ? 'bg-primary-500/10 text-primary-500 font-medium'
             : dragOverFolder === folder.name
               ? 'bg-primary-500/20 ring-2 ring-primary-500'
-              : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+              : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(folder.name)}
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -888,7 +888,7 @@
              affordances.  Surfaces on hover or whenever this
              folder's menu is the open one. -->
         <button
-          class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none shrink-0
+          class="w-5 h-5 rounded-lg text-surface-500 hover:bg-primary-500/10 transition-colors duration-150 ease-out leading-none shrink-0
                  {contextMenu?.folder.name === folder.name
                    ? 'opacity-100'
                    : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}"
@@ -917,7 +917,7 @@
         Folders
       </span>
       <button
-        class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700 disabled:opacity-50"
+        class="w-5 h-5 rounded-lg flex items-center justify-center text-surface-500 hover:bg-primary-500/10 transition-colors duration-150 ease-out disabled:opacity-50"
         title="New folder"
         aria-label="New folder"
         disabled={folderOpBusy}
@@ -943,10 +943,10 @@
            through sentinel folder names that MailList recognises and
            dispatches to the per-account-resolving backend commands. -->
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === 'INBOX'
             ? 'bg-primary-500/10 text-primary-500 font-medium'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder('INBOX')}
       >
         <span
@@ -971,10 +971,10 @@
              OutboxList with `unified={true}`, which already calls
              `list_all_outbox` to merge every account's queue. -->
         <button
-          class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+          class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
             {selectedFolder === OUTBOX_FOLDER
               ? 'bg-primary-500/10 text-primary-500 font-medium'
-              : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+              : 'hover:bg-primary-500/10'}"
           onclick={() => onselectfolder(OUTBOX_FOLDER)}
         >
           <span
@@ -993,10 +993,10 @@
            user toggling between unified and a single account never
            sees their outgoing-mail folders shuffle. -->
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_DRAFTS_FOLDER
             ? 'bg-primary-500/10 text-primary-500 font-medium'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_DRAFTS_FOLDER)}
       >
         <span
@@ -1008,10 +1008,10 @@
         <span class="flex-1 text-left truncate">{m.sidebar_unified_drafts_label()}</span>
       </button>
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_SENT_FOLDER
             ? 'bg-primary-500/10 text-primary-500 font-medium'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_SENT_FOLDER)}
       >
         <span
@@ -1023,10 +1023,10 @@
         <span class="flex-1 text-left truncate">{m.sidebar_unified_sent_label()}</span>
       </button>
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_ARCHIVE_FOLDER
             ? 'bg-primary-500/10 text-primary-500 font-medium'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_ARCHIVE_FOLDER)}
       >
         <span
@@ -1038,10 +1038,10 @@
         <span class="flex-1 text-left truncate">{m.sidebar_unified_archive_label()}</span>
       </button>
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_JUNK_FOLDER
             ? 'bg-primary-500/10 text-primary-500 font-medium'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_JUNK_FOLDER)}
       >
         <span
@@ -1053,10 +1053,10 @@
         <span class="flex-1 text-left truncate">{m.sidebar_unified_junk_label()}</span>
       </button>
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_TRASH_FOLDER
             ? 'bg-primary-500/10 text-primary-500 font-medium'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_TRASH_FOLDER)}
       >
         <span
@@ -1098,7 +1098,7 @@
           <!-- svelte-ignore a11y_autofocus -->
           <input
             type="text"
-            class="input flex-1 text-sm px-2 py-1 rounded-md"
+            class="input flex-1 text-sm px-2 py-1 rounded-lg"
             placeholder={newFolderInput.parent
               ? `New subfolder in ${displayNameFromPath(newFolderInput.parent)}`
               : 'New folder'}
@@ -1143,14 +1143,14 @@
 {#if contextMenu}
   {@const stdFolder = standardRank(contextMenu.folder) !== -1}
   <div
-    class="fixed z-60 min-w-44 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    class="fixed z-60 min-w-44 rounded-xl glass-float py-1 text-sm"
     style="left: {Math.min(contextMenu.x, window.innerWidth - 200)}px; top: {Math.min(contextMenu.y, window.innerHeight - 150)}px;"
     role="menu"
     tabindex="-1"
     onmousedown={(e) => e.stopPropagation()}
   >
     <button
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50 disabled:hover:bg-transparent"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-primary-500/10 transition-colors duration-150 ease-out disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy}
       onclick={() => {
         const parent = contextMenu!.folder.name
@@ -1162,7 +1162,7 @@
       <span>New subfolder</span>
     </button>
     <button
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50 disabled:hover:bg-transparent"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-primary-500/10 transition-colors duration-150 ease-out disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy}
       onclick={() => {
         const f = contextMenu!.folder
@@ -1174,7 +1174,7 @@
       <span>Change icon…</span>
     </button>
     <button
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50 disabled:hover:bg-transparent"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-primary-500/10 transition-colors duration-150 ease-out disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy || stdFolder}
       title={stdFolder ? "Standard folders can't be renamed" : ''}
       onclick={() => {
@@ -1188,7 +1188,7 @@
       <span>Rename</span>
     </button>
     <button
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 transition-colors duration-150 ease-out text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy || stdFolder}
       title={stdFolder ? "Standard folders can't be deleted" : ''}
       onclick={() => {
@@ -1216,7 +1216,7 @@
     tabindex="-1"
     onmousedown={(e) => { if (e.target === e.currentTarget) cancelDelete() }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+    <div class="glass-float rounded-2xl w-96 max-w-full p-5">
       <h3 class="text-base font-semibold mb-2">Delete folder?</h3>
       <p class="text-sm text-surface-700 dark:text-surface-300 mb-4">
         Delete <span class="font-medium">{displayName(deleteConfirm.folder)}</span>?
@@ -1253,7 +1253,7 @@
     tabindex="-1"
     onmousedown={(e) => { if (e.target === e.currentTarget) closeIconPicker() }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl max-w-full p-5">
+    <div class="glass-float rounded-2xl max-w-full p-5">
       <h3 class="text-base font-semibold mb-1">Choose an icon</h3>
       <p class="text-xs text-surface-500 mb-4">
         For <span class="font-medium text-surface-700 dark:text-surface-300">{displayName(iconPicker.folder)}</span>

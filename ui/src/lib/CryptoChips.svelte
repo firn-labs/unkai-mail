@@ -46,7 +46,7 @@
        receive path swapped the body for a marker string; we replace
        the marker with a more actionable banner here. -->
   <div
-    class="rounded-md border border-warning-300 bg-warning-50 dark:border-warning-700 dark:bg-warning-900/30 p-3 text-sm flex items-center gap-2"
+    class="rounded-lg border border-warning-300 bg-warning-50 dark:border-warning-700 dark:bg-warning-900/30 p-3 text-sm flex items-center gap-2"
     data-test="crypto-cannot-decrypt-banner"
   >
     <Icon name="encrypted" size={20} />

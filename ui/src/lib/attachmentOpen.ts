@@ -35,6 +35,7 @@
 // from a Tauri IPC against IMAP).
 
 import { invoke } from '@tauri-apps/api/core'
+import { isNextcloudSource } from './ncSources'
 
 const OFFICE_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -111,7 +112,11 @@ async function openViaNcViewer(
   contentType: string | null,
   bytes: number[],
 ): Promise<void> {
-  const ncAccounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+  // The embedded viewer uploads via Nextcloud WebDAV — generic-DAV /
+  // local sources (#413) can't serve it.
+  const ncAccounts = (
+    await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+  ).filter(isNextcloudSource)
   if (ncAccounts.length === 0) {
     throw new Error(
       'Connect a Nextcloud account in Settings to open this file in the embedded viewer.',

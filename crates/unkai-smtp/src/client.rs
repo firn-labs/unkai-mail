@@ -3,14 +3,22 @@
 use lettre::address::Envelope;
 use lettre::message::{
     Attachment as LettreAttachment, Mailbox, MessageBuilder, MultiPart, SinglePart,
-    header::{ContentDisposition, ContentId, ContentTransferEncoding, ContentType},
+    header::{
+        ContentDisposition, ContentId, ContentTransferEncoding, ContentType, Header, HeaderName,
+        HeaderValue,
+    },
 };
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::transport::smtp::client::{Tls, TlsParameters};
+use lettre::transport::smtp::authentication::{Credentials, DEFAULT_MECHANISMS};
+use lettre::transport::smtp::client::{AsyncSmtpConnection, Tls, TlsParameters};
+use lettre::transport::smtp::commands::{Data, Ehlo, Mail, Rcpt};
+use lettre::transport::smtp::extension::{
+    ClientId, Extension, MailBodyParameter, MailParameter, RcptParameter,
+};
 use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use rustls_pki_types::ServerName;
+use std::time::Duration;
 use tokio_rustls::TlsConnector;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use unkai_core::crypto::CryptoBridge;
 use unkai_core::error::UnkaiError;
 use unkai_core::models::{OutgoingEmail, TrustedCert};
@@ -26,6 +34,16 @@ use unkai_core::tls;
 pub struct SmtpClient {
     /// The underlying async SMTP transport (lettre).
     transport: AsyncSmtpTransport<Tokio1Executor>,
+    /// Connection parameters retained for the delivery-confirmation
+    /// path (#461).  Lettre's pooled transport hardcodes empty
+    /// `RCPT TO` parameter lists, so a send that requests an
+    /// RFC 3461 DSN has to open and drive its own
+    /// [`AsyncSmtpConnection`] — which needs everything `connect`
+    /// was originally called with.
+    host: String,
+    port: u16,
+    credentials: Credentials,
+    tls_params: TlsParameters,
 }
 
 impl SmtpClient {
@@ -63,16 +81,16 @@ impl SmtpClient {
             AsyncSmtpTransport::<Tokio1Executor>::relay(host)
                 .map_err(|e| UnkaiError::Network(format!("Failed to create SMTP relay: {e}")))?
                 .port(port)
-                .tls(Tls::Wrapper(tls_params))
-                .credentials(credentials)
+                .tls(Tls::Wrapper(tls_params.clone()))
+                .credentials(credentials.clone())
                 .build()
         } else {
             debug!("Using STARTTLS (port {port})");
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
                 .map_err(|e| UnkaiError::Network(format!("Failed to create STARTTLS relay: {e}")))?
                 .port(port)
-                .tls(Tls::Required(tls_params))
-                .credentials(credentials)
+                .tls(Tls::Required(tls_params.clone()))
+                .credentials(credentials.clone())
                 .build()
         };
 
@@ -84,7 +102,13 @@ impl SmtpClient {
 
         info!("SMTP connection established and authenticated");
 
-        Ok(Self { transport })
+        Ok(Self {
+            transport,
+            host: host.to_string(),
+            port,
+            credentials,
+            tls_params,
+        })
     }
 
     /// Send an email message.
@@ -101,6 +125,33 @@ impl SmtpClient {
     /// sites keep their behaviour unchanged.
     pub async fn send(&self, email: &OutgoingEmail) -> Result<(), UnkaiError> {
         self.send_with_crypto(email, None).await
+    }
+
+    /// Send a message disposition notification — the read receipt
+    /// itself (RFC 8098, #416).
+    ///
+    /// The wire bytes come from [`build_mdn_report_bytes`]; this
+    /// method only adds the SMTP envelope, which has one deliberate
+    /// quirk: the reverse-path is **null** (`MAIL FROM:<>`), as
+    /// RFC 8098 §3 requires.  A receipt that could itself bounce —
+    /// or trigger another receipt — would loop two auto-responders
+    /// against each other forever; the null sender is the standard
+    /// loop-breaker (same mechanism delivery status notifications
+    /// use).
+    pub async fn send_mdn(&self, reply: &MdnReply) -> Result<(), UnkaiError> {
+        let rcpt: Mailbox = sanitise_recipient(&reply.to)
+            .parse()
+            .map_err(|e| UnkaiError::Protocol(format!("Invalid receipt address: {e}")))?;
+        let envelope = Envelope::new(None, vec![rcpt.email])
+            .map_err(|e| UnkaiError::Protocol(format!("build MDN envelope: {e}")))?;
+
+        let bytes = build_mdn_report_bytes(reply);
+        self.transport
+            .send_raw(&envelope, &bytes)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to send read receipt: {e}")))?;
+        info!("Read receipt sent to {}", reply.to);
+        Ok(())
     }
 
     /// Send an email with optional OpenPGP or S/MIME wrapping.
@@ -164,11 +215,18 @@ impl SmtpClient {
             wants_pgp_encrypt || wants_smime_encrypt || wants_smime_sign || wants_pgp_sign;
         if !any_crypto {
             // Plaintext path — historical behaviour, no MIME wrapping.
+            // (envelope + formatted bytes is exactly what lettre's
+            // `AsyncTransport::send` derives from a `Message`
+            // internally, so routing through `submit_raw` changes
+            // nothing for the non-DSN case.)
             let message = build_outgoing_message(email)?;
-            self.transport
-                .send(message)
-                .await
-                .map_err(|e| UnkaiError::Protocol(format!("Failed to send email: {e}")))?;
+            self.submit_raw(
+                message.envelope(),
+                &message.formatted(),
+                email.request_delivery_receipt,
+                "Failed to send email",
+            )
+            .await?;
             info!("Email sent successfully to {:?}", email.to);
             return Ok(());
         }
@@ -189,10 +247,13 @@ impl SmtpClient {
             // recipient like a plaintext send).
             let outer_bytes = wrap_as_pgp_mime_signed(email, bridge)?;
             let envelope = envelope_from_email_include_bcc(email)?;
-            self.transport
-                .send_raw(&envelope, &outer_bytes)
-                .await
-                .map_err(|e| UnkaiError::Protocol(format!("Failed to send signed email: {e}")))?;
+            self.submit_raw(
+                &envelope,
+                &outer_bytes,
+                email.request_delivery_receipt,
+                "Failed to send signed email",
+            )
+            .await?;
             info!("Signed email sent successfully to {:?}", email.to);
             return Ok(());
         }
@@ -203,12 +264,13 @@ impl SmtpClient {
             // sign-only path, so BCC rides the same envelope.
             let outer_bytes = wrap_as_smime_signed(email, bridge)?;
             let envelope = envelope_from_email_include_bcc(email)?;
-            self.transport
-                .send_raw(&envelope, &outer_bytes)
-                .await
-                .map_err(|e| {
-                    UnkaiError::Protocol(format!("Failed to send S/MIME signed email: {e}"))
-                })?;
+            self.submit_raw(
+                &envelope,
+                &outer_bytes,
+                email.request_delivery_receipt,
+                "Failed to send S/MIME signed email",
+            )
+            .await?;
             info!("S/MIME signed email sent successfully to {:?}", email.to);
             return Ok(());
         }
@@ -242,16 +304,17 @@ impl SmtpClient {
             },
         ) in planned.iter().enumerate()
         {
-            self.transport
-                .send_raw(envelope, wire_bytes)
-                .await
-                .map_err(|e| {
-                    UnkaiError::Protocol(format!(
-                        "Failed to send encrypted envelope {}/{}: {e}",
-                        idx + 1,
-                        envelope_count
-                    ))
-                })?;
+            self.submit_raw(
+                envelope,
+                wire_bytes,
+                email.request_delivery_receipt,
+                &format!(
+                    "Failed to send encrypted envelope {}/{}",
+                    idx + 1,
+                    envelope_count
+                ),
+            )
+            .await?;
         }
 
         info!(
@@ -260,6 +323,220 @@ impl SmtpClient {
         );
         Ok(())
     }
+
+    /// Submit one SMTP transaction (envelope + wire bytes), routing by
+    /// whether the sender asked for a delivery confirmation (#461).
+    ///
+    /// The plain route hands the bytes to lettre's pooled transport —
+    /// byte-for-byte what every send did before #461.  The DSN route
+    /// can't use the pool (lettre's connection layer hardcodes empty
+    /// `RCPT TO` parameter lists), so it drives a dedicated
+    /// connection via [`Self::send_raw_requesting_dsn`].
+    ///
+    /// `ctx` prefixes any error so each caller keeps its historical
+    /// message ("Failed to send signed email: …" etc.).
+    async fn submit_raw(
+        &self,
+        envelope: &Envelope,
+        bytes: &[u8],
+        request_dsn: bool,
+        ctx: &str,
+    ) -> Result<(), UnkaiError> {
+        if request_dsn {
+            self.send_raw_requesting_dsn(envelope, bytes, ctx).await
+        } else {
+            self.transport
+                .send_raw(envelope, bytes)
+                .await
+                .map(|_| ())
+                .map_err(|e| UnkaiError::Protocol(format!("{ctx}: {e}")))
+        }
+    }
+
+    /// Send raw wire bytes requesting an RFC 3461 delivery status
+    /// notification (`NOTIFY=SUCCESS,FAILURE`) for every recipient.
+    ///
+    /// DSN requests ride as parameters on the `RCPT TO` command, and
+    /// lettre 0.11's `AsyncSmtpTransport` gives us no way to set them
+    /// — so this path opens its own [`AsyncSmtpConnection`] and
+    /// replays the same dance the transport does internally: connect
+    /// (implicit TLS on 465, STARTTLS otherwise), authenticate, then
+    /// MAIL FROM / RCPT TO / DATA with our parameters attached.
+    ///
+    /// Best-effort by design: when the server doesn't advertise the
+    /// `DSN` extension the transaction proceeds *without* the NOTIFY
+    /// parameters (sending them anyway would be a syntax error per
+    /// RFC 3461 §3.1) — the mail always goes out, mirroring how a
+    /// read-receipt request can be ignored on the recipient side.
+    async fn send_raw_requesting_dsn(
+        &self,
+        envelope: &Envelope,
+        bytes: &[u8],
+        ctx: &str,
+    ) -> Result<(), UnkaiError> {
+        // EHLO name + timeout mirror the pooled transport's defaults.
+        let client_id = ClientId::default();
+        let timeout = Some(Duration::from_secs(60));
+
+        let mut conn = if self.port == 465 {
+            AsyncSmtpConnection::connect_tokio1(
+                (self.host.as_str(), self.port),
+                timeout,
+                &client_id,
+                Some(self.tls_params.clone()),
+                None,
+            )
+            .await
+            .map_err(|e| UnkaiError::Network(format!("{ctx}: SMTP connect failed: {e}")))?
+        } else {
+            let mut conn = AsyncSmtpConnection::connect_tokio1(
+                (self.host.as_str(), self.port),
+                timeout,
+                &client_id,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| UnkaiError::Network(format!("{ctx}: SMTP connect failed: {e}")))?;
+            // `starttls` errors when the server doesn't offer it —
+            // the same hard requirement `Tls::Required` enforces on
+            // the pooled transport.  Never fall back to cleartext.
+            conn.starttls(self.tls_params.clone(), &client_id)
+                .await
+                .map_err(|e| UnkaiError::Network(format!("{ctx}: STARTTLS failed: {e}")))?;
+            conn
+        };
+
+        match self
+            .dsn_transaction(&mut conn, envelope, bytes, &client_id)
+            .await
+        {
+            Ok(()) => {
+                // Best-effort QUIT — the mail is already accepted, a
+                // hiccup while saying goodbye is not a send failure.
+                let _ = conn.quit().await;
+                Ok(())
+            }
+            Err(e) => {
+                // Drop the connection without QUIT so a half-done
+                // transaction can't linger (mirrors lettre's own
+                // abort-on-error handling).
+                conn.abort().await;
+                Err(UnkaiError::Protocol(format!("{ctx}: {e}")))
+            }
+        }
+    }
+
+    /// The MAIL FROM / RCPT TO / DATA exchange of the DSN path.
+    /// Split out so the caller can uniformly abort the connection on
+    /// any error.  Lettre's `command()` returns `Err` for every
+    /// non-2xx/3xx reply, so each `?` here is a protocol-level abort.
+    async fn dsn_transaction(
+        &self,
+        conn: &mut AsyncSmtpConnection,
+        envelope: &Envelope,
+        bytes: &[u8],
+        client_id: &ClientId,
+    ) -> Result<(), UnkaiError> {
+        conn.auth(DEFAULT_MECHANISMS, &self.credentials)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("SMTP authentication failed: {e}")))?;
+
+        // Lettre's `ServerInfo` only models the extensions it uses
+        // itself (STARTTLS / AUTH / 8BITMIME / SMTPUTF8) and silently
+        // drops the rest — so `supports_feature` can never answer
+        // "does this server do DSN?".  Re-issue EHLO and scan the raw
+        // reply lines instead; re-EHLO before MAIL is legal (RFC 5321
+        // §4.1.4, it just resets the session state we haven't used yet).
+        let ehlo = conn
+            .command(Ehlo::new(client_id.clone()))
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("EHLO failed: {e}")))?;
+        let supports_dsn = ehlo_advertises_dsn(ehlo.message());
+        if !supports_dsn {
+            warn!(
+                host = %self.host,
+                "SMTP server does not advertise the DSN extension — \
+                 sending without the delivery-confirmation request"
+            );
+        }
+
+        // Mirror the SMTPUTF8 / 8BITMIME negotiation lettre's own
+        // `send` performs (its `ServerInfo` does track those two).
+        let mut mail_params = Vec::new();
+        if envelope_has_non_ascii_addresses(envelope) {
+            if !conn.server_info().supports_feature(Extension::SmtpUtfEight) {
+                return Err(UnkaiError::Protocol(
+                    "Envelope contains non-ascii addresses but the server does not support SMTPUTF8"
+                        .into(),
+                ));
+            }
+            mail_params.push(MailParameter::SmtpUtfEight);
+        }
+        if !bytes.is_ascii() {
+            if !conn.server_info().supports_feature(Extension::EightBitMime) {
+                return Err(UnkaiError::Protocol(
+                    "Message contains non-ascii bytes but the server does not support 8BITMIME"
+                        .into(),
+                ));
+            }
+            mail_params.push(MailParameter::Body(MailBodyParameter::EightBitMime));
+        }
+
+        conn.command(Mail::new(envelope.from().cloned(), mail_params))
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("MAIL FROM rejected: {e}")))?;
+        for rcpt in envelope.to() {
+            let params = if supports_dsn {
+                dsn_notify_params()
+            } else {
+                Vec::new()
+            };
+            conn.command(Rcpt::new(rcpt.clone(), params))
+                .await
+                .map_err(|e| UnkaiError::Protocol(format!("RCPT TO <{rcpt}> rejected: {e}")))?;
+        }
+        conn.command(Data)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("DATA rejected: {e}")))?;
+        conn.message(bytes)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Message body rejected: {e}")))?;
+        Ok(())
+    }
+}
+
+/// The `RCPT TO` parameters of a delivery-confirmation request
+/// (RFC 3461 §4.1): report when the message reaches the recipient's
+/// mailbox (`SUCCESS`) and keep failure reporting explicit
+/// (`FAILURE`).  `DELAY` is deliberately omitted — transient
+/// queue-delay notices read as noise next to the "did it arrive?"
+/// question the compose toggle asks.
+fn dsn_notify_params() -> Vec<RcptParameter> {
+    vec![RcptParameter::Other {
+        keyword: "NOTIFY".into(),
+        value: Some("SUCCESS,FAILURE".into()),
+    }]
+}
+
+/// Scan a raw EHLO reply for the `DSN` keyword (RFC 3461 §3).
+///
+/// The first reply line is the server's greeting (domain plus free
+/// text — skipped so a host like `dsn.example.com` can't
+/// false-positive); every later line is one extension keyword,
+/// optionally followed by parameters.  `DSN` takes none, so an exact
+/// case-insensitive match is the whole test.
+fn ehlo_advertises_dsn<'a>(lines: impl Iterator<Item = &'a str>) -> bool {
+    lines.skip(1).any(|l| l.trim().eq_ignore_ascii_case("DSN"))
+}
+
+/// Replicates lettre's private `Envelope::has_non_ascii_addresses`
+/// for the hand-driven DSN transaction: SMTPUTF8 is only needed when
+/// a reverse-path or forward-path address itself carries non-ascii
+/// characters.
+fn envelope_has_non_ascii_addresses(envelope: &Envelope) -> bool {
+    envelope.from().is_some_and(|a| !a.to_string().is_ascii())
+        || envelope.to().iter().any(|a| !a.to_string().is_ascii())
 }
 
 /// Build a lettre `TlsParameters` for `host`, threading per-account
@@ -721,6 +998,15 @@ fn write_outer_routing_headers(email: &OutgoingEmail) -> String {
     if let Some(reply_to) = &email.reply_to {
         headers.push_str(&format!("Reply-To: {reply_to}\r\n"));
     }
+    // RFC 8098 read-receipt request (#416).  Routing metadata, so it
+    // must live on the *outer* wrapper — a receiving client can only
+    // honour it if it's visible before any decrypt/verify step.
+    if email.request_read_receipt {
+        headers.push_str(&format!(
+            "Disposition-Notification-To: {}\r\n",
+            address_only(&email.from)
+        ));
+    }
     headers.push_str(&format!("Subject: {}\r\n", email.subject));
     headers.push_str(&format!("Date: {date}\r\n"));
     headers.push_str(&format!("Message-ID: {message_id}\r\n"));
@@ -977,6 +1263,114 @@ fn build_outer_smime_signed_bytes(
     out
 }
 
+/// Everything needed to compose one read receipt (RFC 8098, #416).
+/// Assembled by the Tauri command layer from the cached original
+/// message + the sending account, and handed to
+/// [`build_mdn_report_bytes`] / [`SmtpClient::send_mdn`].
+#[derive(Debug, Clone)]
+pub struct MdnReply {
+    /// The receipt's author — the account address the original mail
+    /// was delivered to.  Becomes both the `From:` header and the
+    /// report's `Final-Recipient` field.
+    pub from: String,
+    /// Where the receipt goes: the original message's
+    /// `Disposition-Notification-To:` value.
+    pub to: String,
+    /// The original message's Message-ID *without* angle brackets
+    /// (the storage convention #277 set).  Fills the report's
+    /// `Original-Message-ID` field — the key the sender's client
+    /// uses to match the receipt back to its sent mail — plus
+    /// `In-Reply-To`/`References` so the receipt threads under the
+    /// original.  `None` when the original carried no Message-ID;
+    /// the receipt is still valid, just unmatchable by ID.
+    pub original_message_id: Option<String>,
+    /// The original message's subject, quoted in the receipt's own
+    /// `Subject:` and human-readable part.
+    pub original_subject: String,
+    /// `true` when the `Always` policy fired the receipt without a
+    /// per-message user action — reported as `automatic-action/
+    /// MDN-sent-automatically` per RFC 8098 §3.2.6.2 so the sender
+    /// knows a machine, not the reader, confirmed the display.
+    /// `false` = the user explicitly clicked "Send receipt"
+    /// (`manual-action/MDN-sent-manually`).
+    pub automatic: bool,
+}
+
+/// Pure-function builder for the `multipart/report;
+/// report-type=disposition-notification` wire bytes (RFC 8098 §3).
+/// Same hand-built-CRLF approach as the crypto outer builders —
+/// lettre has no model for the `message/disposition-notification`
+/// media type — and split out from [`SmtpClient::send_mdn`] so the
+/// structure is unit-testable without a transport.
+///
+/// Layout (both parts required by the RFC):
+///   1. `text/plain` — human-readable one-liner for clients that
+///      don't understand MDNs and just render the parts.
+///   2. `message/disposition-notification` — the machine-readable
+///      field block (`Final-Recipient`, `Original-Message-ID`,
+///      `Disposition`).
+///
+/// The top-level headers also carry `Auto-Submitted: auto-replied`
+/// (RFC 3834) so other auto-responders — vacation replies, ticket
+/// systems — know not to respond to the receipt in turn.
+pub fn build_mdn_report_bytes(reply: &MdnReply) -> Vec<u8> {
+    let boundary = format!("unkai-mdn-{}", uuid::Uuid::new_v4().simple());
+    let message_id = format!("<{}@unkai-mail.local>", uuid::Uuid::new_v4().simple());
+    let date = chrono::Utc::now().to_rfc2822();
+    let final_recipient = address_only(&reply.from);
+
+    let mut out = String::new();
+    out.push_str(&format!("From: {}\r\n", reply.from));
+    out.push_str(&format!("To: {}\r\n", reply.to));
+    out.push_str(&format!("Subject: Read: {}\r\n", reply.original_subject));
+    out.push_str(&format!("Date: {date}\r\n"));
+    out.push_str(&format!("Message-ID: {message_id}\r\n"));
+    if let Some(orig) = &reply.original_message_id {
+        out.push_str(&format!("In-Reply-To: <{orig}>\r\n"));
+        out.push_str(&format!("References: <{orig}>\r\n"));
+    }
+    out.push_str("Auto-Submitted: auto-replied\r\n");
+    out.push_str("MIME-Version: 1.0\r\n");
+    out.push_str(&format!(
+        "Content-Type: multipart/report; report-type=disposition-notification; \
+         boundary=\"{boundary}\"\r\n"
+    ));
+    out.push_str("\r\n");
+
+    // Part 1 — human-readable summary.  Deliberately English-only:
+    // it renders in the *sender's* client, whose locale we can't
+    // know, and a fixed string is the interop-safe choice.
+    out.push_str(&format!("--{boundary}\r\n"));
+    out.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+    out.push_str("\r\n");
+    out.push_str(&format!(
+        "The message \"{}\" sent to {} has been displayed.\r\n\
+         This is no guarantee that the message has been read or understood.\r\n",
+        reply.original_subject, final_recipient,
+    ));
+    out.push_str("\r\n");
+
+    // Part 2 — the machine-readable disposition field block.
+    out.push_str(&format!("--{boundary}\r\n"));
+    out.push_str("Content-Type: message/disposition-notification\r\n");
+    out.push_str("\r\n");
+    out.push_str("Reporting-UA: Unkai Mail\r\n");
+    out.push_str(&format!("Final-Recipient: rfc822;{final_recipient}\r\n"));
+    if let Some(orig) = &reply.original_message_id {
+        out.push_str(&format!("Original-Message-ID: <{orig}>\r\n"));
+    }
+    let mode = if reply.automatic {
+        "automatic-action/MDN-sent-automatically"
+    } else {
+        "manual-action/MDN-sent-manually"
+    };
+    out.push_str(&format!("Disposition: {mode}; displayed\r\n"));
+    out.push_str("\r\n");
+
+    out.push_str(&format!("--{boundary}--\r\n"));
+    out.into_bytes()
+}
+
 /// Base64-encode `data` and lay it out as a MIME `Content-Transfer-
 /// Encoding: base64` body: 76-character lines (the RFC 2045 §6.8 limit),
 /// CRLF terminators, including a final CRLF after the last line so the
@@ -1127,6 +1521,27 @@ fn flush_line(out: &mut Vec<u8>, line: &[u8]) {
     out.extend_from_slice(b"\r\n");
 }
 
+/// `Disposition-Notification-To:` typed header (RFC 8098 §2.1, #416).
+/// lettre 0.11 has no built-in type for it, so we implement the
+/// `Header` trait ourselves — the value is the address the recipient's
+/// client should send the read receipt to (our own From address).
+#[derive(Debug, Clone)]
+struct DispositionNotificationTo(String);
+
+impl Header for DispositionNotificationTo {
+    fn name() -> HeaderName {
+        HeaderName::new_from_ascii_str("Disposition-Notification-To")
+    }
+
+    fn parse(s: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Self(s.to_string()))
+    }
+
+    fn display(&self) -> HeaderValue {
+        HeaderValue::new(Self::name(), self.0.clone())
+    }
+}
+
 /// Build the lettre `Message` for an outgoing email *without* sending it.
 ///
 /// Exposed so callers (e.g. `main.rs`) can build the message once, send
@@ -1147,15 +1562,23 @@ pub fn build_outgoing_message(email: &OutgoingEmail) -> Result<Message, UnkaiErr
     //
     // `Message-ID` is generated for *every* outgoing mail by the
     // `None` arg below — lettre stamps a `<UUID@hostname>` value.
-    // Without this, every Unkai reply lands in other clients
-    // (Apple Mail, Thunderbird, Outlook, …) as an orphan because
-    // they have nothing to anchor a thread on.
+    // Without this, every Unkai reply lands in the recipient's
+    // client as a thread orphan because there is nothing to anchor
+    // a thread on.
     //
     // `In-Reply-To` and `References` only apply to replies and
     // are sourced from the parent's Message-ID + References chain
     // by the Compose / send path; we wrap each ID in the angle
     // brackets the headers expect.
     builder = builder.message_id(None);
+
+    // RFC 8098 read-receipt request (#416): point the receipt at
+    // our own address.  The bare From (display name stripped) keeps
+    // the header a plain routable address — some receiving clients
+    // choke on comments/names in this field.
+    if email.request_read_receipt {
+        builder = builder.header(DispositionNotificationTo(address_only(&email.from)));
+    }
     if let Some(parent_id) = &email.in_reply_to {
         let trimmed = parent_id.trim();
         if !trimmed.is_empty() {
@@ -1556,6 +1979,8 @@ mod tests {
             references: vec![],
             encryption_mode: Some("pgp".into()),
             signing_enabled: false,
+            request_read_receipt: false,
+            request_delivery_receipt: false,
         }
     }
 
@@ -2287,6 +2712,175 @@ mod tests {
         assert!(
             signed_in_wire,
             "signed payload must appear byte-for-byte in the outer envelope wire bytes"
+        );
+    }
+
+    // ── Read receipts / MDN (#416) ─────────────────────────────
+
+    use super::{MdnReply, build_mdn_report_bytes, build_outgoing_message};
+
+    #[test]
+    fn request_read_receipt_stamps_disposition_notification_to() {
+        let mut email = outgoing("please confirm", &["bob@example.com"]);
+        email.encryption_mode = None;
+        email.from = "Alex Morgan <alex@example.com>".into();
+        email.request_read_receipt = true;
+
+        let raw = build_outgoing_message(&email).expect("build").formatted();
+        let parsed = MessageParser::default().parse(&raw).expect("parse");
+        let dnt = parsed
+            .header("Disposition-Notification-To")
+            .and_then(|h| h.as_text())
+            .expect("header must be present");
+        // Bare address — display name stripped for interop.
+        assert_eq!(dnt.trim(), "alex@example.com");
+    }
+
+    #[test]
+    fn no_receipt_request_means_no_header() {
+        let mut email = outgoing("ordinary mail", &["bob@example.com"]);
+        email.encryption_mode = None;
+
+        let raw = build_outgoing_message(&email).expect("build").formatted();
+        let parsed = MessageParser::default().parse(&raw).expect("parse");
+        assert!(parsed.header("Disposition-Notification-To").is_none());
+    }
+
+    #[test]
+    fn crypto_outer_headers_carry_receipt_request() {
+        // The crypto sends hand-build their outer routing headers, so
+        // the receipt request must survive that path too — it's
+        // routing metadata the recipient's client reads pre-decrypt.
+        let mut email = outgoing("secret memo", &["bob@example.com"]);
+        email.request_read_receipt = true;
+        let wire = build_outer_pgp_mime_bytes(
+            &email,
+            b"-----BEGIN PGP MESSAGE-----\nx\n-----END PGP MESSAGE-----\n",
+        );
+        let parsed = MessageParser::default().parse(&wire).expect("parse outer");
+        let dnt = parsed
+            .header("Disposition-Notification-To")
+            .and_then(|h| h.as_text())
+            .expect("outer wrapper must carry the header");
+        assert_eq!(dnt.trim(), "alice@example.com");
+    }
+
+    // ── Delivery confirmations / DSN (#461) ────────────────────
+
+    use super::{dsn_notify_params, ehlo_advertises_dsn};
+
+    #[test]
+    fn dsn_notify_params_render_on_rcpt_command() {
+        // The exact bytes the DSN path puts on the wire for each
+        // recipient — RFC 3461 §4.1 `NOTIFY` esmtp-param, rendered
+        // through lettre's `Rcpt` command Display impl.
+        let addr: super::Address = "bob@example.com".parse().expect("valid address");
+        let cmd = super::Rcpt::new(addr, dsn_notify_params()).to_string();
+        assert_eq!(cmd, "RCPT TO:<bob@example.com> NOTIFY=SUCCESS,FAILURE\r\n");
+    }
+
+    #[test]
+    fn ehlo_scan_detects_dsn_keyword() {
+        // Keyword match is case-insensitive and tolerant of the
+        // parameterised lines other extensions emit.
+        let lines = [
+            "mail.example.com at your service",
+            "SIZE 35882577",
+            "8BITMIME",
+            "dsn",
+            "SMTPUTF8",
+        ];
+        assert!(ehlo_advertises_dsn(lines.iter().copied()));
+    }
+
+    #[test]
+    fn ehlo_scan_ignores_greeting_and_lookalikes() {
+        // "DSN" in the greeting line (e.g. a hostname) must not
+        // count, and neither does a keyword that merely starts with
+        // the letters.
+        let lines = [
+            "DSN.example.com welcomes you",
+            "8BITMIME",
+            "DSNX",
+            "SIZE 100",
+        ];
+        assert!(!ehlo_advertises_dsn(lines.iter().copied()));
+    }
+
+    fn mdn_reply() -> MdnReply {
+        MdnReply {
+            from: "Alex Morgan <alex@example.com>".into(),
+            to: "sender@example.org".into(),
+            original_message_id: Some("orig-123@example.org".into()),
+            original_subject: "quarterly numbers".into(),
+            automatic: false,
+        }
+    }
+
+    #[test]
+    fn mdn_report_is_multipart_report_with_disposition_notification_type() {
+        let wire = build_mdn_report_bytes(&mdn_reply());
+        let parsed = MessageParser::default().parse(&wire).expect("parse MDN");
+
+        let ct = parsed.content_type().expect("Content-Type");
+        assert!(ct.ctype().eq_ignore_ascii_case("multipart"));
+        assert_eq!(ct.subtype().unwrap_or(""), "report");
+        assert_eq!(
+            ct.attribute("report-type").unwrap_or(""),
+            "disposition-notification"
+        );
+        assert_eq!(parsed.subject().unwrap_or(""), "Read: quarterly numbers");
+        // RFC 3834: receipts must declare themselves auto-submitted so
+        // other auto-responders don't answer them.
+        assert_eq!(
+            parsed
+                .header("Auto-Submitted")
+                .and_then(|h| h.as_text())
+                .unwrap_or(""),
+            "auto-replied"
+        );
+    }
+
+    #[test]
+    fn mdn_report_field_block_names_original_message_and_disposition() {
+        let wire = build_mdn_report_bytes(&mdn_reply());
+        let parsed = MessageParser::default().parse(&wire).expect("parse MDN");
+
+        let field_part = (0..)
+            .map_while(|i| parsed.part(i))
+            .find(|p| {
+                p.content_type().is_some_and(|c| {
+                    c.ctype().eq_ignore_ascii_case("message")
+                        && c.subtype()
+                            .is_some_and(|s| s.eq_ignore_ascii_case("disposition-notification"))
+                })
+            })
+            .expect("message/disposition-notification part must exist");
+        let body = std::str::from_utf8(field_part.contents()).expect("utf-8");
+        assert!(body.contains("Final-Recipient: rfc822;alex@example.com"));
+        assert!(body.contains("Original-Message-ID: <orig-123@example.org>"));
+        assert!(body.contains("Disposition: manual-action/MDN-sent-manually; displayed"));
+    }
+
+    #[test]
+    fn automatic_mdn_reports_automatic_action_mode() {
+        let mut reply = mdn_reply();
+        reply.automatic = true;
+        let wire = build_mdn_report_bytes(&reply);
+        let text = String::from_utf8(wire).expect("utf-8");
+        assert!(text.contains("Disposition: automatic-action/MDN-sent-automatically; displayed"));
+    }
+
+    #[test]
+    fn mdn_report_threads_under_the_original() {
+        let wire = build_mdn_report_bytes(&mdn_reply());
+        let parsed = MessageParser::default().parse(&wire).expect("parse MDN");
+        assert_eq!(
+            parsed
+                .header("In-Reply-To")
+                .and_then(|h| h.as_text())
+                .unwrap_or(""),
+            "orig-123@example.org"
         );
     }
 }

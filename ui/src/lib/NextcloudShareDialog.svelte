@@ -215,7 +215,7 @@
       if (e.target === e.currentTarget && !sharing) oncancel()
     }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-[28rem] max-w-full p-5">
+    <div class="glass-float rounded-2xl w-[28rem] max-w-full p-5">
       <h3 class="text-base font-semibold mb-1">Password-protect link?</h3>
       <p class="text-xs text-surface-500 mb-3">
         {paths.length === 1
@@ -232,7 +232,7 @@
       <input
         id="nc-share-dialog-pw"
         type="password"
-        class="input w-full text-sm px-2 py-1.5 rounded-md mb-3"
+        class="input w-full text-sm px-2 py-1.5 rounded-lg mb-3"
         placeholder="Leave blank for no password"
         bind:value={password}
         disabled={sharing}
@@ -258,7 +258,7 @@
       </label>
       <select
         id="nc-share-dialog-perms"
-        class="select w-full text-sm px-2 py-1.5 rounded-md mb-1"
+        class="select w-full text-sm px-2 py-1.5 rounded-lg mb-1"
         bind:value={permissions}
         disabled={sharing}
       >

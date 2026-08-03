@@ -1603,7 +1603,7 @@
   <div
     class={inStandaloneWindow
       ? 'flex-1 min-h-0 w-full bg-surface-50 dark:bg-surface-900 flex flex-col'
-      : 'w-[640px] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col'}
+      : 'w-[640px] max-h-[90vh] glass-float rounded-2xl flex flex-col'}
   >
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-3">
       <h2 class="text-base font-semibold shrink-0">
@@ -1643,7 +1643,7 @@
       <div class="flex items-center gap-2">
         <input
           id="event-summary"
-          class="input flex-1 px-3 py-2 text-sm rounded-md"
+          class="input flex-1 px-3 py-2 text-sm rounded-lg"
           bind:value={summary}
           placeholder="Title of the event"
           aria-label="Title"
@@ -1870,7 +1870,7 @@
       <div>
         <textarea
           id="event-description"
-          class="textarea w-full px-3 py-2 text-sm rounded-md min-h-[140px]"
+          class="textarea w-full px-3 py-2 text-sm rounded-lg min-h-[140px]"
           bind:value={description}
           placeholder="Description"
           aria-label="Description"
@@ -1913,7 +1913,7 @@
           </svg>
           <input
             type="text"
-            class="input w-full pl-9 pr-3 py-2 text-sm rounded-md"
+            class="input w-full pl-9 pr-3 py-2 text-sm rounded-lg"
             {placeholder}
             autocomplete="off"
             value={role === 'REQ-PARTICIPANT'
@@ -1972,7 +1972,7 @@
           />
           {#if activeSuggestionRole === role && dropdownSuggestions.length > 0}
             <ul
-              class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-md shadow-lg"
+              class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-lg shadow-lg"
               role="listbox"
             >
               {#each dropdownSuggestions as s, i (s.kind === 'contact' ? `${s.contact.id}::${s.email.value}` : s.list.id)}

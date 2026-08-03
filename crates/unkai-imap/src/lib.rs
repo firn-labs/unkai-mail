@@ -8,6 +8,6 @@ mod client;
 mod mutf7;
 
 pub use client::{
-    EnvelopeBatch, FlagSnapshot, ImapClient, extract_decrypted_attachment, parse_eml_bytes,
-    parse_eml_bytes_with_crypto, probe_server_certificate,
+    EnvelopeBatch, FlagSnapshot, ImapClient, MdnReportData, extract_decrypted_attachment,
+    parse_eml_bytes, parse_eml_bytes_with_crypto, parse_mdn_report, probe_server_certificate,
 };

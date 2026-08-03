@@ -139,7 +139,7 @@
     aria-expanded={open}
     aria-controls={popoverId}
     autocomplete="off"
-    class="input w-full px-3 py-2 text-sm rounded-md pr-9"
+    class="input w-full px-3 py-2 text-sm rounded-lg pr-9"
     bind:value
     onfocus={() => (open = true)}
     onclick={() => (open = true)}
@@ -166,7 +166,7 @@
   {#if open}
     <div
       id={popoverId}
-      class="absolute z-50 mt-1 rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg p-2 flex gap-1"
+      class="absolute z-50 mt-1 rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg p-2 flex gap-1"
       role="dialog"
       aria-label="Pick a time"
     >
@@ -179,7 +179,7 @@
         </div>
         <ul
           bind:this={hourListEl}
-          class="w-16 max-h-56 overflow-y-auto rounded-md"
+          class="w-16 max-h-56 overflow-y-auto rounded-lg"
           role="listbox"
           aria-label="Hours"
         >
@@ -207,7 +207,7 @@
         </div>
         <ul
           bind:this={minuteListEl}
-          class="w-16 max-h-56 overflow-y-auto rounded-md"
+          class="w-16 max-h-56 overflow-y-auto rounded-lg"
           role="listbox"
           aria-label="Minutes"
         >
