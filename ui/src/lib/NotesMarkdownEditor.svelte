@@ -661,7 +661,7 @@
   :global(.markdown-editor-preview pre) {
     background: var(--color-surface-100);
     padding: 0.75rem;
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
     overflow-x: auto;
   }
   :global([data-mode='dark'] .markdown-editor-preview pre) {

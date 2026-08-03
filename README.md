@@ -198,6 +198,17 @@ verification across IMAP, SMTP, and JMAP:
   </table>
 </div>
 
+### 🤖 Bring your own AI — optional, off by default
+
+Unkai never ships or calls an LLM. Instead it can host a local,
+token-protected **MCP server** so an AI agent *you* choose (Claude,
+or any MCP-capable client) can search your mail, check your calendar,
+or draft replies — under per-tool permissions you control. Reads are
+on by default once enabled; anything that writes is an explicit
+opt-in, and **there is no send tool**: agents can only leave drafts
+for you to review. See **[docs/mcp.md](docs/mcp.md)** for setup and
+the security model.
+
 ### 🔍 Search that scales
 
 Local FTS5 index over the encrypted mail cache for instant searches with
@@ -250,6 +261,7 @@ unkai-mail/
 │   ├── unkai-carddav/     # CardDAV contact sync
 │   ├── unkai-discovery/   # Mozilla autoconfig + DNS SRV discovery
 │   ├── unkai-nextcloud/   # Nextcloud OCS API (Talk, Files, …)
+│   ├── unkai-mcp/         # Local MCP server for BYO AI agents
 │   └── unkai-store/       # Local cache + encrypted SQLite + keychain
 ├── src-tauri/              # Tauri shell (entry point + capabilities)
 └── ui/                     # Svelte 5 + TypeScript + Vite
@@ -410,9 +422,11 @@ Tracked in [GitHub Issues](https://github.com/firn-labs/unkai-mail/issues).
 - Localization (English + German) via Paraglide
 - Skeleton theme picker + custom theme import
 - App-icon picker (14 styles) with hot-swap
+- Local MCP server for BYO AI agents ([#419](https://github.com/firn-labs/unkai-mail/issues/419),
+  [docs/mcp.md](docs/mcp.md)) — per-tool permissions, no send tool
 
 **Next up**
-- AI-assisted reply drafting + RAG over mail ([#59](https://github.com/firn-labs/unkai-mail/issues/59))
+- RAG / semantic search over mail ([#59](https://github.com/firn-labs/unkai-mail/issues/59))
 - RSVP polish — propose a new timeslot / additional response options
 - In-app updater ([#229](https://github.com/firn-labs/unkai-mail/issues/229))
 

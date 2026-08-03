@@ -857,7 +857,7 @@
 </script>
 
 {#if cardReady}
-<div class="rounded-md p-4 mb-3 text-sm
+<div class="rounded-lg p-4 mb-3 text-sm
             {isCancel
               ? 'border border-red-500/40 bg-red-500/5'
               : 'border border-primary-500/40 bg-primary-500/5'}">
@@ -917,7 +917,7 @@
       <label class="text-surface-500" for="rsvp-calendar">Add to</label>
       <select
         id="rsvp-calendar"
-        class="select px-2 py-1 text-xs rounded-md flex-1 max-w-[260px]"
+        class="select px-2 py-1 text-xs rounded-lg flex-1 max-w-[260px]"
         bind:value={selectedCalendarId}
         disabled={calendarsLoading}
       >
@@ -1123,7 +1123,7 @@
         <div class="flex items-center justify-center gap-2 mb-2 text-xs">
           <button
             type="button"
-            class="w-7 h-7 rounded-md flex items-center justify-center text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+            class="w-7 h-7 rounded-lg flex items-center justify-center text-surface-600 dark:text-surface-300 hover:bg-primary-500/10 transition-colors"
             aria-label="Previous day"
             title="Previous day"
             onclick={() => shiftPreviewDay(-1)}
@@ -1133,7 +1133,7 @@
           </span>
           <button
             type="button"
-            class="w-7 h-7 rounded-md flex items-center justify-center text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+            class="w-7 h-7 rounded-lg flex items-center justify-center text-surface-600 dark:text-surface-300 hover:bg-primary-500/10 transition-colors"
             aria-label="Next day"
             title="Next day"
             onclick={() => shiftPreviewDay(1)}
@@ -1148,7 +1148,7 @@
           {@const proposedGeom = proposedOnPreviewedDay ? blockGeometry(invite.start, invite.end) : null}
           <div
             bind:this={previewScrollEl}
-            class="relative rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 overflow-y-auto"
+            class="relative rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 overflow-y-auto"
             style="max-height: {PREVIEW_VIEWPORT_PX}px;"
           >
             <!-- Hour rows: 24 fixed-height grid rows guarantee

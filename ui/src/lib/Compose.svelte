@@ -17,6 +17,7 @@
    */
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { untrack } from 'svelte'
   import { formatError } from './errors'
   import { extractManagedShares } from './managedShares'
@@ -596,6 +597,15 @@
       iconName: 'encrypted',
       content: encryptionTabContent,
     },
+    // #416 — per-send options tab.  Currently just the read-receipt
+    // request toggle; future per-send switches land here rather
+    // than crowding the Send actions row.
+    {
+      id: 'options',
+      label: 'Options',
+      iconName: 'settings',
+      content: optionsTabContent,
+    },
   ])
 
   /** Shares minted from this Compose during the current draft.
@@ -1045,6 +1055,25 @@
   // opened Compose never inherits a stale passphrase.
   let pgpPassphrase = $state('')
 
+  // Read-receipt request toggle (#416, RFC 8098).  When on, the
+  // backend stamps `Disposition-Notification-To:` with the sender's
+  // own address and tracks the sent Message-ID so an incoming
+  // receipt can be matched back and shown as status on the sent
+  // mail.  Defaults off per message — receipts are an explicit ask,
+  // and most recipients' clients let them decline anyway.
+  let requestReadReceipt = $state(false)
+
+  // Delivery-confirmation request toggle (#461, RFC 3461 DSN).
+  // When on, the send path asks the mail server for a delivery
+  // status notification per recipient (NOTIFY=SUCCESS,FAILURE on
+  // the SMTP envelope; the same parameters on a JMAP submission).
+  // Unlike the read receipt above, the answer comes from the
+  // *server* once the mail lands in the recipient's mailbox — not
+  // from the recipient's client — but it's equally best-effort:
+  // servers that don't implement DSN deliver the mail without a
+  // report, so the toggle never blocks a send.
+  let requestDeliveryReceipt = $state(false)
+
   // #341 — when the sending account has opted into "Unlock
   // automatically" we hide the inline passphrase input entirely
   // and let the backend resolve the passphrase from the OS
@@ -1317,7 +1346,11 @@
   async function ensureNextcloudAccount(): Promise<string | null> {
     if (ncAccountId) return ncAccountId
     try {
-      const accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      // Talk links / file attachments need a real Nextcloud —
+      // generic-DAV / local contact sources (#413) don't qualify.
+      const accounts = (
+        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+      ).filter(isNextcloudSource)
       if (accounts.length === 0) {
         error = 'Connect a Nextcloud account first (Settings → Nextcloud).'
         return null
@@ -2258,6 +2291,10 @@
                 ? 'pgp'
                 : null,
           signing_enabled: cryptoStack === 'pgp' && (encryptEnabled || signOnlyEnabled),
+          // #416: ask the recipient's client to send a read receipt.
+          request_read_receipt: requestReadReceipt,
+          // #461: ask the receiving server for a delivery confirmation.
+          request_delivery_receipt: requestDeliveryReceipt,
         },
         // #255: lets the backend stamp `\Answered` on the
         // original + persist `replied_kind` for the mail-list
@@ -2654,7 +2691,7 @@
          flex-column already scrolls the body region, so the modal
          itself never needs to scroll. -->
     <div
-      class="compose-modal bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col"
+      class="compose-modal glass-float rounded-2xl flex flex-col"
       style="resize: both; overflow: hidden; width: 720px; height: 80vh; min-width: 480px; min-height: 420px; max-width: 95vw; max-height: 95vh;"
     >
       {@render composeBody()}
@@ -2713,13 +2750,13 @@
                because the OS window itself is the minimise surface
                there. -->
           <button
-            class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100 px-1 text-lg leading-none"
+            class="text-on-glass-muted hover:text-on-glass px-1 text-lg leading-none"
             onclick={() => void minimizeAndSave()}
             aria-label={m.compose_button_minimize_aria_label()}
             title={m.compose_button_minimize_title()}
           >–</button>
         {/if}
-        <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
+        <button class="text-on-glass-muted hover:text-on-glass" onclick={cancel} aria-label="Close">✕</button>
       </div>
     </header>
 
@@ -2736,11 +2773,11 @@
            more than one account, otherwise collapsed to a static label
            so single-account users see no extra chrome. -->
       <div class="flex items-center gap-2">
-        <label class="text-xs w-14 text-surface-500" for="compose-from">From</label>
+        <label class="text-xs w-14 text-on-glass-muted" for="compose-from">From</label>
         {#if accounts.length > 1}
           <select
             id="compose-from"
-            class="select flex-1 px-3 py-2 text-sm rounded-md"
+            class="select flex-1 px-3 py-2 text-sm rounded-lg"
             bind:value={fromAccountId}
           >
             {#each accounts as a (a.id)}
@@ -2748,14 +2785,14 @@
             {/each}
           </select>
         {:else}
-          <span id="compose-from" class="text-sm text-surface-700 dark:text-surface-300">
+          <span id="compose-from" class="text-sm text-on-glass">
             {(fromAccount?.person_name ?? fromAccount?.display_name) || ''} &lt;{fromAddress}&gt;
           </span>
         {/if}
       </div>
 
       <div class="flex items-center gap-2">
-        <label class="text-xs w-14 text-surface-500" for="compose-to">To</label>
+        <label class="text-xs w-14 text-on-glass-muted" for="compose-to">To</label>
         <AddressAutocomplete
           id="compose-to"
           bind:value={to}
@@ -2768,18 +2805,18 @@
 
       {#if showCcBcc}
         <div class="flex items-center gap-2">
-          <label class="text-xs w-14 text-surface-500" for="compose-cc">Cc</label>
+          <label class="text-xs w-14 text-on-glass-muted" for="compose-cc">Cc</label>
           <AddressAutocomplete id="compose-cc" bind:value={cc} />
         </div>
         <div class="flex items-center gap-2">
-          <label class="text-xs w-14 text-surface-500" for="compose-bcc">Bcc</label>
+          <label class="text-xs w-14 text-on-glass-muted" for="compose-bcc">Bcc</label>
           <AddressAutocomplete id="compose-bcc" bind:value={bcc} />
         </div>
       {/if}
 
       <div class="flex items-center gap-2">
-        <label class="text-xs w-14 text-surface-500" for="compose-subject">Subject</label>
-        <input id="compose-subject" class="input flex-1 px-3 py-2 text-sm rounded-md" bind:value={subject} />
+        <label class="text-xs w-14 text-on-glass-muted" for="compose-subject">Subject</label>
+        <input id="compose-subject" class="input flex-1 px-3 py-2 text-sm rounded-lg" bind:value={subject} />
       </div>
 
       <!-- `flex-1 min-h-0` makes this the stretchy slot in the body
@@ -2820,7 +2857,7 @@
            recipient has a key, or encryption is off. -->
       {#if cryptoStack === 'pgp' && encryptEnabled && recipientsWithoutKey.length > 0}
         <div
-          class="flex items-start gap-3 px-3 py-2 rounded-md border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
+          class="flex items-start gap-3 px-3 py-2 rounded-lg border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
           role="alert"
         >
           <span class="shrink-0 mt-0.5"><Icon name="warning" size={16} /></span>
@@ -2842,7 +2879,7 @@
            in the attached PDF I sent earlier"). -->
       {#if showAttachmentMentionWarning}
         <div
-          class="flex items-start gap-3 px-3 py-2 rounded-md border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
+          class="flex items-start gap-3 px-3 py-2 rounded-lg border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
           role="alert"
         >
           <span aria-hidden="true">⚠️</span>
@@ -2867,7 +2904,7 @@
                  the OS default app).  The ✕ remove button keeps
                  its own click handler with stopPropagation so
                  hitting it doesn't also trigger the preview. -->
-            <span class="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-surface-200 dark:bg-surface-800 text-xs">
+            <span class="inline-flex items-center gap-2 px-2 py-1 rounded-lg bg-surface-200 dark:bg-surface-800 text-xs">
               <button
                 type="button"
                 class="inline-flex items-center gap-2 cursor-pointer text-left"
@@ -2966,6 +3003,47 @@
   </button>
 {/snippet}
 
+<!-- Options tab panel — per-send options (#416 / #461).  Same
+     `.rt-btn` shape as the Attach / Meetings panels.  The
+     read-receipt toggle asks the recipient's client to confirm
+     display; the delivery-confirmation toggle asks the *server* to
+     confirm the mail reached the mailbox (RFC 3461 DSN).  Both
+     tooltips manage expectations up front — receipts are advisory
+     (clients decline or ignore them) and delivery reports need the
+     server to support DSN. -->
+{#snippet optionsTabContent()}
+  <button
+    type="button"
+    class="rt-btn"
+    class:is-active={requestReadReceipt}
+    title={requestReadReceipt
+      ? m.compose_read_receipt_title_active()
+      : m.compose_read_receipt_title()}
+    aria-pressed={requestReadReceipt}
+    onclick={() => (requestReadReceipt = !requestReadReceipt)}
+  >
+    <span class="rt-btn-icon"><Icon name="read" size={20} /></span>
+    <span class="rt-btn-label">
+      {requestReadReceipt ? m.compose_read_receipt_active() : m.compose_read_receipt()}
+    </span>
+  </button>
+  <button
+    type="button"
+    class="rt-btn"
+    class:is-active={requestDeliveryReceipt}
+    title={requestDeliveryReceipt
+      ? m.compose_delivery_receipt_title_active()
+      : m.compose_delivery_receipt_title()}
+    aria-pressed={requestDeliveryReceipt}
+    onclick={() => (requestDeliveryReceipt = !requestDeliveryReceipt)}
+  >
+    <span class="rt-btn-icon"><Icon name="success" size={20} /></span>
+    <span class="rt-btn-label">
+      {requestDeliveryReceipt ? m.compose_delivery_receipt_active() : m.compose_delivery_receipt()}
+    </span>
+  </button>
+{/snippet}
+
 <!-- Always-visible Save / Send actions in the tab-strip trailing
      slot.  Save stays compact (stacked icon + label) on the left;
      Send is the primary action and gets the wider, horizontally-
@@ -3019,12 +3097,12 @@
   {#if bothStacksAvailable}
     <div class="flex items-center gap-2 px-2" role="group" aria-label={m.compose_crypto_stack_label()}>
       <span class="text-xs text-surface-500 whitespace-nowrap">{m.compose_crypto_stack_label()}</span>
-      <div class="inline-flex rounded-md border border-surface-300 dark:border-surface-600 overflow-hidden text-xs">
+      <div class="inline-flex rounded-lg border border-surface-300 dark:border-surface-600 overflow-hidden text-xs">
         <button
           type="button"
           class="px-2.5 py-1 transition-colors {cryptoStack === 'pgp'
             ? 'bg-primary-500 text-white'
-            : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'text-surface-600 dark:text-surface-300 hover:bg-primary-500/10'}"
           aria-pressed={cryptoStack === 'pgp'}
           onclick={() => {
             if (cryptoStack !== 'pgp') {
@@ -3039,7 +3117,7 @@
           type="button"
           class="px-2.5 py-1 transition-colors {cryptoStack === 'smime'
             ? 'bg-primary-500 text-white'
-            : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : 'text-surface-600 dark:text-surface-300 hover:bg-primary-500/10'}"
           aria-pressed={cryptoStack === 'smime'}
           onclick={() => {
             if (cryptoStack !== 'smime') {
@@ -3060,7 +3138,7 @@
   <button
     type="button"
     class="rt-btn"
-    class:active={encryptEnabled}
+    class:is-active={encryptEnabled}
     title={encryptEnabled
       ? m.compose_crypto_encrypt_title_active()
       : m.compose_crypto_encrypt_title()}
@@ -3094,7 +3172,7 @@
   <button
     type="button"
     class="rt-btn"
-    class:active={signOnlyEnabled}
+    class:is-active={signOnlyEnabled}
     title={signOnlyEnabled
       ? m.compose_crypto_sign_title_active()
       : m.compose_crypto_sign_title()}
@@ -3142,7 +3220,7 @@
         <input
           id="pgp-passphrase-input"
           type="password"
-          class="input text-xs px-2 py-1 rounded-md w-56"
+          class="input text-xs px-2 py-1 rounded-lg w-56"
           placeholder={m.compose_crypto_passphrase_placeholder()}
           bind:value={pgpPassphrase}
           disabled={sending}
@@ -3267,17 +3345,16 @@
     align-items: center;
     gap: 0.15rem;
     padding: 0.5rem 0.75rem;
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
     line-height: 1;
-    color: inherit;
+    color: var(--text-on-glass);
     cursor: pointer;
-    transition: background-color 100ms ease, color 100ms ease;
+    transition: background-color 150ms ease-out, color 150ms ease-out;
   }
+  /* Theme-derived translucent hover (#451) — matches the
+     hover:bg-primary-500/10 accent the Tailwind chrome uses. */
   :global(.ctb:hover:not(:disabled)) {
-    background: rgb(0 0 0 / 0.06);
-  }
-  :global([data-mode='dark'] .ctb:hover:not(:disabled)) {
-    background: rgb(255 255 255 / 0.08);
+    background: color-mix(in oklab, var(--color-primary-500) 10%, transparent);
   }
   :global(.ctb:disabled) {
     opacity: 0.5;

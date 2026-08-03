@@ -34,6 +34,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import DateField from './DateField.svelte'
   import { formatError } from './errors'
@@ -111,7 +112,10 @@
 
   async function loadAccounts() {
     try {
-      const list = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      // Nextcloud-app feature — skip generic-DAV / local sources (#413).
+      const list = (
+        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+      ).filter(isNextcloudSource)
       accounts = list
       if (list.length === 1 && !accountId) {
         accountId = list[0].id
@@ -411,7 +415,7 @@
        at btn-sm.  Without the symmetric flex-1 the search drifts
        off-center as either side changes. -->
   <div
-    class="flex items-center gap-3 px-6 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
+    class="flex items-center gap-3 px-6 py-3 border-b glass-panel"
   >
     <div class="flex-1 min-w-0 flex justify-start">
       <h2 class="text-xl font-semibold truncate">{m.shares_view_title()}</h2>
@@ -479,7 +483,7 @@
           {#each filteredShares as row (row.id)}
             {@const folder = dirname(row.path)}
             {@const isFolder = row.item_type === 'folder'}
-            <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800">
+            <li class="px-5 py-3 flex items-center gap-3 hover:bg-primary-500/10">
               <span class="flex-shrink-0 text-surface-600 dark:text-surface-300">
                 {#if isFolder}
                   <Icon name="files" size={20} />
@@ -576,7 +580,7 @@
       if (e.target === e.currentTarget && !editing_busy) cancelEdit()
     }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-[28rem] max-w-full p-5">
+    <div class="glass-float rounded-2xl w-[28rem] max-w-full p-5">
       <h3 class="text-base font-semibold mb-1">{m.shares_edit_title()}</h3>
       <p class="text-xs text-surface-500 mb-3 truncate" title={editing.path}>
         {basename(editing.path)}
@@ -588,7 +592,7 @@
       </label>
       <select
         id="shares-edit-perms"
-        class="select w-full text-sm px-2 py-1.5 rounded-md mb-3"
+        class="select w-full text-sm px-2 py-1.5 rounded-lg mb-3"
         bind:value={editPermissions}
         disabled={editing_busy}
       >
@@ -626,7 +630,7 @@
           {#if editPasswordMode === 'replace'}
             <input
               type="password"
-              class="input w-full text-sm px-2 py-1.5 rounded-md mt-1"
+              class="input w-full text-sm px-2 py-1.5 rounded-lg mt-1"
               placeholder={m.shares_edit_password_placeholder()}
               bind:value={editPasswordValue}
               disabled={editing_busy}

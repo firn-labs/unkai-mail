@@ -417,7 +417,7 @@
     onkeydown={(e) => e.key === 'Escape' && resolveIncludeAttachmentsPrompt(false)}
   >
     <div
-      class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl"
+      class="card p-5 max-w-sm w-[90%] glass-float rounded-2xl"
     >
       <h2 id="forward-attachments-title-popout" class="text-base font-semibold mb-2">
         {m.compose_forward_attachments_title()}
@@ -466,7 +466,7 @@
     onkeydown={(e) => e.key === 'Escape' && resolveDecryptPrompt(null)}
   >
     <div
-      class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl"
+      class="card p-5 max-w-sm w-[90%] glass-float rounded-2xl"
     >
       <h2 id="decrypt-prompt-title" class="text-base font-semibold mb-2">
         {pendingDecryptPrompt.kind === 'forward'
@@ -498,7 +498,7 @@
         <input
           id="decrypt-prompt-passphrase-popout"
           type="password"
-          class="input w-full px-3 py-2 text-sm rounded-md mb-2"
+          class="input w-full px-3 py-2 text-sm rounded-lg mb-2"
           bind:value={pendingDecryptPrompt.value}
           disabled={pendingDecryptPrompt.busy}
           autocomplete="off"

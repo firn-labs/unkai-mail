@@ -72,6 +72,14 @@ reason = "proc-macro-error unmaintained — transitive build-time"
 id = "RUSTSEC-2026-0097"
 reason = "rand 0.7 / 0.8 unsoundness — transitive only, not exposed in our API"
 
+# ── quick-xml < 0.41 DoS advisories (transitive copies) ──────────
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0194"
+reason = "quick-xml 0.37/0.38 transitive via tauri-winrt-notification and plist parse locally generated XML only; workspace dep is on patched 0.41"
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0195"
+reason = "quick-xml 0.37/0.38 transitive via tauri-winrt-notification and plist parse locally generated XML only; workspace dep is on patched 0.41"
+
 # ── rsa Marvin timing side-channel (transitive via pgp) ──────────
 [[IgnoredVulns]]
 id = "RUSTSEC-2023-0071"

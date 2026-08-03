@@ -23,7 +23,7 @@ applies to every package listed underneath it.
 |---|---|
 | [MIT](#mit-license) | most Rust crates, all UI runtime / dev deps |
 | [Apache-2.0](#apache-license-20) | dual-licensed Rust crates, OpenSSL (vendored), TypeScript |
-| [BSD-3-Clause](#bsd-3-clause-license) | SQLCipher (vendored) |
+| [BSD-3-Clause](#bsd-3-clause-license) | SQLCipher (vendored), `subtle` |
 | [bzip2-1.0.6](#bzip2-license) | libbz2-rs-sys (via pgp) |
 | [ISC](#isc-license) | rustls, ring (parts) |
 | [MPL-2.0](#mozilla-public-license-20) | webpki-roots, webpki-root-certs, dompurify |
@@ -43,10 +43,12 @@ The following packages are distributed under the MIT License:
 `open`, `hex`, `async-imap`, `futures`, `tokio-rustls`,
 `rustls-pki-types`, `tokio-util`, `sha2`, `lettre`, `mail-parser`,
 `quick-xml`, `ical`, `base64`, `aes-gcm`, `pbkdf2`, `hmac`, `uuid`,
-`hickory-resolver`, `font-kit`, `pgp` (rpgp), `rand`, `zeroize`, `tauri`,
+`hickory-resolver`, `font-kit`, `pgp` (rpgp), `rand`, `zeroize`,
+`axum`, `tauri`,
 `tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
-`tauri-plugin-single-instance`, `notify-rust`, `windows`.
+`tauri-plugin-single-instance`, `notify-rust`,
+`tauri-winrt-notification`, `windows`.
 
 **npm packages**: `@tauri-apps/api`, `@tauri-apps/plugin-autostart`,
 `@tauri-apps/plugin-dialog`, `@tauri-apps/plugin-notification`,
@@ -106,10 +108,12 @@ with downstream consumers who require it):
 `open`, `hex`, `async-imap`, `futures`, `rustls`, `tokio-rustls`,
 `rustls-pki-types`, `mail-parser`, `ical`, `base64`, `aes-gcm`,
 `pbkdf2`, `hmac`, `uuid`, `hickory-resolver`, `font-kit`,
-`pgp` (rpgp), `rand`, `openssl`, `zeroize`, `tauri`, `tauri-build`,
+`pgp` (rpgp), `rand`, `openssl`, `zeroize`, `rmcp`, `tauri`,
+`tauri-build`,
 `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
-`tauri-plugin-single-instance`, `notify-rust`, `windows`.
+`tauri-plugin-single-instance`, `notify-rust`,
+`tauri-winrt-notification`, `windows`.
 
 **Vendored libraries**: OpenSSL (statically linked through
 `rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature for the
@@ -136,6 +140,13 @@ package satisfies the reproduction requirement.
 ---
 
 ## BSD-3-Clause License
+
+**Rust crates**: `subtle` (constant-time comparison for the MCP
+bearer-token check, #438; copyright (c) 2016-2017 Isis Agora
+Lovecruft and Henry de Valence). The licence text below is the
+same BSD-3-Clause template with the respective copyright holder
+substituted; `subtle`'s full notice ships in its Cargo source
+package as fetched at build time.
 
 **Vendored library**: SQLCipher Community Edition — statically linked
 into the binary via `rusqlite`'s

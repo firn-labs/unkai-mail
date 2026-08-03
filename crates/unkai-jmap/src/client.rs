@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{info, warn};
 use unkai_core::error::UnkaiError;
-use unkai_core::models::{Email, EmailEnvelope, Folder, OutgoingEmail};
+use unkai_core::models::{Email, EmailEnvelope, Folder, OutgoingEmail, priority_from_headers};
 use unkai_core::url::ensure_https;
 use url::Url;
 
@@ -300,6 +300,18 @@ impl JmapClient {
                         "properties": [
                             "id", "from", "subject", "receivedAt",
                             "keywords", "hasAttachment", "mailboxIds",
+                            // #417: recipients feed the conversation
+                            // grouper's participant-overlap check.
+                            "to",
+                            // #414: sender-declared priority, via the
+                            // RFC 8621 §4.1.3 header-form properties
+                            // (priority is not a JMAP keyword).
+                            "header:X-Priority:asText",
+                            "header:Importance:asText",
+                            "header:X-MSMail-Priority:asText",
+                            // #416: spot incoming read receipts
+                            // (multipart/report) at envelope time.
+                            "header:Content-Type:asText",
                         ],
                     }),
                     call_id: "g0".into(),
@@ -343,6 +355,13 @@ impl JmapClient {
                     uid: synthetic_uid(&email.id, i),
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients for the participant-overlap
+                    // check, same display shape as `from`.
+                    to_addrs: email
+                        .to
+                        .as_ref()
+                        .map(|addrs| addrs.iter().map(|a| a.display()).collect())
+                        .unwrap_or_default(),
                     subject: email.subject.clone().unwrap_or_default(),
                     date,
                     is_read,
@@ -370,6 +389,19 @@ impl JmapClient {
                     // encryption either; the cache LEFT-JOIN fills it
                     // in once a body fetch has stamped the value.
                     protection: None,
+                    // #414: pin + override are local-only cache
+                    // state; priority maps from the raw headers.
+                    is_pinned: false,
+                    reminder_at: None,
+                    priority: priority_from_headers(
+                        email.header_x_priority.as_deref(),
+                        email.header_importance.as_deref(),
+                        email.header_msmail_priority.as_deref(),
+                    ),
+                    priority_override: None,
+                    // #416: wire-only receipt marker, from the raw
+                    // Content-Type header property.
+                    is_mdn_report: is_mdn_report_content_type(email.header_content_type.as_deref()),
                 }
             })
             .collect();
@@ -408,6 +440,12 @@ impl JmapClient {
                         "id", "from", "to", "cc", "subject", "receivedAt",
                         "keywords", "hasAttachment", "mailboxIds",
                         "bodyValues", "textBody", "htmlBody", "attachments",
+                        // #414: sender-declared priority headers.
+                        "header:X-Priority:asText",
+                        "header:Importance:asText",
+                        "header:X-MSMail-Priority:asText",
+                        // #416: read-receipt request header.
+                        "header:Disposition-Notification-To:asText",
                     ],
                     "fetchAllBodyValues": true,
                 }),
@@ -575,6 +613,26 @@ impl JmapClient {
             protection,
             signature_status: None,
             signer_fingerprint: None,
+            // #414: pin + override are local-only cache state; the
+            // Tauri layer stamps the stored values.  Priority maps
+            // from the raw headers requested above.
+            is_pinned: false,
+            reminder_at: None,
+            priority: priority_from_headers(
+                email.header_x_priority.as_deref(),
+                email.header_importance.as_deref(),
+                email.header_msmail_priority.as_deref(),
+            ),
+            priority_override: None,
+            // #416: read-receipt request, from the header property
+            // requested above.  Handled-state is local-only; the
+            // Tauri layer overlays the stored value.
+            mdn_requested_to: email
+                .header_disposition_notification_to
+                .as_deref()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            mdn_handled: None,
         })
     }
 
@@ -801,6 +859,54 @@ impl JmapClient {
         Ok(())
     }
 
+    /// Set or clear the `$flagged` keyword on a message (#414) —
+    /// equivalent of IMAP's `UID STORE ±FLAGS (\Flagged)`, which the
+    /// mail list reads back as `is_starred`.  Keyword removal uses
+    /// `null` in the patch object, same as `mark_as_unread`.
+    pub async fn set_flagged(
+        &self,
+        folder: &str,
+        uid: u32,
+        flagged: bool,
+    ) -> Result<(), UnkaiError> {
+        let jmap_id = self.resolve_jmap_id(folder, uid).await?;
+
+        let keyword_value = if flagged {
+            Value::Bool(true)
+        } else {
+            Value::Null
+        };
+        let resp = self
+            .call(vec![MethodCall {
+                name: "Email/set".into(),
+                args: json!({
+                    "accountId": self.account_id,
+                    "update": {
+                        jmap_id.clone(): {
+                            "keywords/$flagged": keyword_value,
+                        },
+                    },
+                }),
+                call_id: "flag0".into(),
+            }])
+            .await?;
+
+        let args = Self::find_response(&resp.method_responses, "flag0")?;
+        if let Some(errors) = args.get("notUpdated")
+            && let Some(err) = errors.get(&jmap_id)
+        {
+            return Err(UnkaiError::Protocol(format!(
+                "Failed to update $flagged: {err}"
+            )));
+        }
+
+        info!(
+            "JMAP: {} $flagged on '{jmap_id}'",
+            if flagged { "set" } else { "cleared" }
+        );
+        Ok(())
+    }
+
     /// Send an email via JMAP Submission.
     ///
     /// This is a two-step process batched into one request:
@@ -889,6 +995,51 @@ impl JmapClient {
             .cloned()
             .collect();
 
+        let mut draft = json!({
+            "mailboxIds": { drafts_id: true },
+            "from": [{ "email": email.from }],
+            "to": to,
+            "cc": cc,
+            "bcc": bcc,
+            "subject": email.subject,
+            "bodyValues": body_values,
+            "textBody": text_body,
+            "htmlBody": html_body,
+            "keywords": { "$draft": true },
+        });
+        // RFC 8098 read-receipt request (#416), set via the RFC 8621
+        // §4.1.3 header-form property — the structured Email object
+        // has no first-class field for it.
+        if email.request_read_receipt {
+            draft["header:Disposition-Notification-To:asText"] = json!(email.from);
+        }
+
+        // #461 — RFC 3461 delivery-confirmation request.  RFC 8621 §7
+        // lets every envelope address carry SMTP parameters verbatim,
+        // and the session's submission capability tells us up front
+        // whether the outbound relay implements DSN
+        // (`submissionExtensions`, RFC 8621 §1.3).  When it doesn't,
+        // degrade to a plain envelope rather than letting the server
+        // reject the submission — the same best-effort contract as
+        // the SMTP path.
+        let with_dsn = email.request_delivery_receipt && self.submission_supports_dsn();
+        if email.request_delivery_receipt && !with_dsn {
+            warn!(
+                "JMAP server does not advertise the DSN submission extension — \
+                 sending without the delivery-confirmation request"
+            );
+        }
+        let rcpt_to: Vec<Value> = all_rcpt
+            .iter()
+            .map(|e| {
+                if with_dsn {
+                    json!({ "email": e, "parameters": { "NOTIFY": "SUCCESS,FAILURE" } })
+                } else {
+                    json!({ "email": e })
+                }
+            })
+            .collect();
+
         // Build the batched request: create email + submit it.
         let resp = self
             .call(vec![
@@ -896,20 +1047,7 @@ impl JmapClient {
                     name: "Email/set".into(),
                     args: json!({
                         "accountId": self.account_id,
-                        "create": {
-                            "draft": {
-                                "mailboxIds": { drafts_id: true },
-                                "from": [{ "email": email.from }],
-                                "to": to,
-                                "cc": cc,
-                                "bcc": bcc,
-                                "subject": email.subject,
-                                "bodyValues": body_values,
-                                "textBody": text_body,
-                                "htmlBody": html_body,
-                                "keywords": { "$draft": true },
-                            },
-                        },
+                        "create": { "draft": draft },
                     }),
                     call_id: "emailCreate".into(),
                 },
@@ -923,7 +1061,7 @@ impl JmapClient {
                                 "identityId": identity_id,
                                 "envelope": {
                                     "mailFrom": { "email": email.from },
-                                    "rcptTo": all_rcpt.iter().map(|e| json!({ "email": e })).collect::<Vec<_>>(),
+                                    "rcptTo": rcpt_to,
                                 },
                             },
                         },
@@ -986,6 +1124,29 @@ impl JmapClient {
     }
 
     // ── Internal helpers ───────────────────────────────────────
+
+    /// Whether this account's submission capability advertises the
+    /// ESMTP `DSN` extension (#461).
+    ///
+    /// RFC 8621 §1.3: the `urn:ietf:params:jmap:submission`
+    /// capability object carries `submissionExtensions`, a map of
+    /// ESMTP keyword → argument list for every extension the
+    /// server's outbound relay accepts envelope parameters for.
+    /// Only when `DSN` appears there is it legal to put RFC 3461
+    /// `NOTIFY` parameters on a submission envelope — servers may
+    /// reject envelopes carrying parameters they didn't advertise.
+    fn submission_supports_dsn(&self) -> bool {
+        self.session
+            .accounts
+            .get(&self.account_id)
+            .and_then(|acc| {
+                acc.account_capabilities
+                    .get("urn:ietf:params:jmap:submission")
+            })
+            .and_then(|cap| cap.get("submissionExtensions"))
+            .and_then(|ext| ext.as_object())
+            .is_some_and(|exts| exts.keys().any(|k| k.eq_ignore_ascii_case("DSN")))
+    }
 
     /// Find the JMAP mailbox ID for a given folder name.
     async fn find_mailbox_id(&self, folder: &str) -> Result<String, UnkaiError> {
@@ -1267,6 +1428,22 @@ fn build_full_name(mbox: &JmapMailbox, by_id: &HashMap<&str, &JmapMailbox>) -> S
     }
     parts.reverse();
     parts.join("/")
+}
+
+/// #416: is this raw `Content-Type:` header value an incoming read
+/// receipt (`multipart/report; report-type=disposition-notification`,
+/// RFC 8098 §3 / RFC 6522)?  String-level check on the header text —
+/// the JMAP envelope fetch hands us the raw header via the
+/// `header:Content-Type:asText` property, and the two substrings
+/// together are unambiguous enough that a full MIME parameter parse
+/// would buy nothing.  Matching on `disposition-notification` alone
+/// (not `report-type=disposition-notification`) keeps both the
+/// quoted and unquoted parameter forms covered.
+fn is_mdn_report_content_type(ct: Option<&str>) -> bool {
+    ct.is_some_and(|v| {
+        let v = v.to_ascii_lowercase();
+        v.contains("multipart/report") && v.contains("disposition-notification")
+    })
 }
 
 /// Generate a stable synthetic u32 UID from a JMAP string ID.

@@ -41,6 +41,13 @@ ignore = [
   "RUSTSEC-2024-0370", # proc-macro-error (transitive build-time)
   "RUSTSEC-2026-0097", # rand 0.7 + 0.8 — unsound; transitive only
 
+  # ── quick-xml < 0.41 DoS advisories ──────────────────────────────
+  # Only the transitive 0.37/0.38 copies via tauri-winrt-notification
+  # and plist remain; they parse locally generated XML only.  Our own
+  # workspace dep is on 0.41 (patched).
+  "RUSTSEC-2026-0194", # quick-xml (quadratic dup-attr check)
+  "RUSTSEC-2026-0195", # quick-xml (unbounded ns alloc)
+
   # ── rsa Marvin timing side-channel (transitive via pgp) ─────────
   # `rsa` (CVE-2023-49092 / RUSTSEC-2023-0071) has no patched release
   # upstream.  Pulled in transitively by `pgp` → `unkai-crypto`.  The

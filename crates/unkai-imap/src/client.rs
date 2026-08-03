@@ -12,7 +12,9 @@ use tokio_rustls::client::TlsStream;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 use unkai_core::crypto::CryptoBridge;
 use unkai_core::error::UnkaiError;
-use unkai_core::models::{Email, EmailAttachment, EmailEnvelope, Folder, TrustedCert};
+use unkai_core::models::{
+    Email, EmailAttachment, EmailEnvelope, Folder, TrustedCert, priority_from_headers,
+};
 use unkai_core::tls;
 
 use crate::attachment_filename::decode_attachment_filename;
@@ -223,6 +225,20 @@ fn parse_plaintext_eml_bytes(
         .map(parse_references_header)
         .unwrap_or_default();
 
+    // #414: sender-declared priority headers.
+    let priority = priority_from_headers(
+        header_first("X-Priority").as_deref(),
+        header_first("Importance").as_deref(),
+        header_first("X-MSMail-Priority").as_deref(),
+    );
+
+    // #416: read-receipt request.  Kept verbatim (may be a full
+    // "Name <addr>" mailbox) — it becomes the `To:` of the receipt
+    // if the user agrees to send one.
+    let mdn_requested_to = header_first("Disposition-Notification-To")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
     Ok(Email {
         id: id.to_string(),
         account_id: account_id.to_string(),
@@ -248,6 +264,16 @@ fn parse_plaintext_eml_bytes(
         protection: None,
         signature_status: None,
         signer_fingerprint: None,
+        // #414: pin + override are local-only cache state; the
+        // parse path only knows the sender's declared priority.
+        is_pinned: false,
+        reminder_at: None,
+        priority,
+        priority_override: None,
+        mdn_requested_to,
+        // #416: handled-state is local-only; the cache overlay
+        // fills it in.
+        mdn_handled: None,
     })
 }
 
@@ -1170,7 +1196,7 @@ impl ImapClient {
                     .uid_fetch(
                         range,
                         "(UID FLAGS INTERNALDATE ENVELOPE \
-                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
                     )
                     .await
                     .map_err(|e| UnkaiError::Protocol(format!("UID FETCH failed: {e}")))?
@@ -1187,7 +1213,7 @@ impl ImapClient {
                     .fetch(
                         &range,
                         "(UID FLAGS INTERNALDATE ENVELOPE \
-                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                         BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
                     )
                     .await
                     .map_err(|e| UnkaiError::Protocol(format!("FETCH failed: {e}")))?
@@ -1262,6 +1288,10 @@ impl ImapClient {
                     uid,
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients ride along off the same ENVELOPE
+                    // so the conversation grouper can match on
+                    // participants, not just subject.
+                    to_addrs: format_address_list(envelope.to.as_ref()),
                     subject,
                     date,
                     is_read,
@@ -1286,6 +1316,18 @@ impl ImapClient {
                     thread_id: None,
                     thread_total_count: None,
                     protection,
+                    // #414: pin + priority override are local-only
+                    // user state the wire knows nothing about; the
+                    // cache read paths fill them back in.  The
+                    // header-derived priority comes from the same
+                    // HEADER.FIELDS slice the protection check uses.
+                    is_pinned: false,
+                    reminder_at: None,
+                    priority: extract_envelope_priority(fetch),
+                    priority_override: None,
+                    // #416: wire-only receipt marker — read off the
+                    // same header slice as protection / priority.
+                    is_mdn_report: extract_envelope_mdn_report(fetch),
                 })
             })
             .collect();
@@ -1540,6 +1582,19 @@ impl ImapClient {
             .map(parse_references_header)
             .unwrap_or_default();
 
+        // #414: sender-declared priority headers.
+        let priority = priority_from_headers(
+            header_first("X-Priority").as_deref(),
+            header_first("Importance").as_deref(),
+            header_first("X-MSMail-Priority").as_deref(),
+        );
+
+        // #416: read-receipt request, verbatim (same shape as the
+        // plaintext parse path).
+        let mdn_requested_to = header_first("Disposition-Notification-To")
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
         // PGP/MIME detection (#57).  Stamping `protection` here even
         // without a bridge lets MailView render a Decrypt affordance
         // and the inline chips instead of silently falling back to an
@@ -1580,6 +1635,17 @@ impl ImapClient {
             // passphrase comes in.
             signature_status: None,
             signer_fingerprint: None,
+            // #414: pin + override live in the cache only; the Tauri
+            // layer stamps the stored values before handing the
+            // message to the UI.
+            is_pinned: false,
+            reminder_at: None,
+            priority,
+            priority_override: None,
+            mdn_requested_to,
+            // #416: handled-state is local-only; the Tauri layer
+            // overlays the stored value.
+            mdn_handled: None,
         })
     }
 
@@ -1807,6 +1873,48 @@ impl ImapClient {
             .map_err(|e| UnkaiError::Protocol(format!("Failed to read UID STORE: {e}")))?;
 
         info!("Marked UID {uid} as \\Answered in '{folder}'");
+        Ok(())
+    }
+
+    /// Set or clear the IMAP `\Flagged` system flag on a message
+    /// (#414) — the server half of the user's flag toggle, which the
+    /// mail list reads back as `is_starred`.  One method for both
+    /// directions since, unlike read state, the two are always
+    /// invoked from the same toggle affordance.
+    /// Uses `UID STORE <uid> ±FLAGS (\Flagged)`; idempotent.
+    pub async fn set_flagged(
+        &mut self,
+        folder: &str,
+        uid: u32,
+        flagged: bool,
+    ) -> Result<(), UnkaiError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| UnkaiError::Protocol("Session is closed".into()))?;
+
+        // Read-write SELECT so the server accepts the STORE.
+        session.select(to_wire(folder)).await.map_err(|e| {
+            UnkaiError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        let op = if flagged {
+            "+FLAGS (\\Flagged)"
+        } else {
+            "-FLAGS (\\Flagged)"
+        };
+        let _updates: Vec<_> = session
+            .uid_store(uid.to_string(), op)
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("UID STORE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        info!(
+            "{} \\Flagged on UID {uid} in '{folder}'",
+            if flagged { "Set" } else { "Cleared" }
+        );
         Ok(())
     }
 
@@ -2341,7 +2449,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH after SEARCH failed: {e}")))?
@@ -2394,6 +2502,10 @@ impl ImapClient {
                     uid,
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients ride along off the same ENVELOPE
+                    // so the conversation grouper can match on
+                    // participants, not just subject.
+                    to_addrs: format_address_list(envelope.to.as_ref()),
                     subject,
                     date,
                     is_read,
@@ -2409,6 +2521,18 @@ impl ImapClient {
                     thread_id: None,
                     thread_total_count: None,
                     protection,
+                    // #414: pin + priority override are local-only
+                    // user state the wire knows nothing about; the
+                    // cache read paths fill them back in.  The
+                    // header-derived priority comes from the same
+                    // HEADER.FIELDS slice the protection check uses.
+                    is_pinned: false,
+                    reminder_at: None,
+                    priority: extract_envelope_priority(fetch),
+                    priority_override: None,
+                    // #416: wire-only receipt marker — read off the
+                    // same header slice as protection / priority.
+                    is_mdn_report: extract_envelope_mdn_report(fetch),
                 })
             })
             .collect();
@@ -2472,7 +2596,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH (older search) failed: {e}")))?
@@ -2521,6 +2645,10 @@ impl ImapClient {
                     uid,
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients ride along off the same ENVELOPE
+                    // so the conversation grouper can match on
+                    // participants, not just subject.
+                    to_addrs: format_address_list(envelope.to.as_ref()),
                     subject,
                     date,
                     is_read,
@@ -2536,6 +2664,18 @@ impl ImapClient {
                     thread_id: None,
                     thread_total_count: None,
                     protection,
+                    // #414: pin + priority override are local-only
+                    // user state the wire knows nothing about; the
+                    // cache read paths fill them back in.  The
+                    // header-derived priority comes from the same
+                    // HEADER.FIELDS slice the protection check uses.
+                    is_pinned: false,
+                    reminder_at: None,
+                    priority: extract_envelope_priority(fetch),
+                    priority_override: None,
+                    // #416: wire-only receipt marker — read off the
+                    // same header slice as protection / priority.
+                    is_mdn_report: extract_envelope_mdn_report(fetch),
                 })
             })
             .collect();
@@ -2615,7 +2755,7 @@ impl ImapClient {
             .uid_fetch(
                 set,
                 "(UID FLAGS INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE)])",
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES CONTENT-TYPE X-PRIORITY IMPORTANCE X-MSMAIL-PRIORITY)])",
             )
             .await
             .map_err(|e| UnkaiError::Protocol(format!("UID FETCH (older) failed: {e}")))?
@@ -2668,6 +2808,10 @@ impl ImapClient {
                     uid,
                     folder: folder.to_string(),
                     from,
+                    // #417: recipients ride along off the same ENVELOPE
+                    // so the conversation grouper can match on
+                    // participants, not just subject.
+                    to_addrs: format_address_list(envelope.to.as_ref()),
                     subject,
                     date,
                     is_read,
@@ -2683,6 +2827,18 @@ impl ImapClient {
                     thread_id: None,
                     thread_total_count: None,
                     protection,
+                    // #414: pin + priority override are local-only
+                    // user state the wire knows nothing about; the
+                    // cache read paths fill them back in.  The
+                    // header-derived priority comes from the same
+                    // HEADER.FIELDS slice the protection check uses.
+                    is_pinned: false,
+                    reminder_at: None,
+                    priority: extract_envelope_priority(fetch),
+                    priority_override: None,
+                    // #416: wire-only receipt marker — read off the
+                    // same header slice as protection / priority.
+                    is_mdn_report: extract_envelope_mdn_report(fetch),
                 })
             })
             .collect();
@@ -2778,6 +2934,26 @@ fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
         (false, true) => decoded_name,
         (false, false) => format!("{decoded_name} <{email}>"),
     }
+}
+
+/// Format a whole ENVELOPE address list (e.g. the `To:` slot) as
+/// `"Name <user@host>"` display strings, one per address (#417).
+///
+/// Group syntax (RFC 5322 §3.4) shows up in the ENVELOPE as marker
+/// entries whose `mailbox`/`host` are NIL — `format_address` renders
+/// those as an empty string, which we drop so the participant-overlap
+/// check downstream never sees a phantom "" address.
+fn format_address_list(
+    addrs: Option<&Vec<async_imap::imap_proto::types::Address<'_>>>,
+) -> Vec<String> {
+    addrs
+        .map(|list| {
+            list.iter()
+                .map(format_address)
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Pull RFC 5322 threading headers off a `Fetch` response (#277).
@@ -2883,6 +3059,130 @@ fn extract_envelope_protection(fetch: &async_imap::types::Fetch) -> Option<Strin
     } else {
         None
     }
+}
+
+/// #414: read the sender-declared priority out of the
+/// `BODY.PEEK[HEADER.FIELDS ...]` slice — `X-Priority:` /
+/// `Importance:` / `X-MSMail-Priority:` — so the mail list can
+/// badge high/low-priority mail the moment the envelope lands,
+/// without fetching the body.  The mapping rules live in
+/// [`unkai_core::models::priority_from_headers`]; like
+/// [`extract_envelope_protection`] this relies on the FETCH call
+/// site requesting the header names in its `HEADER.FIELDS` list.
+fn extract_envelope_priority(fetch: &async_imap::types::Fetch) -> Option<String> {
+    let raw = fetch.header()?;
+    let parsed = MessageParser::default().parse(raw)?;
+    let header_text = |name: &str| {
+        parsed
+            .header(name)
+            .and_then(|h| h.as_text())
+            .map(str::to_string)
+    };
+    priority_from_headers(
+        header_text("X-Priority").as_deref(),
+        header_text("Importance").as_deref(),
+        header_text("X-MSMail-Priority").as_deref(),
+    )
+}
+
+/// #416: classify an envelope as an incoming read receipt from the
+/// same `BODY.PEEK[HEADER.FIELDS ...]` slice the protection check
+/// uses — top-level `Content-Type: multipart/report;
+/// report-type=disposition-notification` (RFC 8098 §3, RFC 6522).
+/// The sync path uses this marker to fetch the report body and
+/// update the matching sent-mail receipt record without the user
+/// ever having to open the receipt message.  Same caveat as
+/// [`extract_envelope_protection`]: relies on the FETCH call site
+/// requesting `CONTENT-TYPE` in its `HEADER.FIELDS` list.
+fn extract_envelope_mdn_report(fetch: &async_imap::types::Fetch) -> bool {
+    let Some(raw) = fetch.header() else {
+        return false;
+    };
+    let Some(parsed) = MessageParser::default().parse(raw) else {
+        return false;
+    };
+    let Some(ct) = parsed.content_type() else {
+        return false;
+    };
+    ct.ctype().eq_ignore_ascii_case("multipart")
+        && ct
+            .subtype()
+            .is_some_and(|s| s.eq_ignore_ascii_case("report"))
+        && ct
+            .attribute("report-type")
+            .is_some_and(|r| r.eq_ignore_ascii_case("disposition-notification"))
+}
+
+/// The machine-readable core of one incoming read receipt (#416),
+/// pulled out of a `message/disposition-notification` part.
+#[derive(Debug, Clone)]
+pub struct MdnReportData {
+    /// `Original-Message-ID` field with angle brackets stripped —
+    /// matches the bracket-free storage convention (#277), so it can
+    /// be joined directly against the sent-receipt tracking table.
+    pub original_message_id: String,
+    /// The `Disposition` field's disposition-type (the part after
+    /// the `;`), lowercased — `"displayed"`, `"deleted"`, or
+    /// `"dispatched"`/`"processed"` from older RFC 3798 senders.
+    pub disposition: String,
+    /// `Final-Recipient` address (the reader who sent the receipt),
+    /// when present — the part after the `rfc822;` type tag.
+    pub reporter: Option<String>,
+}
+
+/// Parse a raw RFC 5322 message as an incoming read receipt
+/// (RFC 8098 §3, #416).  Returns `None` when the message has no
+/// `message/disposition-notification` part or the part is missing
+/// the two fields we key on (`Original-Message-ID` + `Disposition`)
+/// — receipts we can't match to a sent mail are useless to us.
+///
+/// The field block inside the part uses RFC 5322 header syntax, so
+/// we hand it back to `MessageParser` rather than re-implementing
+/// unfolding rules here (same trick the envelope extractors use).
+pub fn parse_mdn_report(raw: &[u8]) -> Option<MdnReportData> {
+    let parsed = MessageParser::default().parse(raw)?;
+    let part = (0..).map_while(|i| parsed.part(i)).find(|p| {
+        p.content_type().is_some_and(|c| {
+            c.ctype().eq_ignore_ascii_case("message")
+                && c.subtype()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("disposition-notification"))
+        })
+    })?;
+
+    // The part body is a bare field block — append a blank line so
+    // MessageParser sees a complete headers-only message.
+    let mut field_bytes = part.contents().to_vec();
+    field_bytes.extend_from_slice(b"\r\n\r\n");
+    let fields = MessageParser::default().parse(&field_bytes)?;
+    let field_text = |name: &str| {
+        fields
+            .header(name)
+            .and_then(|h| h.as_text())
+            .map(str::to_string)
+    };
+
+    let original_message_id = field_text("Original-Message-ID")
+        .as_deref()
+        .and_then(strip_msgid_brackets)?;
+    // `Disposition: manual-action/MDN-sent-manually; displayed` —
+    // the action mode before the `;` records *how* the receipt was
+    // triggered; the disposition-type after it is what the sender
+    // cares about.
+    let disposition = field_text("Disposition")
+        .as_deref()
+        .and_then(|v| v.rsplit(';').next().map(|d| d.trim().to_lowercase()))
+        .filter(|d| !d.is_empty())?;
+    // `Final-Recipient: rfc822;alex@example.com`
+    let reporter = field_text("Final-Recipient")
+        .as_deref()
+        .and_then(|v| v.split(';').nth(1).map(|a| a.trim().to_string()))
+        .filter(|a| !a.is_empty());
+
+    Some(MdnReportData {
+        original_message_id,
+        disposition,
+        reporter,
+    })
 }
 
 /// `<abc@host>` → `Some("abc@host")`.  Tolerates surrounding
@@ -3571,5 +3871,83 @@ mod tests {
 
         assert_eq!(email.subject, "opaque signed");
         assert_eq!(email.protection, None);
+    }
+
+    // ── Read receipts / MDN (#416) ─────────────────────────────
+
+    use super::parse_mdn_report;
+
+    #[test]
+    fn parse_detects_disposition_notification_to_header() {
+        let raw = b"From: Sender <sender@example.org>\r\n\
+             To: alex@example.com\r\n\
+             Subject: please confirm\r\n\
+             Disposition-Notification-To: Sender <sender@example.org>\r\n\
+             MIME-Version: 1.0\r\n\
+             Content-Type: text/plain\r\n\
+             \r\n\
+             Did you get this?\r\n";
+        let email = parse_eml_bytes(raw, "INBOX:1", "acc", "INBOX").unwrap();
+        assert_eq!(
+            email.mdn_requested_to.as_deref(),
+            Some("Sender <sender@example.org>")
+        );
+    }
+
+    #[test]
+    fn plain_mail_has_no_mdn_request() {
+        let raw = b"From: sender@example.org\r\n\
+             To: alex@example.com\r\n\
+             Subject: hi\r\n\
+             Content-Type: text/plain\r\n\
+             \r\n\
+             hello\r\n";
+        let email = parse_eml_bytes(raw, "INBOX:1", "acc", "INBOX").unwrap();
+        assert_eq!(email.mdn_requested_to, None);
+    }
+
+    /// A receipt as another RFC 8098 client would send it back to us.
+    fn mdn_report_raw() -> Vec<u8> {
+        b"From: Reader <reader@example.org>\r\n\
+          To: alex@example.com\r\n\
+          Subject: Read: quarterly numbers\r\n\
+          MIME-Version: 1.0\r\n\
+          Content-Type: multipart/report; report-type=disposition-notification; \
+              boundary=\"rep\"\r\n\
+          \r\n\
+          --rep\r\n\
+          Content-Type: text/plain\r\n\
+          \r\n\
+          Your message was displayed.\r\n\
+          \r\n\
+          --rep\r\n\
+          Content-Type: message/disposition-notification\r\n\
+          \r\n\
+          Reporting-UA: some-other-client\r\n\
+          Final-Recipient: rfc822;reader@example.org\r\n\
+          Original-Message-ID: <orig-123@example.com>\r\n\
+          Disposition: manual-action/MDN-sent-manually; displayed\r\n\
+          \r\n\
+          --rep--\r\n"
+            .to_vec()
+    }
+
+    #[test]
+    fn parse_mdn_report_extracts_original_id_and_disposition() {
+        let report = parse_mdn_report(&mdn_report_raw()).expect("must parse as a receipt");
+        // Brackets stripped, matching the #277 storage convention.
+        assert_eq!(report.original_message_id, "orig-123@example.com");
+        assert_eq!(report.disposition, "displayed");
+        assert_eq!(report.reporter.as_deref(), Some("reader@example.org"));
+    }
+
+    #[test]
+    fn parse_mdn_report_rejects_ordinary_mail() {
+        let raw = b"From: sender@example.org\r\n\
+             Subject: not a receipt\r\n\
+             Content-Type: text/plain\r\n\
+             \r\n\
+             just words\r\n";
+        assert!(parse_mdn_report(raw).is_none());
     }
 }

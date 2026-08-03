@@ -14,6 +14,11 @@ unkai-carddav.workspace = true
 unkai-nextcloud.workspace = true
 unkai-store.workspace = true
 unkai-discovery.workspace = true
+# Local MCP server (#438) — the AI-integration endpoint the app
+# hosts on 127.0.0.1 when the user opts in.  The Tauri layer owns
+# its lifecycle (start/stop on the settings toggle) and the token
+# commands; the crate itself stays keychain- and Tauri-free.
+unkai-mcp.workspace = true
 # OpenPGP primitives for the receive (decrypt+verify) and send
 # (encrypt+sign) bridges, the vCard KEY auto-import flow, and the
 # Account-Settings "import private key" command (#57).  Lives only
@@ -89,6 +94,12 @@ notify-rust = "4"
 # `set_app_user_model_id` in `main.rs`.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_UI_Shell"] }
+# Direct WinRT toast access on Windows (#415).  Same crate the
+# notification plugin uses via notify-rust, but used directly so we
+# can attach an `on_activated` click callback — the plugin exposes
+# no desktop click event, and clicking a new-mail / reminder toast
+# has to focus the window and deep-link to the message.
+tauri-winrt-notification = "0.7"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

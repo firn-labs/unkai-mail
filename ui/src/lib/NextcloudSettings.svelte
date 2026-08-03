@@ -15,9 +15,11 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import NextcloudConnect from './NextcloudConnect.svelte'
   import SyncStatusRow from './SyncStatusRow.svelte'
   import Toggle from './Toggle.svelte'
   import { ncProbeBundle, ncRestoreBundle } from './settingsBundle'
+  import { m } from '../paraglide/messages'
 
   // ── Props ───────────────────────────────────────────────────
   interface Props {
@@ -56,6 +58,10 @@
     /** User-trusted self-signed cert fingerprints (#253).
      *  Mirrors the Rust `NextcloudAccount::trusted_certs`. */
     trusted_certs?: TrustedCert[]
+    /** What this record is (#413): a full Nextcloud, a generic
+     *  CardDAV/CalDAV server, or a local-only store.  Absent on
+     *  records saved before the field existed → Nextcloud. */
+    kind?: 'nextcloud' | 'dav' | 'local'
   }
   /** Mirror of the Rust `TrustedCert` shape — the same struct
    *  is used by IMAP/SMTP and now Nextcloud HTTPS. */
@@ -64,20 +70,6 @@
     sha256: string
     host: string
     added_at: number
-  }
-  /** Mirror of `ProbedCert` from the Rust side. */
-  interface ProbedCertEntry {
-    der: number[]
-    sha256: string
-  }
-  interface ProbedCert {
-    chain: ProbedCertEntry[]
-    host: string
-  }
-  interface LoginFlowInit {
-    login_url: string
-    poll_token: string
-    poll_endpoint: string
   }
 
   // Returned by sync_nextcloud_contacts so the UI can show
@@ -226,25 +218,8 @@
     }
   }
 
-  // Connect flow
-  let serverInput = $state('')
-  let connecting = $state(false)      // true while a login is in flight
-  let pollTimer: number | null = null // setInterval handle, so we can cancel
-
-  // Self-signed cert support (#253).  Mirrors AccountSetup.svelte's
-  // shape: a TLS error during `start_nextcloud_login` triggers
-  // `probe_server_certificate`, the user reviews fingerprints in
-  // a prompt, and on confirm the chain lands in `trustedCerts` and
-  // we re-run the connect.  The same trust list rides through every
-  // subsequent OCS / CalDAV / CardDAV / Notes / Talk / Files call
-  // because it's saved into the persisted account record.
-  let trustedCerts = $state<TrustedCert[]>([])
-  let pendingCert = $state<ProbedCert | null>(null)
-
   $effect(() => {
     loadAccounts()
-    // Cleanup: cancel any in-flight polling if the component unmounts.
-    return () => stopPolling()
   })
 
   async function loadAccounts() {
@@ -462,180 +437,40 @@
     onnextcloudchanged?.()
   }
 
-  /** Heuristic: does `msg` look like a TLS-trust failure?  Same
-   *  fingerprint-style match `AccountSetup.svelte` uses for IMAP. */
-  function looksLikeCertError(msg: string): boolean {
-    const m = msg.toLowerCase()
-    return (
-      m.includes('certificate') ||
-      m.includes('cert ') ||
-      m.includes('unknownissuer') ||
-      m.includes('untrustedissuer') ||
-      m.includes('badcertificate') ||
-      m.includes('tls handshake') ||
-      m.includes('invalid peer certificate')
-    )
-  }
-
-  /** Pull host (and explicit port if any) out of a server URL so
-   *  we can hand it to `probe_server_certificate`.  Defaults to
-   *  443 — the only port Nextcloud realistically serves on. */
-  function hostPortFromUrl(url: string): { host: string; port: number } | null {
-    try {
-      const u = new URL(url)
-      return {
-        host: u.hostname,
-        port: u.port ? Number.parseInt(u.port, 10) : 443,
-      }
-    } catch {
-      return null
-    }
-  }
-
-  async function handleNcCertError() {
-    pendingCert = null
-    const url = serverInput.trim()
-    const normalised = /^https?:\/\//.test(url) ? url : `https://${url}`
-    const target = hostPortFromUrl(normalised)
-    if (!target) {
-      error = 'Could not parse the server URL.'
-      return
-    }
-    try {
-      const probed = await invoke<ProbedCert>('probe_server_certificate', {
-        host: target.host,
-        port: target.port,
-      })
-      pendingCert = probed
-    } catch (e: any) {
-      error = `Could not retrieve the server certificate: ${formatError(e) || 'unknown error'}`
-    }
-  }
-
-  function trustPendingNcCert() {
-    if (!pendingCert) return
-    const addedAt = Math.floor(Date.now() / 1000)
-    const host = pendingCert.host
-    const additions: TrustedCert[] = pendingCert.chain.map((entry) => ({
-      der: entry.der,
-      sha256: entry.sha256,
-      host,
-      added_at: addedAt,
-    }))
-    trustedCerts = [...trustedCerts, ...additions]
-    pendingCert = null
-    // Retry the connect now that the chain is trusted.  Same idiom
-    // AccountSetup uses after `trustPendingCert`.
-    void startConnect()
-  }
-
-  function dismissPendingNcCert() {
-    pendingCert = null
-  }
-
-  async function startConnect() {
-    error = ''
-    const url = serverInput.trim()
-    if (!url) {
-      error = 'Please enter your Nextcloud server URL.'
-      return
-    }
-    // Normalise: tolerate "cloud.example.com" by assuming https. NC
-    // never supports plain http in practice, so we don't add that path.
-    const normalised = /^https?:\/\//.test(url) ? url : `https://${url}`
-
-    connecting = true
-    try {
-      const init = await invoke<LoginFlowInit>('start_nextcloud_login', {
-        serverUrl: normalised,
-        // Pass the wizard-time trust list so a self-signed server
-        // gets a clean handshake on the second attempt after the
-        // user trusted the cert via the prompt.
-        trustedCerts: trustedCerts.length > 0 ? trustedCerts : null,
-      })
-      // Fire-and-forget the browser open — if it fails the user can copy
-      // the URL manually from a fallback we'll show below.
-      try {
-        await invoke('open_url', { url: init.login_url })
-      } catch (e) {
-        console.warn('open_url failed, user must open manually', e)
-      }
-      pendingLoginUrl = init.login_url
-      beginPolling(init)
-    } catch (e) {
-      const msg = formatError(e) || 'Failed to start Nextcloud login'
-      // TLS trust failure → kick off the probe + cert prompt.
-      // Anything else falls through as a regular error toast.
-      if (looksLikeCertError(msg)) {
-        connecting = false
-        await handleNcCertError()
-        return
-      }
-      error = msg
-      connecting = false
-    }
-  }
-
-  // Shown so the user can click/copy the URL if auto-open didn't work.
-  let pendingLoginUrl = $state('')
-
-  function beginPolling(init: LoginFlowInit) {
-    // Snapshot the count of NC accounts that already existed
-    // *before* this login flow so the post-success "found a
-    // backup?" probe (#168) can tell first-ever-connect apart
-    // from "connecting another NC".  Recovery on first connect
-    // is the supported path; subsequent NC connects deliberately
-    // do not prompt — restoring would clobber the user's live
-    // settings on a machine they're already running on.
+  /** Post-connect bookkeeping, fired by the shared NextcloudConnect
+   *  card once the backend has persisted the new account.
+   *
+   *  `wasFirstEverConnect` is snapshotted *before* `loadAccounts`
+   *  refreshes the list so the post-success "found a backup?" probe
+   *  (#168) can tell first-ever-connect apart from "connecting
+   *  another NC".  Recovery on first connect is the supported path;
+   *  subsequent NC connects deliberately do not prompt — restoring
+   *  would clobber the user's live settings on a machine they're
+   *  already running on. */
+  async function onConnected(result: NextcloudAccount) {
     const wasFirstEverConnect = accounts.length === 0
-    // 2-second cadence is a compromise between UI responsiveness and
-    // not hammering the NC server. Login Flow v2 tokens live for ~20
-    // minutes; we stop on success, cancel, or any unexpected error.
-    pollTimer = window.setInterval(async () => {
-      try {
-        const result = await invoke<NextcloudAccount | null>('poll_nextcloud_login', {
-          pollEndpoint: init.poll_endpoint,
-          pollToken: init.poll_token,
-          // Same trust list rides the polling call so the
-          // post-success `fetch_capabilities` probe and the
-          // saved account record both pick it up (#253).
-          trustedCerts: trustedCerts.length > 0 ? trustedCerts : null,
-        })
-        if (result) {
-          stopPolling()
-          connecting = false
-          pendingLoginUrl = ''
-          serverInput = ''
-          await loadAccounts()
-          // Surface the new account's capabilities to the rest of
-          // the shell immediately (#318) — without this the IconRail
-          // wouldn't show Contacts / Calendar / Files / etc. until
-          // the user closed Settings.
-          onnextcloudchanged?.()
-          // First-time sync (#318): a freshly-connected NC has no
-          // local contacts/calendars yet, so the integration views
-          // would open onto an empty list until the user remembers
-          // to click "Sync". Kick both off in the background here
-          // — `syncContacts` / `syncCalendars` drive the same UI
-          // state the manual buttons do, so the SyncStatusRow
-          // reflects progress and errors normally.
-          void autoSyncNewAccount(result.id)
-          // Recovery prompt — only on the very first NC connect
-          // (per the agreed spec: a recovery option, not a sync
-          // option).  Failures during the probe stay silent: a
-          // server with no backup or an unreachable .json
-          // shouldn't surface as an error toast.
-          if (wasFirstEverConnect) {
-            void promptRestoreFromNc(result.id)
-          }
-        }
-      } catch (e) {
-        stopPolling()
-        connecting = false
-        pendingLoginUrl = ''
-        error = formatError(e) || 'Login failed'
-      }
-    }, 2000)
+    await loadAccounts()
+    // Surface the new account's capabilities to the rest of
+    // the shell immediately (#318) — without this the IconRail
+    // wouldn't show Contacts / Calendar / Files / etc. until
+    // the user closed Settings.
+    onnextcloudchanged?.()
+    // First-time sync (#318): a freshly-connected NC has no
+    // local contacts/calendars yet, so the integration views
+    // would open onto an empty list until the user remembers
+    // to click "Sync". Kick both off in the background here
+    // — `syncContacts` / `syncCalendars` drive the same UI
+    // state the manual buttons do, so the SyncStatusRow
+    // reflects progress and errors normally.
+    void autoSyncNewAccount(result.id)
+    // Recovery prompt — only on the very first NC connect
+    // (per the agreed spec: a recovery option, not a sync
+    // option).  Failures during the probe stay silent: a
+    // server with no backup or an unreachable .json
+    // shouldn't surface as an error toast.
+    if (wasFirstEverConnect) {
+      void promptRestoreFromNc(result.id)
+    }
   }
 
   /** Probe the freshly-connected NC for a settings.json bundle;
@@ -666,23 +501,12 @@
     }
   }
 
-  function stopPolling() {
-    if (pollTimer !== null) {
-      window.clearInterval(pollTimer)
-      pollTimer = null
-    }
-  }
-
-  function cancelConnect() {
-    // The server-side token just expires on its own — nothing to tell
-    // Nextcloud. Local teardown is enough.
-    stopPolling()
-    connecting = false
-    pendingLoginUrl = ''
-  }
-
   async function removeAccount(acct: NextcloudAccount) {
-    if (!confirm(`Disconnect Nextcloud ${acct.username}@${acct.server_url}?`)) return
+    const label =
+      (acct.kind ?? 'nextcloud') === 'nextcloud'
+        ? `${acct.username}@${acct.server_url}`
+        : (acct.display_name ?? acct.username ?? acct.id)
+    if (!confirm(m.nextcloud_settings_disconnect_confirm({ name: label }))) return
     try {
       await invoke('remove_nextcloud_account', { id: acct.id })
       await loadAccounts()
@@ -703,7 +527,7 @@
   </div>
 
   {#if error}
-    <div class="text-sm text-red-500 p-3 bg-red-500/10 rounded-md">{error}</div>
+    <div class="text-sm text-red-500 p-3 bg-red-500/10 rounded-lg">{error}</div>
   {/if}
 
   {#if loading}
@@ -714,11 +538,20 @@
       <div class="space-y-2">
         {#each accounts as acct (acct.id)}
           {@const cs = contactsState[acct.id]}
-          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg space-y-3">
+          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl space-y-3">
             <div class="flex items-start justify-between">
               <div class="flex-1">
                 <p class="font-semibold">{acct.display_name ?? acct.username}</p>
-                <p class="text-sm text-surface-500 break-all">{acct.server_url}</p>
+                {#if (acct.kind ?? 'nextcloud') === 'local'}
+                  <p class="text-sm text-surface-500">{m.nextcloud_settings_kind_local()}</p>
+                {:else}
+                  <p class="text-sm text-surface-500 break-all">{acct.server_url}</p>
+                {/if}
+                {#if (acct.kind ?? 'nextcloud') === 'dav'}
+                  <span class="inline-block mt-1 text-xs px-2 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700">
+                    {m.nextcloud_settings_kind_dav()}
+                  </span>
+                {/if}
                 {#if acct.capabilities}
                   <div class="flex flex-wrap gap-1.5 mt-2">
                     {#if acct.capabilities.version}
@@ -758,17 +591,24 @@
               </button>
             </div>
 
-            <!-- Contacts sync row -->
-            {#if acct.capabilities?.carddav !== false}
+            <!-- Local-only sources have nothing to sync — the cache
+                 is the source of truth (#413). -->
+            {#if (acct.kind ?? 'nextcloud') === 'local'}
+              <p class="text-xs text-surface-500">
+                {m.nextcloud_settings_local_note()}
+              </p>
+            {:else if acct.capabilities?.carddav !== false || acct.capabilities?.caldav !== false}
               {@const cls = calendarsState[acct.id]}
-              <SyncStatusRow
-                label="Contacts"
-                count={cs?.count ?? null}
-                lastSyncedAt={cs?.lastSyncedAt ?? null}
-                syncing={cs?.syncing ?? false}
-                error={cs?.error ?? null}
-                onsync={() => syncContacts(acct)}
-              />
+              {#if acct.capabilities?.carddav !== false}
+                <SyncStatusRow
+                  label={m.nextcloud_settings_row_contacts()}
+                  count={cs?.count ?? null}
+                  lastSyncedAt={cs?.lastSyncedAt ?? null}
+                  syncing={cs?.syncing ?? false}
+                  error={cs?.error ?? null}
+                  onsync={() => syncContacts(acct)}
+                />
+              {/if}
               <!-- Calendars sync row — same component, same shape, so
                    the two surfaces stay visually identical. CalendarView
                    no longer carries its own sync UI; the user comes
@@ -877,102 +717,11 @@
       </div>
     {/if}
 
-    <!-- Connect form -->
-    {#if !connecting}
-      <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg">
-        <label class="text-xs text-surface-500 block mb-1" for="nc-server">
-          Nextcloud server URL
-        </label>
-        <div class="flex gap-2">
-          <input
-            id="nc-server"
-            class="input flex-1 px-3 py-2 text-sm rounded-md"
-            placeholder="https://cloud.example.com"
-            bind:value={serverInput}
-            onkeydown={(e) => e.key === 'Enter' && startConnect()}
-          />
-          <button class="btn preset-filled-primary-500" onclick={startConnect}>
-            Connect
-          </button>
-        </div>
-
-        <!-- Self-signed cert trust prompt (#253).  Same shape as
-             AccountSetup's IMAP-side prompt: full chain SHA-256
-             fingerprints, "Trust this server" / "Cancel" CTA. -->
-        {#if pendingCert}
-          <div class="mt-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
-            <p class="text-sm font-medium mb-1">
-              The server's TLS certificate isn't trusted by default.
-            </p>
-            <p class="text-xs text-surface-500 mb-3">
-              This is normal for self-hosted Nextcloud servers using a
-              self-signed certificate.  Compare the fingerprint below
-              with the certificate on your server before trusting.
-            </p>
-            <p class="text-xs mb-1">
-              <span class="text-surface-500">Host:</span>
-              <span class="font-mono">{pendingCert.host}</span>
-            </p>
-            <div class="text-xs mb-3">
-              <p class="text-surface-500 mb-1">
-                {#if pendingCert.chain.length === 1}
-                  SHA-256 fingerprint (leaf):
-                {:else}
-                  SHA-256 fingerprints (leaf + {pendingCert.chain.length - 1} intermediate):
-                {/if}
-              </p>
-              <ul class="space-y-1">
-                {#each pendingCert.chain as entry, i (entry.sha256)}
-                  <li class="font-mono break-all">
-                    <span class="text-surface-500">{i === 0 ? 'leaf:' : `int${i}:`}</span>
-                    {entry.sha256}
-                  </li>
-                {/each}
-              </ul>
-            </div>
-            <div class="flex gap-2">
-              <button
-                type="button"
-                class="btn btn-sm preset-filled-primary-500"
-                onclick={trustPendingNcCert}
-              >Trust this server and continue</button>
-              <button
-                type="button"
-                class="btn btn-sm preset-outlined-surface-500"
-                onclick={dismissPendingNcCert}
-              >Cancel</button>
-            </div>
-          </div>
-        {/if}
-
-        {#if trustedCerts.length > 0 && !pendingCert}
-          <div class="mt-3 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400">
-            {#if trustedCerts.length === 1}
-              Trusting 1 self-signed certificate for this connection.
-            {:else}
-              Trusting {trustedCerts.length} self-signed certificates for this connection.
-            {/if}
-          </div>
-        {/if}
-      </div>
-    {:else}
-      <!-- Waiting for browser auth -->
-      <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg space-y-2">
-        <p class="text-sm">
-          Waiting for authorisation in your browser…
-        </p>
-        {#if pendingLoginUrl}
-          <p class="text-xs text-surface-500">
-            If nothing opened, click here:
-            <a class="underline text-primary-500 break-all" href={pendingLoginUrl} target="_blank" rel="noopener">
-              {pendingLoginUrl}
-            </a>
-          </p>
-        {/if}
-        <button class="btn btn-sm preset-outlined-surface-500" onclick={cancelConnect}>
-          Cancel
-        </button>
-      </div>
-    {/if}
+    <!-- Connect form — shared with the setup wizard (#413). The
+         component owns the Login Flow v2 polling and the TLS-trust
+         prompt; we only handle the post-connect bookkeeping. -->
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-2xl">
+      <NextcloudConnect onconnected={onConnected} />
+    </div>
   {/if}
 </div>
