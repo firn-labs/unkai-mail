@@ -43,7 +43,7 @@
   import FileTypeIcon from './FileTypeIcon.svelte'
   import Icon from './Icon.svelte'
   import { thumbUrlSync } from './AttachmentThumb.svelte'
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
 
   /**
    * Imperative handle the parent gets via `onready`. Tiptap is
@@ -182,7 +182,7 @@
     /** Email address used in the mailto: href and plain-text
      *  serialization. */
     email: string
-    /** Optional avatar URL (e.g. `convertFileSrc(id, 'contact-photo')`). */
+    /** Optional avatar URL (e.g. `api.platform.assetUrl(id, 'contact-photo')`). */
     photoUrl?: string | null
     /** Optional secondary line in the popup row (e.g. organization). */
     hint?: string | null
@@ -1202,7 +1202,7 @@
       systemFonts = systemFontsCache
       return
     }
-    void invoke<string[]>('list_system_fonts')
+    void api.system.listSystemFonts()
       .then((rows) => {
         const curatedLabels = new Set(
           CURATED_FONTS.map((f) => f.label.toLowerCase()),

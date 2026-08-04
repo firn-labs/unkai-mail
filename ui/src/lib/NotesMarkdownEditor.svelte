@@ -40,7 +40,7 @@
   } from '@codemirror/language'
   import { markdown } from '@codemirror/lang-markdown'
   import { marked } from 'marked'
-  import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+  import * as api from './api'
   import {
     createMentionExtension,
     insertMention,
@@ -137,7 +137,7 @@
   }
   let allContacts = $state<ContactRow[]>([])
   $effect(() => {
-    void invoke<ContactRow[]>('get_contacts')
+    void api.contacts.getContacts({})
       .then((rows) => {
         allContacts = rows
       })
@@ -322,7 +322,7 @@
           id: email,
           label: c.display_name || email,
           email,
-          photoUrl: c.photo_mime ? convertFileSrc(c.id, 'contact-photo') : null,
+          photoUrl: c.photo_mime ? api.platform.assetUrl(c.id, 'contact-photo') : null,
           hint: c.organization,
         })
         if (out.length >= 8) return out
@@ -343,7 +343,7 @@
       // backend command accepts the operator-prefixed grammar
       // (FROM:, SUBJECT:, etc.) so power users get the full
       // syntax for free here too.
-      hits = await invoke<SearchHit[]>('search_emails', { query })
+      hits = await api.mail.searchEmails({ query })
     } catch (e) {
       console.warn('NotesMarkdownEditor: search_emails failed', e)
     }
@@ -362,7 +362,7 @@
       typeof accountId === 'string'
     ) {
       try {
-        const fallback = await invoke<IMAPEnvelope[]>('search_imap_server', {
+        const fallback = await api.mail.searchImapServer({
           accountId,
           folder: 'INBOX',
           query,

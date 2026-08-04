@@ -14,7 +14,7 @@
  * module only owns the local-cache read and the lookup index.
  */
 
-import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+import * as api from './api'
 
 export interface ContactAddress {
   kind: string
@@ -97,7 +97,7 @@ class ContactsStore {
 
   async load(): Promise<void> {
     try {
-      const fetched = await invoke<Contact[]>('get_contacts', { ncId: null })
+      const fetched = await api.contacts.getContacts({ ncId: null })
       fetched.sort((a, b) =>
         a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }),
       )
@@ -121,5 +121,5 @@ export const contactsStore = new ContactsStore()
  *  `loading="lazy"` to defer off-screen rows. */
 export function contactPhotoSrc(c: Contact | undefined | null): string | null {
   if (!c?.photo_mime) return null
-  return convertFileSrc(c.id, 'contact-photo')
+  return api.platform.assetUrl(c.id, 'contact-photo')
 }

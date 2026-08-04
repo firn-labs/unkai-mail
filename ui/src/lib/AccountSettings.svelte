@@ -7,11 +7,8 @@
    * area and lets users manage their accounts after initial setup.
    */
 
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { isNextcloudSource } from './ncSources'
-  import { listen } from '@tauri-apps/api/event'
-  import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
-  import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
   import SecuritySettings from './SecuritySettings.svelte'
   import AiSettings from './AiSettings.svelte'
@@ -397,7 +394,7 @@
     if (logoSaving || appSettings.logo_style === id) return
     logoSaving = true
     try {
-      await invoke('set_logo_style', { style: id })
+      await api.settings.setLogoStyle({ style: id })
       appSettings.logo_style = id
       onappprefschanged?.({ ...appSettings })
     } catch (e) {
@@ -456,7 +453,7 @@
   let linkCheckRefreshing = $state(false)
   async function loadLinkCheckStatus() {
     try {
-      linkCheckStatus = await invoke<LinkCheckStatus>('get_link_check_status')
+      linkCheckStatus = await api.mail.getLinkCheckStatus()
     } catch (e) {
       console.warn('get_link_check_status failed', e)
     }
@@ -465,7 +462,7 @@
     if (linkCheckRefreshing) return
     linkCheckRefreshing = true
     try {
-      await invoke('refresh_urlhaus_now')
+      await api.mail.refreshUrlhausNow()
       await loadLinkCheckStatus()
     } catch (e) {
       console.warn('refresh_urlhaus_now failed', e)
@@ -522,7 +519,7 @@
   }
   async function loadNcOptions() {
     try {
-      const accs = await invoke<{ id: string; username: string; server_url: string; display_name?: string | null; kind?: string }[]>('get_nextcloud_accounts')
+      const accs = await api.nextcloud.getNextcloudAccounts()
       // The settings bundle lives on Nextcloud WebDAV — generic-DAV
       // and local sources (#413) can't be backup targets.
       ncOptions = accs
@@ -608,11 +605,11 @@
 
   async function loadCalendarsForPicker() {
     try {
-      const accounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      const accounts = await api.nextcloud.getNextcloudAccounts()
       const all: CalendarRow[] = []
       for (const acc of accounts) {
         try {
-          const cs = await invoke<CalendarRow[]>('get_cached_calendars', {
+          const cs = await api.calendar.getCachedCalendars({
             ncId: acc.id,
           })
           all.push(...cs)
@@ -629,7 +626,7 @@
 
   async function loadAppSettings() {
     try {
-      appSettings = await invoke<AppSettings>('get_app_settings')
+      appSettings = await api.settings.getAppSettings()
     } catch (e: any) {
       console.warn('failed to load app settings', e)
     }
@@ -647,7 +644,7 @@
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(async () => {
       try {
-        await invoke('update_app_settings', { newSettings: appSettings })
+        await api.settings.updateAppSettings({ newSettings: appSettings })
         prefsSaveStatus = 'saved'
         // Settings changed → kick the auto-sync worker so a
         // recovery push to the configured Nextcloud (#168)
@@ -674,8 +671,8 @@
    *  actually autostart. */
   async function onAutostartToggle(next: boolean) {
     try {
-      if (next) await autostartEnable()
-      else await autostartDisable()
+      if (next) await api.platform.enableAutostart()
+      else await api.platform.disableAutostart()
       appSettings.autostart_enabled = next
       scheduleSave()
     } catch (e) {
@@ -698,7 +695,7 @@
    *  `~/Library/Preferences` / xdg-mime hint). */
   async function openDefaultAppsSettings() {
     try {
-      await invoke('open_default_apps_settings')
+      await api.system.openDefaultAppsSettings()
     } catch (e) {
       alert(`Could not open the default-apps settings page: ${e}`)
     }
@@ -709,7 +706,7 @@
    *  manually (e.g. via system settings) since the last
    *  launch. */
   $effect(() => {
-    void autostartIsEnabled()
+    void api.platform.isAutostartEnabled()
       .then((enabled) => {
         if (enabled !== appSettings.autostart_enabled) {
           appSettings.autostart_enabled = enabled
@@ -733,12 +730,12 @@
     if (importingTheme) return
     importingTheme = true
     try {
-      const picked = await openFileDialog({
+      const picked = await api.platform.openFileDialog({
         multiple: false,
         directory: false,
         filters: [{ name: 'CSS theme', extensions: ['css'] }],
       })
-      if (!picked) return
+      if (!picked || Array.isArray(picked)) return
       // tauri-plugin-dialog returns the path as a plain string when
       // `multiple: false, directory: false` is set.
       const path = picked
@@ -746,7 +743,7 @@
       const stem = fileName.replace(/\.css$/i, '')
       // Reasonable default label — the user can rename later.
       const label = stem.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-      await invoke('import_custom_theme', {
+      await api.settings.importCustomTheme({
         sourcePath: path,
         label,
       })
@@ -766,7 +763,7 @@
       return
     }
     try {
-      await invoke('remove_custom_theme', { id })
+      await api.settings.removeCustomTheme({ id })
       await reloadSettingsSnapshot()
     } catch (e) {
       console.warn('remove_custom_theme failed', e)
@@ -778,7 +775,7 @@
    *  full page reload. */
   async function reloadSettingsSnapshot() {
     try {
-      const fresh = await invoke<AppSettings>('get_app_settings')
+      const fresh = await api.settings.getAppSettings()
       appSettings = fresh
       onappprefschanged?.({ ...fresh })
     } catch (e) {
@@ -800,7 +797,7 @@
   async function runCheckMailNow() {
     checkNowBusy = true
     try {
-      await invoke('check_mail_now')
+      await api.mail.checkMailNow()
     } catch (e: any) {
       console.warn('check_mail_now failed', e)
     } finally {
@@ -812,7 +809,7 @@
     loading = true
     error = ''
     try {
-      accounts = await invoke<Account[]>('get_accounts')
+      accounts = await api.accounts.getAccounts()
     } catch (e: any) {
       error = typeof e === 'string' ? e : e?.message ?? 'Failed to load accounts'
     } finally {
@@ -825,7 +822,7 @@
     if (!confirm(`Remove account ${email}? This cannot be undone.`)) return
 
     try {
-      await invoke('remove_account', { id })
+      await api.accounts.removeAccount({ id })
       // Refresh the list after removal
       await loadAccounts()
       // Tell the shell too (#421) — the IconRail is mounted outside
@@ -880,7 +877,7 @@
     trustError = ''
     trustBusy = true
     try {
-      const probed = await invoke<ProbedCert>('probe_server_certificate', {
+      const probed = await api.accounts.probeServerCertificate({
         host: account.imap_host,
         port: account.imap_port,
       })
@@ -917,7 +914,7 @@
         ...trustPrompt.account,
         trusted_certs: [...(trustPrompt.account.trusted_certs ?? []), ...additions],
       }
-      await invoke('update_account', { account: updated })
+      await api.accounts.updateAccount({ account: updated })
       trustPrompt = null
       await loadAccounts()
     } catch (e: any) {
@@ -951,7 +948,7 @@
           // The Rust `update_account` takes the full Account record;
           // sending the in-place edited copy is fine because we never
           // mutate fields the user can't edit here (host/port/etc).
-          await invoke('update_account', {
+          await api.accounts.updateAccount({
             account: { ...account, signature: next.trim() || null },
           })
           sigSaveStatus[account.id] = 'saved'
@@ -1000,7 +997,7 @@
     const unlisten: Array<Promise<() => void>> = []
 
     unlisten.push(
-      listen<{ accountId: string; html: string }>(
+      api.onAppEvent(
         SIGNATURE_UPDATED_EVENT,
         (event) => {
           const acc = accounts.find((a) => a.id === event.payload.accountId)
@@ -1010,7 +1007,7 @@
       ),
     )
     unlisten.push(
-      listen<{ accountId: string }>(SIGNATURE_POPOUT_CLOSED_EVENT, (event) => {
+      api.onAppEvent(SIGNATURE_POPOUT_CLOSED_EVENT, (event) => {
         sigPopoutOpen[event.payload.accountId] = false
       }),
     )
@@ -1047,7 +1044,7 @@
   async function onEmojiChange(account: Account, next: string | null) {
     account.emoji = next
     try {
-      await invoke('update_account', { account: { ...account, emoji: next } })
+      await api.accounts.updateAccount({ account: { ...account, emoji: next } })
     } catch (e) {
       console.warn('failed to save account emoji', e)
     }
@@ -1132,12 +1129,12 @@
         smtp_host: draft.smtp_host.trim(),
         smtp_port: draft.smtp_port,
       }
-      await invoke('update_account', { account: updated })
+      await api.accounts.updateAccount({ account: updated })
       Object.assign(account, updated)
 
       const newPassword = passwordDrafts[account.id] ?? ''
       if (newPassword) {
-        await invoke('set_account_password', { id: account.id, password: newPassword })
+        await api.accounts.setAccountPassword({ id: account.id, password: newPassword })
         passwordDrafts[account.id] = ''
       }
 
@@ -1156,7 +1153,7 @@
     const next = raw.trim() || null
     account.person_name = next
     try {
-      await invoke('update_account', {
+      await api.accounts.updateAccount({
         account: { ...account, person_name: next },
       })
     } catch (e) {
@@ -1189,7 +1186,7 @@
       if ((a.sort_order ?? 0) !== i) {
         a.sort_order = i
         try {
-          await invoke('update_account', { account: { ...a, sort_order: i } })
+          await api.accounts.updateAccount({ account: { ...a, sort_order: i } })
         } catch (e) {
           console.warn('failed to save account sort order', e)
         }
@@ -1202,7 +1199,7 @@
     iconSaveStatus[account.id] = 'saving'
     account.folder_icons = rules
     try {
-      await invoke('update_account', {
+      await api.accounts.updateAccount({
         account: { ...account, folder_icons: rules },
       })
       iconSaveStatus[account.id] = 'saved'
@@ -2079,7 +2076,7 @@
                 title="Use the {style.label} icon for the tray, window and taskbar"
               >
                 <img
-                  src={convertFileSrc(style.id, 'unkai-logo')}
+                  src={api.platform.assetUrl(style.id, 'unkai-logo')}
                   alt={`${style.label} icon preview`}
                   class="w-12 h-12 object-contain"
                   loading="lazy"
@@ -2740,10 +2737,10 @@
             // pending, so persist explicitly here so the new
             // process boots with the right locale even on a
             // slow disk.
-            void invoke('set_app_settings', {
-              settings: appSettings,
+            void api.settings.updateAppSettings({
+              newSettings: appSettings,
             }).finally(() => {
-              void invoke('restart_app')
+              void api.system.restartApp()
             })
           }}
         >

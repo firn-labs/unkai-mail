@@ -17,7 +17,7 @@
    * a real lock screen.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
   import {
@@ -139,7 +139,7 @@
       if (status && !status.hasPlainKey) {
         disablingEncryption = true
         try {
-          await invoke('disable_fido_only_mode')
+          await api.settings.disableFidoOnlyMode()
           keyEncryptionEnabled = false
           persistToggle(false)
           await loadStatus()
@@ -166,7 +166,7 @@
     if (!safeForFidoOnlyMode(status)) return
     void (async () => {
       try {
-        await invoke('enable_fido_only_mode')
+        await api.settings.enableFidoOnlyMode()
         await loadStatus()
       } catch (e) {
         error = formatError(e) || 'Failed to activate key encryption'
@@ -177,7 +177,7 @@
   async function loadStatus() {
     loading = true
     try {
-      status = await invoke<FidoStatus>('fido_status')
+      status = await api.settings.fidoStatus()
     } catch (e) {
       error = formatError(e) || 'Failed to load FIDO status'
     } finally {
@@ -203,7 +203,7 @@
 
   async function loadWipePolicy() {
     try {
-      const p = await invoke<WipePolicy>('get_wipe_policy')
+      const p = await api.settings.getWipePolicy()
       wipePolicy = p
       wipeMaxAttemptsRaw = p.maxAttempts != null ? String(p.maxAttempts) : ''
     } catch (e) {
@@ -217,7 +217,7 @@
   async function saveWipePolicy(next: WipePolicy) {
     wipeSaving = true
     try {
-      await invoke('set_wipe_policy', {
+      await api.settings.setWipePolicy({
         policy: { enabled: next.enabled, maxAttempts: next.maxAttempts },
       })
       wipePolicy = next
@@ -253,11 +253,11 @@
     try {
       // Generate a fresh PRF salt server-side so it shares the
       // app's RNG and can't be influenced from the renderer.
-      const saltB64 = await invoke<string>('fido_generate_salt')
+      const saltB64 = await api.settings.fidoGenerateSalt()
       // The OS shows its own auth sheet here; we receive the
       // PRF output once the user authenticates.
       const enrolled = await enrollFidoCredential(saltB64, 'unkai-user', label)
-      await invoke('fido_enroll', {
+      await api.settings.fidoEnroll({
         credentialIdB64: enrolled.credentialIdB64,
         saltB64: enrolled.saltB64,
         prfOutputB64: enrolled.prfOutputB64,
@@ -285,7 +285,7 @@
     savingPassphrase = true
     error = ''
     try {
-      await invoke('fido_enroll_passphrase', {
+      await api.settings.fidoEnrollPassphrase({
         passphrase: passphraseValue,
         label: PASSPHRASE_LABEL,
       })
@@ -332,7 +332,7 @@
       if (status && !status.hasPlainKey && c.kind === 'fido_prf') {
         await evaluateFidoPrf(c.credentialId, c.salt)
       }
-      await invoke('fido_remove', { credentialIdB64: c.credentialId })
+      await api.settings.fidoRemove({ credentialIdB64: c.credentialId })
       await loadStatus()
     } catch (e) {
       error = formatError(e) || 'Failed to remove credential'

@@ -61,6 +61,16 @@ unkai-mail/
 - **Security-first** — TLS everywhere, credential storage via OS keychain, no plaintext secrets
 - **Modular design** — each protocol as its own crate for testability and reuse
 
+## Frontend ↔ backend IPC: the `api/` layer (#473)
+
+All backend IPC in the frontend goes through the typed layer in [`ui/src/lib/api/`](ui/src/lib/api/) — **never import `@tauri-apps/*` directly in a component.** A vitest guard (`ui/src/lib/api/noDirectIpc.test.ts`) fails the build on violations.
+
+- **Commands**: one typed wrapper per `#[tauri::command]`, grouped into domain modules (`api/mail`, `api/compose`, `api/accounts`, `api/contacts`, `api/calendar`, `api/nextcloud`, `api/talk`, `api/notes`, `api/tasks`, `api/crypto`, `api/settings`, `api/system`), all funnelling through `call()` in `api/core.ts`. Components do `import * as api from './api'` and call `api.mail.fetchEnvelopes({ accountId, folder, limit })`. **When you add/rename/change a Rust command, update its wrapper in the matching domain module in the same PR** — that's the point of the layer: the compiler finds every affected call site.
+- **Events**: every event name (backend push channels + popout↔main handoffs) is registered in `AppEventPayloads` in `api/events.ts`. Subscribe with `api.onAppEvent('new-mail', handler)` (handler gets the Tauri `Event`, payload under `.payload`), emit with `api.emitAppEvent(...)`. Adding a new event = adding it to the registry first.
+- **Platform affordances** (native dialogs, plugin notifications, autostart, `convertFileSrc` asset URLs) live in `api/platform.ts` — this file is the canonical list of desktop-only surface.
+- **DTO types**: `api/types.ts` holds placeholder `any` aliases for backend DTOs. Tightening them is **lazy**, like the i18n migration: replace an alias with a real interface whenever you touch code that consumes it; don't open a bulk-typing PR.
+- **Allowed exceptions** (window plumbing only, enforced by the guard test): `standalone*Window.ts`, `reminderPopupWindow.ts`, `attachmentOpen.ts` may use `@tauri-apps/api/webviewWindow`; standalone components may use `@tauri-apps/api/window` to close themselves; type-only imports from `@tauri-apps/api/event` are fine anywhere.
+
 ## UI Conventions
 
 ### Glass aesthetic (#451)

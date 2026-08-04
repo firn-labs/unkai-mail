@@ -21,8 +21,8 @@
   into "Unlock automatically".
 -->
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core'
   import { m } from '../paraglide/messages'
+  import * as api from './api'
   import Toggle from './Toggle.svelte'
   import Icon from './Icon.svelte'
   import { formatError } from './errors'
@@ -76,7 +76,7 @@
 
   async function refreshUnlockStatus(accountId: string) {
     try {
-      unlockEnabled = await invoke<boolean>('smime_has_unlock_automatically', {
+      unlockEnabled = await api.crypto.smimeHasUnlockAutomatically({
         accountId,
       })
     } catch (e) {
@@ -102,7 +102,7 @@
     unlockBusy = true
     unlockError = null
     try {
-      await invoke('smime_enable_unlock_automatically', {
+      await api.crypto.smimeEnableUnlockAutomatically({
         accountId: account.id,
         passphrase: unlockPassphrase,
       })
@@ -124,7 +124,7 @@
     unlockBusy = true
     unlockError = null
     try {
-      await invoke('smime_disable_unlock_automatically', {
+      await api.crypto.smimeDisableUnlockAutomatically({
         accountId: account.id,
       })
       await refreshUnlockStatus(account.id)
@@ -154,7 +154,7 @@
 
   async function refreshStatus(accountId: string) {
     try {
-      status = await invoke<SmimeCertStatus>('smime_get_account_cert_status', {
+      status = await api.crypto.smimeGetAccountCertStatus({
         accountId,
       })
     } catch (e) {
@@ -209,7 +209,7 @@
     errorMessage = null
     try {
       const pkcs12Base64 = await fileToBase64(selectedFile)
-      await invoke<string>('smime_import_pkcs12', {
+      await api.crypto.smimeImportPkcs12({
         accountId: account.id,
         pkcs12Base64,
         passphrase: passphraseInput,
@@ -231,7 +231,7 @@
     busy = true
     errorMessage = null
     try {
-      await invoke<void>('smime_remove_private_cert', { accountId: account.id })
+      await api.crypto.smimeRemovePrivateCert({ accountId: account.id })
       // `smime_remove_private_cert` already drops the passphrase
       // keychain entry, but the UI's mirror of that state needs a
       // refresh so the toggle visual catches up.

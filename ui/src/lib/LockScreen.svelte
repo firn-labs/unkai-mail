@@ -10,8 +10,8 @@
    * receives `onunlock()` and routes the user into the inbox.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
   import { tick } from 'svelte'
+  import * as api from './api'
   import { formatError } from './errors'
   import { evaluateFidoPrf } from './webauthnPrf'
 
@@ -38,7 +38,7 @@
 
   async function refreshAttempts() {
     try {
-      const s = await invoke<{ attemptsRemaining: number | null }>('database_status')
+      const s = await api.settings.databaseStatus()
       onattemptschange?.(s.attemptsRemaining)
     } catch {
       /* swallow — counter is best-effort */
@@ -83,7 +83,7 @@
     await tick()
     await new Promise((r) => setTimeout(r, 32))
     try {
-      await invoke('unlock_with_passphrase', { passphrase: passphraseValue })
+      await api.settings.unlockWithPassphrase({ passphrase: passphraseValue })
       passphraseValue = ''
       onunlock()
     } catch (e) {
@@ -105,7 +105,7 @@
       // your security key", same UX surface the enrollment
       // already uses.
       const prfOutput = await evaluateFidoPrf(method.credentialId, method.salt)
-      await invoke('unlock_with_prf', {
+      await api.settings.unlockWithPrf({
         credentialIdB64: method.credentialId,
         prfOutputB64: prfOutput,
       })

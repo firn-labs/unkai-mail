@@ -34,7 +34,7 @@
 // a thunk that fetches them lazily (MailView, where bytes come
 // from a Tauri IPC against IMAP).
 
-import { invoke } from '@tauri-apps/api/core'
+import * as api from './api'
 import { isNextcloudSource } from './ncSources'
 
 const OFFICE_MIME_TYPES = new Set([
@@ -115,7 +115,7 @@ async function openViaNcViewer(
   // The embedded viewer uploads via Nextcloud WebDAV — generic-DAV /
   // local sources (#413) can't serve it.
   const ncAccounts = (
-    await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+    await api.nextcloud.getNextcloudAccounts()
   ).filter(isNextcloudSource)
   if (ncAccounts.length === 0) {
     throw new Error(
@@ -123,12 +123,10 @@ async function openViaNcViewer(
     )
   }
   const ncId = ncAccounts[0].id
-  const result = await invoke<OpenResult>(command, {
-    ncId,
-    filename,
-    data: bytes,
-    contentType,
-  })
+  const result: OpenResult =
+    command === 'pdf_open_attachment'
+      ? await api.system.pdfOpenAttachment({ ncId, filename, data: bytes, contentType })
+      : await api.system.officeOpenAttachment({ ncId, filename, data: bytes, contentType })
 
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
   const label = `att-${crypto.randomUUID().replaceAll('-', '')}`
@@ -144,12 +142,9 @@ async function openViaNcViewer(
   // swallowed; the startup sweeper handles orphans.
   void win.once('tauri://destroyed', async () => {
     try {
-      await invoke(
-        command === 'pdf_open_attachment'
-          ? 'pdf_close_attachment'
-          : 'office_close_attachment',
-        { ncId, tempPath: result.tempPath },
-      )
+      await (command === 'pdf_open_attachment'
+        ? api.system.pdfCloseAttachment({ ncId, tempPath: result.tempPath })
+        : api.system.officeCloseAttachment({ ncId, tempPath: result.tempPath }))
     } catch (e) {
       console.warn('attachment close cleanup failed:', e)
     }
@@ -165,7 +160,7 @@ async function openInDesktopApp(
   filename: string,
   bytes: number[],
 ): Promise<void> {
-  await invoke('print_attachment', { fileName: filename, bytes })
+  await api.system.printAttachment({ fileName: filename, bytes })
 }
 
 /**

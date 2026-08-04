@@ -11,15 +11,10 @@
    * since this is a desktop app, not a website.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './lib/api'
   import { isNextcloudSource } from './lib/ncSources'
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+  import type { UnlistenFn } from '@tauri-apps/api/event'
   import DOMPurify from 'dompurify'
-  import {
-    isPermissionGranted,
-    requestPermission,
-    sendNotification,
-  } from '@tauri-apps/plugin-notification'
   import Icon from './lib/Icon.svelte'
   import IconRail, { type RailView } from './lib/IconRail.svelte'
   import Sidebar from './lib/Sidebar.svelte'
@@ -170,7 +165,7 @@
 
   async function refreshNextcloudCapabilities() {
     try {
-      const list = await invoke<NextcloudAccountWithCaps[]>('get_nextcloud_accounts')
+      const list = await api.nextcloud.getNextcloudAccounts()
       const any = (pred: (a: NextcloudAccountWithCaps) => boolean) =>
         list.some(pred)
       ncCaps = {
@@ -215,7 +210,7 @@
   let dbStatus = $state<DatabaseStatus | null>(null)
   let dbStatusError = $state('')
   $effect(() => {
-    void invoke<DatabaseStatus>('database_status')
+    void api.settings.databaseStatus()
       .then((s) => (dbStatus = s))
       .catch((e) => {
         console.warn('database_status failed', e)
@@ -471,7 +466,7 @@
    *  Captures the wheel event before the webview's native zoom
    *  kicks in.  Each tick adjusts by `UI_SCALE_STEP` (5 %) up
    *  or down within `[MIN_UI_SCALE, MAX_UI_SCALE]`.  The change
-   *  is persisted via `set_app_settings` and flips
+   *  is persisted via `update_app_settings` and flips
    *  `ui_scale_auto` off so the auto-derivation doesn't undo
    *  the user's choice on the next launch.  Persistence is
    *  fire-and-forget — a save failure leaves the in-memory
@@ -495,8 +490,8 @@
         ui_scale_auto: false,
       }
       appPrefs = updated
-      void invoke('set_app_settings', { settings: updated }).catch((err) =>
-        console.warn('set_app_settings (ui_scale) failed', err),
+      void api.settings.updateAppSettings({ newSettings: updated }).catch((err) =>
+        console.warn('update_app_settings (ui_scale) failed', err),
       )
     }
     // `passive: false` so `preventDefault` is allowed — without
@@ -522,7 +517,7 @@
    *  `unread-count-updated` emissions when the poll finishes. */
   function reloadFrontendFromContextMenu() {
     closeAppContextMenu()
-    void invoke('check_mail_now').catch((e) => {
+    void api.mail.checkMailNow().catch((e) => {
       console.warn('check_mail_now during refresh failed', e)
     })
     window.location.reload()
@@ -726,7 +721,7 @@
 
   async function bootstrapNotifications() {
     try {
-      const granted = await isPermissionGranted()
+      const granted = await api.platform.notificationsPermissionGranted()
       if (granted) {
         notificationsGranted = true
         return
@@ -735,7 +730,7 @@
       // launch the setup wizard should own the screen, not an OS
       // permission dialog.
       if (currentView === 'setup') return
-      const res = await requestPermission()
+      const res = await api.platform.requestNotificationsPermission()
       notificationsGranted = res === 'granted'
     } catch (err) {
       console.warn('notification permission bootstrap failed', err)
@@ -754,11 +749,11 @@
     try {
       // Office temp files only exist on real Nextclouds (#413).
       const accounts = (
-        await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        await api.nextcloud.getNextcloudAccounts()
       ).filter(isNextcloudSource)
       for (const a of accounts) {
         try {
-          await invoke('office_sweep_temp', { ncId: a.id })
+          await api.system.officeSweepTemp({ ncId: a.id })
         } catch (e) {
           console.warn('office_sweep_temp failed for', a.id, e)
         }
@@ -785,7 +780,7 @@
     // isn't wired (macOS) so we fall through to the Tauri plugin —
     // toast still shows, click does nothing there.
     try {
-      const handled = await invoke<boolean>('send_native_notification', {
+      const handled = await api.system.sendNativeNotification({
         title,
         body,
         accountId: mailRef?.accountId,
@@ -797,7 +792,7 @@
       console.warn('send_native_notification failed, falling back to plugin', err)
     }
     try {
-      sendNotification({
+      api.platform.showNotification({
         title,
         body,
         ...(notificationIconPath ? { icon: notificationIconPath } : {}),
@@ -877,10 +872,10 @@
       payload.meetingUrl &&
       appPrefs?.auto_open_meetings
     ) {
-      void invoke('open_url', { url: payload.meetingUrl }).catch((err) =>
+      void api.system.openUrl({ url: payload.meetingUrl }).catch((err) =>
         console.warn('open_url for event reminder failed', err),
       )
-      void invoke('dismiss_event_reminder', { uid: payload.uid }).catch(
+      void api.calendar.dismissEventReminder({ uid: payload.uid }).catch(
         () => {},
       )
       return
@@ -952,7 +947,10 @@
     void refreshNextcloudCapabilities()
 
     try {
-      appPrefs = await invoke<AppPrefs>('get_app_settings')
+      /* The `as` keeps the null-excluding narrowing the old
+       * `invoke<AppPrefs>` generic provided — the api layer's
+       * `AppSettings` DTO is still a loose alias (#473). */
+      appPrefs = (await api.settings.getAppSettings()) as AppPrefs
       // Seed the theme module's custom-theme registry so the
       // picker + the runtime <link> swap know about the user's
       // imported themes (#132).  Re-runs on every reload so
@@ -1007,7 +1005,7 @@
 
   async function loadNotificationIconPath() {
     try {
-      notificationIconPath = await invoke<string>('get_notification_icon_path')
+      notificationIconPath = await api.system.getNotificationIconPath()
     } catch (err) {
       console.warn('get_notification_icon_path failed', err)
     }
@@ -1046,19 +1044,19 @@
     let unlistenMessageReminder: UnlistenFn | null = null
     let unlistenNotificationClicked: UnlistenFn | null = null
     ;(async () => {
-      unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
+      unlistenNewMail = await api.onAppEvent('new-mail', (e) =>
         handleNewMail(e.payload),
       )
       // #415: a per-message reminder elapsed — toast it (with a
       // click-through back to the mail).
-      unlistenMessageReminder = await listen<MessageReminder>(
+      unlistenMessageReminder = await api.onAppEvent(
         'message-reminder',
         (e) => handleMessageReminder(e.payload),
       )
       // #415: the user clicked a new-mail / reminder toast.  Rust
       // already focused this window (`show_main_window`) before
       // emitting; all that's left is routing to the message.
-      unlistenNotificationClicked = await listen<NotificationClick>(
+      unlistenNotificationClicked = await api.onAppEvent(
         'notification-clicked',
         (e) =>
           openMailInMainView(e.payload.accountId, e.payload.folder, e.payload.uid),
@@ -1069,7 +1067,7 @@
       // poll path runs).  Bump the refresh token so MailList
       // re-reads the cache and the row picks up the new flags
       // without a manual refresh.
-      unlistenMailFlagsUpdated = await listen<MailFlagsUpdatedPayload>(
+      unlistenMailFlagsUpdated = await api.onAppEvent(
         'mail-flags-updated',
         () => {
           refreshToken++
@@ -1081,10 +1079,7 @@
       // the Sidebar can decide whether to show the synthetic
       // Outbox folder for the active account specifically,
       // instead of leaking it into every account's sidebar.
-      unlistenOutboxUpdated = await listen<{
-        total: number
-        byAccount: Record<string, number>
-      }>('outbox-updated', (e) => {
+      unlistenOutboxUpdated = await api.onAppEvent('outbox-updated', (e) => {
         outboxCountByAccount = e.payload.byAccount ?? {}
         outboxRefreshToken++
         // If the user is sitting on the Outbox folder for the
@@ -1109,11 +1104,11 @@
       // without waiting for the first poll tick.
       try {
         outboxCountByAccount =
-          (await invoke<Record<string, number>>('count_outbox_by_account')) ?? {}
+          (await api.compose.countOutboxByAccount()) ?? {}
       } catch (e) {
         console.warn('count_outbox_by_account at startup failed', e)
       }
-      unlistenEventReminder = await listen<EventReminder>(
+      unlistenEventReminder = await api.onAppEvent(
         'event-reminder',
         (e) => handleEventReminder(e.payload),
       )
@@ -1127,7 +1122,7 @@
       // `SetForegroundWindow` lock, especially when the main
       // window is hidden in the system tray.  Doing it from
       // Rust avoids that.
-      unlistenReminderShowEvent = await listen<{ eventId: string }>(
+      unlistenReminderShowEvent = await api.onAppEvent(
         'reminder-show-event',
         (e) => {
           calendarFocusEventId = e.payload.eventId
@@ -1138,10 +1133,10 @@
       // imported / removed (in this window or another).  Re-pull
       // settings so the picker + the runtime <link> registry
       // both refresh without a full reload.
-      unlistenCustomThemes = await listen('custom-themes-changed', () =>
+      unlistenCustomThemes = await api.onAppEvent('custom-themes-changed', () =>
         loadAppPrefs(),
       )
-      unlistenCompose = await listen('open-compose', () => openCompose({}))
+      unlistenCompose = await api.onAppEvent('open-compose', () => openCompose({}))
       // Standalone-mail windows (#104) emit these when the user
       // hits Reply / Reply All / Forward over there.  Per #304 the
       // resulting Compose opens as its own popped-out window so
@@ -1153,7 +1148,7 @@
       // default to the account the original message lives on
       // rather than whatever account the main window happens to
       // have active.
-      unlistenComposeFromMail = await listen<{
+      type ComposeFromMailPayload = {
         kind: 'reply' | 'reply-all' | 'forward'
         mail: ForwardableMail
         /** #341 — passphrase the popout collected when its local
@@ -1172,7 +1167,9 @@
          *  re-prompting in the main window for popout-driven
          *  forwards. */
         includeAttachments?: boolean | null
-      }>('compose-from-mail', (e) => {
+      }
+
+      unlistenComposeFromMail = await api.onAppEvent('compose-from-mail', (e: { payload: ComposeFromMailPayload }) => {
         const { kind, mail, pgpPassphrase, includeAttachments } = e.payload
         void (async () => {
           // #341 — the popped-out mail window owns its own decrypt
@@ -1240,13 +1237,13 @@
           )
         })()
       })
-      unlistenEditDraftFromMail = await listen<{ mail: DraftMail }>(
+      unlistenEditDraftFromMail = await api.onAppEvent(
         'edit-draft-from-mail',
-        (e) => onEditDraft(e.payload.mail),
+        (e: { payload: { mail: DraftMail } }) => onEditDraft(e.payload.mail),
       )
-      unlistenMailtoFromMail = await listen<{
-        init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }
-      }>('mailto-from-mail', (e) => openCompose(e.payload.init))
+      unlistenMailtoFromMail = await api.onAppEvent('mailto-from-mail', (e: {
+        payload: { init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string } }
+      }) => openCompose(e.payload.init))
       // #304 — "Respond with meeting" from a popped-out mail
       // window.  Both the EventEditor and the resulting Compose
       // open as their own popped-out windows, so the user stays
@@ -1255,9 +1252,9 @@
       // preparation work (NC account / calendars fetch, attendee
       // splitting) still runs here in the main window because
       // that's where `activeAccountEmail` lives.
-      unlistenRespondWithMeetingFromMail = await listen<{
-        mail: ReplyableMail
-      }>('respond-with-meeting-from-mail', (e) => {
+      unlistenRespondWithMeetingFromMail = await api.onAppEvent('respond-with-meeting-from-mail', (e: {
+        payload: { mail: ReplyableMail }
+      }) => {
         void openMeetingEditorPopout(e.payload.mail)
       })
       // #304 — popped-out EventEditor emits this on save.  Build
@@ -1266,10 +1263,9 @@
       // main-window-side) and open Compose as another popped-out
       // window.  `saved` is undefined when the editor closed
       // without saving — nothing to do in that case.
-      unlistenEventEditorSavedFromPopout = await listen<{
-        saved?: SavedEvent
-        replyTo: ReplyableMail
-      }>('event-editor-saved-from-popout', (e) => {
+      unlistenEventEditorSavedFromPopout = await api.onAppEvent('event-editor-saved-from-popout', (e: {
+        payload: { saved?: SavedEvent; replyTo: ReplyableMail }
+      }) => {
         const { saved, replyTo } = e.payload
         if (!saved || !replyTo) return
         const loc = (saved.location ?? '').trim()
@@ -1321,7 +1317,7 @@
       // instance plugin).  We parse the raw URL with the same RFC
       // 6068 helper the in-app body and notes handlers use, then
       // open Compose against the user's primary account.
-      unlistenMailtoDeepLink = await listen<string>(
+      unlistenMailtoDeepLink = await api.onAppEvent(
         'unkai://mailto',
         (e) => {
           if (typeof e.payload === 'string') {
@@ -1381,7 +1377,7 @@
    *  there is nothing left for Settings to manage. */
   async function checkAccounts(opts: { keepView?: boolean } = {}) {
     try {
-      const list = await invoke<Account[]>('get_accounts')
+      const list = await api.accounts.getAccounts()
       accounts = list
       if (list.length > 0) {
         // Warm the shared contact cache (#305) so MailList rows
@@ -1478,7 +1474,7 @@
     // (which otherwise wouldn't trigger MailList's own
     // refreshing flag).
     accountClickRefreshing = true
-    void invoke('check_mail_now')
+    void api.mail.checkMailNow()
       .catch((e) => {
         console.warn('check_mail_now from IconRail click failed', e)
       })
@@ -1582,7 +1578,7 @@
    *  loop's startup poll but cheap and predictable. */
   $effect(() => {
     if (currentView === 'inbox') {
-      void invoke('check_mail_now').catch((e) =>
+      void api.mail.checkMailNow().catch((e) =>
         console.warn('auto check_mail_now on view switch failed:', e),
       )
     }
@@ -2042,7 +2038,7 @@
     // platforms / permissions where it can't post.
     if (notificationsGranted) {
       try {
-        sendNotification({
+        api.platform.showNotification({
           title: 'Unkai Mail — send failed',
           body: payload.errorMessage,
           icon: notificationIconPath || undefined,
@@ -2086,7 +2082,7 @@
     selectedFolder = OUTBOX_FOLDER
     selectedUid = null
     try {
-      const rows = await invoke<OutboxRowDto[]>('list_outbox', {
+      const rows = await api.compose.listOutbox({
         accountId: activeAccountId ?? '',
       })
       selectedOutboxRow = rows.find((r) => r.id === newRowId) ?? null
@@ -2421,17 +2417,7 @@
     // promise of the per-account opt-in.
     let lastError = ''
     try {
-      const auto = await invoke<{
-        body_text: string | null
-        body_html: string | null
-        attachments: {
-          filename: string
-          content_type: string
-          size: number | null
-          part_id: number
-          content_id?: string | null
-        }[]
-      } | null>('try_auto_decrypt_message', {
+      const auto = await api.crypto.tryAutoDecryptMessage({
         accountId: mail.account_id,
         folder: mail.folder,
         uid: mail.uid,
@@ -2502,17 +2488,7 @@
         // with the *outer* part_ids and ship the wrong bytes (or
         // error out) — exactly the symptom that re-surfaced after
         // the prior fix.
-        const decrypted = await invoke<{
-          body_text: string | null
-          body_html: string | null
-          attachments: {
-            filename: string
-            content_type: string
-            size: number | null
-            part_id: number
-            content_id?: string | null
-          }[]
-        }>('decrypt_message', {
+        const decrypted = await api.crypto.decryptMessage({
           accountId: mail.account_id,
           folder: mail.folder,
           uid: mail.uid,
@@ -2610,7 +2586,7 @@
       mail.attachments.map(async (att) => ({
         filename: att.filename,
         content_type: att.content_type,
-        data: await invoke<number[]>('download_email_attachment', {
+        data: await api.mail.downloadEmailAttachment({
           accountId: mail.account_id,
           folder: mail.folder,
           uid,
@@ -2749,23 +2725,22 @@
       mail.attachments.map(async (att) => ({
         filename: att.filename,
         content_type: att.content_type,
-        data: await invoke<number[]>(
-          useDecrypted ? 'download_decrypted_attachment' : 'download_email_attachment',
-          useDecrypted
-            ? {
-                accountId: mail.account_id,
-                folder: mail.folder,
-                uid: mail.uid,
-                partId: att.part_id,
-                pgpPassphrase: passphrase,
-              }
-            : {
-                accountId: mail.account_id,
-                folder: mail.folder,
-                uid: mail.uid,
-                partId: att.part_id,
-              },
-        ),
+        data: await (useDecrypted
+          ? api.crypto.downloadDecryptedAttachment({
+              accountId: mail.account_id,
+              folder: mail.folder,
+              uid: mail.uid,
+              partId: att.part_id,
+              // Non-null: the `useDecrypted && passphrase == null`
+              // guard above already rejected that combination.
+              pgpPassphrase: passphrase!,
+            })
+          : api.mail.downloadEmailAttachment({
+              accountId: mail.account_id,
+              folder: mail.folder,
+              uid: mail.uid,
+              partId: att.part_id,
+            })),
         content_id: crypto.randomUUID().replaceAll('-', ''),
       })),
     )
@@ -2998,7 +2973,7 @@
       let ncId = ''
       try {
         const list = (
-          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+          await api.nextcloud.getNextcloudAccounts()
         ).filter(isNextcloudSource)
         if (list.length === 0) {
           alert('Connect a Nextcloud account first (Settings → Nextcloud).')
@@ -3012,7 +2987,7 @@
 
       let calendars: CalendarSummary[] = []
       try {
-        calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+        calendars = await api.calendar.getCachedCalendars({ ncId })
       } catch (e) {
         alert(`Failed to load calendars: ${e}`)
         return null
@@ -3024,7 +2999,7 @@
       }
       let initialCalendarId = visible[0].id
       try {
-        const s = await invoke<{ default_calendar_id: string | null }>('get_app_settings')
+        const s = await api.settings.getAppSettings()
         if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
           initialCalendarId = s.default_calendar_id!
         }
@@ -3250,7 +3225,7 @@
   async function processPendingLaunchFile() {
     let path: string | null = null
     try {
-      path = await invoke<string | null>('take_pending_file_to_open')
+      path = await api.system.takePendingFileToOpen()
     } catch (e) {
       console.warn('take_pending_file_to_open failed', e)
       return
@@ -3284,7 +3259,7 @@
   async function processPendingMailtoUrls() {
     let urls: string[] = []
     try {
-      urls = await invoke<string[]>('take_pending_mailto_urls')
+      urls = await api.system.takePendingMailtoUrls()
     } catch (e) {
       console.warn('take_pending_mailto_urls failed', e)
       return
@@ -3355,7 +3330,7 @@
   async function openIcsFileInEditor(path: string) {
     let events: ImportedIcsEvent[] = []
     try {
-      events = await invoke<ImportedIcsEvent[]>('parse_ics_file', { path })
+      events = await api.calendar.parseIcsFile({ path })
     } catch (e) {
       alert(`Could not parse the calendar file: ${e}`)
       return
@@ -3373,7 +3348,7 @@
     let ncId = ''
     try {
       const list = (
-          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+          await api.nextcloud.getNextcloudAccounts()
         ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert(
@@ -3389,7 +3364,7 @@
 
     let calendars: CalendarSummary[] = []
     try {
-      calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+      calendars = await api.calendar.getCachedCalendars({ ncId })
     } catch (e) {
       alert(`Failed to load calendars: ${e}`)
       return
@@ -3401,9 +3376,7 @@
     }
     let initialCalendarId = visible[0].id
     try {
-      const s = await invoke<{ default_calendar_id: string | null }>(
-        'get_app_settings',
-      )
+      const s = await api.settings.getAppSettings()
       if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
         initialCalendarId = s.default_calendar_id!
       }
@@ -3463,7 +3436,7 @@
     let ncId = ''
     try {
       const list = (
-          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+          await api.nextcloud.getNextcloudAccounts()
         ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert('Connect a Nextcloud account first (Settings → Nextcloud).')
@@ -3482,9 +3455,9 @@
     // "we haven't synced yet" case.
     let lists: { id: string; display_name: string; name: string }[] = []
     try {
-      lists = await invoke('list_nextcloud_task_lists', { ncId })
+      lists = await api.tasks.listNextcloudTaskLists({ ncId })
       if (lists.length === 0) {
-        lists = await invoke('sync_nextcloud_task_lists', { ncId })
+        lists = await api.tasks.syncNextcloudTaskLists({ ncId })
       }
     } catch (e) {
       alert(`Failed to load task lists: ${e}`)
@@ -3500,7 +3473,7 @@
     const targetListLabel = lists[0].display_name || lists[0].name
 
     try {
-      await invoke('create_nextcloud_task_from_mail', {
+      await api.tasks.createNextcloudTaskFromMail({
         ncId,
         listId: targetListId,
         mailAccountId: mail.account_id,
@@ -3524,7 +3497,7 @@
     let ncId = ''
     try {
       const list = (
-          await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+          await api.nextcloud.getNextcloudAccounts()
         ).filter(isNextcloudSource)
       if (list.length === 0) {
         alert('Connect a Nextcloud account first (Settings → Nextcloud).')
@@ -3557,7 +3530,7 @@
     const title = mail.subject || '(no subject)'
 
     try {
-      await invoke('create_nextcloud_note', {
+      await api.notes.createNextcloudNote({
         ncId,
         title,
         content,

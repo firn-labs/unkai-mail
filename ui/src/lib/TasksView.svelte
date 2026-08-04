@@ -33,7 +33,7 @@
    * mail-ref handler.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
@@ -162,7 +162,7 @@
     try {
       // Nextcloud-app feature — skip generic-DAV / local sources (#413).
       const list = (
-        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+        await api.nextcloud.getNextcloudAccounts()
       ).filter(isNextcloudSource)
       accounts = list
       if (list.length >= 1 && !accountId) {
@@ -201,8 +201,8 @@
     error = ''
     try {
       const [tl, ts] = await Promise.all([
-        invoke<TaskList[]>('list_nextcloud_task_lists', { ncId: accountId }),
-        invoke<Task[]>('list_nextcloud_tasks', { ncId: accountId }),
+        api.tasks.listNextcloudTaskLists({ ncId: accountId }),
+        api.tasks.listNextcloudTasks({ ncId: accountId }),
       ])
       lists = tl
       tasks = ts
@@ -224,7 +224,7 @@
   async function syncNow() {
     if (!accountId) return
     try {
-      const tl = await invoke<TaskList[]>('sync_nextcloud_task_lists', {
+      const tl = await api.tasks.syncNextcloudTaskLists({
         ncId: accountId,
       })
       lists = tl
@@ -233,7 +233,7 @@
       let latestTasks: Task[] = tasks
       for (const list of tl) {
         try {
-          latestTasks = await invoke<Task[]>('sync_nextcloud_tasks', {
+          latestTasks = await api.tasks.syncNextcloudTasks({
             ncId: accountId,
             listId: list.id,
           })
@@ -522,7 +522,7 @@
     const listId = draftListId
     const dueUnix = localSplitToUnixSecs(draftDueDate, draftDueTime)
     try {
-      const updated = await invoke<Task>('update_nextcloud_task', {
+      const updated = await api.tasks.updateNextcloudTask({
         ncId: accountId,
         listId,
         uid,
@@ -559,7 +559,7 @@
     if (!accountId) return
     const becomeCompleted = !isCompleted(t)
     try {
-      const updated = await invoke<Task>('update_nextcloud_task', {
+      const updated = await api.tasks.updateNextcloudTask({
         ncId: accountId,
         listId: t.task_list_id,
         uid: t.uid,
@@ -595,7 +595,7 @@
     const idx = lists.findIndex((x) => x.id === l.id)
     if (idx !== -1) lists[idx] = { ...lists[idx], muted: newMuted }
     try {
-      await invoke('set_nextcloud_task_list_muted', {
+      await api.tasks.setNextcloudTaskListMuted({
         taskListId: l.id,
         muted: newMuted,
       })
@@ -613,7 +613,7 @@
     if (!t) return
     if (!confirm(`Delete "${t.summary || '(untitled task)'}"? This cannot be undone.`)) return
     try {
-      await invoke('delete_nextcloud_task', {
+      await api.tasks.deleteNextcloudTask({
         ncId: accountId,
         listId: t.task_list_id,
         uid: t.uid,
@@ -629,7 +629,7 @@
   async function quickDelete(t: Task) {
     if (!accountId) return
     try {
-      await invoke('delete_nextcloud_task', {
+      await api.tasks.deleteNextcloudTask({
         ncId: accountId,
         listId: t.task_list_id,
         uid: t.uid,
@@ -716,7 +716,7 @@
       const dateForSave =
         newReminderDate || (newReminderTime ? todayLocalDate() : '')
       const dueUnix = localSplitToUnixSecs(dateForSave, newReminderTime)
-      const created = await invoke<Task>('create_nextcloud_task', {
+      const created = await api.tasks.createNextcloudTask({
         ncId: accountId,
         listId: newTaskListId,
         summary,

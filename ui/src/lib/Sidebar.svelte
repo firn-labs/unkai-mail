@@ -18,7 +18,7 @@
    * Contacts / Calendar sync-now buttons.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
@@ -250,7 +250,7 @@
       const failures: unknown[] = []
       for (const g of groups.values()) {
         try {
-          const moved = await invoke<number[]>('move_messages', {
+          const moved = await api.mail.moveMessages({
             accountId: g.accountId,
             folder: g.folder,
             uids: g.uids,
@@ -332,7 +332,7 @@
   async function commitFolderIcon(folder: Folder, emoji: string | null) {
     folderOpBusy = true
     try {
-      await invoke('set_folder_icon', {
+      await api.mail.setFolderIcon({
         accountId,
         folderName: folder.name,
         icon: emoji,
@@ -419,7 +419,7 @@
     const newName = parent ? `${parent}${delimiterFor(oldName)}${newLeaf}` : newLeaf
     folderOpBusy = true
     try {
-      await invoke('rename_folder', {
+      await api.mail.renameFolder({
         accountId,
         oldName,
         newName,
@@ -462,7 +462,7 @@
     const name = joinPath(parentFolder, leaf)
     folderOpBusy = true
     try {
-      await invoke('create_folder', { accountId, name })
+      await api.mail.createFolder({ accountId, name })
       newFolderInput = null
       await load(accountId)
     } catch (e) {
@@ -481,7 +481,7 @@
     const { folder } = deleteConfirm
     folderOpBusy = true
     try {
-      await invoke('delete_folder', { accountId, name: folder.name })
+      await api.mail.deleteFolder({ accountId, name: folder.name })
       // If the user was viewing the folder they just deleted, bounce
       // them to INBOX — otherwise MailList keeps trying to fetch
       // from a mailbox the server no longer has.
@@ -536,7 +536,7 @@
   let unifiedUnread = $state(0)
   async function refreshUnifiedUnread() {
     try {
-      unifiedUnread = await invoke<number>('get_total_unread')
+      unifiedUnread = await api.mail.getTotalUnread()
     } catch (e) {
       console.warn('get_total_unread failed:', e)
     }
@@ -546,8 +546,7 @@
     void refreshUnifiedUnread()
     let unlisten: (() => void) | null = null
     ;(async () => {
-      const { listen } = await import('@tauri-apps/api/event')
-      unlisten = await listen('unread-count-updated', () => {
+      unlisten = await api.onAppEvent('unread-count-updated', () => {
         void refreshUnifiedUnread()
         // Per-folder badges read from the cached `folders` table,
         // which `mark_envelope_read` and `bump_folder_unread` keep in
@@ -567,7 +566,7 @@
       reserved for mount + account switch. */
   async function reloadCachedFolders(id: string) {
     try {
-      const cached = await invoke<Folder[]>('get_cached_folders', { accountId: id })
+      const cached = await api.mail.getCachedFolders({ accountId: id })
       if (id === accountId) folders = cached
     } catch (e) {
       console.warn('reloadCachedFolders failed:', e)
@@ -601,7 +600,7 @@
     error = ''
 
     try {
-      const cached = await invoke<Folder[]>('get_cached_folders', { accountId: id })
+      const cached = await api.mail.getCachedFolders({ accountId: id })
       if (id === accountId) {
         folders = cached
         if (cached.length > 0) loading = false
@@ -611,7 +610,7 @@
     }
 
     try {
-      const fresh = await invoke<Folder[]>('fetch_folders', { accountId: id })
+      const fresh = await api.mail.fetchFolders({ accountId: id })
       if (id === accountId) {
         folders = fresh
       }

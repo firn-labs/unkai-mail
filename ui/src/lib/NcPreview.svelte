@@ -16,7 +16,7 @@
   // `nextcloud_file_preview` Tauri command and renders an
   // `<img>` once the bytes land; everything else falls through
   // to <FileTypeIcon>.
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import FileTypeIcon from './FileTypeIcon.svelte'
 
   interface Props {
@@ -66,7 +66,7 @@
     let cancelled = false
     void (async () => {
       try {
-        const bytes = await invoke<number[] | null>('nextcloud_file_preview', {
+        const bytes = await api.nextcloud.nextcloudFilePreview({
           ncId: accountId,
           path,
           size: 128,

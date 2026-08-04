@@ -22,7 +22,7 @@
    * `canCancel` defaults to `false` and the button is hidden.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import NextcloudConnect from './NextcloudConnect.svelte'
   import Toggle from './Toggle.svelte'
@@ -117,7 +117,7 @@
   )
 
   $effect(() => {
-    invoke<ProviderPreset[]>('list_provider_presets')
+    api.accounts.listProviderPresets()
       .then((list) => (presets = list))
       .catch((e) => console.warn('list_provider_presets failed:', e))
   })
@@ -281,7 +281,7 @@
       return
     }
     try {
-      davPendingCert = await invoke<ProbedCert>('probe_server_certificate', {
+      davPendingCert = await api.accounts.probeServerCertificate({
         host: target.host,
         port: target.port,
       })
@@ -327,7 +327,7 @@
     try {
       if (davChoice === 'dav') {
         const name = davDisplayName.trim() || davServerUrl.trim()
-        const acct = await invoke<{ id: string }>('add_dav_account', {
+        const acct = await api.nextcloud.addDavAccount({
           displayName: name,
           serverUrl: davServerUrl.trim(),
           username: davUsername.trim(),
@@ -342,19 +342,19 @@
         // First pull in the background so the views aren't empty —
         // same posture as the Nextcloud step (#318).
         if (davUseContacts) {
-          void invoke('sync_nextcloud_contacts', { ncId: acct.id }).catch((e) =>
+          void api.contacts.syncNextcloudContacts({ ncId: acct.id }).catch((e) =>
             console.warn('initial CardDAV sync failed:', e),
           )
         }
         if (davUseCalendars) {
-          void invoke('sync_nextcloud_calendars', { ncId: acct.id }).catch((e) =>
+          void api.calendar.syncNextcloudCalendars({ ncId: acct.id }).catch((e) =>
             console.warn('initial CalDAV sync failed:', e),
           )
         }
         davConfigured = { kind: 'dav', name }
       } else {
         const name = davDisplayName.trim() || m.account_setup_dav_local_default_name()
-        await invoke('add_local_dav_account', {
+        await api.nextcloud.addLocalDavAccount({
           displayName: name,
           useContacts: davUseContacts,
           useCalendars: davUseCalendars,
@@ -382,23 +382,20 @@
     if (!caps) return
     const jobs: Promise<unknown>[] = []
     if (caps.carddav) {
-      jobs.push(invoke('sync_nextcloud_contacts', { ncId: acct.id }))
+      jobs.push(api.contacts.syncNextcloudContacts({ ncId: acct.id }))
     }
     if (caps.caldav) {
-      jobs.push(invoke('sync_nextcloud_calendars', { ncId: acct.id }))
+      jobs.push(api.calendar.syncNextcloudCalendars({ ncId: acct.id }))
     }
     await Promise.allSettled(jobs)
     // Task lists piggy-back on CalDAV but need their own discovery
     // + per-list sync round-trip (#92).
     if (caps.tasks && caps.caldav) {
       try {
-        const lists = await invoke<{ id: string }[]>(
-          'sync_nextcloud_task_lists',
-          { ncId: acct.id },
-        )
+        const lists = await api.tasks.syncNextcloudTaskLists({ ncId: acct.id })
         await Promise.allSettled(
           lists.map((l) =>
-            invoke('sync_nextcloud_tasks', { ncId: acct.id, listId: l.id }),
+            api.tasks.syncNextcloudTasks({ ncId: acct.id, listId: l.id }),
           ),
         )
       } catch (e) {
@@ -453,10 +450,9 @@
     discoveryHint = null
     discovering = true
     try {
-      const found = await invoke<DiscoveredAccount | null>(
-        'discover_account_settings',
-        { email: email.trim() },
-      )
+      const found = await api.accounts.discoverAccountSettings({
+        email: email.trim(),
+      })
       if (found) {
         // Only overwrite blank fields so a user mid-edit doesn't
         // lose what they typed. Same posture as the old heuristic.
@@ -542,7 +538,7 @@
   async function handleCertError() {
     pendingCert = null
     try {
-      const probed = await invoke<ProbedCert>('probe_server_certificate', {
+      const probed = await api.accounts.probeServerCertificate({
         host: imapHost.trim(),
         port: imapPort,
       })
@@ -591,7 +587,7 @@
       // TLS failure, bad password — all surface here). `trustedCerts`
       // grows when the user accepts a self-signed cert via the
       // prompt below, so the same probe will pass on the retry.
-      await invoke('test_connection', {
+      await api.accounts.testConnection({
         host: imapHost.trim(),
         port: imapPort,
         username: email.trim(),
@@ -607,7 +603,7 @@
       // Call the Rust backend to save this account. The password is
       // handed over as a separate argument so the Rust side can stash
       // it in the OS keychain — it never gets written to accounts.json.
-      await invoke('add_account', {
+      await api.accounts.addAccount({
         account: {
           id,
           display_name: displayName.trim(),
