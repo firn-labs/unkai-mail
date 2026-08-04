@@ -11,7 +11,7 @@
    * rendered from `<mark>` the backend inserted around matches.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import type { SearchScope, SearchFilters } from './SearchBar.svelte'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
@@ -83,7 +83,7 @@
     loading = true
     error = ''
     try {
-      const result = await invoke<SearchHit[]>('search_emails', {
+      const result = await api.mail.searchEmails({
         query,
         scope,
         filters,
@@ -102,17 +102,7 @@
     serverSearching = true
     try {
       const folder = scope.folder ?? currentFolder
-      const serverHits = await invoke<
-        Array<{
-          uid: number
-          folder: string
-          from: string
-          subject: string
-          date: string
-          is_read: boolean
-          is_starred: boolean
-        }>
-      >('search_imap_server', {
+      const serverHits = await api.mail.searchImapServer({
         accountId,
         folder,
         query,
@@ -183,17 +173,7 @@
     loadingServerOlder = true
     try {
       const folder = scope.folder ?? currentFolder
-      const more = await invoke<
-        Array<{
-          uid: number
-          folder: string
-          from: string
-          subject: string
-          date: string
-          is_read: boolean
-          is_starred: boolean
-        }>
-      >('search_imap_server_older', {
+      const more = await api.mail.searchImapServerOlder({
         accountId,
         folder,
         query,

@@ -19,8 +19,7 @@
 // preference but still requires re-auth on first connect for
 // each account.
 
-import { invoke } from '@tauri-apps/api/core'
-import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog'
+import * as api from './api'
 
 /**
  * `localStorage` keys that carry user-visible state we want to
@@ -96,7 +95,7 @@ export function applyLocalStorage(map: Record<string, string>) {
  */
 export async function notifySettingsChanged(): Promise<void> {
   try {
-    await invoke('notify_settings_changed', { localStorage: collectLocalStorage() })
+    await api.settings.notifySettingsChanged({ localStorage: collectLocalStorage() })
   } catch (e) {
     // Failing to update the worker's snapshot is not user-
     // visible — log and move on so the UI action that triggered
@@ -107,7 +106,7 @@ export async function notifySettingsChanged(): Promise<void> {
 
 /** Build a bundle JSON string from the live state. */
 export async function packBundle(): Promise<string> {
-  return invoke<string>('build_settings_bundle', {
+  return api.settings.buildSettingsBundle({
     localStorage: collectLocalStorage(),
   })
 }
@@ -118,7 +117,7 @@ export async function packBundle(): Promise<string> {
  * `null` if the user cancelled the save dialog.
  */
 export async function downloadBundle(): Promise<string | null> {
-  const path = await saveFileDialog({
+  const path = await api.platform.saveFileDialog({
     title: 'Save Unkai settings backup',
     defaultPath: 'unkai-settings.json',
     filters: [{ name: 'Unkai settings', extensions: ['json'] }],
@@ -130,7 +129,7 @@ export async function downloadBundle(): Promise<string | null> {
   // text write.  TextEncoder gives us a Uint8Array which Tauri
   // serialises as the `Vec<u8>` the Rust side expects.
   const bytes = new TextEncoder().encode(json)
-  await invoke('save_bytes_to_path', { path, data: Array.from(bytes) })
+  await api.system.saveBytesToPath({ path, data: Array.from(bytes) })
   return path
 }
 
@@ -142,15 +141,15 @@ export async function downloadBundle(): Promise<string | null> {
  * the bundle's schema version is too new.
  */
 export async function uploadBundle(): Promise<string | null> {
-  const picked = await openFileDialog({
+  const picked = await api.platform.openFileDialog({
     title: 'Import Unkai settings backup',
     multiple: false,
     filters: [{ name: 'Unkai settings', extensions: ['json'] }],
   })
   if (!picked || Array.isArray(picked)) return null
   const path = typeof picked === 'string' ? picked : (picked as { path: string }).path
-  const json = await invoke<string>('read_text_from_path', { path })
-  const localStorageMap = await invoke<Record<string, string>>('apply_settings_bundle', { json })
+  const json = await api.system.readTextFromPath({ path })
+  const localStorageMap = await api.settings.applySettingsBundle({ json })
   applyLocalStorage(localStorageMap)
   return path
 }
@@ -162,7 +161,7 @@ export interface SettingsSyncStateView {
 }
 
 export async function getSyncState(): Promise<SettingsSyncStateView> {
-  return invoke<SettingsSyncStateView>('get_settings_sync_state')
+  return api.settings.getSettingsSyncState()
 }
 
 /**
@@ -172,7 +171,7 @@ export async function getSyncState(): Promise<SettingsSyncStateView> {
  * settings change.
  */
 export async function setSyncTarget(targetNcId: string | null): Promise<void> {
-  await invoke('set_settings_sync_target', { targetNcId })
+  await api.settings.setSettingsSyncTarget({ targetNcId })
 }
 
 /**
@@ -184,7 +183,7 @@ export async function setSyncTarget(targetNcId: string | null): Promise<void> {
  * restore?" prompt.
  */
 export async function ncProbeBundle(ncId: string): Promise<string | null> {
-  return invoke<string | null>('nc_probe_settings_bundle', { ncId })
+  return api.settings.ncProbeSettingsBundle({ ncId })
 }
 
 /**
@@ -195,7 +194,7 @@ export async function ncProbeBundle(ncId: string): Promise<string | null> {
  * applied locally; returned for callers that want to inspect).
  */
 export async function ncRestoreBundle(ncId: string): Promise<Record<string, string>> {
-  const localStorageMap = await invoke<Record<string, string>>('nc_restore_settings_bundle', { ncId })
+  const localStorageMap = await api.settings.ncRestoreSettingsBundle({ ncId })
   applyLocalStorage(localStorageMap)
   return localStorageMap
 }

@@ -24,7 +24,7 @@
    * the open state, with a one-tick delay so the click that
    * opened it doesn't immediately close it.
    */
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
 
@@ -107,7 +107,7 @@
   async function runFetch(query: string) {
     loading = true
     try {
-      const hits = await invoke<GeocodeResult[]>('geocode_search', {
+      const hits = await api.calendar.geocodeSearch({
         query,
         lang,
       })

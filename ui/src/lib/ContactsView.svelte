@@ -9,8 +9,7 @@
    * the next sync to see our own changes.
    */
 
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
-  import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
+  import * as api from './api'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
   import Avatar from './Avatar.svelte'
@@ -239,7 +238,7 @@
    *  stays a plain set of inputs that never touch the network. */
   let geocodingEnabled = $state(false)
   $effect(() => {
-    void invoke<{ location_geocoding_enabled?: boolean }>('get_app_settings')
+    void api.settings.getAppSettings()
       .then((s) => {
         geocodingEnabled = s.location_geocoding_enabled === true
       })
@@ -392,10 +391,7 @@
       const rows: typeof allAddressbooks = []
       for (const a of accounts) {
         try {
-          const books = await invoke<AddressbookSummary[]>(
-            'list_nextcloud_addressbooks',
-            { ncId: a.id },
-          )
+          const books = await api.contacts.listNextcloudAddressbooks({ ncId: a.id })
           for (const b of books) {
             const k = `${a.id}::${b.path}`
             if (seen.has(k)) continue
@@ -416,12 +412,12 @@
       console.warn('addressbooks load failed', e)
     }
     try {
-      categories = await invoke<ContactCategoryView[]>('list_contact_categories')
+      categories = await api.contacts.listContactCategories()
     } catch (e) {
       console.warn('list_contact_categories failed', e)
     }
     try {
-      mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+      mailingLists = await api.contacts.listMailingLists()
     } catch (e) {
       console.warn('list_mailing_lists failed', e)
     }
@@ -456,7 +452,7 @@
     }
     for (const id of seedIds) {
       try {
-        await invoke('add_contact_to_category', { contactId: id, category: name })
+        await api.contacts.addContactToCategory({ contactId: id, category: name })
       } catch (e) {
         console.warn('seed category member failed', id, e)
       }
@@ -468,7 +464,7 @@
     const next = prompt('Rename Contact Group', name)?.trim()
     if (!next || next === name) return
     try {
-      await invoke('rename_contact_category', { old: name, new: next })
+      await api.contacts.renameContactCategory({ old: name, new: next })
       await reloadContacts()
       if (selectedScope === `category:${name}`) selectedScope = `category:${next}`
     } catch (e) {
@@ -478,7 +474,7 @@
   async function deleteCategory(name: string) {
     if (!confirm(`Remove the "${name}" tag from every contact carrying it? Contacts themselves are kept.`)) return
     try {
-      await invoke('delete_contact_category', { name })
+      await api.contacts.deleteContactCategory({ name })
       await reloadContacts()
       if (selectedScope === `category:${name}`) selectedScope = 'all'
     } catch (e) {
@@ -487,7 +483,7 @@
   }
   async function toggleCategoryAsList(name: string, currentlyOn: boolean) {
     try {
-      await invoke('set_category_use_as_mailing_list', {
+      await api.contacts.setCategoryUseAsMailingList({
         name,
         enabled: !currentlyOn,
       })
@@ -505,7 +501,7 @@
   }
   async function addContactIdToCategory(contactId: string, name: string) {
     try {
-      await invoke('add_contact_to_category', { contactId, category: name })
+      await api.contacts.addContactToCategory({ contactId, category: name })
       await reloadContacts()
     } catch (e) {
       formError = formatError(e) || 'Failed to tag contact'
@@ -536,10 +532,7 @@
     let books = addressbooksByAccount[ncId]
     if (!books) {
       try {
-        books = await invoke<AddressbookSummary[]>(
-          'list_nextcloud_addressbooks',
-          { ncId },
-        )
+        books = await api.contacts.listNextcloudAddressbooks({ ncId })
         addressbooksByAccount[ncId] = books
       } catch (e) {
         newListError = formatError(e) || 'Failed to list addressbooks'
@@ -555,7 +548,7 @@
     }
     const chosenEmoji = newListForm.emoji
     try {
-      const created = await invoke<{ id: string }>('create_contact_group', {
+      const created = await api.contacts.createContactGroup({
         ncId,
         addressbookUrl: book.path,
         addressbookName: book.name,
@@ -568,7 +561,7 @@
       // source icon, not that the create itself failed.
       if (chosenEmoji && created?.id) {
         try {
-          await invoke('set_mailing_list_emoji', {
+          await api.contacts.setMailingListEmoji({
             id: `list:${created.id}`,
             emoji: chosenEmoji,
           })
@@ -577,7 +570,7 @@
         }
       }
       try {
-        mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+        mailingLists = await api.contacts.listMailingLists()
       } catch (e) {
         console.warn('list_mailing_lists refresh failed', e)
       }
@@ -595,7 +588,7 @@
     // prefix to get back to the contact-handle id.
     const groupId = id.startsWith('list:') ? id.slice(5) : id
     try {
-      await invoke('delete_contact_group', { groupId })
+      await api.contacts.deleteContactGroup({ groupId })
       mailingLists = mailingLists.filter((m) => m.id !== id)
     } catch (e) {
       formError = formatError(e) || 'Failed to delete mailing list'
@@ -632,7 +625,7 @@
         m.id === ml.id ? { ...m, members: [...m.members, memberView] } : m,
       )
       try {
-        await invoke('update_contact_group', {
+        await api.contacts.updateContactGroup({
           groupId,
           displayName: null,
           memberUids: [...currentUids, targetUid],
@@ -656,7 +649,7 @@
         return cats.includes(ml.name) ? c : { ...c, categories: [...cats, ml.name] }
       })
       try {
-        await invoke('add_contact_to_category', { contactId, category: ml.name })
+        await api.contacts.addContactToCategory({ contactId, category: ml.name })
       } catch (e) {
         await reloadContacts()
         formError = formatError(e) || 'Failed to tag contact'
@@ -688,7 +681,7 @@
           : m,
       )
       try {
-        await invoke('update_contact_group', {
+        await api.contacts.updateContactGroup({
           groupId,
           displayName: null,
           memberUids: remainingUids,
@@ -715,7 +708,7 @@
           : c,
       )
       try {
-        await invoke('remove_contact_from_category', {
+        await api.contacts.removeContactFromCategory({
           contactId: target.id,
           category: ml.name,
         })
@@ -733,7 +726,7 @@
 
   async function toggleMailingListHidden(id: string, currently: boolean) {
     try {
-      await invoke('set_mailing_list_hidden', { id, hidden: !currently })
+      await api.contacts.setMailingListHidden({ id, hidden: !currently })
       mailingLists = mailingLists.map((m) =>
         m.id === id ? { ...m, hiddenFromAutocomplete: !currently } : m,
       )
@@ -752,13 +745,13 @@
     renamingListId = null
     if (!next || next === ml.name) return
     try {
-      await invoke('rename_mailing_list', { id: ml.id, newName: next })
+      await api.contacts.renameMailingList({ id: ml.id, newName: next })
       // Category renames change the row's id (cat:<old> →
       // cat:<new>); refetch picks up the new id while keeping
       // per-row settings in sync.  Manual lists keep their id.
       if (ml.source === 'category') {
         if (selectedListId === ml.id) selectedListId = `cat:${next}`
-        mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+        mailingLists = await api.contacts.listMailingLists()
         await reloadContacts()
       } else {
         mailingLists = mailingLists.map((m) =>
@@ -780,7 +773,7 @@
   async function pickMailingListEmoji(ml: MailingListView, emoji: string | null) {
     emojiPickerFor = null
     try {
-      await invoke('set_mailing_list_emoji', { id: ml.id, emoji })
+      await api.contacts.setMailingListEmoji({ id: ml.id, emoji })
       mailingLists = mailingLists.map((m) =>
         m.id === ml.id ? { ...m, emoji } : m,
       )
@@ -825,7 +818,7 @@
     loading = true
     error = ''
     try {
-      accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      accounts = await api.nextcloud.getNextcloudAccounts()
       if (accounts.length === 0) {
         error = 'Connect a Nextcloud account first to sync contacts.'
         loading = false
@@ -858,7 +851,7 @@
     try {
       for (const a of accounts) {
         try {
-          await invoke('sync_nextcloud_contacts', { ncId: a.id })
+          await api.contacts.syncNextcloudContacts({ ncId: a.id })
         } catch (e) {
           console.warn('sync_nextcloud_contacts failed for', a.id, e)
         }
@@ -875,10 +868,7 @@
       return
     }
     try {
-      const books = await invoke<AddressbookSummary[]>(
-        'list_nextcloud_addressbooks',
-        { ncId },
-      )
+      const books = await api.contacts.listNextcloudAddressbooks({ ncId })
       addressbooksByAccount[ncId] = books
       applyAddressbookDefault(ncId)
     } catch (e) {
@@ -1072,10 +1062,7 @@
   // Display elsewhere uses `contactPhotoSrc()` against the URI scheme.
   async function loadSelectedPhotoBytes(id: string) {
     try {
-      const photo = await invoke<{ mime: string; data: number[] } | null>(
-        'get_contact_photo',
-        { contactId: id },
-      )
+      const photo = await api.contacts.getContactPhoto({ contactId: id })
       if (selectedId !== id) return
       selectedPhotoBytes = photo?.data ?? null
     } catch (e) {
@@ -1175,7 +1162,7 @@
    *  so the next save re-emits the avatar with the new image. */
   async function pickPhoto() {
     try {
-      const picked = await openFileDialog({
+      const picked = await api.platform.openFileDialog({
         multiple: false,
         directory: false,
         filters: [
@@ -1191,7 +1178,7 @@
       // for reading we go through `read_text_from_path`?  No —
       // that's text-only.  We need binary read; the simplest
       // path is to fetch via `convertFileSrc` and a fetch call.
-      const url = convertFileSrc(picked)
+      const url = api.platform.assetUrl(picked)
       const resp = await fetch(url)
       const bytes = new Uint8Array(await resp.arrayBuffer())
       // Sniff the MIME from the file extension since the
@@ -1439,7 +1426,7 @@
     const primaryEmail = contact.email[0]?.value ?? null
     for (const value of contact.keys ?? []) {
       try {
-        await invoke<string>('pgp_import_public_key', {
+        await api.crypto.pgpImportPublicKey({
           armoredKey: value,
           emailHint: primaryEmail,
         })
@@ -1447,7 +1434,7 @@
         console.warn('pgp_import_public_key failed for contact key', e)
       }
       try {
-        await invoke<string>('smime_import_public_cert', {
+        await api.crypto.smimeImportPublicCert({
           certData: value,
           emailHint: primaryEmail,
         })
@@ -1472,7 +1459,7 @@
           formError = 'Pick a Nextcloud account and addressbook first.'
           return
         }
-        const created = await invoke<Contact>('create_contact', {
+        const created = await api.contacts.createContact({
           ncId: formAccountId,
           addressbookUrl: formAddressbookUrl,
           addressbookName: formAddressbookName,
@@ -1488,7 +1475,7 @@
         // contact without waiting for the next CardDAV sync.
         void pushKeysToCryptoCache(created)
       } else if (selectedId) {
-        const updated = await invoke<Contact>('update_contact', {
+        const updated = await api.contacts.updateContact({
           contactId: selectedId,
           input,
         })
@@ -1510,7 +1497,7 @@
     saving = true
     formError = ''
     try {
-      await invoke('delete_contact', { contactId: selectedId })
+      await api.contacts.deleteContact({ contactId: selectedId })
       await reloadContacts()
       selectedId = null
       deleteConfirm = false

@@ -13,11 +13,11 @@
    * next refresh tick.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import Compose, { type ComposeInitial } from './Compose.svelte'
   import { takeComposePopoutPayload } from './standaloneComposeWindow'
-  import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
+  import { applyTheme, installSystemModeListener } from './theme'
 
   // Mirror the MailAccount shape Compose.svelte expects.  Defining
   // it locally is simpler than coordinating an export from Compose
@@ -43,10 +43,7 @@
       // chosen Skeleton theme + light/dark mode.  Same shape as
       // StandaloneMail.svelte (#104).
       try {
-        const prefs = await invoke<{
-          theme_name: string
-          theme_mode: ThemeMode
-        }>('get_app_settings')
+        const prefs = await api.settings.getAppSettings()
         applyTheme(prefs.theme_name, prefs.theme_mode)
         unlistenSystem = installSystemModeListener(
           prefs.theme_mode,
@@ -58,7 +55,7 @@
 
       // Load the accounts list — Compose's From: picker needs it.
       try {
-        accounts = await invoke<MailAccount[]>('get_accounts')
+        accounts = await api.accounts.getAccounts()
       } catch (e) {
         console.warn('get_accounts failed', e)
         loadError = 'Could not load mail accounts.'

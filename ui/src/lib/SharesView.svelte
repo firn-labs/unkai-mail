@@ -33,7 +33,7 @@
    * visual language stays consistent.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import DateField from './DateField.svelte'
@@ -114,7 +114,7 @@
     try {
       // Nextcloud-app feature — skip generic-DAV / local sources (#413).
       const list = (
-        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+        await api.nextcloud.getNextcloudAccounts()
       ).filter(isNextcloudSource)
       accounts = list
       if (list.length === 1 && !accountId) {
@@ -146,7 +146,7 @@
     if (!opts.silent) loading = true
     if (!opts.silent) error = ''
     try {
-      const list = await invoke<ShareRow[]>('list_nextcloud_shares', {
+      const list = await api.nextcloud.listNextcloudShares({
         ncId: accountId,
       })
       // Newest first — the user's most recent share is the one most
@@ -253,7 +253,7 @@
   }
 
   function openInBrowser(row: ShareRow) {
-    void invoke('open_url', { url: row.url })
+    void api.system.openUrl({ url: row.url })
   }
 
   // ── Delete ──────────────────────────────────────────────────
@@ -265,7 +265,7 @@
     if (!ok) return
     deletingId = row.id
     try {
-      await invoke('delete_nextcloud_share', {
+      await api.nextcloud.deleteNextcloudShare({
         ncId: row.nc_id,
         shareId: row.id,
       })
@@ -352,7 +352,7 @@
       : ''
 
     const permissionsChanged = editPermissions !== editing.permissions
-    const payload: Record<string, unknown> = {
+    const payload: Parameters<typeof api.nextcloud.updateNextcloudShare>[0] = {
       ncId: editing.nc_id,
       shareId: editing.id,
     }
@@ -367,7 +367,7 @@
     }
 
     try {
-      await invoke('update_nextcloud_share', payload)
+      await api.nextcloud.updateNextcloudShare(payload)
       // Optimistically reflect the change in the local row so the UI
       // doesn't lag behind the next refresh tick.
       const idx = shares.findIndex((s) => s.id === editing!.id)

@@ -24,7 +24,7 @@
  * so the rest of the app works unchanged.
  */
 
-import { convertFileSrc } from '@tauri-apps/api/core'
+import * as api from './api'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
@@ -130,9 +130,9 @@ function ensureCustomThemeLoaded(themeId: string): void {
     if (link) link.parentElement?.removeChild(link)
     return
   }
-  // `convertFileSrc` rewrites the absolute path into the protocol
+  // `assetUrl` rewrites the absolute path into the protocol
   // the Tauri webview can fetch (`asset://` on most platforms).
-  const href = convertFileSrc(path)
+  const href = api.platform.assetUrl(path)
   if (!link) {
     link = document.createElement('link')
     link.id = CUSTOM_LINK_ID

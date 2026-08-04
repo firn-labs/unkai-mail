@@ -23,8 +23,8 @@
   add a tauri-plugin-dialog file picker over the same Tauri command.
 -->
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core'
   import { m } from '../paraglide/messages'
+  import * as api from './api'
   import Toggle from './Toggle.svelte'
   import Icon from './Icon.svelte'
   import { formatError } from './errors'
@@ -89,7 +89,7 @@
 
   async function refreshUnlockStatus(accountId: string) {
     try {
-      unlockEnabled = await invoke<boolean>('pgp_has_unlock_automatically', {
+      unlockEnabled = await api.crypto.pgpHasUnlockAutomatically({
         accountId,
       })
     } catch (e) {
@@ -118,7 +118,7 @@
     unlockBusy = true
     unlockError = null
     try {
-      await invoke('pgp_enable_unlock_automatically', {
+      await api.crypto.pgpEnableUnlockAutomatically({
         accountId: account.id,
         passphrase: unlockPassphrase,
       })
@@ -140,7 +140,7 @@
     unlockBusy = true
     unlockError = null
     try {
-      await invoke('pgp_disable_unlock_automatically', {
+      await api.crypto.pgpDisableUnlockAutomatically({
         accountId: account.id,
       })
       await refreshUnlockStatus(account.id)
@@ -182,7 +182,7 @@
 
   async function refreshStatus(accountId: string) {
     try {
-      status = await invoke<PgpKeyStatus>('pgp_get_account_key_status', {
+      status = await api.crypto.pgpGetAccountKeyStatus({
         accountId,
       })
     } catch (e) {
@@ -212,7 +212,7 @@
     busy = true
     errorMessage = null
     try {
-      await invoke<string>('pgp_import_private_key', {
+      await api.crypto.pgpImportPrivateKey({
         accountId: account.id,
         armoredKey: armoredKeyInput,
         passphrase: passphraseInput,
@@ -239,7 +239,7 @@
     busy = true
     errorMessage = null
     try {
-      await invoke<void>('pgp_remove_private_key', { accountId: account.id })
+      await api.crypto.pgpRemovePrivateKey({ accountId: account.id })
       // #341 — `pgp_remove_private_key` already drops the passphrase
       // keychain entry defensively (it has since #57), but the UI's
       // mirror of that state needs a refresh so the toggle visual

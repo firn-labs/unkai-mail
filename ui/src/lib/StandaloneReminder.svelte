@@ -23,11 +23,10 @@
    *   * Dismiss — call `dismiss_event_reminder`, close.
    */
 
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
-  import { emit } from '@tauri-apps/api/event'
+  import * as api from './api'
   import { onMount, onDestroy } from 'svelte'
   import Icon from './Icon.svelte'
-  import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
+  import { applyTheme, installSystemModeListener } from './theme'
   import {
     takeReminderPopoutPayload,
     type EventReminderPayload,
@@ -121,7 +120,7 @@
 
   async function dismiss() {
     if (reminder) {
-      void invoke('dismiss_event_reminder', { uid: reminder.uid }).catch(
+      void api.calendar.dismissEventReminder({ uid: reminder.uid }).catch(
         () => {},
       )
     }
@@ -143,11 +142,11 @@
     //      event so App.svelte's listener flips the view to
     //      calendar and threads the event id through to
     //      CalendarView.
-    void invoke('show_main_window_cmd').catch((err) =>
+    void api.system.showMainWindowCmd().catch((err) =>
       console.warn('show_main_window_cmd failed', err),
     )
-    await emit('reminder-show-event', { eventId: reminder.eventId })
-    void invoke('dismiss_event_reminder', { uid: reminder.uid }).catch(
+    await api.emitAppEvent('reminder-show-event', { eventId: reminder.eventId })
+    void api.calendar.dismissEventReminder({ uid: reminder.uid }).catch(
       () => {},
     )
     await closeSelf()
@@ -155,10 +154,10 @@
 
   async function joinMeeting() {
     if (!reminder?.meetingUrl) return await closeSelf()
-    void invoke('open_url', { url: reminder.meetingUrl }).catch((err) =>
+    void api.system.openUrl({ url: reminder.meetingUrl }).catch((err) =>
       console.warn('open_url for reminder popup failed', err),
     )
-    void invoke('dismiss_event_reminder', { uid: reminder.uid }).catch(
+    void api.calendar.dismissEventReminder({ uid: reminder.uid }).catch(
       () => {},
     )
     await closeSelf()
@@ -168,7 +167,7 @@
     if (!reminder || !snoozeChoice) return
     const target = snoozeTargetUtc(snoozeChoice, reminder.start)
     if (!target) return
-    void invoke('snooze_event_reminder', {
+    void api.calendar.snoozeEventReminder({
       uid: reminder.uid,
       snoozeUntilIso: target.toISOString(),
     }).catch((err) => console.warn('snooze_event_reminder failed', err))
@@ -185,11 +184,7 @@
     // ripples to this window.
     void (async () => {
       try {
-        const prefs = await invoke<{
-          theme_name: string
-          theme_mode: ThemeMode
-          logo_style?: string
-        }>('get_app_settings')
+        const prefs = await api.settings.getAppSettings()
         applyTheme(prefs.theme_name, prefs.theme_mode)
         unlistenSystemMode = installSystemModeListener(
           prefs.theme_mode,
@@ -264,7 +259,7 @@
              ripples on the next reminder without any extra
              plumbing. -->
         <img
-          src={convertFileSrc(logoStyle, 'unkai-logo')}
+          src={api.platform.assetUrl(logoStyle, 'unkai-logo')}
           alt="Unkai Mail"
           class="w-5 h-5 shrink-0 object-contain"
           draggable="false"

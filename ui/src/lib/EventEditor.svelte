@@ -32,7 +32,7 @@
    * round-trips through `CalendarEvent.attendees`.
    */
 
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
   import DateField from './DateField.svelte'
@@ -235,7 +235,7 @@
    *  the iframe behind the user's back. */
   let geocodingEnabled = $state(false)
   $effect(() => {
-    void invoke<{ location_geocoding_enabled?: boolean }>('get_app_settings')
+    void api.settings.getAppSettings()
       .then((s) => {
         geocodingEnabled = s.location_geocoding_enabled === true
       })
@@ -328,7 +328,7 @@
       const cal = calendars.find((c) => c.id === calendarId)
       if (cal) {
         try {
-          await invoke('delete_talk_room', {
+          await api.talk.deleteTalkRoom({
             ncId: cal.nextcloud_account_id,
             roomToken: room.token,
           })
@@ -354,7 +354,7 @@
     // bootstrapping applies.  Edit mode opens an existing
     // event so neither step is appropriate.
     if (mode === 'edit') return
-    void invoke<{ default_calendar_id: string | null }>('get_app_settings')
+    void api.settings.getAppSettings()
       .then((s) => {
         const def = s.default_calendar_id
         if (def && calendars.some((c) => c.id === def)) {
@@ -456,7 +456,7 @@
    *  RSVP surface). */
   let userIdentities = $state<Set<string>>(new Set())
   $effect(() => {
-    void invoke<{ email: string }[]>('get_accounts')
+    void api.accounts.getAccounts()
       .then((rows) => {
         const set = new Set<string>()
         for (const a of rows) if (a.email) set.add(a.email.toLowerCase())
@@ -485,7 +485,7 @@
       organizerEmail = organizerCache.get(ncId) ?? null
       return
     }
-    void invoke<string | null>('get_nextcloud_user_email', { ncId })
+    void api.nextcloud.getNextcloudUserEmail({ ncId })
       .then((email) => {
         organizerCache.set(ncId, email ?? null)
         // Only apply if the user hasn't switched calendars while
@@ -586,7 +586,7 @@
    *  + display name without an extra IPC round-trip per chip. */
   let contactsByEmail = $state<Map<string, Contact>>(new Map())
   $effect(() => {
-    void invoke<Contact[]>('search_contacts', { query: '', limit: 500 })
+    void api.contacts.searchContacts({ query: '', limit: 500 })
       .then((rows) => {
         const map = new Map<string, Contact>()
         for (const c of rows) {
@@ -609,7 +609,7 @@
    *  photo so chips/dropdown render an initials bubble. */
   function photoUrl(c: Contact | undefined): string | null {
     if (!c || !c.photo_mime) return null
-    return convertFileSrc(c.id, 'contact-photo')
+    return api.platform.assetUrl(c.id, 'contact-photo')
   }
 
   function initials(name: string): string {
@@ -652,7 +652,7 @@
       // OCS reply lands).  Without this guard, a re-render
       // before the promise resolves would re-fire the lookup.
       internalLookup.set(key, null)
-      void invoke<InternalUser | null>('find_nextcloud_user_by_email', {
+      void api.nextcloud.findNextcloudUserByEmail({
         ncId,
         email: att.email,
       })
@@ -702,7 +702,7 @@
    *  fetched once and filtered client-side on every keystroke.
    *  Hidden-from-autocomplete rows stay out of the dropdown. */
   let allLists = $state<MailingListSuggestion[]>([])
-  void invoke<MailingListSuggestion[]>('list_mailing_lists')
+  void api.contacts.listMailingLists()
     .then((rows) => {
       allLists = rows.filter((m) => !m.hiddenFromAutocomplete)
     })
@@ -718,7 +718,7 @@
     if (searchDebounce !== null) window.clearTimeout(searchDebounce)
     searchDebounce = window.setTimeout(async () => {
       try {
-        const rows = await invoke<Contact[]>('search_contacts', {
+        const rows = await api.contacts.searchContacts({
           query: q,
           limit: SUGGESTION_LIMIT,
         })
@@ -734,7 +734,7 @@
         // address in the dropdown.
         const contactSuggestions: Suggestion[] = []
         for (const c of rows) {
-          const emails = c.email.filter((e) => e.value.length > 0)
+          const emails = c.email.filter((e: ContactEmail) => e.value.length > 0)
           if (emails.length === 0) continue
           for (const e of emails) {
             contactSuggestions.push({ kind: 'contact', contact: c, email: e })
@@ -1154,7 +1154,7 @@
       if (internalLookup.has(key)) continue
       internalLookup.set(key, null)
       lookups.push(
-        invoke<InternalUser | null>('find_nextcloud_user_by_email', {
+        api.nextcloud.findNextcloudUserByEmail({
           ncId,
           email: att.email,
         })
@@ -1176,7 +1176,7 @@
         : { kind: 'email' as const, value: att.email }
       if (!match) allInternal = false
       try {
-        await invoke('add_talk_participant', {
+        await api.talk.addTalkParticipant({
           ncId,
           roomToken: room.token,
           participant,
@@ -1197,7 +1197,7 @@
     const desiredPublic = !allInternal
     if (desiredPublic !== room.isPublic) {
       try {
-        await invoke('set_talk_room_public', {
+        await api.talk.setTalkRoomPublic({
           ncId,
           roomToken: room.token,
           public: desiredPublic,
@@ -1239,7 +1239,7 @@
       // ones; "Meeting" is the same default the NC Calendar app
       // uses for unnamed rooms.
       const roomName = summary.trim() || 'Meeting'
-      const room = await invoke<{ token: string; web_url: string }>('create_talk_room', {
+      const room = await api.talk.createTalkRoom({
         ncId: cal.nextcloud_account_id,
         roomName,
         // No participants up-front — they're resolved + added
@@ -1339,7 +1339,7 @@
     // backend has authoritative information.
     try {
       if (mode === 'create') {
-        const created = await invoke<{ id: string }>('create_calendar_event', {
+        const created = await api.calendar.createCalendarEvent({
           calendarId,
           input,
         })
@@ -1402,7 +1402,7 @@
           originalUserPartstat !== null &&
           newPartstat !== originalUserPartstat
         if (partstatChanged) {
-          await invoke('rsvp_existing_event', {
+          await api.calendar.rsvpExistingEvent({
             eventId: event.id,
             partstat: newPartstat,
             attendeeHint: myAttendee?.email ?? null,
@@ -1412,7 +1412,7 @@
           // a PARTSTAT that already landed.
           originalUserPartstat = newPartstat
         } else {
-          await invoke('update_calendar_event', {
+          await api.calendar.updateCalendarEvent({
             eventId: event.id,
             input,
           })
@@ -1490,7 +1490,7 @@
     deleting = true
     error = ''
     try {
-      await invoke('delete_calendar_event', { eventId: event.id })
+      await api.calendar.deleteCalendarEvent({ eventId: event.id })
 
       // Best-effort tear down the associated Talk room (#172).
       // Nextcloud doesn't auto-delete rooms attached to a deleted
@@ -1508,7 +1508,7 @@
         const cal = calendars.find((c) => c.id === calendarId)
         if (cal) {
           try {
-            await invoke('delete_talk_room', {
+            await api.talk.deleteTalkRoom({
               ncId: cal.nextcloud_account_id,
               roomToken: token,
             })
@@ -1562,7 +1562,7 @@
   $effect(() => {
     if (mode !== 'edit') return
     if (!calendarId) return
-    void invoke('sync_calendar_by_id', { calendarId }).catch((e) => {
+    void api.calendar.syncCalendarById({ calendarId }).catch((e) => {
       console.warn('event-editor: autosync_calendar failed', e)
     })
   })
@@ -1826,7 +1826,7 @@
             class="btn btn-sm preset-filled-primary-500 whitespace-nowrap"
             title="Open the Talk meeting in your browser"
             onclick={() =>
-              void invoke('open_url', { url: joinMeetingUrl }).catch((err) =>
+              void api.system.openUrl({ url: joinMeetingUrl }).catch((err) =>
                 console.warn('open_url failed for Talk meeting', err),
               )}
           >

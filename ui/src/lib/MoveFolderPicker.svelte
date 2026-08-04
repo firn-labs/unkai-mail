@@ -14,7 +14,7 @@
    * makes this component reusable.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import Icon, { type IconName } from './Icon.svelte'
 
@@ -65,7 +65,7 @@
       loading = true
       error = ''
       try {
-        folders = await invoke<Folder[]>('get_cached_folders', { accountId })
+        folders = await api.mail.getCachedFolders({ accountId })
       } catch (e) {
         error = formatError(e) || 'Failed to load folders'
       } finally {

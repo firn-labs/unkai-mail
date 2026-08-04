@@ -24,7 +24,7 @@
    * saved account record remembers the decision.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
@@ -136,7 +136,7 @@
       return
     }
     try {
-      const probed = await invoke<ProbedCert>('probe_server_certificate', {
+      const probed = await api.accounts.probeServerCertificate({
         host: target.host,
         port: target.port,
       })
@@ -181,7 +181,7 @@
 
     connecting = true
     try {
-      const init = await invoke<LoginFlowInit>('start_nextcloud_login', {
+      const init = await api.nextcloud.startNextcloudLogin({
         serverUrl: normalised,
         // Pass the trust list so a self-signed server gets a clean
         // handshake on the second attempt after the user trusted the
@@ -191,7 +191,7 @@
       // Fire-and-forget the browser open — if it fails the user can
       // copy the URL manually from the fallback shown below.
       try {
-        await invoke('open_url', { url: init.login_url })
+        await api.system.openUrl({ url: init.login_url })
       } catch (e) {
         console.warn('open_url failed, user must open manually', e)
       }
@@ -217,7 +217,7 @@
     // minutes; we stop on success, cancel, or any unexpected error.
     pollTimer = window.setInterval(async () => {
       try {
-        const result = await invoke<NextcloudAccount | null>('poll_nextcloud_login', {
+        const result = await api.nextcloud.pollNextcloudLogin({
           pollEndpoint: init.poll_endpoint,
           pollToken: init.poll_token,
           // Same trust list rides the polling call so the

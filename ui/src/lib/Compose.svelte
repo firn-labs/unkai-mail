@@ -16,7 +16,7 @@
    * is tracked separately.
    */
 
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { isNextcloudSource } from './ncSources'
   import { untrack } from 'svelte'
   import { formatError } from './errors'
@@ -228,7 +228,7 @@
         another duplicate) and removes the modal overlay so the
         component fills the whole window. */
     inStandaloneWindow?: boolean
-    /** Fires after `invoke('send_email')` resolves successfully
+    /** Fires after `api.compose.sendEmail(…)` resolves successfully
      *  with the id of the new Outbox row (#276 follow-up).
      *  Distinct from `onclose` because the modal closes
      *  immediately on Send (#156); this callback is the proof
@@ -628,7 +628,7 @@
     if (shares.length === 0) return
     const handle = setTimeout(() => {
       for (const s of shares) {
-        invoke('update_nextcloud_share_label', {
+        api.nextcloud.updateNextcloudShareLabel({
           ncId: s.ncId,
           shareId: s.id,
           label,
@@ -1100,7 +1100,7 @@
       let hasPgp = false
       let hasSmime = false
       try {
-        const s = await invoke<{ has_key: boolean }>('pgp_get_account_key_status', {
+        const s = await api.crypto.pgpGetAccountKeyStatus({
           accountId: id,
         })
         hasPgp = s?.has_key === true
@@ -1108,7 +1108,7 @@
         console.warn('pgp_get_account_key_status failed', e)
       }
       try {
-        const s = await invoke<{ has_cert: boolean }>('smime_get_account_cert_status', {
+        const s = await api.crypto.smimeGetAccountCertStatus({
           accountId: id,
         })
         hasSmime = s?.has_cert === true
@@ -1139,9 +1139,11 @@
       autoUnlockForCompose = false
       return
     }
-    const cmd =
-      stack === 'smime' ? 'smime_has_unlock_automatically' : 'pgp_has_unlock_automatically'
-    void invoke<boolean>(cmd, { accountId: id })
+    const probe =
+      stack === 'smime'
+        ? api.crypto.smimeHasUnlockAutomatically
+        : api.crypto.pgpHasUnlockAutomatically
+    void probe({ accountId: id })
       .then((on) => {
         if (fromAccountId === id && cryptoStack === stack) autoUnlockForCompose = on
       })
@@ -1239,7 +1241,7 @@
           if (aborted) return
           if (seeded.get(addr) !== 'checking') continue
           try {
-            const rows = await invoke<unknown[]>('pgp_get_keys_for_email', {
+            const rows = await api.crypto.pgpGetKeysForEmail({
               email: addr,
             })
             if (aborted) return
@@ -1313,7 +1315,7 @@
     const key = addr.toLowerCase()
     if (internalLookup.has(key)) return internalLookup.get(key) ?? null
     try {
-      const m = await invoke<InternalUserHit | null>('find_nextcloud_user_by_email', {
+      const m = await api.nextcloud.findNextcloudUserByEmail({
         ncId,
         email: addr,
       })
@@ -1349,7 +1351,7 @@
       // Talk links / file attachments need a real Nextcloud —
       // generic-DAV / local contact sources (#413) don't qualify.
       const accounts = (
-        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+        await api.nextcloud.getNextcloudAccounts()
       ).filter(isNextcloudSource)
       if (accounts.length === 0) {
         error = 'Connect a Nextcloud account first (Settings → Nextcloud).'
@@ -1429,7 +1431,7 @@
     if (!ncId) return
     let cals: CalendarSummary[] = []
     try {
-      cals = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+      cals = await api.calendar.getCachedCalendars({ ncId })
     } catch (e) {
       error = formatError(e) || 'Failed to load calendars'
       return
@@ -1441,7 +1443,7 @@
     }
     let initialCalendarId = visible[0].id
     try {
-      const s = await invoke<{ default_calendar_id: string | null }>('get_app_settings')
+      const s = await api.settings.getAppSettings()
       if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
         initialCalendarId = s.default_calendar_id!
       }
@@ -1600,7 +1602,7 @@
       seen.add(k)
       dedupd.push({ kind: 'email', value: addr })
     }
-    const room = await invoke<TalkRoom>('create_talk_room', {
+    const room = await api.talk.createTalkRoom({
       ncId: id,
       // Talk requires a non-empty name. Fall back to a generic label
       // when the user hasn't set a subject yet — they can rename in
@@ -1739,8 +1741,7 @@
     // ultimately fails, the row reappears on the next sync /
     // refresh from the backend's tombstone-clear path.
     if (src) ondraftexpunged?.(src)
-    const result = await invoke<{ folder: string; uid: number | null }>(
-      'save_draft',
+    const result = await api.compose.saveDraft(
       {
         accountId: src?.accountId ?? fromAccountId,
         email: {
@@ -1821,7 +1822,7 @@
   }
   let allContacts = $state<ContactRow[]>([])
   $effect(() => {
-    invoke<ContactRow[]>('get_contacts')
+    api.contacts.getContacts()
       .then((rows) => {
         allContacts = rows
       })
@@ -1841,7 +1842,7 @@
       id: email,
       label: c.display_name || email,
       email,
-      photoUrl: c.photo_mime ? convertFileSrc(c.id, 'contact-photo') : null,
+      photoUrl: c.photo_mime ? api.platform.assetUrl(c.id, 'contact-photo') : null,
       hint: c.organization ?? null,
     }
   }
@@ -2029,11 +2030,11 @@
 
   async function send() {
     // Re-entrancy guard (#292 follow-up): `send()` is async and the
-    // first `await invoke('tombstone_draft_for_expunge', …)` yields
+    // first `await api.compose.tombstoneDraftForExpunge(…)` yields
     // for an IPC round-trip before `onclose()` removes the modal.
     // If the user double-clicks Send (or some other event re-fires
     // the click within that window) the second invocation would
-    // race the first — both call `invoke('send_email')` which is
+    // race the first — both call `api.compose.sendEmail(…)` which is
     // an outright enqueue, so the recipient gets the mail twice
     // and the draft cleanup runs against a UID that's already
     // gone.  `sending = true` immediately disables the Send button
@@ -2153,7 +2154,7 @@
     // follow-up).  `onclose` triggers the parent's `refreshToken`
     // bump which immediately schedules a `fetch_envelopes`; the
     // background `runSendPipeline` doesn't reach its
-    // `invoke('delete_message')` for another ~30-100ms, so without
+    // `api.mail.deleteMessage(…)` for another ~30-100ms, so without
     // this upfront mark the fresh batch comes back carrying the
     // about-to-be-expunged UID and `mergeEnvelopes` puts it back in
     // the visible list (it lingers until the next sync evicts it).
@@ -2164,7 +2165,7 @@
     // the send.
     if (snap.draftSource) {
       try {
-        await invoke('tombstone_draft_for_expunge', {
+        await api.compose.tombstoneDraftForExpunge({
           accountId: snap.draftSource.accountId,
           folder: snap.draftSource.folder,
           uid: snap.draftSource.uid,
@@ -2177,7 +2178,7 @@
 
     // Standalone-window path (#304): the popped-out window IS the
     // JS context that runs `runSendPipeline`.  If we close the
-    // window before the pipeline awaits `invoke('send_email')`,
+    // window before the pipeline awaits `api.compose.sendEmail(…)`,
     // the webview is destroyed and the IPC never fires — the
     // user clicked Send and nothing happened.  So in standalone
     // we run the pipeline inline before closing and surface any
@@ -2201,7 +2202,7 @@
 
     // Defer the heavy bits past the next macrotask so Svelte
     // gets to flush the unmount + browser gets to paint before
-    // we hit `invoke('send_email', …)`.  Without this gap, the
+    // we hit `api.compose.sendEmail(…)`.  Without this gap, the
     // attachment payload gets structured-cloned on the same
     // task as the click handler, freezing the close animation
     // for 200-800 ms with multi-MB attachments.  The `requestAnimationFrame`
@@ -2257,7 +2258,7 @@
       const newReferences: string[] = parentMessageId
         ? [...parentReferences, parentMessageId]
         : []
-      const newOutboxId = await invoke<number>('send_email', {
+      const newOutboxId = await api.compose.sendEmail({
         accountId: snap.fromAccountId,
         email: {
           from: snap.fromHeader,
@@ -2384,10 +2385,7 @@
         if (a.email) senderIdentities.add(a.email.toLowerCase())
       }
       try {
-        const profileEmail = await invoke<string | null>(
-          'get_nextcloud_user_email',
-          { ncId },
-        )
+        const profileEmail = await api.nextcloud.getNextcloudUserEmail({ ncId })
         if (profileEmail) senderIdentities.add(profileEmail.toLowerCase())
       } catch (e) {
         console.warn('get_nextcloud_user_email failed', e)
@@ -2409,7 +2407,7 @@
       }
       if (participantsToAdd.length > 0) {
         try {
-          await invoke('add_talk_participants', {
+          await api.talk.addTalkParticipants({
             ncId,
             roomToken: room,
             participants: participantsToAdd,
@@ -2419,7 +2417,7 @@
         }
         if (allInternal && snap.talkRoomIsPublic) {
           try {
-            await invoke('set_talk_room_public', {
+            await api.talk.setTalkRoomPublic({
               ncId,
               roomToken: room,
               public: false,
@@ -2441,7 +2439,7 @@
     // step.
     if (snap.stagedEvent) {
       try {
-        await invoke('create_calendar_event', {
+        await api.calendar.createCalendarEvent({
           calendarId: snap.stagedEvent.calendarId,
           input: snap.stagedEvent.input,
         })
@@ -2477,7 +2475,7 @@
     if (snap.draftSource) {
       ondraftexpunged?.(snap.draftSource)
       try {
-        await invoke('expunge_draft_after_send', {
+        await api.compose.expungeDraftAfterSend({
           accountId: snap.draftSource.accountId,
           folder: snap.draftSource.folder,
           uid: snap.draftSource.uid,
@@ -2578,7 +2576,7 @@
       // Fire-and-forget: a failure here is annoying (orphan room in
       // Nextcloud) but not worth blocking the close on.  The user
       // can clean it up from Talk manually.
-      invoke('delete_talk_room', { ncId, roomToken: room }).catch((e) => {
+      api.talk.deleteTalkRoom({ ncId, roomToken: room }).catch((e) => {
         console.warn('delete_talk_room on cancel failed', e)
       })
       talkRoomToken = null
@@ -2614,7 +2612,7 @@
     }
     createdShares = []
     for (const s of sharesToDelete) {
-      invoke('delete_nextcloud_share', {
+      api.nextcloud.deleteNextcloudShare({
         ncId: s.ncId,
         shareId: s.shareId,
       }).catch((e) => {
@@ -2635,7 +2633,7 @@
     const src = initial?.draftSource
     if (!src) return null
     try {
-      await invoke('delete_message', {
+      await api.mail.deleteMessage({
         accountId: src.accountId,
         folder: src.folder,
         uid: src.uid,

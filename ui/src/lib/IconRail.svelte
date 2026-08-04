@@ -28,9 +28,9 @@
    * was the single surface showing the integration nav.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
   import { isNextcloudSource } from './ncSources'
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+  import type { UnlistenFn } from '@tauri-apps/api/event'
+  import * as api from './api'
   import { onDestroy } from 'svelte'
   import Icon, { type IconName } from './Icon.svelte'
 
@@ -153,11 +153,11 @@
   // event subscription.
   let unreadByAccount = $state<Record<string, number>>({})
   $effect(() => {
-    void invoke<Record<string, number>>('get_unread_counts_by_account')
+    void api.mail.getUnreadCountsByAccount()
       .then((m) => (unreadByAccount = m))
       .catch((e) => console.warn('get_unread_counts_by_account failed', e))
     let unlisten: UnlistenFn | null = null
-    void listen<Record<string, number>>(
+    void api.onAppEvent(
       'unread-count-by-account-updated',
       (e) => {
         unreadByAccount = e.payload ?? {}
@@ -196,14 +196,14 @@
       // Generic-DAV / local sources reuse the NC account record but
       // have no Talk endpoint (#413) — only poll real Nextclouds.
       const ncAccounts = (
-        await invoke<{ id: string; kind?: string }[]>('get_nextcloud_accounts')
+        await api.nextcloud.getNextcloudAccounts()
       ).filter(isNextcloudSource)
       if (ncAccounts.length === 0) {
         talkUnreadTotal = 0
         talkUnreadHasMention = false
         return
       }
-      const rooms = await invoke<TalkRoomSummary[]>('list_talk_rooms', {
+      const rooms = await api.talk.listTalkRooms({
         ncId: ncAccounts[0].id,
       })
       let total = 0

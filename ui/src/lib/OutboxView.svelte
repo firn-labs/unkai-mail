@@ -19,7 +19,7 @@
    * keep a malformed local DB from injecting script.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import DOMPurify from 'dompurify'
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
@@ -84,7 +84,7 @@
    *  IPC error rather than blocking the user. */
   async function accountHasAutoUnlock(): Promise<boolean> {
     try {
-      return await invoke<boolean>('pgp_has_unlock_automatically', {
+      return await api.crypto.pgpHasUnlockAutomatically({
         accountId: row.accountId,
       })
     } catch (e) {
@@ -112,7 +112,7 @@
     busy = true
     actionError = ''
     try {
-      await invoke('retry_outbox_entry', { id: row.id })
+      await api.compose.retryOutboxEntry({ id: row.id })
     } catch (e) {
       actionError = `${e}`
     } finally {
@@ -132,7 +132,7 @@
     actionError = ''
     passphraseError = ''
     try {
-      await invoke('retry_outbox_entry_with_passphrase', {
+      await api.compose.retryOutboxEntryWithPassphrase({
         id: row.id,
         pgpPassphrase: passphrase,
       })
@@ -164,7 +164,7 @@
     busy = true
     actionError = ''
     try {
-      await invoke('delete_outbox_entry', { id: row.id })
+      await api.compose.deleteOutboxEntry({ id: row.id })
     } catch (e) {
       actionError = `${e}`
     } finally {

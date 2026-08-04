@@ -16,12 +16,12 @@
    * the entire UI.  Closing the window is the only outbound action.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import DOMPurify from 'dompurify'
   import { onMount, onDestroy } from 'svelte'
   import Icon from './Icon.svelte'
-  import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
+  import { applyTheme, installSystemModeListener } from './theme'
   import { formatError } from './errors'
 
   interface EmailAttachment {
@@ -59,10 +59,7 @@
   onMount(() => {
     void (async () => {
       try {
-        const prefs = await invoke<{
-          theme_name: string
-          theme_mode: ThemeMode
-        }>('get_app_settings')
+        const prefs = await api.settings.getAppSettings()
         applyTheme(prefs.theme_name, prefs.theme_mode)
         unlistenSystemMode = installSystemModeListener(
           prefs.theme_mode,
@@ -73,7 +70,7 @@
       }
 
       try {
-        email = await invoke<ParsedEmail>('parse_eml_file', { path })
+        email = await api.mail.parseEmlFile({ path })
       } catch (e) {
         loadError = formatError(e) || 'Could not parse the email file.'
       } finally {

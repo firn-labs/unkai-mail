@@ -17,7 +17,7 @@
    * chrome or attach-specific actions.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
   import NextcloudFileBrowser, {
@@ -178,7 +178,7 @@
         filePaths.map(async (p) => {
           setStatus(p, { kind: 'downloading' })
           try {
-            const bytes = await invoke<number[]>('download_nextcloud_file', {
+            const bytes = await api.nextcloud.downloadNextcloudFile({
               ncId: accountId,
               path: p,
             })

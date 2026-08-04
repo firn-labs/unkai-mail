@@ -38,7 +38,7 @@
 </script>
 
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import DateField from './DateField.svelte'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
@@ -176,17 +176,14 @@
       const exp = setExpiration && expireDate ? expireDate : null
       const results = await Promise.all(
         paths.map(async (p) => {
-          const r = await invoke<{ id: string; url: string }>(
-            'create_nextcloud_share',
-            {
-              ncId: accountId,
-              path: p,
-              password: pw,
-              label: shareLabel?.trim() || null,
-              permissions,
-              expireDate: exp,
-            },
-          )
+          const r = await api.nextcloud.createNextcloudShare({
+            ncId: accountId,
+            path: p,
+            password: pw,
+            label: shareLabel?.trim() || null,
+            permissions,
+            expireDate: exp,
+          })
           return {
             filename: basename(p),
             url: r.url,

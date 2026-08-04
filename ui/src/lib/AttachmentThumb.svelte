@@ -191,7 +191,7 @@
           if (!m) return resolve()
           const mime = m[1]
           const base64 = m[2]
-          await invoke('put_attachment_preview', {
+          await api.mail.putAttachmentPreview({
             accountId: target.accountId,
             folder: target.folder,
             uid: target.uid,
@@ -323,7 +323,7 @@
   // the one-time extraction.  Everything else falls through to
   // <FileTypeIcon>.
   import FileTypeIcon from './FileTypeIcon.svelte'
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
 
   interface Props {
     /** Bytes the host already has in memory (Compose path).

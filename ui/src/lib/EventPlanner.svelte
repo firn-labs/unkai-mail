@@ -24,7 +24,7 @@
    *     free-busy-query (NC users) or a local-cache scan
    *     (externals), so what we receive is already aggregated.
    */
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { m } from '../paraglide/messages'
 
   interface EventAttendee {
@@ -170,7 +170,7 @@
     loading = true
     loadError = null
     try {
-      const result = await invoke<AttendeeAvailability[]>('get_attendee_availability', {
+      const result = await api.calendar.getAttendeeAvailability({
         ncId,
         attendeeEmails: attendees.map((a) => a.email),
         rangeStart: start.toISOString(),

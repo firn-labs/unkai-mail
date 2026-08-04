@@ -27,8 +27,8 @@
    * user knows their mail is waiting on a retry, not lost.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+  import type { UnlistenFn } from '@tauri-apps/api/event'
+  import * as api from './api'
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
 
@@ -103,10 +103,9 @@
     loading = true
     error = ''
     try {
-      const fresh = await invoke<OutboxRowDto[]>(
-        unified ? 'list_all_outbox' : 'list_outbox',
-        unified ? {} : { accountId },
-      )
+      const fresh = await (unified
+        ? api.compose.listAllOutbox()
+        : api.compose.listOutbox({ accountId }))
       rows = fresh
       // Keep the parent's preview row in sync with the fresh
       // list.  If the previously-selected id is still present,
@@ -141,7 +140,7 @@
     let alive = true
     void (async () => {
       try {
-        const u = await listen('outbox-updated', () => {
+        const u = await api.onAppEvent('outbox-updated', () => {
           if (alive) void load()
         })
         unlistenOutbox = u
