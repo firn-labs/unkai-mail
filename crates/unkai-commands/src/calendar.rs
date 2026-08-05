@@ -1972,8 +1972,7 @@ pub async fn get_event_partstat_for_user(
     // interval.  Best-effort: a sync failure leaves the cache
     // as-is and we return the locally-known state.
     if let Some((_, cal_path)) = cache.get_calendar_server_path(&handle.calendar_id)?
-        && let Err(e) =
-            refresh_calendar_cache(cache, &handle.nextcloud_account_id, &cal_path).await
+        && let Err(e) = refresh_calendar_cache(cache, &handle.nextcloud_account_id, &cal_path).await
     {
         tracing::warn!(
             "RSVP badge: pre-read calendar sync failed (continuing with stale cache): {e}"
