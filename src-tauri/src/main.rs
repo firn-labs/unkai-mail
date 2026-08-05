@@ -8851,6 +8851,134 @@ async fn download_decrypted_attachment(
     }
 }
 
+// ── Inline body images (#471) ────────────────────────────────
+
+/// One `cid:`-referenceable image part, ready for the renderer to
+/// turn into a Blob URL and drop into the body's `<img src>`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InlineImageView {
+    part_id: u32,
+    /// RFC 2392 Content-ID without angle brackets, when the part
+    /// carried one.  The renderer matches `cid:` sources against this
+    /// first and falls back to `filename`.
+    content_id: Option<String>,
+    filename: String,
+    mime: String,
+    /// Base64-encoded image bytes.  Same reasoning as
+    /// `AttachmentPreviewView`: Tauri's JSON serializer would turn a
+    /// `Vec<u8>` into a `[123, 45, …]` number array (~3× the raw
+    /// size) where base64 costs ~1.33×.
+    base64: String,
+}
+
+/// Shared marshalling for both inline-image commands.
+fn inline_image_views(images: Vec<unkai_imap::InlineImage>) -> Vec<InlineImageView> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    images
+        .into_iter()
+        .map(|i| InlineImageView {
+            part_id: i.part_id,
+            content_id: i.content_id,
+            filename: i.filename,
+            mime: i.content_type,
+            base64: STANDARD.encode(i.bytes),
+        })
+        .collect()
+}
+
+/// Fetch every image part an HTML body can reference by `cid:` for
+/// one message, in a single server round-trip (#471).
+///
+/// The reading pane needs the actual bytes before it can render
+/// `<img src="cid:logo@example">` — a `cid:` URL means nothing to the
+/// webview.  Doing that through `download_email_attachment` would
+/// cost one IMAP connection and one full-message FETCH *per image*,
+/// so this command pulls the raw message once and lets
+/// `collect_inline_images` walk it.
+///
+/// `pgp_passphrase` is `Some` only when the open message is
+/// encrypted; it routes the extraction through the same decrypt
+/// bridge (and the same cached-ciphertext shortcut) that
+/// `download_decrypted_attachment` uses, because an encrypted
+/// message's inline images live inside the ciphertext. An empty
+/// string is a valid value — it means "resolve the passphrase from
+/// the keychain", the account's "Unlock automatically" path.
+///
+/// Returns an empty list rather than an error when the message has
+/// nothing inline: the renderer treats this as best-effort
+/// decoration and must never surface a scary banner because a
+/// newsletter's logo could not be fetched.
+#[tauri::command]
+async fn fetch_inline_images(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    pgp_passphrase: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<InlineImageView>, UnkaiError> {
+    let account = load_account(&cache, &account_id)?;
+
+    // Encrypted message: build the receive bridge up front so both
+    // the cached-ciphertext shortcut and the network path below can
+    // use it.  `None` here means the message is plaintext.
+    let bridge = pgp_passphrase
+        .as_ref()
+        .map(|pass| TauriCryptoBridge::for_account_receive(&account_id, pass, (*cache).clone()));
+
+    // #341 ciphertext cache — reading the body of an encrypted
+    // message already populated it, so the common case (open mail →
+    // decrypt → images render) costs no network at all.
+    if let Some(b) = &bridge
+        && let Ok(Some(raw)) = cache.get_encrypted_raw_eml(&account_id, &folder, uid)
+    {
+        match unkai_imap::extract_decrypted_inline_images(&raw, b) {
+            Ok(Some(images)) => return Ok(inline_image_views(images)),
+            // Cached bytes turned out not to be an encrypted
+            // envelope after all — fall through and re-fetch
+            // rather than trusting a stale row.
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    "fetch_inline_images: cached ciphertext for \
+                     {account_id}/{folder}/{uid} failed ({e}); refetching from server"
+                );
+            }
+        }
+    }
+
+    // One raw fetch covers every inline part.  Both stacks can hand
+    // back the full `.eml`, so unlike `download_email_attachment`
+    // this path works on JMAP accounts too.
+    let raw = if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        client.fetch_raw_message(&folder, uid).await?
+    } else {
+        let mut client = connect_imap(&account).await?;
+        let raw = client.fetch_raw_message(&folder, uid).await?;
+        let _ = client.logout().await;
+        raw
+    };
+
+    // An `Ok(None)` here means the message isn't an encrypted
+    // envelope after all (e.g. a clear-signed one the UI flags as
+    // protected) — its parts are readable as-is, so fall through to
+    // the plain walk below.
+    if let Some(b) = &bridge
+        && let Some(images) = unkai_imap::extract_decrypted_inline_images(&raw, b)?
+    {
+        // Best-effort cache write, same as the attachment path: a
+        // failure just means the next open pays the network cost
+        // again.
+        if let Err(e) = cache.put_encrypted_raw_eml(&account_id, &folder, uid, &raw) {
+            tracing::debug!("put_encrypted_raw_eml after inline-image fetch failed: {e}");
+        }
+        return Ok(inline_image_views(images));
+    }
+
+    Ok(inline_image_views(unkai_imap::collect_inline_images(&raw)?))
+}
+
 // ── Attachment preview cache (#157) ──────────────────────────
 //
 // Persists frontend-generated thumbnails alongside the cached
@@ -14422,6 +14550,24 @@ fn parse_eml_file(path: String) -> Result<unkai_core::models::Email, UnkaiError>
     unkai_imap::parse_eml_bytes(&bytes, &format!("file:{stem}"), "", "")
 }
 
+/// `fetch_inline_images` for the file-backed popout (#471): the
+/// `.eml` viewer has no account or UID to fetch against, so it
+/// re-reads the file it already parsed and collects the `cid:`
+/// images from those bytes.  Cheap — the file is on local disk and
+/// the OS page cache still holds it from `parse_eml_file`.
+///
+/// No crypto bridge here: the popout renders `.eml` files without an
+/// account context, so there's no key to decrypt an encrypted
+/// message with.  Those bodies come through empty anyway, and an
+/// empty body references no images.
+#[tauri::command]
+fn parse_eml_file_inline_images(path: String) -> Result<Vec<InlineImageView>, UnkaiError> {
+    let bytes = std::fs::read(&path).map_err(|e| UnkaiError::Other(format!("read {path}: {e}")))?;
+    Ok(inline_image_views(unkai_imap::collect_inline_images(
+        &bytes,
+    )?))
+}
+
 /// Read an `.ics` file from disk and parse it into one or more
 /// `CalendarEvent`s.  Caller (the import-from-disk flow) opens the
 /// first event in the EventEditor so the user can pick a target
@@ -16118,6 +16264,7 @@ fn main() {
             fetch_message,
             download_email_attachment,
             download_decrypted_attachment,
+            fetch_inline_images,
             put_attachment_preview,
             get_attachment_previews,
             download_calendar_from_message,
@@ -16313,6 +16460,7 @@ fn main() {
             // #254 — file-association entry points
             take_pending_file_to_open,
             parse_eml_file,
+            parse_eml_file_inline_images,
             parse_ics_file,
             open_default_apps_settings,
             // #294 — OS-level mailto handler cold-start drain

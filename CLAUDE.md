@@ -181,6 +181,15 @@ The Talk + meeting invite cards we drop into outgoing mail (`ui/src/lib/inviteHt
 
 When in doubt, render the card to a local HTML file and open it in `outlook.com`, `mail.google.com`, and Apple Mail — those three are the dominant surfaces and have the strictest sanitisers.
 
+### Inline body images — `cid:` (#471)
+
+Incoming mail puts images *in* the body by attaching them with a Content-ID and pointing at them with an RFC 2392 URL (`<img src="cid:logo@example">`). The webview can't resolve that scheme, so the reader resolves it itself:
+
+- **Backend** — `fetch_inline_images` (and `parse_eml_file_inline_images` for the `.eml` popout) pull **every** referenceable image part out of **one** raw-message fetch, base64-encoded. Never resolve cids by calling `download_email_attachment` in a loop: that command opens an IMAP connection and re-FETCHes the whole message *per part*. Extraction lives in `crates/unkai-imap/src/inline_images.rs`, with per-image (8 MB) and per-message (32 MB) ceilings; over-ceiling parts stay reachable as normal attachment chips.
+- **Part ids are one index space.** `InlineImage.part_id` uses the same `attachments()` enumeration that stamps `EmailAttachment.part_id`, so a cid image and its attachment chip address the same bytes. Anything that re-indexes parts has to keep both in step.
+- **Frontend** — `ui/src/lib/inlineImages.ts` owns the matching rules (normalise the cid, match by Content-ID then by filename) and the DOM rewrite; both readers (`MailView`, `StandaloneMailFile`) call it, and the object URLs it builds are revoked when the message closes. Match logic goes in that module, not in a component, so it stays unit-tested.
+- **No "Show images" gate.** Inline parts ride inside the message, so rendering them fetches nothing from the network and leaks no read receipt. The remote-image blocker deliberately skips `cid:` — only `http(s)` sources need consent.
+
 ## Development Guidelines
 
 - Write clear, well-documented code — the team is learning as they build

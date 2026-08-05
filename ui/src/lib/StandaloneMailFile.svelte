@@ -23,6 +23,11 @@
   import Icon from './Icon.svelte'
   import { applyTheme, installSystemModeListener } from './theme'
   import { formatError } from './errors'
+  import {
+    applyInlineImages,
+    buildInlineImageUrls,
+    inlineImageBlob,
+  } from './inlineImages'
 
   interface EmailAttachment {
     filename: string
@@ -76,11 +81,36 @@
       } finally {
         loading = false
       }
+
+      // #471 — inline body images, same treatment as the reading
+      // pane.  Runs after the body so a slow image read can't hold
+      // up the text, and failures stay a console warning: the
+      // message is perfectly readable without its logo.
+      try {
+        const parts = await api.mail.parseEmlFileInlineImages({ path })
+        inlineImageUrls = buildInlineImageUrls(parts, (part) => {
+          const url = URL.createObjectURL(inlineImageBlob(part))
+          inlineImageObjectUrls.push(url)
+          return url
+        })
+      } catch (e) {
+        console.warn('parse_eml_file_inline_images failed', e)
+      } finally {
+        inlineImagesLoading = false
+      }
     })()
   })
 
+  /** #471 — lookup key → object URL for the file's own image parts,
+   *  plus the URLs we have to hand back on close. */
+  let inlineImageUrls = $state<Record<string, string>>({})
+  let inlineImagesLoading = $state(true)
+  let inlineImageObjectUrls: string[] = []
+
   onDestroy(() => {
     unlistenSystemMode?.()
+    for (const url of inlineImageObjectUrls) URL.revokeObjectURL(url)
+    inlineImageObjectUrls = []
   })
 
   // Same allow-list as MailView's sanitiser, minus the per-message
@@ -119,6 +149,10 @@
       a.setAttribute('target', '_blank')
       a.setAttribute('rel', 'noopener noreferrer')
     }
+    // #471 — `cid:` sources point at the file's own MIME parts; the
+    // webview can't resolve that scheme, so swap in the object URLs
+    // built from the bytes we read back off disk.
+    applyInlineImages(doc, inlineImageUrls, inlineImagesLoading)
     return doc.body.innerHTML
   }
 

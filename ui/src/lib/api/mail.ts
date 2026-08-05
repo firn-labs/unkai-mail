@@ -14,6 +14,7 @@ import type {
   Email,
   EmailEnvelope,
   Folder,
+  InlineImagePart,
   LinkVerdict,
   SearchFilters,
   SearchHit,
@@ -299,6 +300,23 @@ export function downloadEmailAttachment(args: {
   return call('download_email_attachment', args)
 }
 
+/**
+ * Every image part of a message that the HTML body can reference by
+ * `cid:` (#471), bytes included, in one round-trip.
+ *
+ * `pgpPassphrase` is only sent for encrypted messages — an empty
+ * string routes the backend through the keychain ("Unlock
+ * automatically"); omit it entirely for plaintext mail.
+ */
+export function fetchInlineImages(args: {
+  accountId: string
+  folder: string
+  uid: number
+  pgpPassphrase?: string
+}): Promise<InlineImagePart[]> {
+  return call('fetch_inline_images', args)
+}
+
 export function getAttachmentPreviews(args: {
   accountId: string
   folder: string
@@ -320,6 +338,13 @@ export function putAttachmentPreview(args: {
 
 export function parseEmlFile(args: { path: string }): Promise<Email> {
   return call('parse_eml_file', args)
+}
+
+/** `fetchInlineImages` for the account-less `.eml` popout (#471). */
+export function parseEmlFileInlineImages(args: {
+  path: string
+}): Promise<InlineImagePart[]> {
+  return call('parse_eml_file_inline_images', args)
 }
 
 export function checkUrls(args: { urls: string[] }): Promise<LinkVerdict[]> {
