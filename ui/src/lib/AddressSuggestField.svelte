@@ -24,7 +24,7 @@
    * so the parent doesn't need to know which Nominatim key wins
    * for which form field.
    */
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
 
@@ -139,7 +139,7 @@
     const gen = ++fetchGen
     loading = true
     try {
-      const hits = await invoke<GeocodeResult[]>('geocode_search', {
+      const hits = await api.calendar.geocodeSearch({
         query,
         lang,
       })

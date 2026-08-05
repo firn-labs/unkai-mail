@@ -15,7 +15,7 @@
    * No SQLite layer — the room list is purely a UI cache.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
@@ -94,7 +94,7 @@
     try {
       // Nextcloud-app feature — skip generic-DAV / local sources (#413).
       const list = (
-        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+        await api.nextcloud.getNextcloudAccounts()
       ).filter(isNextcloudSource)
       accounts = list
       if (list.length === 1 && !accountId) {
@@ -128,7 +128,7 @@
     if (!opts.silent) loading = true
     if (!opts.silent) error = ''
     try {
-      const list = await invoke<TalkRoom[]>('list_talk_rooms', { ncId: accountId })
+      const list = await api.talk.listTalkRooms({ ncId: accountId })
       // Sort by last activity desc within each group; the template
       // splits active vs. archived into two visual sections so we
       // don't need to interleave them here.
@@ -142,7 +142,7 @@
   }
 
   function openRoom(room: TalkRoom) {
-    void invoke('open_url', { url: room.web_url })
+    void api.system.openUrl({ url: room.web_url })
   }
 
   /**
@@ -173,7 +173,7 @@
     if (!ok) return
     deletingToken = room.token
     try {
-      await invoke('delete_talk_room', { ncId: accountId, roomToken: room.token })
+      await api.talk.deleteTalkRoom({ ncId: accountId, roomToken: room.token })
       rooms = rooms.filter((r) => r.token !== room.token)
     } catch (e) {
       error = formatError(e) || 'Failed to delete Talk room'

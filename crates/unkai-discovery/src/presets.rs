@@ -208,9 +208,7 @@ pub fn all() -> Vec<ProviderPreset> {
 /// Find the preset serving `domain` (case-insensitive), if any.
 pub fn for_domain(domain: &str) -> Option<ProviderPreset> {
     let needle = domain.trim().to_lowercase();
-    all()
-        .into_iter()
-        .find(|p| p.domains.iter().any(|d| *d == needle))
+    all().into_iter().find(|p| p.domains.contains(&needle))
 }
 
 #[cfg(test)]

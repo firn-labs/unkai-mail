@@ -79,14 +79,7 @@ export function takeSignatureEditorPopoutPayload(
   }
 }
 
-/** Event name the popout fires on every successful debounced save.
- *  Payload: `{ accountId: string; html: string }`.  The main window's
- *  `AccountSettings` listens for this so its in-memory
- *  `account.signature` stays in sync without a full account refetch. */
-export const SIGNATURE_UPDATED_EVENT = 'signature-updated-from-popout'
-
-/** Event name the popout fires once just before it closes (whether
- *  via the OS close button or the in-window "Done" action).  Payload:
- *  `{ accountId: string }`.  The main window uses this as the signal
- *  to re-enable its locked inline editor for that account. */
-export const SIGNATURE_POPOUT_CLOSED_EVENT = 'signature-popout-closed'
+/* The popout's event names live in the typed registry in `api/events`
+ * (#473); re-exported here so the window helper stays the popout's
+ * single import point. */
+export { SIGNATURE_UPDATED_EVENT, SIGNATURE_POPOUT_CLOSED_EVENT } from './api/events'

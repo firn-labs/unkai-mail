@@ -30,8 +30,8 @@
    * read-only week renderer.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+  import * as api from './api'
+  import type { UnlistenFn } from '@tauri-apps/api/event'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
@@ -329,7 +329,7 @@
     }
     calendarOpBusy = true
     try {
-      await invoke('update_nextcloud_calendar', {
+      await api.calendar.updateNextcloudCalendar({
         calendarId: id,
         displayName: newName,
         color: null,
@@ -354,7 +354,7 @@
     const { calendar, color } = colorPicker
     calendarOpBusy = true
     try {
-      await invoke('update_nextcloud_calendar', {
+      await api.calendar.updateNextcloudCalendar({
         calendarId: calendar.id,
         displayName: null,
         color,
@@ -375,7 +375,7 @@
     if (!trimmed) return
     calendarOpBusy = true
     try {
-      await invoke('create_nextcloud_calendar', {
+      await api.calendar.createNextcloudCalendar({
         ncId,
         displayName: trimmed,
         color,
@@ -394,7 +394,7 @@
     const { id } = deleteCalendarConfirm
     calendarOpBusy = true
     try {
-      await invoke('delete_nextcloud_calendar', { calendarId: id })
+      await api.calendar.deleteNextcloudCalendar({ calendarId: id })
       deleteCalendarConfirm = null
       await refreshCalendars()
     } catch (e) {
@@ -410,7 +410,7 @@
     const idx = calendars.findIndex((cal) => cal.id === c.id)
     if (idx !== -1) calendars[idx] = { ...calendars[idx], muted: newMuted }
     try {
-      await invoke('set_nextcloud_calendar_muted', { calendarId: c.id, muted: newMuted })
+      await api.calendar.setNextcloudCalendarMuted({ calendarId: c.id, muted: newMuted })
     } catch (e) {
       // Rollback on failure.
       const i = calendars.findIndex((cal) => cal.id === c.id)
@@ -652,7 +652,7 @@
     loading = true
     error = ''
     try {
-      accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      accounts = await api.nextcloud.getNextcloudAccounts()
       if (accounts.length === 0) {
         error = 'Connect a Nextcloud account first to sync calendars.'
         loading = false
@@ -662,7 +662,7 @@
       // empty and "user-declined" detection silently no-ops
       // (events render normally).
       try {
-        const mailAccounts = await invoke<{ email: string }[]>('get_accounts')
+        const mailAccounts = await api.accounts.getAccounts()
         const set = new Set<string>()
         for (const a of mailAccounts) {
           if (a.email) set.add(a.email.toLowerCase())
@@ -772,7 +772,7 @@
     const allCalendars: CalendarSummary[] = []
     for (const a of accounts) {
       try {
-        const cs = await invoke<CalendarSummary[]>('get_cached_calendars', {
+        const cs = await api.calendar.getCachedCalendars({
           ncId: a.id,
         })
         allCalendars.push(...cs)
@@ -788,7 +788,7 @@
       return
     }
     try {
-      events = await invoke<CalendarEvent[]>('get_cached_events', {
+      events = await api.calendar.getCachedEvents({
         calendarIds: allCalendars.map((c) => c.id),
         rangeStart: windowStart.toISOString(),
         rangeEnd: windowEnd.toISOString(),
@@ -808,8 +808,7 @@
     try {
       for (const a of accounts) {
         try {
-          const report = await invoke<{ errors: string[] }>(
-            'sync_nextcloud_calendars',
+          const report = await api.calendar.syncNextcloudCalendars(
             { ncId: a.id },
           )
           if (report.errors.length > 0) {
@@ -1220,7 +1219,7 @@
     let alive = true
     void (async () => {
       try {
-        unlisten = await listen('calendars-updated', () => {
+        unlisten = await api.onAppEvent('calendars-updated', () => {
           if (!alive) return
           // Re-read the cache; events list isn't affected so the
           // existing window of events stays intact.
@@ -1729,7 +1728,7 @@
                         onmousedown={(ev) => ev.stopPropagation()}
                         onclick={(ev) => {
                           ev.stopPropagation()
-                          void invoke('open_url', { url: meetingUrl }).catch((err) =>
+                          void api.system.openUrl({ url: meetingUrl }).catch((err) =>
                             console.warn('open_url failed', err),
                           )
                         }}

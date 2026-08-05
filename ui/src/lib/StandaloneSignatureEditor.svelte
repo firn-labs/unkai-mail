@@ -18,8 +18,7 @@
    * editor for this account.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
-  import { emit } from '@tauri-apps/api/event'
+  import * as api from './api'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import RichTextEditor from './RichTextEditor.svelte'
   import {
@@ -27,7 +26,7 @@
     SIGNATURE_UPDATED_EVENT,
     takeSignatureEditorPopoutPayload,
   } from './standaloneSignatureEditorWindow'
-  import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
+  import { applyTheme, installSystemModeListener } from './theme'
   import { m } from '../paraglide/messages'
 
   let { popoutKey }: { popoutKey: string } = $props()
@@ -59,7 +58,7 @@
   async function persist(next: string) {
     if (!account) return
     try {
-      await invoke('update_account', {
+      await api.accounts.updateAccount({
         account: { ...account, signature: next.trim() || null },
       })
       // Reflect the saved value back onto our local copy so the
@@ -72,7 +71,7 @@
       // the user's edit is already persisted backend-side, so a
       // missed event is only a UI staleness, not data loss.
       try {
-        await emit(SIGNATURE_UPDATED_EVENT, {
+        await api.emitAppEvent(SIGNATURE_UPDATED_EVENT, {
           accountId: account.id,
           html: next,
         })
@@ -125,7 +124,7 @@
   async function announceClosing(): Promise<void> {
     if (!account) return
     try {
-      await emit(SIGNATURE_POPOUT_CLOSED_EVENT, { accountId: account.id })
+      await api.emitAppEvent(SIGNATURE_POPOUT_CLOSED_EVENT, { accountId: account.id })
     } catch (e) {
       console.warn(`${SIGNATURE_POPOUT_CLOSED_EVENT} emit failed`, e)
     }
@@ -175,10 +174,7 @@
       // chosen Skeleton theme + light/dark mode.  Mirrors the other
       // standalone windows.
       try {
-        const prefs = await invoke<{
-          theme_name: string
-          theme_mode: ThemeMode
-        }>('get_app_settings')
+        const prefs = await api.settings.getAppSettings()
         applyTheme(prefs.theme_name, prefs.theme_mode)
         unlistenSystem = installSystemModeListener(
           prefs.theme_mode,
@@ -198,7 +194,7 @@
       // through `update_account` — the backend expects the entire
       // Account record, not a partial.
       try {
-        const accounts = await invoke<AccountRecord[]>('get_accounts')
+        const accounts = await api.accounts.getAccounts()
         const match = accounts.find((a) => a.id === stashed.accountId)
         if (!match) {
           loadError = m.signature_popout_account_missing()

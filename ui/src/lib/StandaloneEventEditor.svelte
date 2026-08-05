@@ -15,8 +15,7 @@
    * to do in that case.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
-  import { emit } from '@tauri-apps/api/event'
+  import * as api from './api'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import {
@@ -24,7 +23,7 @@
     type CalendarSummaryPopout,
     type EventEditorDraftPopout,
   } from './standaloneEventEditorWindow'
-  import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
+  import { applyTheme, installSystemModeListener } from './theme'
 
   let { popoutKey }: { popoutKey: string } = $props()
 
@@ -55,10 +54,7 @@
     let unlistenSystem: (() => void) | null = null
     void (async () => {
       try {
-        const prefs = await invoke<{
-          theme_name: string
-          theme_mode: ThemeMode
-        }>('get_app_settings')
+        const prefs = await api.settings.getAppSettings()
         applyTheme(prefs.theme_name, prefs.theme_mode)
         unlistenSystem = installSystemModeListener(
           prefs.theme_mode,
@@ -104,7 +100,7 @@
     // (even on undefined `saved`, which happens for the edit/delete
     // paths) so the main window can pick up state changes; but in
     // the #304 create-only flow `saved` is reliably present.
-    void emit('event-editor-saved-from-popout', { saved, replyTo }).catch(
+    void api.emitAppEvent('event-editor-saved-from-popout', { saved, replyTo }).catch(
       (e) => {
         console.warn('event-editor-saved-from-popout emit failed', e)
       },

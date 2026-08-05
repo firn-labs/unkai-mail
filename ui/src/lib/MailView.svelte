@@ -9,8 +9,7 @@
    * with remote images blocked by default.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
-  import { save } from '@tauri-apps/plugin-dialog'
+  import * as api from './api'
   import DOMPurify from 'dompurify'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
@@ -294,7 +293,7 @@
       // so the props the parent component holds for `accountId`,
       // `folder`, and `uid` haven't changed.
       const uidNum = Number(email.id.split(':').pop())
-      const decrypted = await invoke<Email>('decrypt_message', {
+      const decrypted = await api.crypto.decryptMessage({
         accountId: email.account_id,
         folder: email.folder,
         uid: uidNum,
@@ -389,7 +388,7 @@
       if (!sessionPassphrase && !autoUnlockForAccount) {
         throw new Error(DECRYPT_REQUIRED_MARKER)
       }
-      return await invoke<number[]>('download_decrypted_attachment', {
+      return await api.crypto.downloadDecryptedAttachment({
         accountId: email.account_id,
         folder: email.folder,
         uid,
@@ -397,7 +396,7 @@
         pgpPassphrase: sessionPassphrase,
       })
     }
-    return await invoke<number[]>('download_email_attachment', {
+    return await api.mail.downloadEmailAttachment({
       accountId: email.account_id,
       folder: email.folder,
       uid,
@@ -427,8 +426,7 @@
     u: number,
   ): Promise<void> {
     try {
-      const rows = await invoke<{ partId: number; mime: string; base64: string }[]>(
-        'get_attachment_previews',
+      const rows = await api.mail.getAttachmentPreviews(
         { accountId: acc, folder: fld, uid: u },
       )
       for (const r of rows) {
@@ -488,13 +486,13 @@
     void (async () => {
       try {
         const bytes = att
-          ? await invoke<number[]>('download_email_attachment', {
+          ? await api.mail.downloadEmailAttachment({
               accountId: cur.account_id,
               folder: cur.folder,
               uid: curUid,
               partId: att.part_id,
             })
-          : await invoke<number[] | null>('download_calendar_from_message', {
+          : await api.calendar.downloadCalendarFromMessage({
               accountId: cur.account_id,
               folder: cur.folder,
               uid: curUid,
@@ -509,7 +507,7 @@
         // Race-guard: bail if the user navigated to a different
         // mail before our fetch completed.
         if (email !== cur) return
-        const summary = await invoke<InviteSummary>('parse_event_invite', { bytes })
+        const summary = await api.calendar.parseEventInvite({ bytes })
         if (email !== cur) return
         // Surface the card for `METHOD:REQUEST` (organiser-sent
         // invites — Accept / Tentative / Decline UI) and
@@ -530,7 +528,7 @@
         // meeting that's been cancelled.  Best-effort — a
         // persistence failure doesn't block the card mounting.
         if (m === 'CANCEL') {
-          void invoke('record_cancelled_invite', { uid: summary.uid }).catch(
+          void api.calendar.recordCancelledInvite({ uid: summary.uid }).catch(
             (e) => console.warn('record_cancelled_invite failed', e),
           )
         }
@@ -586,7 +584,7 @@
     // account this message belongs to.  Done in parallel with the
     // cache + IMAP fetches below so the auto-decrypt attempt that
     // depends on it doesn't have to wait on an extra round-trip.
-    void invoke<boolean>('pgp_has_unlock_automatically', { accountId: id })
+    void api.crypto.pgpHasUnlockAutomatically({ accountId: id })
       .then((on) => {
         if (id === accountId && f === folder && u === uid) {
           autoUnlockForAccount = on
@@ -601,7 +599,7 @@
     // Cache first — lets the reading pane paint instantly when the user
     // re-opens a previously read message (the common case).
     try {
-      const cached = await invoke<Email | null>('get_cached_message', {
+      const cached = await api.mail.getCachedMessage({
         accountId: id,
         folder: f,
         uid: u,
@@ -631,7 +629,7 @@
     // changed on the server (marked read elsewhere, updated draft, etc.).
     refreshing = email != null
     try {
-      const fresh = await invoke<Email>('fetch_message', {
+      const fresh = await api.mail.fetchMessage({
         accountId: id,
         folder: f,
         uid: u,
@@ -685,7 +683,7 @@
       emailBodyLooksEncrypted(email)
     ) {
       try {
-        const auto = await invoke<Email | null>('try_auto_decrypt_message', {
+        const auto = await api.crypto.tryAutoDecryptMessage({
           accountId: id,
           folder: f,
           uid: u,
@@ -716,7 +714,7 @@
     // the envelope list so the unread styling clears immediately.
     if (email && !email.is_read && id === accountId && f === folder && u === uid) {
       try {
-        await invoke('mark_as_read', { accountId: id, folder: f, uid: u })
+        await api.mail.markAsRead({ accountId: id, folder: f, uid: u })
         if (email) email.is_read = true
         onread?.(u)
       } catch (e: any) {
@@ -733,7 +731,7 @@
       // `ask` arms the banner; `always` fires the receipt silently.
       if (email.mdn_requested_to && !email.mdn_handled) {
         try {
-          const settings = await invoke<{ mdn_response_mode?: string }>('get_app_settings')
+          const settings = await api.settings.getAppSettings()
           if (id === accountId && f === folder && u === uid) {
             mdnMode = settings?.mdn_response_mode ?? 'ask'
             if (mdnMode === 'always') void respondMdn(false, true)
@@ -750,7 +748,7 @@
       // Compose toggle on, so the chip stays absent everywhere else.
       if (email.message_id) {
         try {
-          const status = await invoke<SentReceiptStatus | null>('get_receipt_status', {
+          const status = await api.mail.getReceiptStatus({
             accountId: id,
             messageId: email.message_id,
           })
@@ -780,7 +778,7 @@
     mdnBusy = true
     mdnError = ''
     try {
-      await invoke('respond_mdn_request', { accountId, folder, uid, decline, automatic })
+      await api.mail.respondMdnRequest({ accountId, folder, uid, decline, automatic })
       // Mirror the backend's mdn_handled stamp so the banner drops
       // without a refetch.
       if (email) email.mdn_handled = decline ? 'declined' : 'sent'
@@ -801,7 +799,7 @@
     const next = !email.is_read
     email.is_read = next
     try {
-      await invoke('set_message_read', {
+      await api.mail.setMessageRead({
         accountId,
         folder,
         uid,
@@ -837,7 +835,7 @@
     email.is_starred = next
     onflagchanged?.(uid, next)
     try {
-      await invoke('set_message_flagged', { accountId, folder, uid, flagged: next })
+      await api.mail.setMessageFlagged({ accountId, folder, uid, flagged: next })
     } catch (e: any) {
       console.warn('set_message_flagged failed:', e)
       if (email) email.is_starred = !next
@@ -851,7 +849,7 @@
     email.is_pinned = next
     onpinchanged?.(uid, next)
     try {
-      await invoke('set_message_pinned', { accountId, folder, uid, pinned: next })
+      await api.mail.setMessagePinned({ accountId, folder, uid, pinned: next })
     } catch (e: any) {
       console.warn('set_message_pinned failed:', e)
       if (email) email.is_pinned = !next
@@ -893,7 +891,7 @@
     onprioritychanged?.(uid, priority)
     priorityMenuOpen = false
     try {
-      await invoke('set_message_priority', { accountId, folder, uid, priority })
+      await api.mail.setMessagePriority({ accountId, folder, uid, priority })
     } catch (e: any) {
       console.warn('set_message_priority failed:', e)
       if (email) email.priority_override = prev
@@ -1660,7 +1658,7 @@
       return
     }
     const expectedId = email.id
-    void invoke<LinkVerdict[]>('check_urls', { urls })
+    void api.mail.checkUrls({ urls })
       .then((rows) => {
         // Drop the response if the user moved on to a different
         // message before it landed — annotating a stale email
@@ -1766,7 +1764,7 @@
     const url = unsafeLinkPrompt.url
     unsafeLinkPrompt = null
     try {
-      await invoke('open_url', { url })
+      await api.system.openUrl({ url })
     } catch (e) {
       console.warn('open_url failed', e)
     }
@@ -1894,7 +1892,7 @@
       return
     }
     e.preventDefault()
-    void invoke('open_url', { url: href })
+    void api.system.openUrl({ url: href })
   }
 
   /** Single dispatch point for any user-driven attachment open
@@ -1966,7 +1964,7 @@
    *
    * Flow:
    * 1. Open a native "Save As" dialog (prefilled with the attachment
-   *    filename) via `@tauri-apps/plugin-dialog`.
+   *    filename) via `api.platform.saveFileDialog`.
    * 2. If the user cancels, bail without fetching bytes — no point
    *    pulling a multi-MB attachment just to throw it away.
    * 3. Otherwise re-fetch the bytes through `download_email_attachment`
@@ -1989,7 +1987,7 @@
     // resolves to `null` and we stop — no network, no write, no noise.
     let chosenPath: string | null = null
     try {
-      chosenPath = await save({
+      chosenPath = await api.platform.saveFileDialog({
         defaultPath: att.filename,
         title: 'Save attachment',
       })
@@ -2002,7 +2000,7 @@
     setBusy(att.part_id, true)
     try {
       const bytes = await fetchAttachmentBytes(att)
-      await invoke('save_bytes_to_path', { path: chosenPath, data: bytes })
+      await api.system.saveBytesToPath({ path: chosenPath, data: bytes })
     } catch (e) {
       error = formatAttachmentFetchError(e, 'Failed to download attachment')
     } finally {
@@ -2030,7 +2028,7 @@
     setBusy(att.part_id, true)
     try {
       const bytes = await fetchAttachmentBytes(att)
-      await invoke('print_attachment', {
+      await api.system.printAttachment({
         fileName: att.filename,
         bytes,
       })
@@ -2090,7 +2088,7 @@
       // when folderPath is just '/'.
       const base = folderPath.endsWith('/') ? folderPath : `${folderPath}/`
       const target = `${base}${att.filename}`
-      await invoke('upload_to_nextcloud', {
+      await api.nextcloud.uploadToNextcloud({
         ncId,
         path: target,
         data: bytes,
@@ -2132,7 +2130,7 @@
     const fld = email.folder
     onmessageremoved?.(removedUid)
     try {
-      await invoke('move_message', {
+      await api.mail.moveMessage({
         accountId: acc,
         folder: fld,
         uid: removedUid,
@@ -2164,7 +2162,7 @@
     if (members) {
       for (const u of members) onmessageremoved?.(u)
       try {
-        await invoke('archive_messages', {
+        await api.mail.archiveMessages({
           accountId: acc,
           folder: fld,
           uids: members,
@@ -2176,7 +2174,7 @@
     }
     onmessageremoved?.(removedUid)
     try {
-      await invoke('archive_message', {
+      await api.mail.archiveMessage({
         accountId: acc,
         folder: fld,
         uid: removedUid,
@@ -2196,7 +2194,7 @@
     const fld = email.folder
     onmessageremoved?.(removedUid)
     try {
-      await invoke('delete_message', {
+      await api.mail.deleteMessage({
         accountId: acc,
         folder: fld,
         uid: removedUid,

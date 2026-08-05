@@ -28,7 +28,7 @@
    *                       it wherever it wants
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { isNextcloudSource } from './ncSources'
   import { formatError } from './errors'
   import Icon, { type IconName } from './Icon.svelte'
@@ -171,7 +171,7 @@
       // Files browsing is a Nextcloud feature — skip generic-DAV /
       // local sources (#413).
       const list = (
-        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+        await api.nextcloud.getNextcloudAccounts()
       ).filter(isNextcloudSource)
       accounts = list
       if (list.length === 1 && !accountId) {
@@ -214,7 +214,7 @@
       loading = true
     }
     try {
-      const list = await invoke<FileEntry[]>('list_nextcloud_files', {
+      const list = await api.nextcloud.listNextcloudFiles({
         ncId: accountId,
         path,
       })
@@ -345,7 +345,7 @@
     try {
       const base = currentPath.endsWith('/') ? currentPath : `${currentPath}/`
       const fullPath = `${base}${trimmed}`
-      await invoke('create_nextcloud_directory', {
+      await api.nextcloud.createNextcloudDirectory({
         ncId: accountId,
         path: fullPath,
       })

@@ -30,7 +30,7 @@
    * UX feel persistent without leaving stub notes lying around.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
@@ -187,7 +187,7 @@
     try {
       // Nextcloud-app feature — skip generic-DAV / local sources (#413).
       const list = (
-        await invoke<(NextcloudAccount & { kind?: string })[]>('get_nextcloud_accounts')
+        await api.nextcloud.getNextcloudAccounts()
       ).filter(isNextcloudSource)
       accounts = list
       if (list.length >= 1 && !accountId) {
@@ -228,7 +228,7 @@
     loading = true
     error = ''
     try {
-      const list = await invoke<Note[]>('list_nextcloud_notes', { ncId: accountId })
+      const list = await api.notes.listNextcloudNotes({ ncId: accountId })
       notes = list
       if (selectedId != null && !list.some((n) => n.id === selectedId)) {
         selectedId = null
@@ -250,7 +250,7 @@
   async function syncNow() {
     if (!accountId) return
     try {
-      const list = await invoke<Note[]>('sync_nextcloud_notes', { ncId: accountId })
+      const list = await api.notes.syncNextcloudNotes({ ncId: accountId })
       notes = list
       // Drop any pending folder that the server now reports as
       // having at least one note in it — the folder is no longer
@@ -516,7 +516,7 @@
       // doesn't help — the list mutates as we update each one).
       const targets = notesInFolderTree(path)
       for (const n of targets) {
-        const updated = await invoke<Note>('update_nextcloud_note', {
+        const updated = await api.notes.updateNextcloudNote({
           ncId: accountId,
           noteId: n.id,
           etag: n.etag,
@@ -577,7 +577,7 @@
     if (!accountId) return
     if (note.category === path) return
     try {
-      const updated = await invoke<Note>('update_nextcloud_note', {
+      const updated = await api.notes.updateNextcloudNote({
         ncId: accountId,
         noteId: note.id,
         etag: note.etag,
@@ -669,7 +669,7 @@
   async function quickDeleteNote(note: Note) {
     if (!accountId) return
     try {
-      await invoke('delete_nextcloud_note', { ncId: accountId, noteId: note.id })
+      await api.notes.deleteNextcloudNote({ ncId: accountId, noteId: note.id })
       notes = notes.filter((n) => n.id !== note.id)
       if (selectedId === note.id) {
         selectedId = null
@@ -745,7 +745,7 @@
     const initialCategory =
       selection.kind === 'category' ? selection.path : ''
     try {
-      const created = await invoke<Note>('create_nextcloud_note', {
+      const created = await api.notes.createNextcloudNote({
         ncId: accountId,
         title: '',
         content: '',
@@ -773,7 +773,7 @@
     const label = note.title.trim() || 'this note'
     if (!confirm(`Delete ${label}? This cannot be undone.`)) return
     try {
-      await invoke('delete_nextcloud_note', { ncId: accountId, noteId: note.id })
+      await api.notes.deleteNextcloudNote({ ncId: accountId, noteId: note.id })
       notes = notes.filter((n) => n.id !== note.id)
       selectedId = null
       saveStatus = ''
@@ -787,7 +787,7 @@
     const note = notes.find((n) => n.id === selectedId)
     if (!note) return
     try {
-      const updated = await invoke<Note>('update_nextcloud_note', {
+      const updated = await api.notes.updateNextcloudNote({
         ncId: accountId,
         noteId: note.id,
         etag: note.etag,
@@ -821,7 +821,7 @@
     const contentNow = draftContent
     const categoryNow = draftCategory
     try {
-      const updated = await invoke<Note>('update_nextcloud_note', {
+      const updated = await api.notes.updateNextcloudNote({
         ncId: accountId,
         noteId: id,
         etag: draftEtag,

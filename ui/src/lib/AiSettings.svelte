@@ -34,7 +34,7 @@
    * (AccountSettings) refresh its own copy for the same reason.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import { notifySettingsChanged } from './settingsBundle'
   import Icon from './Icon.svelte'
@@ -166,10 +166,10 @@
     try {
       const [fetchedSettings, fetchedStatus, fetchedToken, fetchedTools] =
         await Promise.all([
-          invoke<AppSettingsMcp>('get_app_settings'),
-          invoke<McpServerStatus>('mcp_server_status'),
-          invoke<boolean>('mcp_token_status'),
-          invoke<McpTool[]>('mcp_list_tools'),
+          api.settings.getAppSettings(),
+          api.settings.mcpServerStatus(),
+          api.settings.mcpTokenStatus(),
+          api.settings.mcpListTools(),
         ])
       settings = fetchedSettings
       status = fetchedStatus
@@ -188,7 +188,7 @@
 
   async function refreshStatus() {
     try {
-      status = await invoke<McpServerStatus>('mcp_server_status')
+      status = await api.settings.mcpServerStatus()
     } catch (e) {
       console.warn('mcp_server_status failed', e)
     }
@@ -196,7 +196,7 @@
 
   async function refreshTools() {
     try {
-      tools = await invoke<McpTool[]>('mcp_list_tools')
+      tools = await api.settings.mcpListTools()
     } catch (e) {
       console.warn('mcp_list_tools failed', e)
     }
@@ -211,9 +211,9 @@
     saving = true
     error = ''
     try {
-      const fresh = await invoke<AppSettingsMcp>('get_app_settings')
+      const fresh = await api.settings.getAppSettings()
       mutate(fresh)
-      await invoke('update_app_settings', { newSettings: fresh })
+      await api.settings.updateAppSettings({ newSettings: fresh })
       settings = fresh
       onsettingschanged?.(fresh)
       // Kick the Nextcloud settings-sync worker (#168) — the MCP
@@ -273,7 +273,7 @@
     generating = true
     error = ''
     try {
-      generatedToken = await invoke<string>('mcp_generate_token')
+      generatedToken = await api.settings.mcpGenerateToken()
       hasToken = true
     } catch (e) {
       error = formatError(e) || m.settings_ai_error_save()
@@ -286,7 +286,7 @@
     if (!confirm(m.settings_ai_token_revoke_confirm())) return
     error = ''
     try {
-      await invoke('mcp_revoke_token')
+      await api.settings.mcpRevokeToken()
       hasToken = false
       generatedToken = null
     } catch (e) {

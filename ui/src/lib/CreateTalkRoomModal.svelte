@@ -18,7 +18,7 @@
    * pre-resolve which is which on the client.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
 
@@ -141,7 +141,7 @@
       // hand the parsed list up to the caller — they'll add invites
       // once the mail actually sends, so discarding the draft can
       // tear the empty room down with no surprised recipients.
-      const room = await invoke<TalkRoom>('create_talk_room', {
+      const room = await api.talk.createTalkRoom({
         ncId,
         roomName: name,
         participants: deferParticipants ? [] : participants,

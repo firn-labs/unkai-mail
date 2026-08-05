@@ -6128,9 +6128,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
 name = "spki"
@@ -7336,7 +7336,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -7379,7 +7379,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-caldav"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -7397,7 +7397,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-carddav"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "ical",
@@ -7412,7 +7412,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "hex",
@@ -7428,7 +7428,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "openssl",
  "pgp",
@@ -7444,7 +7444,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-discovery"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hickory-resolver",
  "quick-xml 0.41.0",
@@ -7458,7 +7458,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-imap"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-imap",
  "base64 0.22.1",
@@ -7478,7 +7478,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-jmap"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "chrono",
@@ -7494,7 +7494,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -7523,7 +7523,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-nextcloud"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "quick-xml 0.41.0",
@@ -7538,7 +7538,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-smtp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -7556,7 +7556,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",

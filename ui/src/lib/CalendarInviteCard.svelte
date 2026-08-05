@@ -14,7 +14,7 @@
    * back without re-fetching anything.
    */
 
-  import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import Icon, { type IconName } from './Icon.svelte'
 
@@ -114,7 +114,7 @@
    *  visuals the agenda grid uses. */
   let userIdentities = $state<Set<string>>(new Set())
   $effect(() => {
-    void invoke<{ email: string }[]>('get_accounts')
+    void api.accounts.getAccounts()
       .then((rows) => {
         const set = new Set<string>()
         for (const r of rows) if (r.email) set.add(r.email.toLowerCase())
@@ -192,7 +192,7 @@
       const ev =
         activeIds.length === 0
           ? []
-          : await invoke<PreviewEvent[]>('get_cached_events', {
+          : await api.calendar.getCachedEvents({
               calendarIds: activeIds,
               rangeStart: dayStart.toISOString(),
               rangeEnd: dayEnd.toISOString(),
@@ -367,7 +367,7 @@
   }
   let contactsByEmail = $state<Map<string, ContactRow>>(new Map())
   $effect(() => {
-    void invoke<ContactRow[]>('search_contacts', { query: '', limit: 500 })
+    void api.contacts.searchContacts({ query: '', limit: 500 })
       .then((rows) => {
         const map = new Map<string, ContactRow>()
         for (const c of rows) {
@@ -382,7 +382,7 @@
   function attendeePhotoUrl(a: InviteAttendee): string | null {
     const c = contactsByEmail.get(a.email.toLowerCase())
     if (!c || !c.photo_mime) return null
-    return convertFileSrc(c.id, 'contact-photo')
+    return api.platform.assetUrl(c.id, 'contact-photo')
   }
 
   /** Optimistic PARTSTAT overrides keyed by lower-cased email,
@@ -496,13 +496,13 @@
   $effect(() => {
     calendarsLoading = true
     void Promise.all([
-      invoke<{ default_calendar_id: string | null }>('get_app_settings'),
+      api.settings.getAppSettings(),
       (async () => {
-        const accounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+        const accounts = await api.nextcloud.getNextcloudAccounts()
         const all: CalendarRow[] = []
         for (const acc of accounts) {
           try {
-            const cs = await invoke<CalendarRow[]>('get_cached_calendars', {
+            const cs = await api.calendar.getCachedCalendars({
               ncId: acc.id,
             })
             all.push(...cs)
@@ -519,7 +519,7 @@
         // mutation target.  Skips silently when the lookup
         // fails — backend has its own fallbacks.
         try {
-          const list = await invoke<{ email: string }[]>('get_accounts')
+          const list = await api.accounts.getAccounts()
           const owned = new Set(
             list.map((a) => a.email.toLowerCase()).filter(Boolean),
           )
@@ -622,8 +622,8 @@
     }
     if (!uid) return
     void Promise.all([
-      invoke<boolean>('is_event_in_calendar', { uid }),
-      invoke<boolean>('is_invite_cancelled', { uid }),
+      api.calendar.isEventInCalendar({ uid }),
+      api.calendar.isInviteCancelled({ uid }),
     ])
       .then(([present, cancelled]) => {
         if (invite.uid !== uid) return
@@ -642,7 +642,7 @@
     error = ''
     dismissingCancel = true
     try {
-      await invoke('dismiss_cancelled_event', { uid: invite.uid })
+      await api.calendar.dismissCancelledEvent({ uid: invite.uid })
       dismissed = true
     } catch (e) {
       error = formatError(e) || 'Failed to remove the cancelled event'
@@ -698,8 +698,7 @@
       try {
         const valid = (s: string | null): s is Partstat =>
           s === 'ACCEPTED' || s === 'DECLINED' || s === 'TENTATIVE'
-        const partstat = await invoke<string | null>(
-          'get_event_partstat_for_user',
+        const partstat = await api.calendar.getEventPartstatForUser(
           { uid, attendeeHint: attendeeHint },
         )
         if (invite.uid !== uid) return
@@ -708,7 +707,7 @@
         } else {
           // No PARTSTAT on a calendar event — try the local
           // persistence table.
-          const local = await invoke<string | null>('get_rsvp_response', { uid })
+          const local = await api.calendar.getRsvpResponse({ uid })
           if (invite.uid !== uid) return
           respondedAs = valid(local) ? local : null
         }
@@ -814,7 +813,7 @@
       // For DECLINED, the backend PUT-then-DELETEs so the
       // organiser is notified but the entry doesn't clutter the
       // user's calendar.
-      await invoke('respond_to_invite', {
+      await api.calendar.respondToInvite({
         calendarId: selectedCalendarId,
         rawIcs: invite.rawIcs,
         partstat,

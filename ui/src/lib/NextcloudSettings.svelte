@@ -13,7 +13,7 @@
    * component only ever sees the account metadata.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import NextcloudConnect from './NextcloudConnect.svelte'
   import SyncStatusRow from './SyncStatusRow.svelte'
@@ -152,7 +152,7 @@
 
   async function loadCalendarsList(ncId: string) {
     try {
-      const list = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+      const list = await api.calendar.getCachedCalendars({ ncId })
       calendarsList[ncId] = list
     } catch (e) {
       console.warn('get_cached_calendars failed for', ncId, e)
@@ -166,7 +166,7 @@
    *  blank the visibility section. */
   async function loadTaskListsList(ncId: string) {
     try {
-      const list = await invoke<TaskListSummary[]>('list_nextcloud_task_lists', { ncId })
+      const list = await api.tasks.listNextcloudTaskLists({ ncId })
       taskListsList[ncId] = list
     } catch (e) {
       console.warn('list_nextcloud_task_lists failed for', ncId, e)
@@ -184,7 +184,7 @@
       c.id === calendarId ? { ...c, hidden } : c,
     )
     try {
-      await invoke('set_nextcloud_calendar_hidden', { calendarId, hidden })
+      await api.calendar.setNextcloudCalendarHidden({ calendarId, hidden })
     } catch (e) {
       calendarsList[ncId] = prev
       const state = calendarsState[ncId]
@@ -208,7 +208,7 @@
       c.id === taskListId ? { ...c, hidden } : c,
     )
     try {
-      await invoke('set_nextcloud_task_list_hidden', { taskListId, hidden })
+      await api.tasks.setNextcloudTaskListHidden({ taskListId, hidden })
     } catch (e) {
       taskListsList[ncId] = prev
       const state = calendarsState[ncId]
@@ -226,7 +226,7 @@
     loading = true
     error = ''
     try {
-      accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      accounts = await api.nextcloud.getNextcloudAccounts()
       // Seed sync-row state for any new accounts and refresh the
       // cached counts + last-sync timestamps for existing ones.
       // Failures are non-fatal — we just keep the old values so a
@@ -251,10 +251,9 @@
       void Promise.all(
         accounts.map(async (a) => {
           try {
-            const fresh = await invoke<NextcloudAccount>(
-              'refresh_nextcloud_capabilities',
-              { ncId: a.id },
-            )
+            const fresh = await api.nextcloud.refreshNextcloudCapabilities({
+              ncId: a.id,
+            })
             // Patch the local list in place — Svelte 5 picks up the
             // new capabilities on the next render. Match by id in
             // case the user removed an account mid-refresh.
@@ -279,7 +278,7 @@
 
   async function refreshContactsStatus(ncId: string) {
     try {
-      const s = await invoke<SyncStatus>('get_contacts_sync_status', { ncId })
+      const s = await api.contacts.getContactsSyncStatus({ ncId })
       contactsState[ncId].lastSyncedAt = s.last_synced_at
       contactsState[ncId].count = s.count
     } catch (e) {
@@ -289,7 +288,7 @@
 
   async function refreshCalendarsStatus(ncId: string) {
     try {
-      const s = await invoke<SyncStatus>('get_calendars_sync_status', { ncId })
+      const s = await api.calendar.getCalendarsSyncStatus({ ncId })
       calendarsState[ncId].lastSyncedAt = s.last_synced_at
       calendarsState[ncId].count = s.count
     } catch (e) {
@@ -302,7 +301,7 @@
    *  max(last_synced_at) across the cached task_lists. */
   async function refreshTasksStatus(ncId: string) {
     try {
-      const s = await invoke<SyncStatus>('get_tasks_sync_status', { ncId })
+      const s = await api.tasks.getTasksSyncStatus({ ncId })
       if (tasksState[ncId]) {
         tasksState[ncId].lastSyncedAt = s.last_synced_at
         tasksState[ncId].count = s.count
@@ -326,7 +325,7 @@
     state.syncing = true
     state.error = ''
     try {
-      const report = await invoke<SyncContactsReport>('sync_nextcloud_contacts', {
+      const report = await api.contacts.syncNextcloudContacts({
         ncId: acct.id,
       })
       if (report.errors.length > 0) {
@@ -348,10 +347,7 @@
     state.syncing = true
     state.error = ''
     try {
-      const report = await invoke<{ errors: string[] }>(
-        'sync_nextcloud_calendars',
-        { ncId: acct.id },
-      )
+      const report = await api.calendar.syncNextcloudCalendars({ ncId: acct.id })
       if (report.errors.length > 0) {
         state.error = report.errors.join('; ')
       }
@@ -379,10 +375,7 @@
     state.syncing = true
     state.error = ''
     try {
-      const lists = await invoke<TaskListSummary[]>(
-        'sync_nextcloud_task_lists',
-        { ncId: acct.id },
-      )
+      const lists = await api.tasks.syncNextcloudTaskLists({ ncId: acct.id })
       // Pull the latest tasks for every discovered list so the
       // virtual-bucket badges in TasksView reflect the current
       // server contents.  Failures on one list don't block the
@@ -390,7 +383,7 @@
       // doesn't blank the whole status row.
       for (const list of lists) {
         try {
-          await invoke('sync_nextcloud_tasks', {
+          await api.tasks.syncNextcloudTasks({
             ncId: acct.id,
             listId: list.id,
           })
@@ -508,7 +501,7 @@
         : (acct.display_name ?? acct.username ?? acct.id)
     if (!confirm(m.nextcloud_settings_disconnect_confirm({ name: label }))) return
     try {
-      await invoke('remove_nextcloud_account', { id: acct.id })
+      await api.nextcloud.removeNextcloudAccount({ id: acct.id })
       await loadAccounts()
     } catch (e) {
       error = formatError(e) || 'Failed to remove'

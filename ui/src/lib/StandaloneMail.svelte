@@ -17,11 +17,10 @@
    * `main.ts` routes the query into our props.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
-  import { emit } from '@tauri-apps/api/event'
+  import * as api from './api'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import MailView from './MailView.svelte'
-  import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
+  import { applyTheme, installSystemModeListener } from './theme'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
 
@@ -73,11 +72,7 @@
     let unlistenSystem: (() => void) | null = null
     void (async () => {
       try {
-        const prefs = await invoke<{
-          theme_name: string
-          theme_mode: ThemeMode
-          mail_html_white_background: boolean
-        }>('get_app_settings')
+        const prefs = await api.settings.getAppSettings()
         forceWhiteBackground = prefs.mail_html_white_background ?? true
         applyTheme(prefs.theme_name, prefs.theme_mode)
         unlistenSystem = installSystemModeListener(
@@ -213,17 +208,7 @@
     // through the keychain via `resolve_pgp_passphrase`.
     let lastError = ''
     try {
-      const auto = await invoke<{
-        body_text: string | null
-        body_html: string | null
-        attachments: {
-          filename: string
-          content_type: string
-          size: number | null
-          part_id: number
-          content_id?: string | null
-        }[]
-      } | null>('try_auto_decrypt_message', {
+      const auto = await api.crypto.tryAutoDecryptMessage({
         accountId: narrow.account_id,
         folder: narrow.folder,
         uid: narrow.uid,
@@ -277,17 +262,7 @@
         // the main-window listener can route the forward fan-out
         // through `download_decrypted_attachment` with valid
         // inner-tree part_ids.
-        const decrypted = await invoke<{
-          body_text: string | null
-          body_html: string | null
-          attachments: {
-            filename: string
-            content_type: string
-            size: number | null
-            part_id: number
-            content_id?: string | null
-          }[]
-        }>('decrypt_message', {
+        const decrypted = await api.crypto.decryptMessage({
           accountId: narrow.account_id,
           folder: narrow.folder,
           uid: narrow.uid,
@@ -337,7 +312,7 @@
           includeAttachments = await promptIncludeAttachments(count)
         }
       }
-      await emit('compose-from-mail', {
+      await api.emitAppEvent('compose-from-mail', {
         kind,
         mail: ready.mail,
         pgpPassphrase: ready.passphrase,
@@ -363,17 +338,17 @@
   // editor and remember that the trigger came from a popout —
   // the resulting Compose ends up as its own popped-out window.
   function onRespondWithMeeting(mail: EmailPayload) {
-    void emit('respond-with-meeting-from-mail', { mail }).catch((e) => {
+    void api.emitAppEvent('respond-with-meeting-from-mail', { mail }).catch((e) => {
       console.warn('respond-with-meeting-from-mail emit failed', e)
     })
   }
   function onEditDraft(mail: EmailPayload) {
-    void emit('edit-draft-from-mail', { mail }).catch((e) => {
+    void api.emitAppEvent('edit-draft-from-mail', { mail }).catch((e) => {
       console.warn('edit-draft-from-mail emit failed', e)
     })
   }
   function onMailto(init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }) {
-    void emit('mailto-from-mail', { init }).catch((e) => {
+    void api.emitAppEvent('mailto-from-mail', { init }).catch((e) => {
       console.warn('mailto-from-mail emit failed', e)
     })
   }

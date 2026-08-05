@@ -11,7 +11,7 @@
    * `onselect(uid)` so the parent can swap MailView to that message.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
   import Avatar from './Avatar.svelte'
@@ -332,7 +332,7 @@
     const idAtCall = accountId
     const folderAtCall = folder
     try {
-      const members = await invoke<EmailEnvelope[]>('get_envelopes_by_thread', {
+      const members = await api.mail.getEnvelopesByThread({
         accountId: idAtCall,
         folder: folderAtCall,
         threadId: threadKey,
@@ -875,7 +875,7 @@
     const failures: { uids: number[]; err: unknown }[] = []
     for (const g of groups.values()) {
       try {
-        const moved = await invoke<number[]>('move_messages', {
+        const moved = await api.mail.moveMessages({
           accountId: g.accountId,
           folder: g.folder,
           uids: g.uids,
@@ -1253,28 +1253,14 @@
     //     so a single-folder-name aggregator suffices.
     //   - Single account: plain per-account fetch.
     const specialKind = isUnified ? unifiedSpecialKind(f) : null
-    const cacheCmd =
-      specialKind !== null
-        ? 'get_unified_special_cached_envelopes'
-        : isUnified
-          ? 'get_unified_cached_envelopes'
-          : 'get_cached_envelopes'
-    const fetchCmd =
-      specialKind !== null
-        ? 'fetch_unified_special_envelopes'
-        : isUnified
-          ? 'fetch_unified_envelopes'
-          : 'fetch_envelopes'
-    const args: Record<string, unknown> =
-      specialKind !== null
-        ? { special: specialKind, limit: PAGE_SIZE }
-        : isUnified
-          ? { folder: f, limit: PAGE_SIZE }
-          : { accountId: id, folder: f, limit: PAGE_SIZE }
 
     // Cache first — usually instant, may return [] on cold start.
     try {
-      const cached = await invoke<EmailEnvelope[]>(cacheCmd, args)
+      const cached = await (specialKind !== null
+        ? api.mail.getUnifiedSpecialCachedEnvelopes({ special: specialKind, limit: PAGE_SIZE })
+        : isUnified
+          ? api.mail.getUnifiedCachedEnvelopes({ folder: f, limit: PAGE_SIZE })
+          : api.mail.getCachedEnvelopes({ accountId: id, folder: f, limit: PAGE_SIZE }))
       if (stillCurrent()) {
         envelopes = mergeEnvelopes(envelopes, cached)
         if (envelopes.length > 0) loading = false
@@ -1288,7 +1274,11 @@
     // see new mail as soon as the server responds.
     refreshing = envelopes.length > 0
     try {
-      const fresh = await invoke<EmailEnvelope[]>(fetchCmd, args)
+      const fresh = await (specialKind !== null
+        ? api.mail.fetchUnifiedSpecialEnvelopes({ special: specialKind, limit: PAGE_SIZE })
+        : isUnified
+          ? api.mail.fetchUnifiedEnvelopes({ folder: f, limit: PAGE_SIZE })
+          : api.mail.fetchEnvelopes({ accountId: id, folder: f, limit: PAGE_SIZE }))
       if (stillCurrent()) {
         envelopes = mergeEnvelopes(envelopes, fresh)
       }
@@ -1367,7 +1357,7 @@
         // Tauri serialises Map → JSON object via Object.fromEntries.
         const beforeUidPerAccount: Record<string, number> = {}
         for (const [k, v] of map) beforeUidPerAccount[k] = v
-        older = await invoke<EmailEnvelope[]>('fetch_older_unified_envelopes', {
+        older = await api.mail.fetchOlderUnifiedEnvelopes({
           folder: folderAtCall,
           beforeUidPerAccount,
           limit: PAGE_SIZE,
@@ -1385,7 +1375,7 @@
           olderExhausted = true
           return
         }
-        older = await invoke<EmailEnvelope[]>('fetch_older_envelopes', {
+        older = await api.mail.fetchOlderEnvelopes({
           accountId: idAtCall,
           folder: folderAtCall,
           beforeUid: smallest,
@@ -1614,7 +1604,7 @@
     const removed = idx >= 0 ? envelopes[idx] : null
     onmessagemoved?.(env.uid)
     try {
-      await invoke('delete_message', {
+      await api.mail.deleteMessage({
         accountId: srcAccountId,
         folder: srcFolder,
         uid: env.uid,
@@ -1644,7 +1634,7 @@
     env.is_read = next
     closeContextMenu()
     try {
-      await invoke('set_message_read', {
+      await api.mail.setMessageRead({
         accountId: env.account_id || accountId,
         folder: env.folder,
         uid: env.uid,
@@ -1675,7 +1665,7 @@
     env.is_starred = next
     closeContextMenu()
     try {
-      await invoke('set_message_flagged', {
+      await api.mail.setMessageFlagged({
         accountId: env.account_id || accountId,
         folder: env.folder,
         uid: env.uid,
@@ -1692,7 +1682,7 @@
     env.is_pinned = next
     closeContextMenu()
     try {
-      await invoke('set_message_pinned', {
+      await api.mail.setMessagePinned({
         accountId: env.account_id || accountId,
         folder: env.folder,
         uid: env.uid,
@@ -1712,7 +1702,7 @@
     env.priority_override = priority
     closeContextMenu()
     try {
-      await invoke('set_message_priority', {
+      await api.mail.setMessagePriority({
         accountId: env.account_id || accountId,
         folder: env.folder,
         uid: env.uid,
@@ -1771,7 +1761,7 @@
     env.reminder_at = when
     closeContextMenu()
     try {
-      await invoke('set_message_reminder', {
+      await api.mail.setMessageReminder({
         accountId: env.account_id || accountId,
         folder: env.folder,
         uid: env.uid,

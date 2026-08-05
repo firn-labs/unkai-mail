@@ -18,7 +18,7 @@
    * Contacts / Calendar sync-now buttons.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { formatError } from './errors'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
@@ -215,7 +215,10 @@
     >()
     for (const item of payload) {
       if (target.name === item.folder) continue // move-to-self
-      const key = `${item.accountId} ${item.folder}`
+      // NUL separator — the one byte that can't legally appear in
+      // an account id or IMAP folder name, so composite keys can't
+      // collide (`"a" + "b/c"` vs `"a/b" + "c"`).
+      const key = `${item.accountId}\0${item.folder}`
       const existing = groups.get(key)
       if (existing) existing.uids.push(item.uid)
       else
@@ -247,7 +250,7 @@
       const failures: unknown[] = []
       for (const g of groups.values()) {
         try {
-          const moved = await invoke<number[]>('move_messages', {
+          const moved = await api.mail.moveMessages({
             accountId: g.accountId,
             folder: g.folder,
             uids: g.uids,
@@ -329,7 +332,7 @@
   async function commitFolderIcon(folder: Folder, emoji: string | null) {
     folderOpBusy = true
     try {
-      await invoke('set_folder_icon', {
+      await api.mail.setFolderIcon({
         accountId,
         folderName: folder.name,
         icon: emoji,
@@ -416,7 +419,7 @@
     const newName = parent ? `${parent}${delimiterFor(oldName)}${newLeaf}` : newLeaf
     folderOpBusy = true
     try {
-      await invoke('rename_folder', {
+      await api.mail.renameFolder({
         accountId,
         oldName,
         newName,
@@ -459,7 +462,7 @@
     const name = joinPath(parentFolder, leaf)
     folderOpBusy = true
     try {
-      await invoke('create_folder', { accountId, name })
+      await api.mail.createFolder({ accountId, name })
       newFolderInput = null
       await load(accountId)
     } catch (e) {
@@ -478,7 +481,7 @@
     const { folder } = deleteConfirm
     folderOpBusy = true
     try {
-      await invoke('delete_folder', { accountId, name: folder.name })
+      await api.mail.deleteFolder({ accountId, name: folder.name })
       // If the user was viewing the folder they just deleted, bounce
       // them to INBOX — otherwise MailList keeps trying to fetch
       // from a mailbox the server no longer has.
@@ -533,7 +536,7 @@
   let unifiedUnread = $state(0)
   async function refreshUnifiedUnread() {
     try {
-      unifiedUnread = await invoke<number>('get_total_unread')
+      unifiedUnread = await api.mail.getTotalUnread()
     } catch (e) {
       console.warn('get_total_unread failed:', e)
     }
@@ -543,8 +546,7 @@
     void refreshUnifiedUnread()
     let unlisten: (() => void) | null = null
     ;(async () => {
-      const { listen } = await import('@tauri-apps/api/event')
-      unlisten = await listen('unread-count-updated', () => {
+      unlisten = await api.onAppEvent('unread-count-updated', () => {
         void refreshUnifiedUnread()
         // Per-folder badges read from the cached `folders` table,
         // which `mark_envelope_read` and `bump_folder_unread` keep in
@@ -564,7 +566,7 @@
       reserved for mount + account switch. */
   async function reloadCachedFolders(id: string) {
     try {
-      const cached = await invoke<Folder[]>('get_cached_folders', { accountId: id })
+      const cached = await api.mail.getCachedFolders({ accountId: id })
       if (id === accountId) folders = cached
     } catch (e) {
       console.warn('reloadCachedFolders failed:', e)
@@ -598,7 +600,7 @@
     error = ''
 
     try {
-      const cached = await invoke<Folder[]>('get_cached_folders', { accountId: id })
+      const cached = await api.mail.getCachedFolders({ accountId: id })
       if (id === accountId) {
         folders = cached
         if (cached.length > 0) loading = false
@@ -608,7 +610,7 @@
     }
 
     try {
-      const fresh = await invoke<Folder[]>('fetch_folders', { accountId: id })
+      const fresh = await api.mail.fetchFolders({ accountId: id })
       if (id === accountId) {
         folders = fresh
       }
@@ -858,7 +860,7 @@
         tabindex="0"
         class="group w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors duration-150 ease-out
           {selectedFolder === folder.name
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : dragOverFolder === folder.name
               ? 'bg-primary-500/20 ring-2 ring-primary-500'
               : 'hover:bg-primary-500/10'}"
@@ -933,8 +935,12 @@
   <!-- `py-1` reserves space inside the scroll container so the
        drag-hover `ring-2` on the topmost folder row (typically
        Inbox) doesn't get clipped where its outer stroke would
-       otherwise sit at the very top edge of `overflow-y-auto`. -->
-  <nav class="flex-1 overflow-y-auto px-2 py-1">
+       otherwise sit at the very top edge of `overflow-y-auto`.
+       `space-y-0.5` keeps a hairline gap between rows — the hover
+       and selected fills are the same translucent primary tint, so
+       flush rows would visually merge into one blob when the row
+       adjacent to the selected one is hovered (#465). -->
+  <nav class="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
     {#if unified}
       <!-- Unified mode surfaces three global views: All Inboxes
            (existing), All Sent (#322), All Drafts (#322).  Sent and
@@ -945,7 +951,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === 'INBOX'
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder('INBOX')}
       >
@@ -973,7 +979,7 @@
         <button
           class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
             {selectedFolder === OUTBOX_FOLDER
-              ? 'bg-primary-500/10 text-primary-500 font-medium'
+              ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
               : 'hover:bg-primary-500/10'}"
           onclick={() => onselectfolder(OUTBOX_FOLDER)}
         >
@@ -995,7 +1001,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_DRAFTS_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_DRAFTS_FOLDER)}
       >
@@ -1010,7 +1016,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_SENT_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_SENT_FOLDER)}
       >
@@ -1025,7 +1031,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_ARCHIVE_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_ARCHIVE_FOLDER)}
       >
@@ -1040,7 +1046,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_JUNK_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_JUNK_FOLDER)}
       >
@@ -1055,7 +1061,7 @@
       <button
         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150 ease-out
           {selectedFolder === UNIFIED_TRASH_FOLDER
-            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : 'hover:bg-primary-500/10'}"
         onclick={() => onselectfolder(UNIFIED_TRASH_FOLDER)}
       >

@@ -31,7 +31,7 @@
    * browser caches per-id automatically.
    */
 
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import * as api from './api'
   import { onDestroy } from 'svelte'
   import EmailKindChip from './EmailKindChip.svelte'
 
@@ -121,7 +121,7 @@
   // once at init to gate the fetch is deliberate.
   if (pickMode !== 'replace-address') {
     // Lists never surface in replace-address mode, so skip the IPC.
-    void invoke<MailingListSuggestion[]>('list_mailing_lists')
+    void api.contacts.listMailingLists()
       .then((rows) => {
         // Backend already excludes "Use as mailing list = off"
         // categories; the per-row hide swatch (manual / team
@@ -156,7 +156,7 @@
       return
     }
     try {
-      const rows = await invoke<Contact[]>('search_contacts', {
+      const rows = await api.contacts.searchContacts({
         query,
         limit: LIMIT,
       })
@@ -181,7 +181,7 @@
       // editing.
       const contactSuggestions: Suggestion[] = []
       for (const c of rows) {
-        const emails = c.email.filter((e) => e.value.length > 0)
+        const emails = c.email.filter((e: ContactEmail) => e.value.length > 0)
         if (emails.length === 0) continue
         for (const e of emails) {
           contactSuggestions.push({ kind: 'contact', contact: c, email: e })
@@ -321,7 +321,7 @@
    */
   function photoUrl(c: Contact): string | null {
     if (!c.photo_mime) return null
-    return convertFileSrc(c.id, 'contact-photo')
+    return api.platform.assetUrl(c.id, 'contact-photo')
   }
 
   function initials(name: string): string {
