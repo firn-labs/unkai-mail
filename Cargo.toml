@@ -12,6 +12,7 @@ members = [
     "crates/unkai-discovery",
     "crates/unkai-crypto",
     "crates/unkai-mcp",
+    "crates/unkai-commands",
     "src-tauri",
 ]
 
@@ -211,3 +212,4 @@ unkai-store = { path = "crates/unkai-store" }
 unkai-discovery = { path = "crates/unkai-discovery" }
 unkai-crypto = { path = "crates/unkai-crypto" }
 unkai-mcp = { path = "crates/unkai-mcp" }
+unkai-commands = { path = "crates/unkai-commands" }

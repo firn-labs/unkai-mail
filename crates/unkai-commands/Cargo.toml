@@ -1,0 +1,41 @@
+[package]
+name = "unkai-commands"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# The transport-agnostic application layer (#476).
+#
+# Everything that used to live in `src-tauri/src/main.rs` as a
+# `#[tauri::command]` body now lives here as a plain function, so the
+# application logic can be exercised without spinning up a Tauri
+# runtime.  Deliberately **no `tauri` dependency** — pushing anything
+# UI-facing back to the shell happens through the `UiNotifier` trait
+# in `notify.rs`, which the desktop crate implements on `AppHandle`.
+[dependencies]
+unkai-core.workspace = true
+unkai-imap.workspace = true
+unkai-smtp.workspace = true
+unkai-jmap.workspace = true
+unkai-caldav.workspace = true
+unkai-carddav.workspace = true
+unkai-nextcloud.workspace = true
+unkai-store.workspace = true
+unkai-discovery.workspace = true
+unkai-crypto.workspace = true
+unkai-mcp.workspace = true
+tokio.workspace = true
+futures.workspace = true
+font-kit.workspace = true
+base64.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+dirs.workspace = true
+sha2.workspace = true
+hex.workspace = true
+open.workspace = true

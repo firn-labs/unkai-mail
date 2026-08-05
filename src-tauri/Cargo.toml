@@ -19,6 +19,9 @@ unkai-discovery.workspace = true
 # its lifecycle (start/stop on the settings toggle) and the token
 # commands; the crate itself stays keychain- and Tauri-free.
 unkai-mcp.workspace = true
+# The transport-agnostic application layer (#476) — every command
+# body and background loop.  main.rs holds only thin shims over it.
+unkai-commands.workspace = true
 # OpenPGP primitives for the receive (decrypt+verify) and send
 # (encrypt+sign) bridges, the vCard KEY auto-import flow, and the
 # Account-Settings "import private key" command (#57).  Lives only
