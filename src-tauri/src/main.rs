@@ -11637,6 +11637,81 @@ struct MailFlagsUpdatedPayload {
     folder: String,
 }
 
+/// #470 — rebuild the GTK client-side decoration so its buttons
+/// accept clicks again.
+///
+/// On Wayland GTK draws our titlebar itself (GTK3 doesn't implement
+/// `xdg-decoration`, so KWin can't decorate us), which makes the
+/// minimise / maximise / close buttons part of the app's own surface.
+/// A window created with `visible: false` and shown later never gets
+/// that decoration wired up properly: the titlebar swallows every
+/// click while the page inside stays perfectly interactive. Reported
+/// on Kubuntu/KWin, and the same shape as upstream
+/// tauri-apps/tauri#11856.
+///
+/// Toggling resizability re-runs GTK's `update_window_buttons()`,
+/// which rebuilds the button box and restores input. Measured against
+/// a no-op control on the reporter's machine: without this the buttons
+/// are dead on every launch, with it they work immediately.
+///
+/// Two details are load-bearing:
+///   * **Main thread.** GTK is not thread-safe; called from the async
+///     runtime the toolkit calls silently do nothing.
+///   * **One step per main-loop iteration.** Setting the flag off and
+///     on back-to-back is coalesced into a no-op, so the steps are
+///     spread across glib idle callbacks — the same shape tao uses for
+///     its own maximize (`util::WindowMaximizeProcess`).
+///
+/// Skipped for maximised and fullscreen windows: those states arrive
+/// via a compositor configure, which rebuilds the decoration anyway,
+/// and dropping resizability underneath them risks disturbing their
+/// geometry.
+#[cfg(target_os = "linux")]
+fn rebuild_decoration_input_region(win: &tauri::WebviewWindow) {
+    if win.is_maximized().unwrap_or(false) || win.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let win = win.clone();
+    tauri::async_runtime::spawn(async move {
+        // Let the map settle first; repairing a window that is still
+        // being mapped just gets folded into the map itself.
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        let marshalled = win.clone().run_on_main_thread(move || {
+            use gtk::prelude::*;
+            let Ok(gtk_win) = win.gtk_window() else {
+                tracing::warn!("#470: gtk_window() unavailable, skipping decoration repair");
+                return;
+            };
+            // Restore whatever the window was actually set to rather
+            // than assuming resizable — a fixed-size window must not
+            // silently become resizable.
+            let was_resizable = gtk_win.is_resizable();
+            let step = std::cell::Cell::new(0u8);
+            gtk::glib::idle_add_local_full(gtk::glib::Priority::DEFAULT_IDLE, move || {
+                match step.get() {
+                    0 => {
+                        gtk_win.set_resizable(!was_resizable);
+                        step.set(1);
+                        gtk::glib::ControlFlow::Continue
+                    }
+                    _ => {
+                        gtk_win.set_resizable(was_resizable);
+                        gtk::glib::ControlFlow::Break
+                    }
+                }
+            });
+        });
+        if let Err(e) = marshalled {
+            tracing::warn!("#470: could not reach the main thread for decoration repair: {e}");
+        }
+    });
+}
+
+/// No-op off Linux: Windows and macOS draw our titlebar in the
+/// compositor, so its buttons can't be affected by anything we do.
+#[cfg(not(target_os = "linux"))]
+fn rebuild_decoration_input_region(_win: &tauri::WebviewWindow) {}
+
 /// Bring the main window to the front. Called from the tray's
 /// left-click handler, the tray menu's "Open Unkai" item, and the
 /// `show_main_window` command.
@@ -11649,6 +11724,10 @@ fn show_main_window(app: &AppHandle) -> Result<(), UnkaiError> {
     let _ = win.show();
     let _ = win.unminimize();
     let _ = win.set_focus();
+    // Every caller here is un-hiding a window that was previously
+    // unmapped — at startup, or out of the tray — which is exactly
+    // when the decoration's input region goes stale (#470).
+    rebuild_decoration_input_region(&win);
     Ok(())
 }
 
@@ -15905,6 +15984,10 @@ fn main() {
                     .start_minimized;
                 if !should_hide_on_start {
                     let _ = main_window.show();
+                    // #470 — this `visible: false` → `show()` transition
+                    // is where the Linux titlebar loses its buttons, so
+                    // the decoration gets rebuilt right after the map.
+                    rebuild_decoration_input_region(&main_window);
                 }
             } else {
                 tracing::warn!("main window not found at setup time");

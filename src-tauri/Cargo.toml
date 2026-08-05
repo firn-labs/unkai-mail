@@ -87,6 +87,11 @@ open = { workspace = true }
 # integrations are better than notify-rust's non-Linux backends).
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
+# #470: reach the real GtkApplicationWindow behind the Tauri window to
+# repair the client-side decoration's input region. Pinned to the same
+# 0.18 series Tauri/wry already link against — a second gtk version in
+# the tree would hand us a widget the toolkit doesn't recognise.
+gtk = "0.18"
 
 # Windows-only: needed to register an explicit AppUserModelID so toast
 # notifications attribute to "Unkai Mail" instead of falling back to
