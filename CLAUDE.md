@@ -32,8 +32,12 @@ unkai-mail/
 │   ├── unkai-caldav/      # CalDAV calendar sync
 │   ├── unkai-carddav/     # CardDAV contact sync
 │   ├── unkai-nextcloud/   # Nextcloud API (Talk, Files, OCS)
-│   └── unkai-store/       # Local storage, caching, keychain
-├── src-tauri/              # Tauri app (Rust entry point + config)
+│   ├── unkai-store/       # Local storage, caching, keychain
+│   ├── unkai-discovery/   # Account autoconfiguration (SRV, autoconfig)
+│   ├── unkai-crypto/      # OpenPGP + S/MIME primitives
+│   ├── unkai-mcp/         # Local MCP server (#438)
+│   └── unkai-commands/    # Transport-agnostic application layer (#476)
+├── src-tauri/              # Tauri desktop shell (command shims + chrome)
 └── ui/                     # Frontend (Svelte 5 + TypeScript + Vite)
     ├── src/
     │   ├── lib/            # Svelte components
@@ -70,6 +74,16 @@ All backend IPC in the frontend goes through the typed layer in [`ui/src/lib/api
 - **Platform affordances** (native dialogs, plugin notifications, autostart, `convertFileSrc` asset URLs) live in `api/platform.ts` — this file is the canonical list of desktop-only surface.
 - **DTO types**: `api/types.ts` holds placeholder `any` aliases for backend DTOs. Tightening them is **lazy**, like the i18n migration: replace an alias with a real interface whenever you touch code that consumes it; don't open a bulk-typing PR.
 - **Allowed exceptions** (window plumbing only, enforced by the guard test): `standalone*Window.ts`, `reminderPopupWindow.ts`, `attachmentOpen.ts` may use `@tauri-apps/api/webviewWindow`; standalone components may use `@tauri-apps/api/window` to close themselves; type-only imports from `@tauri-apps/api/event` are fine anywhere.
+
+## Backend command layer: the `unkai-commands` crate (#476)
+
+The backend twin of the `api/` layer above. Every `#[tauri::command]` body, the background loops, and the crypto bridge live in `crates/unkai-commands` — a crate with **no `tauri` dependency**. `src-tauri/src/main.rs` holds only thin `#[tauri::command]` shims (extract managed state → delegate) plus the desktop shell: tray, menus, windows, native notifications, deep links, URI-scheme protocols.
+
+- **Domain modules mirror `ui/src/lib/api/` exactly** — `commands::mail` ↔ `api/mail.ts`, `commands::calendar` ↔ `api/calendar.ts`, etc. A command and its typed frontend wrapper always share a name and a domain. **When you add a Rust command: body goes in the matching `unkai-commands` module, a shim goes in `main.rs`'s alphabetical shim list + `generate_handler![]`, and the wrapper goes in the matching `api/` module — all in the same PR.**
+- **`UiNotifier` (`commands::notify`) is the only channel back to the UI.** The application layer never emits Tauri events; it calls trait methods (`new_mail`, `outbox_updated`, `unread_total_changed`, …) carrying the same payload structs the frontend already deserialises. `src-tauri/src/notifier.rs` (`TauriNotifier`) is the desktop implementation — the one place that knows "notify the user" means "emit a Tauri event / repaint the tray". Adding a push channel = a trait method + a `TauriNotifier` impl + an `api/events.ts` registry entry.
+- **`AppContext` (`commands::state`) bundles shared state** (`cache`, `settings`, `reminders`, `ui`) for the background loops and the few commands that notify. Plain-`Cache` commands keep taking `&Cache` — don't thread the context where it isn't needed.
+- **Support modules**: `support` (helpers used by 2+ domains), `crypto_bridge` (the `CryptoBridge` impl the protocol crates call), `background` (the startup loops `main.rs` spawns), `state`, `notify`, `geocode`.
+- **Keep `unkai-commands` Tauri-free.** Anything that needs an `AppHandle`, a window, or the tray belongs in `src-tauri` (either behind a `UiNotifier` method or in the shell itself). The payoff is that the whole application layer compiles and tests without a Tauri runtime.
 
 ## UI Conventions
 
