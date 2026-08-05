@@ -7343,6 +7343,7 @@ dependencies = [
  "dirs 6.0.0",
  "font-kit",
  "futures",
+ "gtk",
  "hex",
  "notify-rust",
  "open",
