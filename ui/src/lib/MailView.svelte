@@ -32,7 +32,14 @@
     getSenderAddress,
     isSenderTrusted,
   } from './trustedSenders'
+  import {
+    applyInlineImages,
+    buildInlineImageUrls,
+    collectCidImageRefs,
+    inlineImageBlob,
+  } from './inlineImages'
   import { parseMailtoUrl } from './mailtoUrl'
+  import { onDestroy } from 'svelte'
 
   interface EmailAttachment {
     filename: string
@@ -414,6 +421,114 @@
     return formatError(e) || fallback
   }
 
+  // ── Inline body images (#471) ────────────────────────────────
+  //
+  // `<img src="cid:logo@example">` points at one of the message's
+  // own MIME parts.  The webview can't resolve that scheme, so
+  // without this the images the sender meant to appear *in* the body
+  // render as nothing — they only ever showed up as attachment chips.
+  //
+  // Flow: after a body lands, scan it for cid references; if there
+  // are any, pull every referenceable image part in one IPC
+  // (`fetch_inline_images` — one server round-trip for the whole
+  // message, not one per image), turn each into an object URL, and
+  // let `processEmailHtml` rewrite the sources.
+  //
+  // Unlike *remote* images these need no "Show images" opt-in: the
+  // bytes are already inside the message, so rendering them phones
+  // nobody home and leaks no read receipt.
+
+  /** Lookup key (cid / filename, normalised) → object URL. */
+  let inlineImageUrls = $state<Record<string, string>>({})
+
+  /** True from "this body has cid images" until the fetch settles.
+   *  Keeps unresolved images invisible while in flight instead of
+   *  flashing broken-image icons for the length of a network fetch. */
+  let inlineImagesLoading = $state(false)
+
+  /** The object URLs we own, for revoking.  Deliberately not
+   *  `$state` — nothing renders off it, and mutating it must not
+   *  invalidate the body. */
+  let inlineImageObjectUrls: string[] = []
+
+  /** Which (message, body) we last fetched for, so the effect below
+   *  doesn't refetch on every unrelated state change.  Plain `let`
+   *  for the same reason. */
+  let inlineImagesKey = ''
+
+  function revokeInlineImageUrls() {
+    for (const url of inlineImageObjectUrls) URL.revokeObjectURL(url)
+    inlineImageObjectUrls = []
+  }
+
+  onDestroy(revokeInlineImageUrls)
+
+  $effect(() => {
+    const em = email
+    const u = uid
+    const html = em?.body_html ?? ''
+    if (!em || u == null || !html) return
+    // Body length is a cheap proxy for "the body changed" — the
+    // case that matters is an encrypted message whose plaintext
+    // arrives after the first render.
+    const key = `${em.account_id}::${em.folder}::${u}::${html.length}`
+    if (key === inlineImagesKey) return
+    inlineImagesKey = key
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    if (collectCidImageRefs(doc).length === 0) {
+      // Nothing inline — the overwhelmingly common case.  No IPC,
+      // and drop the pending state so a previous message's flag
+      // can't strand this body.
+      inlineImagesLoading = false
+      return
+    }
+    inlineImagesLoading = true
+    void loadInlineImages(em, u)
+  })
+
+  /** Fetch and register the message's inline image parts.  Failures
+   *  are swallowed to a console warning on purpose: a body image
+   *  that won't load is a cosmetic problem, and an error banner over
+   *  a readable message would be worse than the missing logo. */
+  async function loadInlineImages(em: Email, u: number) {
+    const encrypted = emailNeedsDecryptedAttachmentFetch(em)
+    // Encrypted and no way to decrypt yet — the user hasn't entered
+    // the passphrase for this message and the account isn't on
+    // auto-unlock.  Decrypting sets a new body, which re-runs the
+    // effect above with a fresh key, so this isn't a dead end.
+    if (encrypted && !sessionPassphrase && !autoUnlockForAccount) {
+      inlineImagesLoading = false
+      return
+    }
+    try {
+      const parts = await api.mail.fetchInlineImages({
+        accountId: em.account_id,
+        folder: em.folder,
+        uid: u,
+        // Empty string is meaningful for auto-unlock accounts (the
+        // backend resolves the passphrase from the keychain); the
+        // key must be absent entirely for plaintext mail.
+        ...(encrypted ? { pgpPassphrase: sessionPassphrase } : {}),
+      })
+      // The user moved on while we were fetching — drop the result
+      // rather than painting one message's images onto another.
+      if (email?.id !== em.id) return
+      const created: string[] = []
+      const urls = buildInlineImageUrls(parts, (part) => {
+        const url = URL.createObjectURL(inlineImageBlob(part))
+        created.push(url)
+        return url
+      })
+      revokeInlineImageUrls()
+      inlineImageObjectUrls = created
+      inlineImageUrls = urls
+    } catch (e) {
+      console.warn('fetch_inline_images failed', e)
+    } finally {
+      if (email?.id === em.id) inlineImagesLoading = false
+    }
+  }
+
   /** Pre-fetch persisted thumbnails for one message and seed
    *  the in-memory thumb cache so AttachmentThumb's first
    *  mount hits straight away (no bytesProvider call, no
@@ -564,6 +679,14 @@
     showImagesForMessage = false
     trustedSender = false
     whiteBackgroundOverride = null
+    // #471 — inline images belong to exactly one message.  Start in
+    // the "loading" state so the first paint of a body with cid
+    // images doesn't flash the unresolved-image treatment before the
+    // effect has even had a chance to look at it.
+    revokeInlineImageUrls()
+    inlineImageUrls = {}
+    inlineImagesLoading = true
+    inlineImagesKey = ''
     // #57 — clear any in-flight decrypt state from the previous
     // message; a passphrase the user typed for `mail A` must not
     // ride along to `mail B`.
@@ -1483,6 +1606,8 @@
   function processEmailHtml(
     html: string,
     showImages: boolean,
+    inlineUrls: Record<string, string>,
+    inlineLoading: boolean,
   ): { html: string; hadBlocked: boolean } {
     if (!html) return { html: '', hadBlocked: false }
     try {
@@ -1558,6 +1683,14 @@
         })
       }
 
+      // Resolve `cid:` sources against the message's own image parts
+      // (#471).  Runs after the remote-image pass — which skips
+      // `cid:` deliberately, since these bytes are already in the
+      // message and need no "Show images" consent — and before the
+      // quote fold, so an inline image inside a quoted chunk is
+      // resolved too.
+      applyInlineImages(doc, inlineUrls, inlineLoading)
+
       // Fold quoted / forwarded chunks into collapsible cards (#330).
       // Runs after the link / image passes so anything inside a
       // collapsed block has already been annotated and image-blocked;
@@ -1578,6 +1711,8 @@
       return processEmailHtml(
         email.body_html,
         showImagesForMessage || trustedSender || autoLoadRemoteImages,
+        inlineImageUrls,
+        inlineImagesLoading,
       )
     }
     // Plain-text-only message — synthesize a minimal HTML
@@ -1593,6 +1728,8 @@
       return processEmailHtml(
         wrapped,
         showImagesForMessage || trustedSender || autoLoadRemoteImages,
+        inlineImageUrls,
+        inlineImagesLoading,
       )
     }
     return { html: '', hadBlocked: false }

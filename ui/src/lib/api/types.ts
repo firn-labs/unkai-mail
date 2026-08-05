@@ -32,6 +32,19 @@ export type FidoStatusView = any
 export type FileEntry = any
 export type Folder = any
 export type GeocodeResult = any
+/**
+ * Backend `InlineImageView` (#471) — one `cid:`-referenceable image
+ * part with its bytes. Typed for real rather than aliased to `any`
+ * because the renderer matches on every field.
+ */
+export interface InlineImagePart {
+  partId: number
+  /** RFC 2392 Content-ID without angle brackets, when the part had one. */
+  contentId: string | null
+  filename: string
+  mime: string
+  base64: string
+}
 export type InviteSummary = any
 export type LinkVerdict = any
 export type LoginFlowInit = any

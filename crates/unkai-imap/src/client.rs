@@ -685,6 +685,39 @@ fn extract_signed_part_and_signature(
     }))
 }
 
+/// Unwrap an encrypted envelope — either stack — and hand back the
+/// decrypted inner MIME bytes.
+///
+/// Shared by every "read something out of an encrypted message"
+/// helper ([`extract_decrypted_attachment`], and #471's inline-image
+/// collector): they all need the same three-way decision — PGP/MIME
+/// envelope, S/MIME envelope, or neither — and only differ in what
+/// they do with the plaintext afterwards.
+///
+/// `Ok(None)` means "not an encrypted envelope": plain mail, or a
+/// clear-signed `multipart/signed` of either stack, whose parts the
+/// caller can already read without a bridge.
+pub(crate) fn decrypt_envelope_plaintext(
+    raw: &[u8],
+    bridge: &dyn CryptoBridge,
+) -> Result<Option<Vec<u8>>, UnkaiError> {
+    if let Some(envelope) = detect_pgp_mime_envelope(raw)? {
+        return Ok(match envelope {
+            PgpMimeEnvelope::Encrypted { ciphertext_armor } => {
+                Some(bridge.decrypt(&ciphertext_armor)?.plaintext)
+            }
+            PgpMimeEnvelope::Signed => None,
+        });
+    }
+    if let Some(envelope) = detect_smime_envelope(raw)? {
+        return Ok(match envelope {
+            SmimeEnvelope::Enveloped { cms_der } => Some(bridge.decrypt_smime(&cms_der)?.plaintext),
+            SmimeEnvelope::Signed => None,
+        });
+    }
+    Ok(None)
+}
+
 /// #341 follow-up to #57 — pull the bytes of a single attachment out
 /// of a PGP/MIME encrypted message, decrypting through the supplied
 /// bridge so the part_id indexes into the *decrypted inner MIME tree*
@@ -724,19 +757,7 @@ pub fn extract_decrypted_attachment(
     // stack this message uses.  `multipart/signed` (either stack) and
     // plain mail return `Ok(None)` so the caller drops to the regular
     // attachment path.
-    let plaintext = if let Some(envelope) = detect_pgp_mime_envelope(raw)? {
-        match envelope {
-            PgpMimeEnvelope::Encrypted { ciphertext_armor } => {
-                bridge.decrypt(&ciphertext_armor)?.plaintext
-            }
-            PgpMimeEnvelope::Signed => return Ok(None),
-        }
-    } else if let Some(envelope) = detect_smime_envelope(raw)? {
-        match envelope {
-            SmimeEnvelope::Enveloped { cms_der } => bridge.decrypt_smime(&cms_der)?.plaintext,
-            SmimeEnvelope::Signed => return Ok(None),
-        }
-    } else {
+    let Some(plaintext) = decrypt_envelope_plaintext(raw, bridge)? else {
         return Ok(None);
     };
     let parsed = MessageParser::default()
