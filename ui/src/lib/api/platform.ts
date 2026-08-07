@@ -12,12 +12,7 @@
  */
 
 import { convertFileSrc } from '@tauri-apps/api/core'
-import {
-  open as dialogOpen,
-  save as dialogSave,
-  type OpenDialogOptions,
-  type SaveDialogOptions,
-} from '@tauri-apps/plugin-dialog'
+import { open as dialogOpen, type OpenDialogOptions } from '@tauri-apps/plugin-dialog'
 import {
   isPermissionGranted,
   requestPermission,
@@ -31,13 +26,15 @@ import {
 } from '@tauri-apps/plugin-autostart'
 
 /* ── file dialogs ──────────────────────────────────────────────── */
+//
+// Open-picker only. There is deliberately no save-dialog wrapper:
+// every "save to disk" flow pairs the dialog with the file IO on
+// the Rust side (#477 — `save_attachment_as`,
+// `export_settings_bundle`), so the webview never handles a
+// writable filesystem path.
 
 export function openFileDialog(options?: OpenDialogOptions): Promise<string | string[] | null> {
   return dialogOpen(options)
-}
-
-export function saveFileDialog(options?: SaveDialogOptions): Promise<string | null> {
-  return dialogSave(options)
 }
 
 /* ── notifications (plugin path — the richer per-OS toast path is

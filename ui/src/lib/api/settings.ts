@@ -41,14 +41,28 @@ export function getSettingsSyncState(): Promise<SettingsSyncStateView> {
   return call('get_settings_sync_state')
 }
 
-export function buildSettingsBundle(args: {
-  localStorage: Record<string, unknown>
-}): Promise<string> {
-  return call('build_settings_bundle', args)
+/**
+ * #477 — the backend opens the native "Save As" dialog itself and
+ * writes the bundle; no filesystem path crosses the IPC boundary.
+ * Resolves to the chosen path, or `null` when the user cancels.
+ */
+export function exportSettingsBundle(args: {
+  localStorage: Record<string, string>
+}): Promise<string | null> {
+  return call('export_settings_bundle', args)
 }
 
-export function applySettingsBundle(args: { json: string }): Promise<Record<string, string>> {
-  return call('apply_settings_bundle', args)
+/**
+ * #477 — the backend opens the native file picker itself, reads the
+ * chosen bundle, and applies it. Resolves to the imported path plus
+ * the bundle's localStorage portion (for the caller to mirror into
+ * `localStorage`), or `null` when the user cancels.
+ */
+export function importSettingsBundle(): Promise<{
+  path: string
+  localStorage: Record<string, string>
+} | null> {
+  return call('import_settings_bundle')
 }
 
 export function ncProbeSettingsBundle(args: { ncId: string }): Promise<string | null> {

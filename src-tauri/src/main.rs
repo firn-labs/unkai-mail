@@ -29,6 +29,7 @@ use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, UriSchemeContext, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::RwLock;
 use tray::{TrayBaseIcon, decode_logo_png, logo_assets, logo_bytes_for};
 use unkai_commands as cmds;
@@ -487,6 +488,77 @@ fn show_main_window(app: &AppHandle) -> Result<(), UnkaiError> {
     Ok(())
 }
 
+// ── Native file dialogs (#477) ──────────────────────────────────
+//
+// The dialog and the file IO it gates both live on the Rust side,
+// so no raw filesystem path ever crosses the IPC boundary.  The
+// webview can only trigger purpose-specific flows (save this
+// attachment, export/import the settings bundle) — a compromised
+// webview gets "ask the user for a location", never arbitrary
+// file read/write.  The callback-based plugin API is bridged to
+// async via a oneshot channel; the `blocking_*` variants would
+// pin a runtime worker thread for as long as the dialog is open.
+
+/// Open the native "Save As" dialog. Resolves to `None` when the
+/// user cancels.
+async fn pick_save_path(
+    app: &AppHandle,
+    title: &str,
+    default_file_name: &str,
+    filter: Option<(&str, &[&str])>,
+) -> Result<Option<std::path::PathBuf>, UnkaiError> {
+    let mut builder = app
+        .dialog()
+        .file()
+        .set_title(title)
+        .set_file_name(default_file_name);
+    if let Some((name, extensions)) = filter {
+        builder = builder.add_filter(name, extensions);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    builder.save_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    resolve_picked_path(rx).await
+}
+
+/// Open the native single-file picker. Resolves to `None` when the
+/// user cancels.
+async fn pick_open_path(
+    app: &AppHandle,
+    title: &str,
+    filter: (&str, &[&str]),
+) -> Result<Option<std::path::PathBuf>, UnkaiError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title(title)
+        .add_filter(filter.0, filter.1)
+        .pick_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    resolve_picked_path(rx).await
+}
+
+/// Await a dialog callback and turn its `FilePath` into a plain
+/// `PathBuf`.  The `Url` variant only occurs on mobile platforms,
+/// so `into_path` can't fail on our desktop targets — but map the
+/// error anyway rather than unwrap.
+async fn resolve_picked_path(
+    rx: tokio::sync::oneshot::Receiver<Option<tauri_plugin_dialog::FilePath>>,
+) -> Result<Option<std::path::PathBuf>, UnkaiError> {
+    let picked = rx
+        .await
+        .map_err(|e| UnkaiError::Other(format!("file dialog closed unexpectedly: {e}")))?;
+    match picked {
+        Some(file_path) => file_path
+            .into_path()
+            .map(Some)
+            .map_err(|e| UnkaiError::Other(format!("unsupported file location: {e}"))),
+        None => Ok(None),
+    }
+}
+
 /// Custom URI scheme handler for `unkai-logo://localhost/<style>`.
 /// Used by the Settings picker to render preview tiles via plain
 /// `<img src="unkai-logo://localhost/storm">` — same trick the
@@ -764,16 +836,6 @@ async fn add_talk_participants(
 }
 
 #[tauri::command]
-async fn apply_settings_bundle(
-    json: String,
-    cache: State<'_, Cache>,
-    settings: State<'_, SharedSettings>,
-    mcp: State<'_, McpServer>,
-) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
-    cmds::settings::apply_settings_bundle(json, &cache, &settings, &mcp).await
-}
-
-#[tauri::command]
 async fn archive_message(
     account_id: String,
     folder: String,
@@ -791,14 +853,6 @@ async fn archive_messages(
     cache: State<'_, Cache>,
 ) -> Result<Vec<u32>, UnkaiError> {
     cmds::mail::archive_messages(account_id, folder, uids, &cache).await
-}
-
-#[tauri::command]
-async fn build_settings_bundle(
-    local_storage: std::collections::HashMap<String, String>,
-    cache: State<'_, Cache>,
-) -> Result<String, UnkaiError> {
-    cmds::settings::build_settings_bundle(local_storage, &cache).await
 }
 
 #[tauri::command]
@@ -1203,6 +1257,29 @@ async fn expunge_draft_after_send(
     cmds::compose::expunge_draft_after_send(account_id, folder, uid, &cache).await
 }
 
+/// #477 — "Download settings" with the save dialog on the Rust
+/// side. Returns the chosen path (for the "Saved to …" toast) or
+/// `None` when the user cancels.
+#[tauri::command]
+async fn export_settings_bundle(
+    local_storage: std::collections::HashMap<String, String>,
+    app: AppHandle,
+    cache: State<'_, Cache>,
+) -> Result<Option<String>, UnkaiError> {
+    let Some(path) = pick_save_path(
+        &app,
+        "Save Unkai settings backup",
+        "unkai-settings.json",
+        Some(("Unkai settings", &["json"])),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    cmds::settings::export_settings_bundle_to_path(&path, local_storage, &cache).await?;
+    Ok(Some(path.display().to_string()))
+}
+
 #[tauri::command]
 async fn fetch_envelopes(
     account_id: String,
@@ -1576,6 +1653,43 @@ async fn import_custom_theme(
     cmds::settings::import_custom_theme(ctx.ui.as_ref(), source_path, label, &settings).await
 }
 
+/// Result of a completed `import_settings_bundle`: where the bundle
+/// came from (for the "Imported from …" confirmation) plus its
+/// `localStorage` portion for the frontend to mirror into its own
+/// storage.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsBundleImport {
+    path: String,
+    local_storage: std::collections::HashMap<String, String>,
+}
+
+/// #477 — "Import settings" with the file picker on the Rust side.
+/// Returns `None` when the user cancels the picker.
+#[tauri::command]
+async fn import_settings_bundle(
+    app: AppHandle,
+    cache: State<'_, Cache>,
+    settings: State<'_, SharedSettings>,
+    mcp: State<'_, McpServer>,
+) -> Result<Option<SettingsBundleImport>, UnkaiError> {
+    let Some(path) = pick_open_path(
+        &app,
+        "Import Unkai settings backup",
+        ("Unkai settings", &["json"]),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let local_storage =
+        cmds::settings::import_settings_bundle_from_path(&path, &cache, &settings, &mcp).await?;
+    Ok(Some(SettingsBundleImport {
+        path: path.display().to_string(),
+        local_storage,
+    }))
+}
+
 #[tauri::command]
 fn is_event_in_calendar(uid: String, cache: State<'_, Cache>) -> Result<bool, UnkaiError> {
     cmds::calendar::is_event_in_calendar(uid, &cache)
@@ -1939,11 +2053,6 @@ fn put_attachment_preview(
 }
 
 #[tauri::command]
-async fn read_text_from_path(path: String) -> Result<String, UnkaiError> {
-    cmds::system::read_text_from_path(path).await
-}
-
-#[tauri::command]
 fn record_cancelled_invite(uid: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
     cmds::calendar::record_cancelled_invite(uid, &cache)
 }
@@ -2074,9 +2183,36 @@ async fn rsvp_existing_event(
     cmds::calendar::rsvp_existing_event(event_id, partstat, attendee_hint, &cache).await
 }
 
+/// #477 — attachment Download with the "Save As" dialog on the
+/// Rust side. Dialog first, so a cancel costs no network fetch;
+/// then the fetch + write happen entirely in the backend. Returns
+/// the chosen path, or `None` when the user cancels.
+#[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
 #[tauri::command]
-async fn save_bytes_to_path(path: String, data: Vec<u8>) -> Result<(), UnkaiError> {
-    cmds::system::save_bytes_to_path(path, data).await
+async fn save_attachment_as(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    part_id: u32,
+    file_name: String,
+    pgp_passphrase: Option<String>,
+    app: AppHandle,
+    cache: State<'_, Cache>,
+) -> Result<Option<String>, UnkaiError> {
+    let Some(path) = pick_save_path(&app, "Save attachment", &file_name, None).await? else {
+        return Ok(None);
+    };
+    cmds::system::save_attachment_to_path(
+        &path,
+        account_id,
+        folder,
+        uid,
+        part_id,
+        pgp_passphrase,
+        &cache,
+    )
+    .await?;
+    Ok(Some(path.display().to_string()))
 }
 
 #[tauri::command]
@@ -3247,7 +3383,7 @@ fn main() {
 
             // MCP server (#438).  One reconcile at boot brings the
             // listener up if `mcp_enabled` was saved on; afterwards
-            // the `update_app_settings` / `apply_settings_bundle`
+            // the `update_app_settings` / `import_settings_bundle`
             // commands re-reconcile on every settings change, so no
             // polling loop is needed.  Same clone-into-spawn shape
             // as the workers above.
@@ -3374,8 +3510,7 @@ fn main() {
             pdf_open_attachment,
             pdf_close_attachment,
             print_attachment,
-            save_bytes_to_path,
-            read_text_from_path,
+            save_attachment_as,
             sync_nextcloud_contacts,
             get_contacts_sync_status,
             get_calendars_sync_status,
@@ -3446,9 +3581,9 @@ fn main() {
             get_wipe_policy,
             set_wipe_policy,
             update_app_settings,
-            // Issue #168: settings backup & sync.
-            build_settings_bundle,
-            apply_settings_bundle,
+            // Issue #168: settings backup & sync (#477: dialog-paired).
+            export_settings_bundle,
+            import_settings_bundle,
             mcp_generate_token,
             mcp_revoke_token,
             mcp_token_status,

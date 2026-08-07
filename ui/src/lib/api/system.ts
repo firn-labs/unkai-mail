@@ -1,7 +1,7 @@
 /**
  * Desktop-shell integration: native notifications, window/app
  * lifecycle, external openers (Office/PDF/print/URL), mailto/file
- * handoff, fonts, and raw file IO helpers.
+ * handoff, fonts, and the dialog-paired attachment save (#477).
  *
  * Generated wrappers over the backend commands (#473) — one typed
  * function per `#[tauri::command]`. Argument keys mirror the Rust
@@ -94,10 +94,21 @@ export function pdfCloseAttachment(args: { ncId: string; tempPath: string }): Pr
   return call('pdf_close_attachment', args)
 }
 
-export function saveBytesToPath(args: { path: string; data: number[] }): Promise<void> {
-  return call('save_bytes_to_path', args)
-}
-
-export function readTextFromPath(args: { path: string }): Promise<string> {
-  return call('read_text_from_path', args)
+/**
+ * #477 — attachment Download with the "Save As" dialog and the
+ * fetch + write on the Rust side; no filesystem path (and no
+ * multi-MB byte array) crosses the IPC boundary. `pgpPassphrase`
+ * non-null routes through the decrypt-aware fetch (empty string =
+ * keychain auto-unlock). Resolves to the chosen path, or `null`
+ * when the user cancels.
+ */
+export function saveAttachmentAs(args: {
+  accountId: string
+  folder: string
+  uid: number
+  partId: number
+  fileName: string
+  pgpPassphrase?: string | null
+}): Promise<string | null> {
+  return call('save_attachment_as', args)
 }

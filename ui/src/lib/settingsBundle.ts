@@ -2,12 +2,14 @@
 //
 // Three roles:
 //   1. Pack & download — collect every localStorage pref Unkai
-//      cares about and ask the Rust side to splice it together
-//      with `AppSettings` + accounts into a single JSON blob,
-//      then save it via the OS file dialog.
-//   2. Upload & restore — pick a JSON file from disk, hand it
-//      to the Rust side which writes everything back, then mirror
-//      the bundle's `localStorage` portion into the live storage.
+//      cares about and hand it to the Rust side, which splices it
+//      together with `AppSettings` + accounts, opens the native
+//      save dialog itself, and writes the JSON blob (#477 — no
+//      filesystem path crosses the IPC boundary).
+//   2. Upload & restore — the Rust side opens the file picker,
+//      reads the chosen JSON, and writes everything back; we then
+//      mirror the bundle's `localStorage` portion into the live
+//      storage.
 //   3. Notify — every settings UI mutation calls
 //      `notifySettingsChanged()` to ping the auto-sync worker so
 //      it can debounce + push to the configured Nextcloud.
@@ -104,54 +106,28 @@ export async function notifySettingsChanged(): Promise<void> {
   }
 }
 
-/** Build a bundle JSON string from the live state. */
-export async function packBundle(): Promise<string> {
-  return api.settings.buildSettingsBundle({
-    localStorage: collectLocalStorage(),
-  })
-}
-
 /**
- * Save the live settings bundle to a path the user picks.
- * Returns the chosen path (so the UI can show "Saved to …") or
- * `null` if the user cancelled the save dialog.
+ * Save the live settings bundle to a path the user picks.  The
+ * dialog + write live on the Rust side (#477).  Returns the chosen
+ * path (so the UI can show "Saved to …") or `null` if the user
+ * cancelled the save dialog.
  */
 export async function downloadBundle(): Promise<string | null> {
-  const path = await api.platform.saveFileDialog({
-    title: 'Save Unkai settings backup',
-    defaultPath: 'unkai-settings.json',
-    filters: [{ name: 'Unkai settings', extensions: ['json'] }],
-  })
-  if (!path) return null
-  const json = await packBundle()
-  // Reuse the existing `save_bytes_to_path` command so we don't
-  // have to add the filesystem plugin to `package.json` for one
-  // text write.  TextEncoder gives us a Uint8Array which Tauri
-  // serialises as the `Vec<u8>` the Rust side expects.
-  const bytes = new TextEncoder().encode(json)
-  await api.system.saveBytesToPath({ path, data: Array.from(bytes) })
-  return path
+  return api.settings.exportSettingsBundle({ localStorage: collectLocalStorage() })
 }
 
 /**
- * Open a file picker, read the chosen JSON, hand it to the
- * Rust side, and apply the bundle's `localStorage` portion
- * locally.  Returns `null` if the user cancelled, otherwise the
- * path that was imported.  Throws if the file doesn't parse or
+ * Restore a bundle from disk.  The file picker + read + apply live
+ * on the Rust side (#477); we mirror the bundle's `localStorage`
+ * portion locally.  Returns `null` if the user cancelled, otherwise
+ * the path that was imported.  Throws if the file doesn't parse or
  * the bundle's schema version is too new.
  */
 export async function uploadBundle(): Promise<string | null> {
-  const picked = await api.platform.openFileDialog({
-    title: 'Import Unkai settings backup',
-    multiple: false,
-    filters: [{ name: 'Unkai settings', extensions: ['json'] }],
-  })
-  if (!picked || Array.isArray(picked)) return null
-  const path = typeof picked === 'string' ? picked : (picked as { path: string }).path
-  const json = await api.system.readTextFromPath({ path })
-  const localStorageMap = await api.settings.applySettingsBundle({ json })
-  applyLocalStorage(localStorageMap)
-  return path
+  const imported = await api.settings.importSettingsBundle()
+  if (!imported) return null
+  applyLocalStorage(imported.localStorage)
+  return imported.path
 }
 
 /** Live view of the auto-sync state for the Settings UI. */

@@ -6,6 +6,7 @@
 use serde::Serialize;
 use unkai_core::UnkaiError;
 use unkai_core::models::NextcloudAccount;
+use unkai_store::Cache;
 use unkai_store::credentials;
 
 use crate::state::SystemFontsCache;
@@ -21,30 +22,47 @@ pub fn open_url(url: String) -> Result<(), UnkaiError> {
     open::that(&url).map_err(|e| UnkaiError::Other(format!("failed to open '{url}': {e}")))
 }
 
-/// Write raw bytes to a local file.
+/// Fetch an attachment's bytes and write them to `path`.
 ///
-/// Used by the attachment Download flow: the frontend opens a native
-/// "Save As" dialog (via `tauri-plugin-dialog`), the user picks a
-/// destination, and the chosen absolute path + the attachment bytes
-/// come back here. We use `std::fs::write` which truncates any file
-/// already at that path — the native save dialog already asked the
-/// user about overwrites, so we don't need a second confirmation.
-pub async fn save_bytes_to_path(path: String, data: Vec<u8>) -> Result<(), UnkaiError> {
-    // `write` is synchronous and the payload is typically a few MB — the
-    // Tauri command runtime already runs us on a worker thread, so we
-    // don't need to spawn_blocking.
-    std::fs::write(&path, &data)
-        .map_err(|e| UnkaiError::Other(format!("Failed to write {path}: {e}")))
-}
-
-/// Read a small text file (a settings bundle, typically ~kilobytes)
-/// from disk.  Used by the "Import settings" flow (#168): the
-/// frontend opens a file picker via `plugin-dialog`, gets back an
-/// absolute path, and hands it here for the actual read so we
-/// don't need a separate filesystem plugin in `package.json`.
-pub async fn read_text_from_path(path: String) -> Result<String, UnkaiError> {
-    std::fs::read_to_string(&path)
-        .map_err(|e| UnkaiError::Other(format!("Failed to read {path}: {e}")))
+/// #477 — `path` comes from a native "Save As" dialog opened by the
+/// desktop shell, never from the webview, so no raw filesystem path
+/// crosses the IPC boundary.  The fetch also happens here rather
+/// than in the frontend: a cancelled dialog costs no network fetch,
+/// and the (potentially multi-MB) payload doesn't ride through IPC
+/// serialisation twice.
+///
+/// `pgp_passphrase` selects the fetch path: `Some` routes through
+/// the decrypt-aware fetch (empty string = the account's keychain
+/// "Unlock automatically" entry), `None` is the plain fetch.
+///
+/// `std::fs::write` truncates any file already at that path — the
+/// native save dialog already asked the user about overwrites, so
+/// we don't need a second confirmation.
+pub async fn save_attachment_to_path(
+    path: &std::path::Path,
+    account_id: String,
+    folder: String,
+    uid: u32,
+    part_id: u32,
+    pgp_passphrase: Option<String>,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let data = match pgp_passphrase {
+        Some(passphrase) => {
+            crate::crypto::download_decrypted_attachment(
+                account_id, folder, uid, part_id, passphrase, cache,
+            )
+            .await?
+        }
+        None => {
+            crate::mail::download_email_attachment(account_id, folder, uid, part_id, cache).await?
+        }
+    };
+    // `write` is synchronous and the payload is typically a few MB —
+    // the Tauri command runtime already runs us on a worker thread,
+    // so we don't need to spawn_blocking.
+    std::fs::write(path, &data)
+        .map_err(|e| UnkaiError::Other(format!("Failed to write {}: {e}", path.display())))
 }
 
 // ── Office viewer (issue #65) ────────────────────────────────
