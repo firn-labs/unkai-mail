@@ -204,6 +204,15 @@ Incoming mail puts images *in* the body by attaching them with a Content-ID and 
 - **Frontend** — `ui/src/lib/inlineImages.ts` owns the matching rules (normalise the cid, match by Content-ID then by filename) and the DOM rewrite; both readers (`MailView`, `StandaloneMailFile`) call it, and the object URLs it builds are revoked when the message closes. Match logic goes in that module, not in a component, so it stays unit-tested.
 - **No "Show images" gate.** Inline parts ride inside the message, so rendering them fetches nothing from the network and leaks no read receipt. The remote-image blocker deliberately skips `cid:` — only `http(s)` sources need consent.
 
+### Mail-body text contrast on the theme background — (#472)
+
+The reader's "use the app's theme" mode (the non-white-canvas option, `mail_html_white_background = false`) renders the body straight on the theme canvas — near-black in dark mode. Senders write inline colours assuming a white page, so `ui/src/lib/emailContrast.ts` re-tints the ones that would be unreadable:
+
+- **Only failing colours change.** The pass walks the sanitised body tracking the *effective* (background, inherited-text) pair — the app canvas, or any background the email brings along (`background-color` inline style or legacy `bgcolor=`). A colour below 4.5:1 WCAG contrast against what's actually behind it gets its lightness walked toward the readable pole, hue and saturation kept (dark navy link → light blue, not white). Colours that already clear the floor, and all backgrounds, stay exactly as the sender wrote them. A white table cell keeps its dark text; a white cell *relying* on client-default black text gets an explicit dark colour stamped so the theme's near-white inherited text doesn't vanish on it.
+- **Colour math is pure and unit-tested** (`emailContrast.test.ts`, node-only — no DOM); only `ensureReadableEmailText` touches elements. It runs as the last pass in MailView's `processEmailHtml`, and never in white-canvas mode.
+- **Theme colours are oklch**, so `getComputedStyle` strings can't be hand-parsed — MailView resolves the canvas + base text colour (and any exotic email colour syntax) by painting onto a 1×1 canvas probe and reading the pixel back.
+- **Live theme flips re-tint**: a MutationObserver on `<html>`'s `data-theme`/`data-mode` bumps a version counter the `processedHtml` derived reads, so switching light/dark with a message open re-runs the pass against the new canvas.
+
 ## Development Guidelines
 
 - Write clear, well-documented code — the team is learning as they build
