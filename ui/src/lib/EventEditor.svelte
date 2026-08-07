@@ -43,6 +43,7 @@
   import EventPlanner from './EventPlanner.svelte'
   import LocationField from './LocationField.svelte'
   import MapPreview from './MapPreview.svelte'
+  import { linkify } from './linkify'
   import { m } from '../paraglide/messages'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
@@ -213,6 +214,21 @@
   let summary = $state(event?.summary ?? draft?.summary ?? '')
   // svelte-ignore state_referenced_locally
   let description = $state(event?.description ?? draft?.description ?? '')
+  /** Clickable-links-in-descriptions (#474).  When the description
+   *  has text and isn't being edited, the form shows a linkified
+   *  read view instead of the textarea; clicking the view (or
+   *  pressing Enter on it) swaps the textarea back in.  Starts
+   *  `false` so a description-less event opens straight on the
+   *  empty textarea without an extra click. */
+  let editingDescription = $state(false)
+  const descriptionSegments = $derived(linkify(description))
+  /** Svelte action: focus the textarea when it mounts because the
+   *  user clicked the read view — but not on the initial mount of
+   *  an empty-description form, where stealing focus from the
+   *  title field would be hostile. */
+  function focusDescription(node: HTMLTextAreaElement) {
+    if (editingDescription) node.focus()
+  }
   // svelte-ignore state_referenced_locally
   let location = $state(event?.location ?? draft?.location ?? '')
   // GEO lat/lon (#280) — stamped by LocationField when the user
@@ -1627,8 +1643,13 @@
          Split the scroll container (outer div, never inert) from
          the inert wrapper (inner div) so the scrollbar drag —
          which registers as a click on the scroll container — keeps
-         working even when the form's contents are locked. -->
-    <div class="flex-1 overflow-y-auto p-5">
+         working even when the form's contents are locked.
+         The description row (#474) sits *between* two inert
+         wrappers rather than inside one: its linkified URLs must
+         stay clickable exactly here — an invited event on a
+         read-only calendar is where the user reaches for the
+         meeting link. -->
+    <div class="flex-1 overflow-y-auto p-5 space-y-3">
       <div
         inert={mode === 'edit' && currentCalendarReadOnly}
         class="space-y-3"
@@ -1864,19 +1885,72 @@
           caption={location}
         />
       {/if}
-
-      <!-- Row 6 — Description.  Tall by default — the mockup
-           shows it occupying the bulk of the form's middle. -->
-      <div>
-        <textarea
-          id="event-description"
-          class="textarea w-full px-3 py-2 text-sm rounded-lg min-h-[140px]"
-          bind:value={description}
-          placeholder="Description"
-          aria-label="Description"
-        ></textarea>
       </div>
 
+      <!-- Row 6 — Description.  Tall by default — the mockup
+           shows it occupying the bulk of the form's middle.
+           When it holds text and isn't being edited it renders as
+           a read view with `http(s)://` URLs linkified (#474) —
+           click the view (or press Enter on it) to swap the
+           textarea back in.  Deliberately outside the read-only
+           `inert` wrappers so those links stay clickable on
+           events the user can't edit; the textarea fallback
+           re-applies `inert` itself for that case. -->
+      {#snippet descriptionLinks()}
+        {#each descriptionSegments as seg, i (i)}
+          {#if seg.kind === 'link'}
+            <a
+              class="text-primary-500 hover:underline break-all"
+              href={seg.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              onclick={(e) => e.stopPropagation()}
+            >{seg.text}</a>
+          {:else}{seg.text}{/if}
+        {/each}
+      {/snippet}
+      <div>
+        {#if description.trim() && (mode === 'edit' && currentCalendarReadOnly)}
+          <div
+            id="event-description"
+            class="textarea w-full px-3 py-2 text-sm rounded-lg min-h-[140px] whitespace-pre-wrap break-words"
+            aria-label={m.event_editor_description_placeholder()}
+          >{@render descriptionLinks()}</div>
+        {:else if description.trim() && !editingDescription}
+          <div
+            id="event-description"
+            class="textarea w-full px-3 py-2 text-sm rounded-lg min-h-[140px] whitespace-pre-wrap break-words cursor-text text-left"
+            role="button"
+            tabindex="0"
+            aria-label={m.event_editor_description_edit_label()}
+            title={m.event_editor_description_edit_label()}
+            onclick={() => (editingDescription = true)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                editingDescription = true
+              }
+            }}
+          >{@render descriptionLinks()}</div>
+        {:else}
+          <div inert={mode === 'edit' && currentCalendarReadOnly}>
+            <textarea
+              id="event-description"
+              class="textarea w-full px-3 py-2 text-sm rounded-lg min-h-[140px]"
+              bind:value={description}
+              placeholder={m.event_editor_description_placeholder()}
+              aria-label={m.event_editor_description_placeholder()}
+              onblur={() => (editingDescription = false)}
+              use:focusDescription
+            ></textarea>
+          </div>
+        {/if}
+      </div>
+
+      <div
+        inert={mode === 'edit' && currentCalendarReadOnly}
+        class="space-y-3"
+      >
       <!-- Attendee section, split into two halves per the
            mockup (#128):
              1. Three full-width inputs at the top — one for

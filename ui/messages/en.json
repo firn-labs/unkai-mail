@@ -383,6 +383,8 @@
   "event_planner_source_unknown_title": "No availability data — assume free.",
   "event_planner_source_local_title": "From your own calendars (this person isn't a Nextcloud user, or their calendar isn't shared with you).",
   "event_editor_location_placeholder": "Location",
+  "event_editor_description_placeholder": "Description",
+  "event_editor_description_edit_label": "Edit the description",
   "location_field_loading": "Searching…",
   "map_preview_iframe_title": "Map preview",
   "map_preview_attribution": "© OpenStreetMap contributors",
