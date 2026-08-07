@@ -2099,19 +2099,19 @@
   /**
    * Download an attachment to a user-chosen location on disk.
    *
-   * Flow:
-   * 1. Open a native "Save As" dialog (prefilled with the attachment
-   *    filename) via `api.platform.saveFileDialog`.
-   * 2. If the user cancels, bail without fetching bytes — no point
-   *    pulling a multi-MB attachment just to throw it away.
-   * 3. Otherwise re-fetch the bytes through `download_email_attachment`
-   *    and write them to the chosen path via `save_bytes_to_path`.
+   * One backend call (#477): `save_attachment_as` opens the native
+   * "Save As" dialog (prefilled with the attachment filename),
+   * fetches the bytes only after the user confirms — a cancel costs
+   * no network fetch — and writes them to the chosen path.  The
+   * dialog + IO live entirely on the Rust side so no raw filesystem
+   * path crosses the IPC boundary.
    *
-   * Why not a synthetic `<a download>` like the earlier version? The
-   * WebView 2 / WebKit implementations that Tauri sits on top of don't
-   * reliably prompt for a save location — the file either lands in the
-   * system Downloads folder or the download fails silently. The native
-   * dialog is the only consistent way to let the user pick a path.
+   * Why not a synthetic `<a download>` like the earliest version?
+   * The WebView 2 / WebKit implementations that Tauri sits on top of
+   * don't reliably prompt for a save location — the file either
+   * lands in the system Downloads folder or the download fails
+   * silently. The native dialog is the only consistent way to let
+   * the user pick a path.
    */
   async function downloadAttachment(att: EmailAttachment) {
     if (!email) return
@@ -2120,24 +2120,26 @@
     // which serializes to null and fails Tauri's u32 validation.
     if (uid == null) return
 
-    // Ask for a save location first. If the user hits Cancel, `save`
-    // resolves to `null` and we stop — no network, no write, no noise.
-    let chosenPath: string | null = null
-    try {
-      chosenPath = await api.platform.saveFileDialog({
-        defaultPath: att.filename,
-        title: 'Save attachment',
-      })
-    } catch (e) {
-      error = formatError(e) || 'Failed to open save dialog'
+    // Same encryption gate `fetchAttachmentBytes` applies: on an
+    // encrypted message with neither a session passphrase nor a
+    // keychain auto-unlock entry in scope, surface the "re-decrypt
+    // first" hint instead of a doomed IPC round-trip.
+    const encrypted = emailNeedsDecryptedAttachmentFetch(email)
+    if (encrypted && !sessionPassphrase && !autoUnlockForAccount) {
+      error = m.mail_view_attachment_decrypt_required()
       return
     }
-    if (!chosenPath) return
 
     setBusy(att.part_id, true)
     try {
-      const bytes = await fetchAttachmentBytes(att)
-      await api.system.saveBytesToPath({ path: chosenPath, data: bytes })
+      await api.system.saveAttachmentAs({
+        accountId: email.account_id,
+        folder: email.folder,
+        uid,
+        partId: att.part_id,
+        fileName: att.filename,
+        pgpPassphrase: encrypted ? sessionPassphrase : null,
+      })
     } catch (e) {
       error = formatAttachmentFetchError(e, 'Failed to download attachment')
     } finally {

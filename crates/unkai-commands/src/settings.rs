@@ -657,9 +657,7 @@ pub const UNKAI_SETTINGS_FILE: &str = "/Unkai Mail/settings/settings.json";
 
 /// Return the live `AppSettings` + accounts + the frontend's
 /// supplied `local_storage` map as one JSON-serialisable bundle.
-/// This is the single entry point the frontend uses for both
-/// "Download settings" (writes the JSON via `dialog.save` on the
-/// frontend) and the manual "Sync now" path.
+/// Shared by the export path below and the auto-sync worker.
 pub async fn build_settings_bundle(
     local_storage: std::collections::HashMap<String, String>,
     cache: &Cache,
@@ -690,6 +688,40 @@ pub async fn apply_settings_bundle(
     // fresh token here.
     mcp.reconcile().await;
     Ok(local_storage)
+}
+
+/// Build the live settings bundle and write it to `path`.
+///
+/// #477 — the path comes from a native "Save As" dialog opened by
+/// the desktop shell, not from the webview: the frontend can only
+/// *trigger* "export my settings", it never chooses (or even sees)
+/// where the file lands, so no raw filesystem path crosses the IPC
+/// boundary.
+pub async fn export_settings_bundle_to_path(
+    path: &std::path::Path,
+    local_storage: std::collections::HashMap<String, String>,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let json = build_settings_bundle(local_storage, cache).await?;
+    std::fs::write(path, json)
+        .map_err(|e| UnkaiError::Other(format!("Failed to write {}: {e}", path.display())))
+}
+
+/// Read a bundle file and apply it.  Same shape as
+/// `export_settings_bundle_to_path`: the path comes from the
+/// shell's native open dialog (#477), never from the webview.
+/// Post-conditions match `apply_settings_bundle`; the returned
+/// `local_storage` map is for the frontend to mirror into its own
+/// storage.
+pub async fn import_settings_bundle_from_path(
+    path: &std::path::Path,
+    cache: &Cache,
+    settings: &SharedSettings,
+    mcp: &McpServer,
+) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| UnkaiError::Other(format!("Failed to read {}: {e}", path.display())))?;
+    apply_settings_bundle(json, cache, settings, mcp).await
 }
 
 /// Frontend-facing view of `settings_sync::SettingsSyncState`.
