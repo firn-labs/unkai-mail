@@ -39,6 +39,11 @@
     inlineImageBlob,
   } from './inlineImages'
   import { parseMailtoUrl } from './mailtoUrl'
+  import {
+    ensureReadableEmailText,
+    parseCssColor,
+    type Rgb,
+  } from './emailContrast'
   import { onDestroy } from 'svelte'
 
   interface EmailAttachment {
@@ -1043,6 +1048,78 @@
     whiteBackgroundOverride ?? forceWhiteBackground,
   )
 
+  // ── Theme-background contrast (#472) ─────────────────────────────────
+  //
+  // In "use the app's theme" mode the body sits on the theme canvas
+  // (near-black in dark mode), but senders write inline colours
+  // assuming a white page. `emailContrast.ts` re-tints the unreadable
+  // ones; the pieces here are the reactive glue and the pipeline can't
+  // live without a real DOM: knowing *which* canvas is active right
+  // now, and resolving colour syntaxes the pure parser doesn't know.
+
+  // Bumped whenever `theme.ts` rewrites `data-theme` / `data-mode` on
+  // <html>, so `processedHtml` re-derives (and re-tints) on a live
+  // theme or light/dark flip without reopening the message.
+  let themeVersion = $state(0)
+  $effect(() => {
+    const observer = new MutationObserver(() => {
+      themeVersion++
+    })
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'data-mode'],
+    })
+    return () => observer.disconnect()
+  })
+
+  // Canvas probe: paints a colour onto a 1×1 canvas and reads the
+  // sRGB pixel back. This is how we resolve anything the pure parser
+  // can't — most importantly the theme's own colours, which Skeleton
+  // defines in oklch() and `getComputedStyle` hands back unconverted.
+  let colorProbeCtx: CanvasRenderingContext2D | null | undefined
+  function resolveCssColorViaCanvas(value: string): Rgb | null {
+    try {
+      if (colorProbeCtx === undefined) {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1
+        canvas.height = 1
+        colorProbeCtx = canvas.getContext('2d', { willReadFrequently: true })
+      }
+      const ctx = colorProbeCtx
+      if (!ctx) return null
+      // An invalid colour leaves fillStyle unchanged — prime with a
+      // sentinel so "still the sentinel afterwards" means unparseable.
+      ctx.fillStyle = '#010203'
+      ctx.fillStyle = value
+      if (ctx.fillStyle === '#010203' && value.trim().toLowerCase() !== '#010203')
+        return null
+      ctx.clearRect(0, 0, 1, 1)
+      ctx.fillRect(0, 0, 1, 1)
+      const d = ctx.getImageData(0, 0, 1, 1).data
+      return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 }
+    } catch {
+      return null
+    }
+  }
+
+  // The (canvas, base-text) pair the contrast pass judges against —
+  // read live from <body>, which carries the theme's page background
+  // and base font colour. Fallbacks match app.css's surface-50/900
+  // ends so a probe failure degrades to sane values, not to skipping.
+  function themeBaseColors(): { background: Rgb; text: Rgb } {
+    const styles = getComputedStyle(document.body)
+    const dark = document.documentElement.dataset.mode === 'dark'
+    const resolve = (value: string): Rgb | null =>
+      parseCssColor(value) ?? resolveCssColorViaCanvas(value)
+    const background =
+      resolve(styles.backgroundColor) ??
+      (dark ? { r: 30, g: 30, b: 30, a: 1 } : { r: 250, g: 250, b: 250, a: 1 })
+    const text =
+      resolve(styles.color) ??
+      (dark ? { r: 237, g: 237, b: 237, a: 1 } : { r: 24, g: 24, b: 24, a: 1 })
+    return { background, text }
+  }
+
   // ── HTML sanitization + image blocking ───────────────────────────────
   //
   // DOMPurify strips scripts, event handlers, and any element that can
@@ -1608,6 +1685,7 @@
     showImages: boolean,
     inlineUrls: Record<string, string>,
     inlineLoading: boolean,
+    adjustContrast: boolean,
   ): { html: string; hadBlocked: boolean } {
     if (!html) return { html: '', hadBlocked: false }
     try {
@@ -1698,6 +1776,17 @@
       // the links inside the (still-in-DOM, just-hidden) block too.
       collapseQuotedBlocks(doc)
 
+      // Re-tint inline colours that would vanish into the app-theme
+      // canvas (#472) — "use mail theme" mode only; the white-canvas
+      // mode already supplies the page senders designed against.
+      // Last pass, so folded quotes get the same treatment.
+      if (adjustContrast) {
+        ensureReadableEmailText(doc.body, {
+          ...themeBaseColors(),
+          resolveColor: resolveCssColorViaCanvas,
+        })
+      }
+
       return { html: doc.body.innerHTML, hadBlocked }
     } catch (e) {
       console.warn('processEmailHtml failed:', e)
@@ -1705,14 +1794,20 @@
     }
   }
 
-  // Recompute whenever the email body, per-message toggle, or trust state changes.
+  // Recompute whenever the email body, per-message toggle, trust
+  // state, background mode, or active theme changes.
   let processedHtml = $derived.by(() => {
+    // Referenced so a live theme / light-dark flip re-runs the
+    // contrast pass against the new canvas (#472).
+    void themeVersion
+    const adjustContrast = !effectiveWhiteBackground
     if (email?.body_html) {
       return processEmailHtml(
         email.body_html,
         showImagesForMessage || trustedSender || autoLoadRemoteImages,
         inlineImageUrls,
         inlineImagesLoading,
+        adjustContrast,
       )
     }
     // Plain-text-only message — synthesize a minimal HTML
@@ -1730,6 +1825,7 @@
         showImagesForMessage || trustedSender || autoLoadRemoteImages,
         inlineImageUrls,
         inlineImagesLoading,
+        adjustContrast,
       )
     }
     return { html: '', hadBlocked: false }
