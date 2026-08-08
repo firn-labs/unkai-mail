@@ -142,7 +142,7 @@ jobs:
       # built installer as an asset.  Notes come from GitHub's
       # auto-generated changelog (categories in .github/release.yml).
       - name: Build Tauri app + publish to Release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
