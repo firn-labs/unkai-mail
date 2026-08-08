@@ -433,6 +433,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4314,7 +4320,7 @@ dependencies = [
  "aes-gcm",
  "aes-kw",
  "argon2",
- "base64 0.22.1",
+ "base64 0.21.7",
  "bitfields",
  "block-padding",
  "blowfish",
@@ -7338,7 +7344,7 @@ dependencies = [
 name = "unkai-app"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dirs 6.0.0",
  "font-kit",
@@ -7401,7 +7407,7 @@ dependencies = [
 name = "unkai-carddav"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "ical",
  "quick-xml 0.41.0",
  "reqwest 0.12.28",
@@ -7416,7 +7422,7 @@ dependencies = [
 name = "unkai-commands"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dirs 6.0.0",
  "font-kit",
@@ -7495,7 +7501,7 @@ name = "unkai-imap"
 version = "0.2.0"
 dependencies = [
  "async-imap",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "futures",
  "mail-parser",
@@ -7531,7 +7537,7 @@ name = "unkai-mcp"
 version = "0.2.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "futures",
  "getrandom 0.4.3",
@@ -7574,7 +7580,7 @@ dependencies = [
 name = "unkai-smtp"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "lettre",
  "mail-parser",
@@ -7593,7 +7599,7 @@ name = "unkai-store"
 version = "0.2.0"
 dependencies = [
  "aes-gcm",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dirs 6.0.0",
  "getrandom 0.4.3",
