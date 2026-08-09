@@ -20,6 +20,7 @@
    * parent (Compose) can read it at send time.
    */
 
+  import { anchorRect, layoutViewport, visualDeltaToLayout, visualToLayoutRatio } from './coords'
   import { onDestroy } from 'svelte'
   import { createEditor, EditorContent } from 'svelte-tiptap'
   import { Node as TiptapNode, mergeAttributes } from '@tiptap/core'
@@ -281,9 +282,13 @@
   function anchorBelow(rect: DOMRect | null | undefined): PickerPosition {
     if (!rect) return { left: 8, top: 8 }
     const gap = 4
+    // Tiptap hands us a visual-space DOMRect — convert into the
+    // fixed-position (layout) space the popup is styled in.
+    const ratio = visualToLayoutRatio()
+    const vp = layoutViewport()
     return {
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - 280)),
-      top: rect.bottom + gap,
+      left: Math.max(8, Math.min(rect.left * ratio, vp.width - 280)),
+      top: rect.bottom * ratio + gap,
     }
   }
 
@@ -523,7 +528,11 @@
               const startWidth = img.offsetWidth || img.naturalWidth || 200
               let latestWidth = startWidth
               const onMove = (ev: PointerEvent) => {
-                latestWidth = Math.max(50, startWidth + ev.clientX - startX)
+                // Delta in layout pixels — the width attribute is
+                // layout-space, so a raw client-coordinate delta
+                // would out- or under-run the cursor while the
+                // UI-scale zoom (#191) is active.
+                latestWidth = Math.max(50, startWidth + visualDeltaToLayout(ev.clientX - startX))
                 img.style.width = `${latestWidth}px`
               }
               const onUp = () => {
@@ -1452,7 +1461,7 @@
    *  takes a Tiptap-suggestion DOMRect; this one reads from a
    *  click event's currentTarget. */
   function anchorPopover(e: MouseEvent): { x: number; y: number } {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const r = anchorRect(e.currentTarget as HTMLElement)
     return { x: r.left, y: r.bottom + 4 }
   }
 
@@ -1972,7 +1981,7 @@
           {#if showFontPicker}
             <div
               class="fixed z-60 mt-0 w-64 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1 flex flex-col"
-              style="left: {Math.min(fontPickerPos.x, window.innerWidth - 272)}px; top: {fontPickerPos.y}px;"
+              style="left: {Math.min(fontPickerPos.x, layoutViewport().width - 272)}px; top: {fontPickerPos.y}px;"
               role="menu"
               tabindex="-1"
               onclick={(e) => e.stopPropagation()}
@@ -2090,7 +2099,7 @@
               aria-label="Insert link"
               tabindex="-1"
               class="fixed z-60 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md p-2 flex items-center gap-2"
-              style="left: {Math.min(linkPopoverPos.x, window.innerWidth - 320)}px; top: {linkPopoverPos.y}px; width: 304px;"
+              style="left: {Math.min(linkPopoverPos.x, layoutViewport().width - 320)}px; top: {linkPopoverPos.y}px; width: 304px;"
               onclick={(e) => e.stopPropagation()}
               onmousedown={(e) => e.stopPropagation()}
               onkeydown={(e) => e.stopPropagation()}
@@ -2159,7 +2168,7 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="fixed z-60 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg shadow-lg"
-              style="left: {Math.min(tablePickerPos.x, window.innerWidth - 200)}px; top: {tablePickerPos.y}px;"
+              style="left: {Math.min(tablePickerPos.x, layoutViewport().width - 200)}px; top: {tablePickerPos.y}px;"
               onmouseleave={() => { tableHoverRows = 0; tableHoverCols = 0 }}
               onkeydown={(e) => e.key === 'Escape' && (showTablePicker = false)}
             >
@@ -2211,7 +2220,7 @@
           {#if showEmojiPicker}
             <div
               class="fixed z-60"
-              style="left: {Math.min(emojiPickerPos.x, window.innerWidth - 360)}px; top: {emojiPickerPos.y}px;"
+              style="left: {Math.min(emojiPickerPos.x, layoutViewport().width - 360)}px; top: {emojiPickerPos.y}px;"
               role="menu"
               tabindex="-1"
               onclick={(e) => e.stopPropagation()}

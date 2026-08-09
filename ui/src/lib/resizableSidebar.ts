@@ -28,6 +28,7 @@
 // don't have to be pixel-precise.  Hover and active states fade the
 // primary-500 accent in, matching the rest of the chrome.
 
+import { anchorRect, visualDeltaToLayout } from './coords'
 import { m } from '../paraglide/messages'
 
 const STORAGE_PREFIX = 'unkai.resize.'
@@ -166,7 +167,10 @@ export function resizableSidebar(
     state.handle.setPointerCapture(e.pointerId)
 
     const startX = e.clientX
-    const startWidth = el.getBoundingClientRect().width
+    // Layout-space width — `style.width` is a layout value, so
+    // measuring visually would inflate it by the UI-scale zoom
+    // (#191) and make the drag jump on the first move.
+    const startWidth = anchorRect(el).width
 
     // Lock cursor + selection globally so dragging across other
     // panes doesn't snap to a text-select cursor mid-drag.
@@ -176,11 +180,11 @@ export function resizableSidebar(
     document.body.style.userSelect = 'none'
 
     const onMove = (ev: PointerEvent) => {
-      const dx = ev.clientX - startX
+      const dx = visualDeltaToLayout(ev.clientX - startX)
       applyWidth(startWidth + dx)
     }
     const onUp = () => {
-      const finalWidth = el.getBoundingClientRect().width
+      const finalWidth = anchorRect(el).width
       writePersisted(state.options.key, finalWidth)
       teardown()
     }
@@ -207,7 +211,7 @@ export function resizableSidebar(
     update(next: ResizableSidebarOptions) {
       state.options = applyDefaults(next)
       // Re-clamp the current width to the (possibly new) bounds.
-      applyWidth(el.getBoundingClientRect().width)
+      applyWidth(anchorRect(el).width)
     },
     destroy() {
       state.cleanupDrag?.()

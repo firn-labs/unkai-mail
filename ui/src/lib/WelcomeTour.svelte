@@ -23,6 +23,7 @@
   // brightness without any compositing work.  The root div covers
   // the viewport and swallows pointer events, making the app inert
   // while the tour runs (same modality contract as our dialogs).
+  import { anchorRect, visualToLayoutRatio } from './coords'
   import { m } from '../paraglide/messages'
 
   interface Props {
@@ -84,7 +85,10 @@
     let bottom = -Infinity
     let found = false
     for (const el of els) {
-      const r = (el as HTMLElement).getBoundingClientRect()
+      // Layout-space rect: the spotlight div lives inside the
+      // zoomed root, so a raw visual-space rect would drift off
+      // the target under the UI-scale zoom (#191).
+      const r = anchorRect(el as HTMLElement)
       // display:none / unmounted-but-queried elements measure 0×0 —
       // they'd drag the union box to the viewport origin.
       if (r.width === 0 && r.height === 0) continue
@@ -130,12 +134,18 @@
   const cardPos = $derived.by(() => {
     if (!rect) return null
     const r = rect
+    // `winW`/`winH` are visual pixels (svelte:window bindings, kept
+    // raw so resizes stay reactive); the placement math runs in
+    // layout space alongside `rect` and the card's clientWidth.
+    const ratio = visualToLayoutRatio()
+    const vw = winW * ratio
+    const vh = winH * ratio
     let top: number
     let left: number
-    if (r.left + r.width + MARGIN + cardW <= winW) {
+    if (r.left + r.width + MARGIN + cardW <= vw) {
       left = r.left + r.width + MARGIN
       top = r.top
-    } else if (r.top + r.height + MARGIN + cardH <= winH) {
+    } else if (r.top + r.height + MARGIN + cardH <= vh) {
       left = r.left
       top = r.top + r.height + MARGIN
     } else if (r.top - MARGIN - cardH >= 0) {
@@ -145,8 +155,8 @@
       left = r.left - MARGIN - cardW
       top = r.top
     }
-    left = Math.min(Math.max(MARGIN, left), Math.max(MARGIN, winW - cardW - MARGIN))
-    top = Math.min(Math.max(MARGIN, top), Math.max(MARGIN, winH - cardH - MARGIN))
+    left = Math.min(Math.max(MARGIN, left), Math.max(MARGIN, vw - cardW - MARGIN))
+    top = Math.min(Math.max(MARGIN, top), Math.max(MARGIN, vh - cardH - MARGIN))
     return { top, left }
   })
 

@@ -32,6 +32,7 @@
 
   import * as api from './api'
   import type { UnlistenFn } from '@tauri-apps/api/event'
+  import { clampToViewport, cursorAnchor, pointerOffsetIn } from './coords'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
   import { m } from '../paraglide/messages'
@@ -270,7 +271,7 @@
     // Any existing edit loses focus when the menu opens on a
     // different row — cleaner than juggling priorities.
     renamingCalendarId = null
-    calendarContextMenu = { calendar, x: e.clientX, y: e.clientY }
+    calendarContextMenu = { calendar, ...clampToViewport(cursorAnchor(e), 200, 150) }
   }
 
   function closeCalendarContextMenu() {
@@ -1096,26 +1097,14 @@
     return Math.round(raw / 15) * 15
   }
 
-  /** Cursor offset inside the day column in the column's own
-      *layout* pixels — the space `PX_PER_MINUTE` positions events
-      in.  `clientY` and `getBoundingClientRect()` report *visual*
-      pixels, which diverge from layout pixels whenever the UI-scale
-      zoom (#191) is active; feeding the raw difference into
-      `pxToMinuteSnapped` made drags land above/below the cursor by
-      the zoom factor (#480).  Deriving the correction from the
-      element itself (layout height ÷ visual height) stays right on
-      every webview engine, whatever coordinate space it puts zoomed
-      client coordinates in. */
-  function columnLayoutY(ev: MouseEvent, el: HTMLElement): number {
-    const rect = el.getBoundingClientRect()
-    const ratio = rect.height > 0 ? el.offsetHeight / rect.height : 1
-    return (ev.clientY - rect.top) * ratio
-  }
-
   function onDayMouseDown(ev: MouseEvent, bucket: WeekBucket) {
     if (ev.button !== 0) return
     const target = ev.currentTarget as HTMLElement
-    const minute = pxToMinuteSnapped(columnLayoutY(ev, target))
+    // `pointerOffsetIn` converts the cursor into the column's own
+    // layout pixels — the space `PX_PER_MINUTE` positions events
+    // in — so drags stay under the cursor with the UI-scale zoom
+    // (#191) active (#480).
+    const minute = pxToMinuteSnapped(pointerOffsetIn(ev, target).y)
     // If the press lands inside an event block we still start a
     // drag — that lets the user sweep across an existing event
     // to create a new one in the same slot.  The event id is
@@ -1142,7 +1131,7 @@
     const pixelDelta = Math.abs(ev.clientY - drag.startClientY)
     drag = {
       ...drag,
-      currentMinute: pxToMinuteSnapped(columnLayoutY(ev, target)),
+      currentMinute: pxToMinuteSnapped(pointerOffsetIn(ev, target).y),
       hasMoved: drag.hasMoved || pixelDelta > CLICK_PIXEL_SLOP,
     }
   }
@@ -1815,7 +1804,7 @@
 {#if calendarContextMenu}
   <div
     class="fixed z-60 min-w-44 rounded-xl glass-float py-1 text-sm"
-    style="left: {Math.min(calendarContextMenu.x, window.innerWidth - 200)}px; top: {Math.min(calendarContextMenu.y, window.innerHeight - 150)}px;"
+    style="left: {calendarContextMenu.x}px; top: {calendarContextMenu.y}px;"
     role="menu"
     tabindex="-1"
     onmousedown={(e) => e.stopPropagation()}

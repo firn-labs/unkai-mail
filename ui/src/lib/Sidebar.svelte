@@ -19,6 +19,7 @@
    */
 
   import * as api from './api'
+  import { anchorRect, clampToViewport, cursorAnchor } from './coords'
   import { formatError } from './errors'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
@@ -384,7 +385,7 @@
     // fresh row should clear the noise.
     renamingFolder = null
     newFolderInput = null
-    contextMenu = { folder, x: e.clientX, y: e.clientY }
+    contextMenu = { folder, ...clampToViewport(cursorAnchor(e), 200, 150) }
   }
 
   /** Join a parent path with a child segment using the parent's
@@ -919,11 +920,11 @@
           aria-label="Folder actions"
           onclick={(e) => {
             e.stopPropagation()
-            const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+            const r = anchorRect(e.currentTarget as HTMLElement)
             // Reuse the same `contextMenu` state that the
             // right-click handler populates so both surfaces
             // share one menu component.
-            contextMenu = { folder, x: r.right + 4, y: r.top }
+            contextMenu = { folder, ...clampToViewport({ x: r.right + 4, y: r.top }, 200, 150) }
           }}
         >⋯</button>
       </div>
@@ -1171,7 +1172,7 @@
   {@const stdFolder = standardRank(contextMenu.folder) !== -1}
   <div
     class="fixed z-60 min-w-44 rounded-xl glass-float py-1 text-sm"
-    style="left: {Math.min(contextMenu.x, window.innerWidth - 200)}px; top: {Math.min(contextMenu.y, window.innerHeight - 150)}px;"
+    style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
     role="menu"
     tabindex="-1"
     onmousedown={(e) => e.stopPropagation()}

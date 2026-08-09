@@ -58,6 +58,7 @@
    * lose focus first and `pickSelected` would fire against stale
    * state.
    */
+  import { layoutViewport, visualToLayoutRatio } from './coords'
   import { onMount, tick } from 'svelte'
 
   interface Props {
@@ -95,18 +96,24 @@
   const POPUP_MIN_W = 320 // 20rem == min-w-80
   let resolved = $derived.by(() => {
     if (!visible) return { left: 0, top: 0 }
+    // `anchor` comes from CM6's `coordsAtPos` — visual-space, like
+    // a DOMRect.  Convert into the fixed-position (layout) space
+    // this popup is styled in before any placement math, or the
+    // popup drifts off the trigger char under the UI-scale zoom
+    // (#191).
+    const ratio = typeof document !== 'undefined' ? visualToLayoutRatio() : 1
+    const anchorTop = anchor.top * ratio
     // Default below the trigger char, nudged a hair so the row's
     // baseline aligns with the click target.
-    let top = anchor.bottom + 4
-    let left = anchor.left
-    const vh = typeof window !== 'undefined' ? window.innerHeight : 0
-    const vw = typeof window !== 'undefined' ? window.innerWidth : 0
-    if (vh && top + POPUP_MAX_H > vh && anchor.top - POPUP_MAX_H - 4 >= 0) {
+    let top = anchor.bottom * ratio + 4
+    let left = anchor.left * ratio
+    const vp = typeof window !== 'undefined' ? layoutViewport() : { width: 0, height: 0 }
+    if (vp.height && top + POPUP_MAX_H > vp.height && anchorTop - POPUP_MAX_H - 4 >= 0) {
       // Not enough room below — flip above.
-      top = anchor.top - POPUP_MAX_H - 4
+      top = anchorTop - POPUP_MAX_H - 4
     }
-    if (vw && left + POPUP_MIN_W > vw) {
-      left = Math.max(8, vw - POPUP_MIN_W - 8)
+    if (vp.width && left + POPUP_MIN_W > vp.width) {
+      left = Math.max(8, vp.width - POPUP_MIN_W - 8)
     }
     return { left, top }
   })

@@ -10,6 +10,7 @@
    */
 
   import * as api from './api'
+  import { anchorRect, cursorAnchor } from './coords'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
   import Avatar from './Avatar.svelte'
@@ -764,7 +765,7 @@
   }
 
   function openEmojiPickerFor(ml: MailingListView, anchor: HTMLElement) {
-    const r = anchor.getBoundingClientRect()
+    const r = anchorRect(anchor)
     emojiPickerTop = r.bottom + 4
     emojiPickerLeft = r.left
     emojiPickerFor = ml.id
@@ -1684,7 +1685,7 @@
               aria-label="Contact Group actions"
               onclick={(e) => {
                 e.stopPropagation()
-                const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                const r = anchorRect(e.currentTarget as HTMLElement)
                 menuTop = r.top
                 menuLeft = r.right + 6
                 openMenuFor = openMenuFor === `cat:${c.name}` ? null : `cat:${c.name}`
@@ -1748,8 +1749,9 @@
             oncontextmenu={(e) => {
               if (ml.source === 'team') return
               e.preventDefault()
-              menuTop = e.clientY
-              menuLeft = e.clientX
+              const p = cursorAnchor(e)
+              menuTop = p.y
+              menuLeft = p.x
               openMenuFor = `ml:${ml.id}`
             }}
           >
@@ -1807,7 +1809,7 @@
                 aria-label="Mailing list actions"
                 onclick={(e) => {
                   e.stopPropagation()
-                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                  const r = anchorRect(e.currentTarget as HTMLElement)
                   menuTop = r.top
                   menuLeft = r.right + 6
                   openMenuFor = openMenuFor === `ml:${ml.id}` ? null : `ml:${ml.id}`
