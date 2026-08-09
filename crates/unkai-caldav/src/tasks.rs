@@ -43,7 +43,9 @@ use unkai_core::models::{Task, TaskList, TrustedCert};
 use crate::client::{
     absolute_url, build, delete_resource, normalize_server_url, propfind, put_ics, report,
 };
-use crate::xml_util::{local_name, local_name_end, read_text_until, skip_subtree};
+use crate::xml_util::{
+    local_name, local_name_end, read_scalar_until, read_text_until, skip_subtree,
+};
 
 // ── Discovery ──────────────────────────────────────────────────────
 
@@ -116,7 +118,6 @@ fn parse_task_list_propfind(
     nc_id: &str,
 ) -> Result<Vec<TaskList>, UnkaiError> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut lists = Vec::new();
 
     loop {
@@ -162,7 +163,7 @@ fn parse_task_list_response(
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
                 "propstat" | "prop" | "status" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
                 "resourcetype" => loop {
                     match reader.read_event()? {
                         Event::Empty(e) | Event::Start(e) if local_name(&e) == "calendar" => {
@@ -225,8 +226,8 @@ fn parse_task_list_response(
                     }
                     read_only = Some(!has_write);
                 }
-                "displayname" => display_name = Some(read_text_until(reader, "displayname")?),
-                "calendar-color" => color = Some(read_text_until(reader, "calendar-color")?),
+                "displayname" => display_name = Some(read_scalar_until(reader, "displayname")?),
+                "calendar-color" => color = Some(read_scalar_until(reader, "calendar-color")?),
                 other => skip_subtree(reader, other)?,
             },
             Event::End(e) if local_name_end(&e) == "response" => break,
@@ -388,7 +389,6 @@ fn parse_sync_collection(
     server_url: &str,
 ) -> Result<SyncCollectionResult, quick_xml::Error> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut out = SyncCollectionResult::default();
 
     loop {
@@ -404,7 +404,7 @@ fn parse_sync_collection(
                     }
                 }
                 "sync-token" => {
-                    let token = read_text_until(&mut reader, "sync-token")?;
+                    let token = read_scalar_until(&mut reader, "sync-token")?;
                     if !token.is_empty() {
                         out.new_sync_token = Some(token);
                     }
@@ -429,9 +429,9 @@ fn parse_sync_response(
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
                 "propstat" | "prop" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
-                "status" => status = Some(read_text_until(reader, "status")?),
-                "getetag" => etag = Some(read_text_until(reader, "getetag")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
+                "status" => status = Some(read_scalar_until(reader, "status")?),
+                "getetag" => etag = Some(read_scalar_until(reader, "getetag")?),
                 other => skip_subtree(reader, other)?,
             },
             Event::End(end) if local_name_end(&end) == "response" => break,
@@ -493,7 +493,6 @@ fn parse_multiget(
     task_list_id: &str,
 ) -> Result<Vec<RawTask>, quick_xml::Error> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut out = Vec::new();
 
     loop {
@@ -523,8 +522,8 @@ fn parse_multiget_response(
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
                 "propstat" | "prop" | "status" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
-                "getetag" => etag = Some(read_text_until(reader, "getetag")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
+                "getetag" => etag = Some(read_scalar_until(reader, "getetag")?),
                 "calendar-data" => ics_raw = Some(read_text_until(reader, "calendar-data")?),
                 other => skip_subtree(reader, other)?,
             },

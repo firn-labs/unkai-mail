@@ -20,7 +20,7 @@ use unkai_core::UnkaiError;
 use unkai_core::models::TrustedCert;
 
 use crate::client::{absolute_url, build, build_no_redirect, normalize_server_url, propfind};
-use crate::xml_util::{local_name, read_text_until, skip_subtree};
+use crate::xml_util::{local_name, read_scalar_until, skip_subtree};
 
 /// One addressbook on the server.
 ///
@@ -284,7 +284,6 @@ fn origin_of(url: &str) -> Result<String, UnkaiError> {
 /// and `addressbook-home-set`, which both wrap a single href.
 fn extract_nested_href(xml: &str, prop: &str) -> Option<String> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut inside = false;
     loop {
         match reader.read_event() {
@@ -294,7 +293,7 @@ fn extract_nested_href(xml: &str, prop: &str) -> Option<String> {
                     inside = true;
                 } else if inside
                     && name == "href"
-                    && let Ok(text) = read_text_until(&mut reader, "href")
+                    && let Ok(text) = read_scalar_until(&mut reader, "href")
                 {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
@@ -314,7 +313,6 @@ fn extract_nested_href(xml: &str, prop: &str) -> Option<String> {
 /// addressbook ones into `Addressbook` records.
 fn parse_addressbook_list(xml: &str, server_url: &str) -> Result<Vec<Addressbook>, UnkaiError> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut books = Vec::new();
 
     loop {
@@ -367,7 +365,7 @@ fn parse_response(
             Event::Start(s) => match local_name(&s).as_str() {
                 // Transparent wrappers — descend without taking action.
                 "propstat" | "prop" | "status" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
                 "resourcetype" => {
                     // Walk the resourcetype subtree looking for an
                     // <addressbook/> child (any namespace prefix).
@@ -387,9 +385,9 @@ fn parse_response(
                         }
                     }
                 }
-                "displayname" => display_name = Some(read_text_until(reader, "displayname")?),
-                "getctag" => ctag = Some(read_text_until(reader, "getctag")?),
-                "sync-token" => sync_token = Some(read_text_until(reader, "sync-token")?),
+                "displayname" => display_name = Some(read_scalar_until(reader, "displayname")?),
+                "getctag" => ctag = Some(read_scalar_until(reader, "getctag")?),
+                "sync-token" => sync_token = Some(read_scalar_until(reader, "sync-token")?),
                 other => skip_subtree(reader, other)?,
             },
             Event::End(e) if local_name_end(&e) == "response" => break,

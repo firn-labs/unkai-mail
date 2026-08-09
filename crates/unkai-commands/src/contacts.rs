@@ -103,11 +103,33 @@ pub async fn sync_nextcloud_contacts(
     for book in books {
         // Prior token (if any) makes the REPORT incremental; missing
         // state means first sync and the CardDAV layer handles that.
-        let prev_token = cache
+        let mut prev_token = cache
             .get_addressbook_sync_state(&nc_id, &book.name)
             .ok()
             .flatten()
             .and_then(|s| s.sync_token);
+
+        // Self-heal a poisoned bookmark (#479): a stored sync token
+        // next to an *empty* book means some earlier sync persisted
+        // its token without its rows (e.g. every fetched body failed
+        // to parse). Incremental sync would then report "no changes"
+        // forever and the book could never fill. Dropping the token
+        // re-runs the full initial pull; for a genuinely empty book
+        // on the server that full pull is a no-op, so the reset is
+        // always safe.
+        if prev_token.is_some()
+            && cache
+                .count_contacts_in_addressbook(&nc_id, &book.name)
+                .unwrap_or(0)
+                == 0
+        {
+            tracing::warn!(
+                "Addressbook '{}' has a sync token but no cached contacts — \
+                 discarding the token and re-running a full sync",
+                book.name
+            );
+            prev_token = None;
+        }
 
         // Base for resolving hrefs in the sync response. For a
         // generic DAV source the typed server URL may carry a path

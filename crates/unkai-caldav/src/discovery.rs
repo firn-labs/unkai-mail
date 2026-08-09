@@ -29,7 +29,7 @@ use unkai_core::UnkaiError;
 use unkai_core::models::TrustedCert;
 
 use crate::client::{absolute_url, build, build_no_redirect, normalize_server_url, propfind};
-use crate::xml_util::{local_name, local_name_end, read_text_until, skip_subtree};
+use crate::xml_util::{local_name, local_name_end, read_scalar_until, skip_subtree};
 
 /// One calendar on the server.
 ///
@@ -283,7 +283,6 @@ fn origin_of(url: &str) -> Result<String, UnkaiError> {
 /// and `calendar-home-set`, which both wrap a single href.
 fn extract_nested_href(xml: &str, prop: &str) -> Option<String> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut inside = false;
     loop {
         match reader.read_event() {
@@ -293,7 +292,7 @@ fn extract_nested_href(xml: &str, prop: &str) -> Option<String> {
                     inside = true;
                 } else if inside
                     && name == "href"
-                    && let Ok(text) = read_text_until(&mut reader, "href")
+                    && let Ok(text) = read_scalar_until(&mut reader, "href")
                 {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
@@ -311,7 +310,6 @@ fn extract_nested_href(xml: &str, prop: &str) -> Option<String> {
 
 fn parse_calendar_list(xml: &str, server_url: &str) -> Result<Vec<Calendar>, UnkaiError> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut cals = Vec::new();
 
     loop {
@@ -365,7 +363,7 @@ fn parse_response(
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
                 "propstat" | "prop" | "status" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
                 "resourcetype" => {
                     // Walk the resourcetype subtree looking for a
                     // <calendar/> child. quick-xml surfaces both the
@@ -413,10 +411,10 @@ fn parse_response(
                     }
                     read_only = Some(!has_write);
                 }
-                "displayname" => display_name = Some(read_text_until(reader, "displayname")?),
-                "calendar-color" => color = Some(read_text_until(reader, "calendar-color")?),
-                "getctag" => ctag = Some(read_text_until(reader, "getctag")?),
-                "sync-token" => sync_token = Some(read_text_until(reader, "sync-token")?),
+                "displayname" => display_name = Some(read_scalar_until(reader, "displayname")?),
+                "calendar-color" => color = Some(read_scalar_until(reader, "calendar-color")?),
+                "getctag" => ctag = Some(read_scalar_until(reader, "getctag")?),
+                "sync-token" => sync_token = Some(read_scalar_until(reader, "sync-token")?),
                 other => skip_subtree(reader, other)?,
             },
             Event::End(e) if local_name_end(&e) == "response" => break,

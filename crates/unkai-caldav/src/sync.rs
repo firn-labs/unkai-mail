@@ -37,7 +37,9 @@ use unkai_core::models::TrustedCert;
 
 use crate::client::{absolute_url, build, normalize_server_url, report};
 use crate::ical::parse_ics;
-use crate::xml_util::{local_name, local_name_end, read_text_until, skip_subtree};
+use crate::xml_util::{
+    local_name, local_name_end, read_scalar_until, read_text_until, skip_subtree,
+};
 
 /// One calendar object resource on the server, plus the zero-or-more
 /// VEVENTs we parsed out of its iCalendar body.
@@ -164,7 +166,6 @@ fn parse_sync_collection(
     server_url: &str,
 ) -> Result<SyncCollectionResult, quick_xml::Error> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut out = SyncCollectionResult::default();
 
     loop {
@@ -182,7 +183,7 @@ fn parse_sync_collection(
                     }
                 }
                 "sync-token" => {
-                    let token = read_text_until(&mut reader, "sync-token")?;
+                    let token = read_scalar_until(&mut reader, "sync-token")?;
                     if !token.is_empty() {
                         out.new_sync_token = Some(token);
                     }
@@ -207,9 +208,9 @@ fn parse_sync_response(
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
                 "propstat" | "prop" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
-                "status" => status = Some(read_text_until(reader, "status")?),
-                "getetag" => etag = Some(read_text_until(reader, "getetag")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
+                "status" => status = Some(read_scalar_until(reader, "status")?),
+                "getetag" => etag = Some(read_scalar_until(reader, "getetag")?),
                 other => skip_subtree(reader, other)?,
             },
             Event::End(end) if local_name_end(&end) == "response" => break,
@@ -269,7 +270,6 @@ async fn fetch_events(
 
 fn parse_multiget(xml: &str, server_url: &str) -> Result<Vec<RawEvent>, quick_xml::Error> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut out = Vec::new();
 
     loop {
@@ -298,8 +298,8 @@ fn parse_multiget_response(
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
                 "propstat" | "prop" | "status" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
-                "getetag" => etag = Some(read_text_until(reader, "getetag")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
+                "getetag" => etag = Some(read_scalar_until(reader, "getetag")?),
                 "calendar-data" => ics_raw = Some(read_text_until(reader, "calendar-data")?),
                 other => skip_subtree(reader, other)?,
             },
@@ -401,5 +401,37 @@ END:VCALENDAR
         assert_eq!(e.events.len(), 1);
         assert_eq!(e.events[0].id, "e1@example.com");
         assert_eq!(e.events[0].summary, "Hello");
+    }
+
+    /// Regression for #479 — the shape sabre/Nextcloud actually emits:
+    /// no CDATA, compact XML, `&quot;` etags, and every CRLF of the
+    /// iCalendar body encoded as a `&#13;` character reference plus a
+    /// literal LF. quick-xml ≥0.37 delivers those references as
+    /// separate `GeneralRef` events; dropping them (plus reader-level
+    /// text trimming) used to strip every line break, so every fetched
+    /// event failed to parse while the sync token still advanced.
+    #[test]
+    fn parses_multiget_with_char_ref_line_endings() {
+        let xml = "<?xml version=\"1.0\"?>\n\
+            <d:multistatus xmlns:d=\"DAV:\" xmlns:s=\"http://sabredav.org/ns\" xmlns:cal=\"urn:ietf:params:xml:ns:caldav\">\
+            <d:response><d:href>/dav/cal/e9.ics</d:href>\
+            <d:propstat><d:prop><d:getetag>&quot;v9&quot;</d:getetag>\
+            <cal:calendar-data>BEGIN:VCALENDAR&#13;\nVERSION:2.0&#13;\nBEGIN:VEVENT&#13;\nUID:e9@example.com&#13;\nSUMMARY:Standup&#13;\nDTSTART:20260501T090000Z&#13;\nDTEND:20260501T091500Z&#13;\nEND:VEVENT&#13;\nEND:VCALENDAR&#13;\n</cal:calendar-data>\
+            </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>\
+            </d:multistatus>";
+        let out = parse_multiget(xml, "https://cloud.example.com").unwrap();
+        assert_eq!(
+            out.len(),
+            1,
+            "the event must survive entity-ref line endings"
+        );
+        let e = &out[0];
+        assert_eq!(
+            e.etag, "v9",
+            "etag quotes arrive as &quot; and must be stripped"
+        );
+        assert_eq!(e.events.len(), 1);
+        assert_eq!(e.events[0].id, "e9@example.com");
+        assert_eq!(e.events[0].summary, "Standup");
     }
 }
