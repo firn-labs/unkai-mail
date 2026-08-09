@@ -40,6 +40,7 @@
 <script lang="ts">
   import * as api from './api'
   import DateField from './DateField.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
 
@@ -225,11 +226,10 @@
       <label class="block text-xs text-surface-500 mb-1" for="nc-share-dialog-pw">
         Password (optional)
       </label>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
+      <PasswordInput
         id="nc-share-dialog-pw"
-        type="password"
-        class="input w-full text-sm px-2 py-1.5 rounded-lg mb-3"
+        class="mb-3"
+        inputClass="text-sm px-2 py-1.5 rounded-lg"
         placeholder="Leave blank for no password"
         bind:value={password}
         disabled={sharing}

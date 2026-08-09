@@ -40,6 +40,7 @@
   import { formatError } from './errors'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import Icon from './Icon.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import SearchInput from './SearchInput.svelte'
   import { m } from '../paraglide/messages'
 
@@ -628,9 +629,9 @@
             <span>{editing.has_password ? m.shares_edit_password_set_new() : m.shares_edit_password_set_first()}</span>
           </label>
           {#if editPasswordMode === 'replace'}
-            <input
-              type="password"
-              class="input w-full text-sm px-2 py-1.5 rounded-lg mt-1"
+            <PasswordInput
+              class="mt-1"
+              inputClass="text-sm px-2 py-1.5 rounded-lg"
               placeholder={m.shares_edit_password_placeholder()}
               bind:value={editPasswordValue}
               disabled={editing_busy}

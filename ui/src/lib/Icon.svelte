@@ -62,6 +62,8 @@
     // v9 — AI settings category (#439): the sparkles metaphor
     // most desktop apps use for AI surfaces.
     | 'ai'
+    // v10 — password reveal toggle (#481)
+    | 'eye' | 'eye-off'
 </script>
 
 <script lang="ts">
@@ -187,6 +189,9 @@
   import Close from './icons/Close.svelte'
   // v9
   import Ai from './icons/Ai.svelte'
+  // v10
+  import Eye from './icons/Eye.svelte'
+  import EyeOff from './icons/EyeOff.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -316,6 +321,8 @@
     'shield-image-blocked': ShieldImageBlocked,
     'close': Close,
     'ai': Ai,
+    'eye': Eye,
+    'eye-off': EyeOff,
   }
   const Cmp = $derived(map[name])
 </script>

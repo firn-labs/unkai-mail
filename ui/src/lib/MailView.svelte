@@ -17,6 +17,7 @@
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import Icon from './Icon.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import CryptoChips from './CryptoChips.svelte'
   import AttachmentThumb, { seedThumbFromBase64 } from './AttachmentThumb.svelte'
   import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
@@ -2568,13 +2569,12 @@
             passphrase to decrypt and view it.
           </p>
           <div class="flex items-center gap-2">
-            <input
-              type="password"
-              class="input text-sm px-2 py-1.5 rounded-lg flex-1"
+            <PasswordInput
+              class="flex-1"
+              inputClass="text-sm px-2 py-1.5 rounded-lg"
               placeholder="PGP passphrase"
               bind:value={decryptPassphrase}
               disabled={decrypting}
-              autocomplete="off"
               onkeydown={(e) => {
                 if (e.key === 'Enter' && decryptPassphrase) {
                   void runDecrypt()

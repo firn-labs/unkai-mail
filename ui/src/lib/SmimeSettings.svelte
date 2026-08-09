@@ -24,6 +24,7 @@
   import { m } from '../paraglide/messages'
   import * as api from './api'
   import Toggle from './Toggle.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import Icon from './Icon.svelte'
   import { formatError } from './errors'
 
@@ -327,15 +328,14 @@
 
             {#if unlockEnabling}
               <div class="mt-3 space-y-2">
-                <input
+                <PasswordInput
                   id="smime-unlock-pw-{account.id}"
-                  type="password"
-                  class="input flex-1 text-sm px-2 py-1 rounded-lg"
+                  class="flex-1"
+                  inputClass="text-sm px-2 py-1 rounded-lg"
                   placeholder={m.smime_unlock_auto_passphrase_placeholder()}
-                  aria-label={m.smime_unlock_auto_passphrase_label()}
+                  ariaLabel={m.smime_unlock_auto_passphrase_label()}
                   bind:value={unlockPassphrase}
                   disabled={unlockBusy}
-                  autocomplete="off"
                   onkeydown={(e) => {
                     if (e.key === 'Enter' && unlockPassphrase) {
                       e.preventDefault()
@@ -406,14 +406,12 @@
       <label class="block text-xs text-surface-500" for="smime-pw-{account.id}">
         {m.smime_passphrase_label()}
       </label>
-      <input
+      <PasswordInput
         id="smime-pw-{account.id}"
-        type="password"
-        class="input text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
+        inputClass="text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
         placeholder={m.smime_passphrase_placeholder()}
         bind:value={passphraseInput}
         disabled={busy}
-        autocomplete="off"
       />
       {#if errorMessage}
         <div class="text-xs text-error-500">{errorMessage}</div>

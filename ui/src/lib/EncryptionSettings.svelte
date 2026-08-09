@@ -26,6 +26,7 @@
   import { m } from '../paraglide/messages'
   import * as api from './api'
   import Toggle from './Toggle.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import Icon from './Icon.svelte'
   import { formatError } from './errors'
 
@@ -363,15 +364,14 @@
                      ("Passphrase for your PGP key") doubles as the
                      prompt while keeping the form compact.  Visible
                      input border carries the "type here" signal. -->
-                <input
+                <PasswordInput
                   id="pgp-unlock-pw-{account.id}"
-                  type="password"
-                  class="input flex-1 text-sm px-2 py-1 rounded-lg"
+                  class="flex-1"
+                  inputClass="text-sm px-2 py-1 rounded-lg"
                   placeholder={m.encryption_unlock_auto_passphrase_placeholder()}
-                  aria-label={m.encryption_unlock_auto_passphrase_label()}
+                  ariaLabel={m.encryption_unlock_auto_passphrase_label()}
                   bind:value={unlockPassphrase}
                   disabled={unlockBusy}
-                  autocomplete="off"
                   onkeydown={(e) => {
                     if (e.key === 'Enter' && unlockPassphrase) {
                       e.preventDefault()
@@ -430,14 +430,12 @@
       <label class="block text-xs text-surface-500" for="pgp-pw-{account.id}">
         {m.encryption_passphrase_label()}
       </label>
-      <input
+      <PasswordInput
         id="pgp-pw-{account.id}"
-        type="password"
-        class="input text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
+        inputClass="text-xs border-2 border-surface-400 dark:border-surface-500 focus:border-primary-500 dark:focus:border-primary-500"
         placeholder={m.encryption_passphrase_placeholder()}
         bind:value={passphraseInput}
         disabled={busy}
-        autocomplete="off"
       />
       {#if errorMessage}
         <div class="text-xs text-error-500">{errorMessage}</div>

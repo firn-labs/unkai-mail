@@ -26,6 +26,7 @@
     isWebAuthnAvailable,
   } from './webauthnPrf'
   import Toggle from './Toggle.svelte'
+  import PasswordInput from './PasswordInput.svelte'
 
   interface FidoCredential {
     kind: 'fido_prf' | 'passphrase'
@@ -510,17 +511,15 @@
             Linux until WebKitGTK ships the WebAuthn PRF extension.
           </p>
           <div class="space-y-2">
-            <input
-              type="password"
-              class="input w-full text-sm px-3 py-1.5 rounded-lg"
+            <PasswordInput
+              inputClass="text-sm px-3 py-1.5 rounded-lg"
               placeholder="Passphrase (8+ characters)"
               bind:value={passphraseValue}
               disabled={anyBusy}
               autocomplete="new-password"
             />
-            <input
-              type="password"
-              class="input w-full text-sm px-3 py-1.5 rounded-lg"
+            <PasswordInput
+              inputClass="text-sm px-3 py-1.5 rounded-lg"
               placeholder="Confirm passphrase"
               bind:value={passphraseConfirm}
               disabled={anyBusy}
