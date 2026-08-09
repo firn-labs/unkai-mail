@@ -23,6 +23,7 @@
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import { resizableSidebar } from './resizableSidebar'
+  import { buildFolderRows } from './folderTree'
   import { m } from '../paraglide/messages'
   import {
     UNIFIED_SENT_FOLDER,
@@ -792,17 +793,29 @@
       ...folders.filter((f) => standardRank(f) !== -1),
     ].sort((a, b) => standardRank(a) - standardRank(b)),
   )
-  const customFolders = $derived(
-    folders
-      .filter((f) => standardRank(f) === -1)
-      // `localeCompare` so non-ASCII folder names (Entwürfe, Übersicht…)
-      // sort the way the user's locale expects instead of by code point.
-      .sort((a, b) =>
-        displayName(a).localeCompare(displayName(b), undefined, {
-          sensitivity: 'base',
-          numeric: true,
-        }),
-      ),
+
+  /** Sibling order at every tree level. `localeCompare` so non-ASCII
+   *  folder names (Entwürfe, Übersicht…) sort the way the user's
+   *  locale expects instead of by code point. */
+  function compareFolders(a: Folder, b: Folder): number {
+    return displayName(a).localeCompare(displayName(b), undefined, {
+      sensitivity: 'base',
+      numeric: true,
+    })
+  }
+
+  /** The two render tiers, flattened depth-first so subfolders sit
+   *  directly under their parent and indent one step per level
+   *  (#478). Standard folders stay in canonical rank order; their
+   *  user subfolders (e.g. `INBOX/Work`) indent underneath them
+   *  rather than drifting into the alphabetical custom tier. */
+  const folderRows = $derived(
+    buildFolderRows(
+      folders,
+      standardFolders,
+      (f) => standardRank(f) !== -1,
+      compareFolders,
+    ),
   )
 </script>
 
@@ -825,7 +838,11 @@
        subtle header "+" for top-level creates and a right-click
        context menu on each row for subfolder / rename / delete. -->
 
-  {#snippet folderRow(folder: Folder)}
+  <!-- `depth` indents subfolder rows one icon-width per nesting
+       level (#478). The indent is padding, not margin, so the
+       hover / selected / drag-highlight fill still spans the full
+       row width and nested rows read as part of the same list. -->
+  {#snippet folderRow(folder: Folder, depth: number)}
     {#if renamingFolder === folder.name}
       <!-- Inline rename. `bind:this` + `autofocus` on the input
            is set from the `$effect` on `renamingFolder` below so
@@ -833,7 +850,10 @@
            "Rename" click settles. Escape bails, Enter commits,
            blur also commits (matches most file managers). -->
       {@const glyph = folderIcon(folder)}
-      <div class="flex items-center gap-2 px-3 py-1.5">
+      <div
+        class="flex items-center gap-2 pr-3 py-1.5"
+        style:padding-left={`${0.75 + depth * 1}rem`}
+      >
         {#if glyph.kind === 'icon'}
           <Icon name={glyph.name} size={16} />
         {:else}
@@ -858,12 +878,13 @@
       <div
         role="button"
         tabindex="0"
-        class="group w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors duration-150 ease-out
+        class="group w-full flex items-center gap-2 pr-3 py-2 rounded-lg text-sm cursor-pointer transition-colors duration-150 ease-out
           {selectedFolder === folder.name
             ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
             : dragOverFolder === folder.name
               ? 'bg-primary-500/20 ring-2 ring-primary-500'
               : 'hover:bg-primary-500/10'}"
+        style:padding-left={`${0.75 + depth * 1}rem`}
         onclick={() => onselectfolder(folder.name)}
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -1080,16 +1101,16 @@
     {:else if folders.length === 0}
       <p class="px-3 py-2 text-xs text-surface-500">No folders.</p>
     {:else}
-      {#each standardFolders as folder (folder.name)}
-        {@render folderRow(folder)}
+      {#each folderRows.standard as row (row.folder.name)}
+        {@render folderRow(row.folder, row.depth)}
       {/each}
 
-      {#if standardFolders.length > 0 && customFolders.length > 0}
+      {#if folderRows.standard.length > 0 && folderRows.custom.length > 0}
         <hr class="my-2 mx-2 border-surface-200 dark:border-surface-700" />
       {/if}
 
-      {#each customFolders as folder (folder.name)}
-        {@render folderRow(folder)}
+      {#each folderRows.custom as row (row.folder.name)}
+        {@render folderRow(row.folder, row.depth)}
       {/each}
 
       <!-- New-folder inline input. Appears at the bottom of the
