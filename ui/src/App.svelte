@@ -12,6 +12,7 @@
    */
 
   import * as api from './lib/api'
+  import { clampToViewport, cursorAnchor } from './lib/coords'
   import { isNextcloudSource } from './lib/ncSources'
   import type { UnlistenFn } from '@tauri-apps/api/event'
   import DOMPurify from 'dompurify'
@@ -456,7 +457,7 @@
       const customHandled = e.defaultPrevented
       e.preventDefault()
       if (customHandled) return
-      appContextMenu = { x: e.clientX, y: e.clientY }
+      appContextMenu = clampToViewport(cursorAnchor(e), 200, 150)
     }
     document.addEventListener('contextmenu', onCtx)
     return () => document.removeEventListener('contextmenu', onCtx)

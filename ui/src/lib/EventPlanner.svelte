@@ -25,6 +25,7 @@
    *     (externals), so what we receive is already aggregated.
    */
   import * as api from './api'
+  import { pointerOffsetIn, visualDeltaToLayout } from './coords'
   import { m } from '../paraglide/messages'
 
   interface EventAttendee {
@@ -207,8 +208,9 @@
 
   function gridClick(e: MouseEvent) {
     const grid = e.currentTarget as HTMLElement
-    const rect = grid.getBoundingClientRect()
-    const y = e.clientY - rect.top
+    // Layout-space offset so the picked slot stays under the
+    // cursor with the UI-scale zoom (#191) active (#480).
+    const y = pointerOffsetIn(e, grid).y
     // Snap to 15-minute increments for a forgiving click target.
     const minutesFromMidnight = Math.max(
       0,
@@ -233,12 +235,14 @@
     e.stopPropagation()
     e.preventDefault()
     const band = e.currentTarget as HTMLElement
-    const rect = band.getBoundingClientRect()
-    const offsetY = e.clientY - rect.top
+    // Layout-space offset/height: `RESIZE_EDGE_PX` is a layout
+    // constant, so a visual-space comparison would grow or shrink
+    // the grab edges with the UI-scale zoom (#191).
+    const offsetY = pointerOffsetIn(e, band).y
     let mode: 'move' | 'resize-start' | 'resize-end' = 'move'
     if (offsetY <= RESIZE_EDGE_PX) {
       mode = 'resize-start'
-    } else if (offsetY >= rect.height - RESIZE_EDGE_PX) {
+    } else if (offsetY >= band.offsetHeight - RESIZE_EDGE_PX) {
       mode = 'resize-end'
     }
     dragState = {
@@ -273,7 +277,8 @@
     const dayStart = stripTime(focusDay).getTime()
     const dayEnd = dayStart + 24 * 60 * 60 * 1000
     function onMove(ev: PointerEvent) {
-      const dy = ev.clientY - initial.startY
+      // Layout-space delta — `HOUR_PX` is a layout constant (#191).
+      const dy = visualDeltaToLayout(ev.clientY - initial.startY)
       // 60 minutes / HOUR_PX pixels → minutes-per-pixel.  Snap to
       // 15-minute increments so the band lands on the same grid
       // the click-to-relocate path uses.

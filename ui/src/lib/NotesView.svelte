@@ -31,6 +31,7 @@
    */
 
   import * as api from './api'
+  import { anchorRect, clampToViewport, cursorAnchor } from './coords'
   import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
@@ -479,8 +480,10 @@
   /** Open the folder action menu — used by both the three-dot
    *  trigger (positions to the right of the button) and the
    *  right-click handler (positions at the cursor). */
+  /** `x`/`y` are layout-space coordinates — callers convert via
+   *  `cursorAnchor` / `anchorRect` before handing them over. */
   function openFolderMenu(path: string, x: number, y: number) {
-    folderMenu = { path, x, y }
+    folderMenu = { path, ...clampToViewport({ x, y }, 200, 80) }
   }
 
   function startRemoveFolder(path: string) {
@@ -984,7 +987,8 @@
             aria-selected={isSelected}
             oncontextmenu={(e) => {
               e.preventDefault()
-              openFolderMenu(node.path, e.clientX, e.clientY)
+              const p = cursorAnchor(e)
+              openFolderMenu(node.path, p.x, p.y)
             }}
             ondragover={(e) => onFolderDragOver(e, node.path)}
             ondragleave={() => onFolderDragLeave(node.path)}
@@ -1027,7 +1031,7 @@
               aria-label="Folder actions"
               onclick={(e) => {
                 e.stopPropagation()
-                const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                const r = anchorRect(e.currentTarget as HTMLElement)
                 openFolderMenu(node.path, r.right + 4, r.top)
               }}
             >⋯</button>
@@ -1381,7 +1385,7 @@
 {#if folderMenu}
   <div
     class="fixed z-60 min-w-44 rounded-xl glass-float py-1 text-sm"
-    style="left: {Math.min(folderMenu.x, window.innerWidth - 200)}px; top: {Math.min(folderMenu.y, window.innerHeight - 80)}px;"
+    style="left: {folderMenu.x}px; top: {folderMenu.y}px;"
     role="menu"
     tabindex="-1"
     onmousedown={(e) => e.stopPropagation()}

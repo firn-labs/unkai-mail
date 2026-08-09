@@ -12,6 +12,7 @@
    */
 
   import * as api from './api'
+  import { anchorRect, clampToViewport, cursorAnchor } from './coords'
   import { formatError } from './errors'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
   import Avatar from './Avatar.svelte'
@@ -962,7 +963,7 @@
     // separate live DOM element pinned to the bottom-right
     // corner of the drag image (see `attachFloatingBadge`) and
     // stays at 100% opacity.
-    const rect = rowEl.getBoundingClientRect()
+    const rect = anchorRect(rowEl)
     const preview = buildRowDragImage(rowEl)
     const dragAnchor = 16 // matches the (16, 16) offset passed to setDragImage
     if (preview) {
@@ -976,7 +977,9 @@
    *  separately, see `attachFloatingBadge`. */
   function buildRowDragImage(rowEl: HTMLElement): HTMLElement | null {
     try {
-      const rect = rowEl.getBoundingClientRect()
+      // Layout-space width: the clone lives in the zoomed DOM, so
+      // sizing it in visual pixels would render it oversized.
+      const rect = anchorRect(rowEl)
       const wrapper = document.createElement('div')
       wrapper.style.position = 'fixed'
       wrapper.style.top = '-9999px'
@@ -1082,7 +1085,7 @@
     // bottom-right corner.  Falls back to a sensible default if
     // the layout query somehow returns 0 (it shouldn't, but the
     // pin should still produce a non-broken result).
-    const badgeRect = wrap.getBoundingClientRect()
+    const badgeRect = anchorRect(wrap)
     const badgeW = badgeRect.width || 56
     const badgeH = badgeRect.height || 22
 
@@ -1101,8 +1104,9 @@
       // the cursor leaves the window briefly; ignore those so
       // the badge doesn't snap to the corner.
       if (ev.clientX === 0 && ev.clientY === 0) return
-      const dragImageRight = ev.clientX + (rowWidth - dragAnchor)
-      const dragImageBottom = ev.clientY + (rowHeight - dragAnchor)
+      const cursor = cursorAnchor(ev)
+      const dragImageRight = cursor.x + (rowWidth - dragAnchor)
+      const dragImageBottom = cursor.y + (rowHeight - dragAnchor)
       floatingBadgeEl.style.left = `${dragImageRight - badgeW - inset}px`
       floatingBadgeEl.style.top = `${dragImageBottom - badgeH - inset}px`
     }
@@ -1543,7 +1547,7 @@
 
   function openContextMenu(e: MouseEvent, env: EmailEnvelope) {
     e.preventDefault()
-    contextMenu = { x: e.clientX, y: e.clientY, env }
+    contextMenu = { ...clampToViewport(cursorAnchor(e), 200, 150), env }
     // #415: fresh menu, fresh custom-reminder input.
     reminderCustomValue = ''
   }
