@@ -691,7 +691,6 @@ fn parse_multistatus(
     use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(body);
-    reader.config_mut().trim_text(true);
 
     // Prefix of the href we should treat as "our path", so we can
     // strip it and produce user-facing paths relative to the user root.
@@ -872,6 +871,12 @@ fn strip_prefix_lowercase(bytes: &[u8]) -> String {
     String::from_utf8_lossy(local).to_ascii_lowercase()
 }
 
+/// Every value read here is a scalar (href, displayname, size, type,
+/// date), so the accumulated text is trimmed on return. The
+/// `GeneralRef` arm matters even for scalars: quick-xml ≥0.37 emits
+/// entity/character references (`&amp;` in a "Tom &amp; Jerry" folder
+/// name) as separate events, and dropping them corrupts the value
+/// (#479).
 fn read_text_until(
     reader: &mut quick_xml::Reader<&[u8]>,
     start_local: &str,
@@ -882,10 +887,28 @@ fn read_text_until(
         match reader.read_event()? {
             Event::Text(t) => buf.push_str(&t.xml10_content().unwrap_or_default()),
             Event::CData(c) => buf.push_str(&String::from_utf8_lossy(&c)),
-            Event::End(e) if strip_prefix_lowercase(e.name().as_ref()) == start_local => {
-                return Ok(buf);
+            Event::GeneralRef(r) => {
+                if let Some(ch) = r.resolve_char_ref()? {
+                    buf.push(ch);
+                } else {
+                    match r.decode()?.as_ref() {
+                        "lt" => buf.push('<'),
+                        "gt" => buf.push('>'),
+                        "amp" => buf.push('&'),
+                        "apos" => buf.push('\''),
+                        "quot" => buf.push('"'),
+                        other => {
+                            buf.push('&');
+                            buf.push_str(other);
+                            buf.push(';');
+                        }
+                    }
+                }
             }
-            Event::Eof => return Ok(buf),
+            Event::End(e) if strip_prefix_lowercase(e.name().as_ref()) == start_local => {
+                return Ok(buf.trim().to_string());
+            }
+            Event::Eof => return Ok(buf.trim().to_string()),
             _ => {}
         }
     }

@@ -452,6 +452,26 @@ impl Cache {
         Ok(out)
     }
 
+    /// Number of contacts cached for one addressbook of a Nextcloud
+    /// account. Drives the poisoned-token self-heal in the sync
+    /// command (#479): a stored sync token alongside an empty book
+    /// means an earlier sync persisted its bookmark without its rows,
+    /// and only a full re-pull can recover.
+    pub fn count_contacts_in_addressbook(
+        &self,
+        nc_account_id: &str,
+        addressbook: &str,
+    ) -> Result<u32, CacheError> {
+        let conn = self.conn()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contacts
+             WHERE nextcloud_account_id = ?1 AND addressbook = ?2",
+            params![nc_account_id, addressbook],
+            |r| r.get(0),
+        )?;
+        Ok(n as u32)
+    }
+
     /// Number of contacts cached for a Nextcloud account — cheap to
     /// surface in the Settings UI alongside "Sync now".
     pub fn count_contacts(&self, nc_account_id: &str) -> Result<u32, CacheError> {
@@ -1121,6 +1141,47 @@ mod tests {
             member_uids: Vec::new(),
             categories: Vec::new(),
         }
+    }
+
+    #[test]
+    fn per_addressbook_count_scopes_to_the_book() {
+        let cache = open_test_cache();
+        cache
+            .apply_contact_delta(
+                "nc1",
+                "work",
+                None,
+                &[row("u1", "Alex Morgan", "alex@example.com")],
+                &[],
+                Some("tok-work"),
+                None,
+            )
+            .unwrap();
+        // A second book that stored its token but no rows — the #479
+        // poisoned-bookmark shape the sync command's self-heal detects.
+        cache
+            .apply_contact_delta("nc1", "private", None, &[], &[], Some("tok-priv"), None)
+            .unwrap();
+
+        assert_eq!(
+            cache.count_contacts_in_addressbook("nc1", "work").unwrap(),
+            1
+        );
+        assert_eq!(
+            cache
+                .count_contacts_in_addressbook("nc1", "private")
+                .unwrap(),
+            0
+        );
+        assert!(
+            cache
+                .get_addressbook_sync_state("nc1", "private")
+                .unwrap()
+                .unwrap()
+                .sync_token
+                .is_some(),
+            "the poisoned shape really is token-with-empty-book"
+        );
     }
 
     #[test]

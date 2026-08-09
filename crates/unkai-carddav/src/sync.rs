@@ -44,7 +44,7 @@ use unkai_core::models::TrustedCert;
 
 use crate::client::{absolute_url, build, normalize_server_url, report};
 use crate::vcard::{ParsedVcard, VcardAddress, VcardEmail, VcardPhone, parse_vcard};
-use crate::xml_util::{local_name, read_text_until, skip_subtree};
+use crate::xml_util::{local_name, read_scalar_until, read_text_until, skip_subtree};
 
 /// One contact resource as seen on the server, with all the bookkeeping
 /// the local cache needs: where it lives (`href`), what version it is
@@ -218,8 +218,10 @@ fn parse_sync_collection(
     xml: &str,
     server_url: &str,
 ) -> Result<SyncCollectionResult, quick_xml::Error> {
+    // No text trimming: with quick-xml ≥0.37 the fragments between
+    // entity references would each lose their edge whitespace (#479).
+    // Scalar values are trimmed individually via `read_scalar_until`.
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut out = SyncCollectionResult::default();
 
     loop {
@@ -239,7 +241,7 @@ fn parse_sync_collection(
                     }
                 }
                 "sync-token" => {
-                    let token = read_text_until(&mut reader, "sync-token")?;
+                    let token = read_scalar_until(&mut reader, "sync-token")?;
                     if !token.is_empty() {
                         out.new_sync_token = Some(token);
                     }
@@ -267,9 +269,9 @@ fn parse_sync_response(
             Event::Start(s) => match local_name(&s).as_str() {
                 // Transparent wrappers — descend, no state change.
                 "propstat" | "prop" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
-                "status" => status = Some(read_text_until(reader, "status")?),
-                "getetag" => etag = Some(read_text_until(reader, "getetag")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
+                "status" => status = Some(read_scalar_until(reader, "status")?),
+                "getetag" => etag = Some(read_scalar_until(reader, "getetag")?),
                 other => skip_subtree(reader, other)?,
             },
             Event::End(end) if end_local(&end) == "response" => break,
@@ -341,8 +343,9 @@ async fn fetch_vcards(
 }
 
 fn parse_multiget(xml: &str, server_url: &str) -> Result<Vec<RawContact>, quick_xml::Error> {
+    // No text trimming — `<address-data>` content is a raw vCard whose
+    // line breaks and folded-line leading spaces are data (#479).
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut out = Vec::new();
 
     loop {
@@ -371,8 +374,8 @@ fn parse_multiget_response(
         match reader.read_event()? {
             Event::Start(s) => match local_name(&s).as_str() {
                 "propstat" | "prop" | "status" => {}
-                "href" => href = Some(read_text_until(reader, "href")?),
-                "getetag" => etag = Some(read_text_until(reader, "getetag")?),
+                "href" => href = Some(read_scalar_until(reader, "href")?),
+                "getetag" => etag = Some(read_scalar_until(reader, "getetag")?),
                 "address-data" => vcard_raw = Some(read_text_until(reader, "address-data")?),
                 other => skip_subtree(reader, other)?,
             },
@@ -429,6 +432,89 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for #479 — the exact response shape sabre/Nextcloud
+    /// emits: compact XML (no pretty-printing), etags wrapped in
+    /// `&quot;` entities, and every CRLF line ending of the vCard body
+    /// encoded as a `&#13;` character reference followed by a literal
+    /// LF. quick-xml ≥0.37 delivers those references as separate
+    /// `GeneralRef` events; dropping them (plus reader-level text
+    /// trimming) used to strip every line break, making every vCard
+    /// unparseable — the sync then cached zero contacts while still
+    /// storing the sync token.
+    #[test]
+    fn parses_multiget_with_char_ref_line_endings() {
+        let xml = "<?xml version=\"1.0\"?>\n\
+            <d:multistatus xmlns:d=\"DAV:\" xmlns:s=\"http://sabredav.org/ns\" xmlns:card=\"urn:ietf:params:xml:ns:carddav\">\
+            <d:response><d:href>/remote.php/dav/addressbooks/users/alex/contacts/AAAA-1111.vcf</d:href>\
+            <d:propstat><d:prop><d:getetag>&quot;etag-1&quot;</d:getetag>\
+            <card:address-data>BEGIN:VCARD&#13;\nVERSION:3.0&#13;\nN:Morgan;Alex;;;&#13;\nFN:Alex Morgan&#13;\nEMAIL;type=INTERNET;type=WORK;type=pref:alex.morgan@example.com&#13;\nUID:aaaa-1111&#13;\nEND:VCARD&#13;\n</card:address-data>\
+            </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>\
+            </d:multistatus>";
+
+        let contacts = parse_multiget(xml, "https://cloud.example.com").unwrap();
+        assert_eq!(
+            contacts.len(),
+            1,
+            "the vCard must survive entity-ref line endings"
+        );
+        let c = &contacts[0];
+        assert_eq!(c.vcard_uid, "aaaa-1111");
+        assert_eq!(c.display_name, "Alex Morgan");
+        assert_eq!(c.emails.len(), 1);
+        assert_eq!(c.emails[0].value, "alex.morgan@example.com");
+        assert_eq!(
+            c.etag, "etag-1",
+            "etag quotes arrive as &quot; and must be stripped"
+        );
+        assert!(
+            c.vcard_raw.contains("BEGIN:VCARD\r\nVERSION:3.0"),
+            "raw vCard must keep real CRLF line endings, got: {:?}",
+            &c.vcard_raw[..40.min(c.vcard_raw.len())]
+        );
+    }
+
+    /// Folded vCard lines (RFC 6350 §3.2: CRLF + single space marks a
+    /// continuation) must survive extraction byte-for-byte — base64
+    /// `PHOTO`/`KEY` payloads span dozens of folded lines and any lost
+    /// continuation space corrupts them.
+    #[test]
+    fn multiget_preserves_folded_lines() {
+        let xml = "<?xml version=\"1.0\"?>\n\
+            <d:multistatus xmlns:d=\"DAV:\" xmlns:card=\"urn:ietf:params:xml:ns:carddav\">\
+            <d:response><d:href>/dav/ab/x.vcf</d:href>\
+            <d:propstat><d:prop><d:getetag>&quot;e&quot;</d:getetag>\
+            <card:address-data>BEGIN:VCARD&#13;\nVERSION:3.0&#13;\nFN:Jane Smith&#13;\nUID:x&#13;\nNOTE:first half&#13;\n second half&#13;\nEND:VCARD&#13;\n</card:address-data>\
+            </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>\
+            </d:multistatus>";
+
+        let contacts = parse_multiget(xml, "https://cloud.example.com").unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert!(
+            contacts[0].vcard_raw.contains("first half\r\n second half"),
+            "the continuation line's leading space must survive, got: {:?}",
+            contacts[0].vcard_raw
+        );
+    }
+
+    /// Same #479 shape for phase 1: compact sabre XML with `&quot;`
+    /// etags must still yield the changed hrefs and the sync token.
+    #[test]
+    fn parses_sync_collection_with_char_refs() {
+        let xml = "<?xml version=\"1.0\"?>\n\
+            <d:multistatus xmlns:d=\"DAV:\">\
+            <d:response><d:href>/dav/ab/c1.vcf</d:href>\
+            <d:propstat><d:prop><d:getetag>&quot;abc&quot;</d:getetag></d:prop>\
+            <d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>\
+            <d:sync-token>http://sabre.io/ns/sync/42</d:sync-token>\
+            </d:multistatus>";
+        let r = parse_sync_collection(xml, "https://cloud.example.com").unwrap();
+        assert_eq!(r.changed.len(), 1);
+        assert_eq!(
+            r.new_sync_token.as_deref(),
+            Some("http://sabre.io/ns/sync/42")
+        );
+    }
 
     #[test]
     fn parses_sync_collection_with_change_and_delete() {

@@ -1526,6 +1526,25 @@ const MIGRATIONS: &[&str] = &[
           AND b.to_addrs != '[]'
     );
     "#,
+    // ── One-time full DAV resync after the quick-xml body-corruption
+    //    fix (#479).
+    //
+    // quick-xml ≥0.37 emits entity/character references as separate
+    // `GeneralRef` events; our DAV text readers dropped them, so every
+    // vCard / iCalendar body fetched since that dependency bump lost
+    // all its line breaks, failed to parse, and was skipped — while
+    // the sync token still advanced. The affected upserts are
+    // unrecoverable locally (they were never cached), so clearing the
+    // sync tokens forces the next sync of each collection to run as a
+    // full initial pull with the fixed parser. Deletions were applied
+    // correctly all along (they ride on hrefs, not bodies), so the
+    // full re-upsert converges the cache exactly; a full pull of an
+    // in-sync collection is cheap and happens once.
+    r#"
+    UPDATE addressbook_sync_state SET sync_token = NULL, ctag = NULL;
+    UPDATE calendars              SET sync_token = NULL, ctag = NULL;
+    UPDATE task_lists             SET sync_token = NULL, ctag = NULL;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
