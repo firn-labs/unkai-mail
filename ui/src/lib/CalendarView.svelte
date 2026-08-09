@@ -1096,11 +1096,26 @@
     return Math.round(raw / 15) * 15
   }
 
+  /** Cursor offset inside the day column in the column's own
+      *layout* pixels — the space `PX_PER_MINUTE` positions events
+      in.  `clientY` and `getBoundingClientRect()` report *visual*
+      pixels, which diverge from layout pixels whenever the UI-scale
+      zoom (#191) is active; feeding the raw difference into
+      `pxToMinuteSnapped` made drags land above/below the cursor by
+      the zoom factor (#480).  Deriving the correction from the
+      element itself (layout height ÷ visual height) stays right on
+      every webview engine, whatever coordinate space it puts zoomed
+      client coordinates in. */
+  function columnLayoutY(ev: MouseEvent, el: HTMLElement): number {
+    const rect = el.getBoundingClientRect()
+    const ratio = rect.height > 0 ? el.offsetHeight / rect.height : 1
+    return (ev.clientY - rect.top) * ratio
+  }
+
   function onDayMouseDown(ev: MouseEvent, bucket: WeekBucket) {
     if (ev.button !== 0) return
     const target = ev.currentTarget as HTMLElement
-    const rect = target.getBoundingClientRect()
-    const minute = pxToMinuteSnapped(ev.clientY - rect.top)
+    const minute = pxToMinuteSnapped(columnLayoutY(ev, target))
     // If the press lands inside an event block we still start a
     // drag — that lets the user sweep across an existing event
     // to create a new one in the same slot.  The event id is
@@ -1120,7 +1135,6 @@
   function onDayMouseMove(ev: MouseEvent, bucket: WeekBucket) {
     if (!drag || drag.dayKey !== bucket.dayKey) return
     const target = ev.currentTarget as HTMLElement
-    const rect = target.getBoundingClientRect()
     // Flip `hasMoved` only after the cursor crosses the
     // click-vs-drag threshold (#236) so the drag overlay
     // doesn't render — and the mouseup branch doesn't
@@ -1128,7 +1142,7 @@
     const pixelDelta = Math.abs(ev.clientY - drag.startClientY)
     drag = {
       ...drag,
-      currentMinute: pxToMinuteSnapped(ev.clientY - rect.top),
+      currentMinute: pxToMinuteSnapped(columnLayoutY(ev, target)),
       hasMoved: drag.hasMoved || pixelDelta > CLICK_PIXEL_SLOP,
     }
   }
