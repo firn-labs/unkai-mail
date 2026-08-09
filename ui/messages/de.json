@@ -122,6 +122,8 @@
   "account_setup_password_label": "Passwort",
   "account_setup_password_placeholder": "Ihr IMAP/SMTP-Passwort",
   "account_setup_password_hint": "Sicher im Schlüsselbund Ihres Betriebssystems gespeichert — nie als Klartext auf der Festplatte.",
+  "show_password": "Passwort anzeigen",
+  "hide_password": "Passwort verbergen",
   "account_setup_smtp_explainer": "SMTP ist das Protokoll zum Senden Ihrer E-Mails. Port 587 verwendet STARTTLS-Verschlüsselung (empfohlen).",
   "account_setup_smtp_server_label": "SMTP-Server",
   "account_setup_smtp_server_placeholder": "z. B. smtp.beispiel.de",

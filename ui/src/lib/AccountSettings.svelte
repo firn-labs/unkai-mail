@@ -23,6 +23,7 @@
     SIGNATURE_UPDATED_EVENT,
   } from './standaloneSignatureEditorWindow'
   import Toggle from './Toggle.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import {
     STOCK_THEMES,
     applyTheme,
@@ -2601,12 +2602,12 @@
         </label>
         <label class="block col-span-2">
           <span class="text-xs text-surface-500">Password</span>
-          <input
-            type="password"
+          <PasswordInput
             autocomplete="new-password"
             placeholder="Leave empty to keep current password"
             bind:value={passwordDrafts[acc.id]}
-            class="input w-full text-sm px-3 py-2 rounded-lg mt-1"
+            class="mt-1"
+            inputClass="text-sm px-3 py-2 rounded-lg"
           />
           <span class="block text-xs text-surface-400 mt-1">
             When set, replaces the password stored in your OS keychain. Takes effect on the next IMAP/SMTP connection.

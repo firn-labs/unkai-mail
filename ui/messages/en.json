@@ -122,6 +122,8 @@
   "account_setup_password_label": "Password",
   "account_setup_password_placeholder": "Your IMAP/SMTP password",
   "account_setup_password_hint": "Stored securely in your OS keychain — never written to disk in plain text.",
+  "show_password": "Show password",
+  "hide_password": "Hide password",
   "account_setup_smtp_explainer": "SMTP is the protocol used to send your emails. Port 587 uses STARTTLS encryption (recommended).",
   "account_setup_smtp_server_label": "SMTP Server",
   "account_setup_smtp_server_placeholder": "e.g. smtp.example.com",

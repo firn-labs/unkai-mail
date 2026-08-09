@@ -26,6 +26,7 @@
   import { formatError } from './errors'
   import NextcloudConnect from './NextcloudConnect.svelte'
   import Toggle from './Toggle.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
   import { m } from '../paraglide/messages'
@@ -870,18 +871,17 @@
           </label>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_password_label()}</span>
-            <div class="relative mt-1">
+            <PasswordInput
+              bind:value={password}
+              placeholder={m.account_setup_password_placeholder()}
+              class="mt-1"
+              inputClass="pl-8 py-2 rounded-lg"
+              autocomplete="current-password"
+            >
               <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
                 <Icon name="lock" size={14} />
               </span>
-              <input
-                type="password"
-                bind:value={password}
-                placeholder={m.account_setup_password_placeholder()}
-                class="input w-full pl-8 pr-3 py-2 rounded-lg"
-                autocomplete="current-password"
-              />
-            </div>
+            </PasswordInput>
             <span class="block text-xs text-surface-500 mt-1">
               {m.account_setup_password_hint()}
             </span>
@@ -1066,10 +1066,10 @@
               </label>
               <label class="block mb-3">
                 <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_dav_password_label()}</span>
-                <input
-                  type="password"
+                <PasswordInput
                   bind:value={davPassword}
-                  class="input w-full mt-1 px-3 py-2 rounded-lg"
+                  class="mt-1"
+                  inputClass="pl-3 py-2 rounded-lg"
                   autocomplete="current-password"
                 />
               </label>

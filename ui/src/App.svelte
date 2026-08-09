@@ -17,6 +17,7 @@
   import type { UnlistenFn } from '@tauri-apps/api/event'
   import DOMPurify from 'dompurify'
   import Icon from './lib/Icon.svelte'
+  import PasswordInput from './lib/PasswordInput.svelte'
   import IconRail, { type RailView } from './lib/IconRail.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import MailList from './lib/MailList.svelte'
@@ -3961,23 +3962,17 @@
         >
           {m.mail_decrypt_passphrase_label()}
         </label>
-        <input
+        <!-- Focus pulls to the field the moment the modal mounts so
+             the user can start typing without an extra click — the
+             component's `autofocus` prop defers via microtask and
+             skips the busy frame during an in-flight decrypt. -->
+        <PasswordInput
           id="decrypt-prompt-passphrase"
-          type="password"
-          class="input w-full px-3 py-2 text-sm rounded-lg mb-2"
+          class="mb-2"
+          inputClass="px-3 py-2 text-sm rounded-lg"
           bind:value={pendingDecryptPrompt.value}
           disabled={pendingDecryptPrompt.busy}
-          autocomplete="off"
-          {@attach (node: HTMLInputElement) => {
-            // Pull focus the moment the modal mounts so the user
-            // can start typing without an extra click.  Skipped
-            // when the input is disabled (busy frame during the
-            // in-flight decrypt) — focusing a disabled input
-            // would be a no-op and trip the a11y linter.
-            if (!pendingDecryptPrompt?.busy) {
-              queueMicrotask(() => node.focus())
-            }
-          }}
+          autofocus={!pendingDecryptPrompt.busy}
         />
         {#if pendingDecryptPrompt.error}
           <p class="text-xs text-red-500 mb-3">{pendingDecryptPrompt.error}</p>

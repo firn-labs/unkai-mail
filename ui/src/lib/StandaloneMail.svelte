@@ -20,6 +20,7 @@
   import * as api from './api'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import MailView from './MailView.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import { applyTheme, installSystemModeListener } from './theme'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
@@ -470,18 +471,13 @@
         >
           {m.mail_decrypt_passphrase_label()}
         </label>
-        <input
+        <PasswordInput
           id="decrypt-prompt-passphrase-popout"
-          type="password"
-          class="input w-full px-3 py-2 text-sm rounded-lg mb-2"
+          class="mb-2"
+          inputClass="px-3 py-2 text-sm rounded-lg"
           bind:value={pendingDecryptPrompt.value}
           disabled={pendingDecryptPrompt.busy}
-          autocomplete="off"
-          {@attach (node: HTMLInputElement) => {
-            if (!pendingDecryptPrompt?.busy) {
-              queueMicrotask(() => node.focus())
-            }
-          }}
+          autofocus={!pendingDecryptPrompt.busy}
         />
         {#if pendingDecryptPrompt.error}
           <p class="text-xs text-red-500 mb-3">{pendingDecryptPrompt.error}</p>

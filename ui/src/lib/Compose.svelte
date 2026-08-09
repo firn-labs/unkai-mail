@@ -35,6 +35,7 @@
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import { type ShareLink } from './NextcloudShareDialog.svelte'
   import Icon from './Icon.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import AttachmentThumb, { prewarm as prewarmAttachmentThumb } from './AttachmentThumb.svelte'
   import { openAttachment } from './attachmentOpen'
@@ -3215,14 +3216,13 @@
             ? m.compose_crypto_passphrase_label_smime()
             : m.compose_crypto_passphrase_label_pgp()}
         </label>
-        <input
+        <PasswordInput
           id="pgp-passphrase-input"
-          type="password"
-          class="input text-xs px-2 py-1 rounded-lg w-56"
+          class="w-56"
+          inputClass="text-xs px-2 py-1 rounded-lg"
           placeholder={m.compose_crypto_passphrase_placeholder()}
           bind:value={pgpPassphrase}
           disabled={sending}
-          autocomplete="off"
         />
       </div>
     {/if}

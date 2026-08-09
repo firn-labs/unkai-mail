@@ -14,6 +14,7 @@
   import * as api from './api'
   import { formatError } from './errors'
   import { evaluateFidoPrf } from './webauthnPrf'
+  import PasswordInput from './PasswordInput.svelte'
 
   interface Method {
     kind: 'fido_prf' | 'passphrase'
@@ -188,12 +189,11 @@
 
       {#if activeMethod?.kind === 'passphrase'}
         <div class="space-y-2">
-          <input
-            type="password"
-            class="input w-full text-sm px-3 py-2 rounded-lg"
+          <PasswordInput
+            inputClass="text-sm px-3 py-2 rounded-lg"
             placeholder="Passphrase"
             bind:value={passphraseValue}
-            bind:this={passphraseInput}
+            bind:inputEl={passphraseInput}
             onkeydown={handleEnter}
             disabled={busy}
             autocomplete="current-password"

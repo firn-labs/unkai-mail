@@ -22,6 +22,7 @@
   import * as api from './api'
   import DOMPurify from 'dompurify'
   import Icon from './Icon.svelte'
+  import PasswordInput from './PasswordInput.svelte'
   import { m } from '../paraglide/messages'
   import type { OutboxRowDto } from './OutboxList.svelte'
 
@@ -359,13 +360,12 @@
             {m.outbox_passphrase_explain()}
           </p>
           <div class="flex items-center gap-2">
-            <input
-              type="password"
-              class="input text-sm px-2 py-1.5 rounded-lg flex-1"
+            <PasswordInput
+              class="flex-1"
+              inputClass="text-sm px-2 py-1.5 rounded-lg"
               placeholder={m.outbox_passphrase_input_placeholder()}
               bind:value={passphraseInput}
               disabled={busy}
-              autocomplete="off"
               onkeydown={(e) => {
                 if (e.key === 'Enter' && passphraseInput) {
                   void submitWithPassphrase(passphraseInput)
