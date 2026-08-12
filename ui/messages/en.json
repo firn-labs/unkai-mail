@@ -413,6 +413,16 @@
   "sidebar_unified_junk_label": "All Junk",
   "sidebar_unified_trash_label": "All Trash",
 
+  "sidebar_menu_mark_all_read": "Mark all as read",
+  "sidebar_menu_clear_spam": "Clear Spam Folder",
+  "sidebar_clear_spam_title": "Clear spam folder?",
+  "sidebar_clear_spam_body": "Permanently delete all messages in {folder}? They won't be moved to Trash, and this can't be undone.",
+  "sidebar_clear_spam_confirm": "Delete all",
+  "sidebar_clear_spam_confirming": "Deleting…",
+  "sidebar_clear_spam_cancel": "Cancel",
+  "sidebar_clear_spam_failed": "Failed to clear the spam folder",
+  "sidebar_mark_all_read_failed": "Failed to mark the folder as read",
+
   "maillist_empty_in_folder": "No messages in {folder}.",
   "maillist_action_mark_read": "Mark as read",
   "maillist_action_mark_unread": "Mark as unread",

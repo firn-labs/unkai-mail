@@ -414,6 +414,16 @@
   "sidebar_unified_junk_label": "Alle Spam-Ordner",
   "sidebar_unified_trash_label": "Alle Papierkörbe",
 
+  "sidebar_menu_mark_all_read": "Alle als gelesen markieren",
+  "sidebar_menu_clear_spam": "Spam-Ordner leeren",
+  "sidebar_clear_spam_title": "Spam-Ordner leeren?",
+  "sidebar_clear_spam_body": "Alle Nachrichten in {folder} endgültig löschen? Sie werden nicht in den Papierkorb verschoben und das kann nicht rückgängig gemacht werden.",
+  "sidebar_clear_spam_confirm": "Alle löschen",
+  "sidebar_clear_spam_confirming": "Wird gelöscht…",
+  "sidebar_clear_spam_cancel": "Abbrechen",
+  "sidebar_clear_spam_failed": "Spam-Ordner konnte nicht geleert werden",
+  "sidebar_mark_all_read_failed": "Ordner konnte nicht als gelesen markiert werden",
+
   "maillist_empty_in_folder": "Keine Nachrichten in {folder}.",
   "maillist_action_mark_read": "Als gelesen markieren",
   "maillist_action_mark_unread": "Als ungelesen markieren",
