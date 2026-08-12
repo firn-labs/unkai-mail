@@ -211,9 +211,9 @@
     /** App-wide master toggle (#165) for the URLhaus link
      *  checker.  When true, unsafe links in the rendered body
      *  get a red "Unsafe" pill (clicks go through a confirm
-     *  modal) and an all-clear chip renders in the header when
-     *  every link checked out (#482).  When false, links open
-     *  without interception. */
+     *  modal) and an all-clear box renders under the action bar
+     *  when every link checked out (#482).  When false, links
+     *  open without interception. */
     linkCheckEnabled?: boolean
     /** True when this `MailView` is the root of a popped-out
         standalone window (#104).  Hides the "Open in window"
@@ -1854,7 +1854,8 @@
   // <a href> nodes, batches them into one `check_urls` IPC, and produces
   // an annotated HTML string with a red pill inserted next to each
   // unsafe link; when every link checks out the body stays untouched
-  // and a single all-clear chip renders in the header instead (#482).
+  // and a single all-clear box renders under the action bar instead
+  // (#482).
   // Until pass 2 completes the user sees the sanitised body *without*
   // pills — never with a flash of the wrong colour.
   //
@@ -1972,11 +1973,11 @@
     }
   }
 
-  /** #482 — header-chip summary over the verdict map.  `null` while
-   *  the check is off, still pending, or the message has no
+  /** #482 — all-clear-box summary over the verdict map.  `null`
+   *  while the check is off, still pending, or the message has no
    *  checkable links; otherwise the checked/unsafe counts.  `'off'`
    *  verdicts (master toggle off on the backend) count as unchecked
-   *  so the chip never claims an all-clear it didn't verify. */
+   *  so the box never claims an all-clear it didn't verify. */
   let linkSafetySummary = $derived.by(() => {
     if (!linkCheckEnabled) return null
     const checked = Object.values(linkVerdicts).filter((v) => v.verdict !== 'off')
@@ -2558,22 +2559,6 @@
         signerFingerprint={email.signer_fingerprint}
         decrypted={!!(email.body_text || email.body_html)}
       />
-      <!-- #482 — one all-clear chip when every checked link came
-           back safe, instead of a green pill on each of the N
-           links in the body.  Unsafe links keep their inline red
-           pill (rendered by annotateLinkPills), so this chip and
-           the red pills are mutually exclusive. -->
-      {#if linkSafetySummary && linkSafetySummary.unsafe === 0}
-        <div class="flex flex-wrap gap-2 mt-1" data-test="link-safety-all-clear">
-          <span
-            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-success-100 text-success-800 dark:bg-success-900/40 dark:text-success-200"
-            title={m.mail_view_links_all_safe_tooltip({ count: linkSafetySummary.total })}
-          >
-            <Icon name="success" size={14} />
-            {m.mail_view_links_all_safe()}
-          </span>
-        </div>
-      {/if}
       {#if (email.protection === 'encrypted' || email.protection === 'signed-and-encrypted')
         && !email.body_text && !email.body_html}
         <!-- #57 — Decrypt prompt.  Appears when the receive path
@@ -2820,6 +2805,32 @@
         aria-label="Delete"
       ><Icon name="trash" size={16} /></button>
     </div>
+
+    <!-- #482 — link-safety all-clear.  One success box right under
+         the action bar when every checked link came back safe,
+         instead of a green pill on each of the N links in the body.
+         Same card shape as the cannot-decrypt / invite banners so
+         it reads as message-level status, not body content.  Unsafe
+         links keep their inline red pill (annotateLinkPills), so
+         this box and the red pills are mutually exclusive. -->
+    {#if linkSafetySummary && linkSafetySummary.unsafe === 0}
+      <div class="px-6 pt-3">
+        <div
+          class="rounded-lg border border-success-300 bg-success-50 dark:border-success-700 dark:bg-success-900/30 p-3 text-sm flex items-center gap-3 text-success-800 dark:text-success-200"
+          data-test="link-safety-all-clear"
+        >
+          <Icon name="success" size={20} />
+          <div class="flex flex-col min-w-0">
+            <span class="font-medium">{m.mail_view_links_all_safe()}</span>
+            <span class="text-xs opacity-80">
+              {linkSafetySummary.total === 1
+                ? m.mail_view_links_all_safe_detail_one()
+                : m.mail_view_links_all_safe_detail({ count: linkSafetySummary.total })}
+            </span>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <!-- Calendar invite (#58 / iMIP).  Mounted above the
          attachment list so the user reaches for Accept / Decline
