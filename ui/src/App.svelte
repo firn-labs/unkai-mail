@@ -324,6 +324,13 @@
   let selectedUid = $state<number | null>(null)
   // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
   let refreshToken = $state(0)
+  /** Bumped when a bulk folder operation (clear spam / mark all as
+   *  read, #483 follow-up) rewrote the *currently visible* folder's
+   *  contents. Unlike `refreshToken` (merge-preserving), this makes
+   *  MailList drop its rendered rows and repaint from the
+   *  post-operation cache — required for deletions to disappear
+   *  without a folder switch. */
+  let mailListResetToken = $state(0)
 
   /** UIDs of every member of the thread the currently-open message
    *  belongs to (#289 follow-up), but **only when the open message
@@ -3688,6 +3695,18 @@
         onaccountschanged={checkAccounts}
         onmessagemoved={onMessageRemoved}
         onmovesfailed={() => refreshToken++}
+        onfolderbulkchanged={(name, kind) => {
+          // Only the on-screen folder needs the hard reset — for any
+          // other folder the next visit re-reads the cache anyway,
+          // and resetting would needlessly throw away the pagination
+          // state of the list the user is looking at.
+          if (selectedFolder !== name) return
+          // A cleared folder destroyed its messages, so an open one
+          // from it no longer exists — close the reading pane the
+          // same way a folder switch does.
+          if (kind === 'cleared') selectedUid = null
+          mailListResetToken++
+        }}
       />
       <!-- Mail-list column: SearchBar on top, then either MailList
            or SearchResults depending on whether the user is
@@ -3748,6 +3767,7 @@
               unified={unifiedMode}
               selectedUid={selectedUid}
               refreshToken={refreshToken}
+              resetToken={mailListResetToken}
               conversationView={appPrefs?.conversation_view_enabled ?? true}
               onselect={selectMessage}
               bind:envelopes={mailListEnvelopes}

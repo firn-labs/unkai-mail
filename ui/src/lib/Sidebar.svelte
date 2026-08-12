@@ -94,6 +94,17 @@
      *  failures still show the error banner but the UI stays
      *  out-of-sync until the next manual refresh. */
     onmovesfailed?: () => void
+    /** Fires after a bulk folder operation (clear spam / mark all
+     *  as read, #483 follow-up) succeeded on the server, carrying
+     *  the affected folder's name. The parent uses it to hard-reset
+     *  MailList when that folder is the one on screen — the normal
+     *  refresh path merges (it never *removes* rows), so without
+     *  the reset a cleared folder keeps showing its old messages
+     *  until the user switches folders. `kind` says whether rows
+     *  were destroyed (`cleared`) or merely reflagged (`allread`)
+     *  so the parent knows whether an open message from this
+     *  folder must be closed too. */
+    onfolderbulkchanged?: (folderName: string, kind: 'cleared' | 'allread') => void
     /** Total queued rows in the local Outbox (#276) across every
      *  account.  When > 0, a synthetic "Outbox" folder is rendered
      *  above the real IMAP folders with this number as its badge —
@@ -113,6 +124,7 @@
     onaccountschanged,
     onmessagemoved,
     onmovesfailed,
+    onfolderbulkchanged,
     outboxCount = 0,
   }: Props = $props()
 
@@ -509,11 +521,11 @@
   }
 
   /** Wipe every message out of the spam folder (#483). Permanent —
-   *  gated behind the `clearSpamConfirm` modal. The backend clears
-   *  the cache rows and fires `mail-flags-updated` +
-   *  `unread-count-updated` on success, so MailList empties itself
-   *  via the parent's refresh token; we only re-read the folder
-   *  badges here for instant feedback. */
+   *  gated behind the `clearSpamConfirm` modal. On success we
+   *  re-read the folder badges and fire `onfolderbulkchanged` so
+   *  the parent hard-resets MailList if this folder is on screen —
+   *  the event-driven refresh alone can't remove the deleted rows
+   *  (its merge only ever adds/updates). */
   async function confirmClearSpam() {
     if (!clearSpamConfirm || folderOpBusy) return
     const { folder } = clearSpamConfirm
@@ -522,6 +534,7 @@
       await api.mail.clearFolder({ accountId, folder: folder.name })
       clearSpamConfirm = null
       await reloadCachedFolders(accountId)
+      onfolderbulkchanged?.(folder.name, 'cleared')
     } catch (e) {
       folderOpError = formatError(e) || m.sidebar_clear_spam_failed()
     } finally {
@@ -543,6 +556,7 @@
     try {
       await api.mail.markFolderRead({ accountId, folder: folder.name })
       await reloadCachedFolders(accountId)
+      onfolderbulkchanged?.(folder.name, 'allread')
     } catch (e) {
       folderOpError = formatError(e) || m.sidebar_mark_all_read_failed()
     } finally {

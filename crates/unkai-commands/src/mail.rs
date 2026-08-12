@@ -2220,11 +2220,18 @@ pub async fn clear_folder(
 
 /// Mark every message in a folder as read (#483) — the "Mark all as
 /// read" context-menu action. Follows `set_message_read`'s
-/// optimistic shape: cache first so the badge zeroes instantly, then
-/// the whole-mailbox `\Seen` STORE propagates to the server. If the
-/// network half fails the cache is briefly optimistic; the next
-/// flag-refresh reconcile pass pulls it back in line, same as a
-/// failed single-message toggle.
+/// optimistic shape for the *badge*: cache first so the sidebar
+/// count zeroes instantly, then the whole-mailbox `\Seen` STORE
+/// propagates to the server. If the network half fails the cache is
+/// briefly optimistic; the next flag-refresh reconcile pass pulls it
+/// back in line, same as a failed single-message toggle.
+///
+/// `mail-flags-updated` deliberately fires only AFTER the server
+/// STORE succeeds. The event makes MailList re-fetch envelopes from
+/// the network, and firing it while the STORE is still in flight
+/// lets that fetch read the *pre*-STORE flags — the rows repaint as
+/// unread and the whole action looks like a no-op until the next
+/// folder switch.
 pub async fn mark_folder_read(
     account_id: String,
     folder: String,
@@ -2242,11 +2249,14 @@ pub async fn mark_folder_read(
         tracing::warn!("cache.mark_folder_read failed: {e}");
     }
     refresh_unread_badge(cache, ui);
-    emit_mail_flags_updated(ui, &account_id, &folder);
 
     let mut client = connect_imap(&account).await?;
     let result = client.mark_all_as_read(&folder).await;
     let _ = client.logout().await;
+
+    if result.is_ok() {
+        emit_mail_flags_updated(ui, &account_id, &folder);
+    }
     result
 }
 

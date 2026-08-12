@@ -117,6 +117,15 @@
     selectedUid: number | null
     /** Bumped by the parent to force a network re-fetch (manual refresh). */
     refreshToken?: number
+    /** Bumped by the parent when a bulk operation rewrote the current
+     *  folder's contents out from under the list (clear spam / mark
+     *  all as read, #483 follow-up). Unlike `refreshToken`, whose
+     *  merge-preserving refresh keeps rows the fresh batch doesn't
+     *  mention (that's what protects infinite-scroll pagination), a
+     *  reset drops the rendered rows and repaints from the
+     *  post-operation cache — the only way rows that were *deleted*
+     *  server-side actually disappear without a folder switch. */
+    resetToken?: number
     /** `accountId` is passed back when in unified mode so the parent
         can route the open-message action to the right account. In
         single-account mode it's omitted (the active account is implicit).
@@ -169,6 +178,7 @@
     unified = false,
     selectedUid,
     refreshToken = 0,
+    resetToken = 0,
     onselect,
     envelopes = $bindable([]),
     onmessagemoved,
@@ -1153,6 +1163,12 @@
    *  folder to leak into the next on folder switch. */
   let lastFolderKey = $state('')
 
+  /** Last `resetToken` value the load effect consumed — a bump
+   *  means the parent wants replace-semantics for the next load
+   *  (see the prop doc), which reuses the same clear-the-rows
+   *  branch a folder switch takes. */
+  let lastResetToken = $state(0)
+
   /** Shared stale-response predicate. A pending fetch's response is
    *  still relevant iff every dimension that selects which list the
    *  user is actually looking at still matches what the parent
@@ -1186,9 +1202,10 @@
   $effect(() => {
     refreshToken
     const key = `${unified ? '__all__' : accountId}::${folder}`
-    if (key !== lastFolderKey) {
+    if (key !== lastFolderKey || resetToken !== lastResetToken) {
       envelopes = []
       lastFolderKey = key
+      lastResetToken = resetToken
       // #334: on-expand backfill is folder-scoped — start the new
       // folder with a fresh "haven't pulled the rest of any thread
       // yet" slate.
@@ -1222,7 +1239,10 @@
    *  Trade-off: if a message was expunged server-side between
    *  paginated load and refresh, it stays stale in the UI until
    *  the user switches folders. Acceptable — far better than the
-   *  alternative of losing pagination on every keystroke. */
+   *  alternative of losing pagination on every keystroke. When the
+   *  *app itself* rewrote the folder (clear spam / mark all as
+   *  read), the parent bumps `resetToken` instead, which skips the
+   *  merge entirely and repaints from scratch. */
   function mergeEnvelopes(
     existing: EmailEnvelope[],
     fresh: EmailEnvelope[],
