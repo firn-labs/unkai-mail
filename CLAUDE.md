@@ -366,9 +366,19 @@ Then fix the underlying problem on `main` (a new commit, not an amend), and re-t
 
 **Release notes:**
 
-- Auto-generated changelog comes from PR titles, grouped by label. The grouping config lives in `.github/release.yml`. To route a PR into a category, label it (`feature` / `bug` / `security` / `performance` / `documentation` / `refactor` / `test` / `dependencies`).
+- Auto-generated changelog comes from PR titles, grouped by label. The grouping config lives in `.github/release.yml`. To route a PR into a category, label it — see the label inventory below for which labels actually exist.
 - The hand-written editorial header lives in `RELEASE_NOTES_TEMPLATE.md` — paste that above the auto-changelog when finalising the release.
 - Dependabot PRs are auto-routed to a "Dependency updates" bucket and excluded from the headline categories so the changelog stays human-curated.
+
+**GitHub labels (the complete inventory — don't query GitHub for this, and don't pass a label that isn't listed here; `gh pr create --label` hard-fails on unknown labels):**
+
+- **Changelog-routing labels** (these are what `.github/release.yml` groups by): `enhancement` (✨ New features), `bug` (🐛 Bug fixes), `documentation` (📚 Documentation), `dependencies` (📦 Dependency updates). The config also recognises `feature`, `fix`, `security`, `performance`, `refactor`, `cleanup`, `chore`, `docs`, `test`, `ci` — but those labels **don't exist in the repo yet**; create the label first if a PR genuinely needs one of those categories, otherwise use the four that exist. An unlabeled PR falls into "🔧 Other changes".
+- **Area labels**: `backend` (Rust backend / protocol work), `frontend` (Svelte UI work), `nextcloud` (Nextcloud integration), `protocol` (mail/sync protocol implementation), `infrastructure` (build, CI, tooling, project setup).
+- **Planning labels**: `MVP` (required for first usable version), `Backlog` (planned for future releases), `good first issue`, `help wanted`.
+- **Triage labels** (rarely on PRs): `duplicate`, `invalid`, `question`, `wontfix`.
+- **Dependabot's own labels** (bot-applied, don't use manually): `javascript`, `rust`, `github_actions`.
+
+Typical PR labelling: one changelog label + the matching area label (e.g. this UI feature PR → `enhancement` + `frontend`). Keep this inventory in sync when adding or renaming labels on GitHub.
 
 **Windows builds need Strawberry Perl** (the SQLCipher → OpenSSL → vendored-openssl chain compiles OpenSSL from source, and OpenSSL's build scripts need a real Perl). Both `smoke.yml` and `release.yml` install it via `choco install strawberryperl -y` on the Windows runner. Local Windows dev needs the same — see the section above.
 
