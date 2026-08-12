@@ -430,6 +430,8 @@
   "maillist_action_mark_group_unread": "Mark {count} as unread",
   "maillist_action_move": "Move to folder…",
   "maillist_action_move_group": "Move {count} messages to folder…",
+  "maillist_action_restore": "Restore to Inbox",
+  "maillist_action_restore_group": "Restore {count} messages to Inbox",
   "maillist_action_delete": "Delete",
   "maillist_action_delete_group": "Delete {count} messages",
 
