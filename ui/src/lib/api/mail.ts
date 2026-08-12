@@ -140,6 +140,18 @@ export function setFolderIcon(args: {
   return call('set_folder_icon', args)
 }
 
+/** Permanently delete every message in a folder (#483 — the
+ *  "Clear Spam Folder" action). Resolves to the number of messages
+ *  the server reported before the wipe. */
+export function clearFolder(args: { accountId: string; folder: string }): Promise<number> {
+  return call('clear_folder', args)
+}
+
+/** Mark every message in a folder as read (#483). */
+export function markFolderRead(args: { accountId: string; folder: string }): Promise<void> {
+  return call('mark_folder_read', args)
+}
+
 export function archiveMessage(args: {
   accountId: string
   folder: string

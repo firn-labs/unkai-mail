@@ -2394,6 +2394,101 @@ impl ImapClient {
         Ok(())
     }
 
+    /// Permanently delete *every* message in a folder (#483) — the
+    /// "Clear Spam Folder" primitive. One SELECT, one
+    /// `UID STORE 1:* +FLAGS (\Deleted)`, one EXPUNGE; the `1:*` UID
+    /// range covers the whole mailbox so a thousand-message spam
+    /// folder still costs three round-trips, not N.
+    ///
+    /// Plain EXPUNGE (not `UID EXPUNGE`) is deliberate here: we just
+    /// flagged the entire mailbox, so the broader command can't
+    /// over-delete, and skipping UIDPLUS avoids the probe-and-fallback
+    /// dance `delete_message` needs for its single-UID case.
+    ///
+    /// Returns the number of messages the SELECT reported before the
+    /// wipe so the caller can log / surface "N messages deleted".
+    pub async fn delete_all_messages(&mut self, folder: &str) -> Result<u32, UnkaiError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| UnkaiError::Protocol("Session is closed".into()))?;
+
+        // Read-write SELECT so the server accepts the STORE.
+        let mailbox = session.select(to_wire(folder)).await.map_err(|e| {
+            UnkaiError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        // Empty mailbox — nothing to do. Bailing early matters
+        // beyond efficiency: some servers reject a `1:*` UID range
+        // against an empty mailbox instead of treating it as a
+        // no-op match.
+        if mailbox.exists == 0 {
+            info!("delete_all_messages: '{folder}' is already empty");
+            return Ok(0);
+        }
+
+        let _updates: Vec<_> = session
+            .uid_store("1:*", "+FLAGS (\\Deleted)")
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("UID STORE (\\Deleted) failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        let expunged: Vec<_> = session
+            .expunge()
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("EXPUNGE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to read EXPUNGE: {e}")))?;
+
+        info!(
+            "delete_all_messages: cleared '{folder}' ({} in mailbox, {} EXPUNGE response(s))",
+            mailbox.exists,
+            expunged.len()
+        );
+        Ok(mailbox.exists)
+    }
+
+    /// Set `\Seen` on *every* message in a folder (#483) — the
+    /// "Mark all as read" primitive. Same whole-mailbox `1:*` shape
+    /// as [`Self::delete_all_messages`]: one SELECT + one UID STORE
+    /// regardless of folder size. Idempotent — already-read messages
+    /// are unaffected.
+    pub async fn mark_all_as_read(&mut self, folder: &str) -> Result<(), UnkaiError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| UnkaiError::Protocol("Session is closed".into()))?;
+
+        // Read-write SELECT so the server accepts the STORE.
+        let mailbox = session.select(to_wire(folder)).await.map_err(|e| {
+            UnkaiError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        // Same empty-mailbox guard as `delete_all_messages` — a
+        // `1:*` range against zero messages is server-dependent.
+        if mailbox.exists == 0 {
+            info!("mark_all_as_read: '{folder}' is empty, nothing to mark");
+            return Ok(());
+        }
+
+        let _updates: Vec<_> = session
+            .uid_store("1:*", "+FLAGS (\\Seen)")
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("UID STORE (\\Seen) failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| UnkaiError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        info!(
+            "mark_all_as_read: set \\Seen on all {} message(s) in '{folder}'",
+            mailbox.exists
+        );
+        Ok(())
+    }
+
     /// Return every UID currently in the folder (via `UID SEARCH ALL`).
     ///
     /// Used by the envelope-cache reconciler to spot ghost rows: any

@@ -482,6 +482,66 @@ impl Cache {
         Ok(())
     }
 
+    /// Drop every cached row for a folder AND zero its unread badge —
+    /// the cache half of "Clear Spam Folder" (#483). Same row cleanup
+    /// as [`Self::wipe_folder`], but where that method leaves
+    /// `folders.unread_count` alone (its UIDVALIDITY-reset caller
+    /// refreshes counts via `upsert_folders` right after), this one
+    /// runs when the server-side mailbox was just emptied for real,
+    /// so the count is *known* to be zero and the badge must reflect
+    /// that immediately. Transactional so the rows and the badge
+    /// can't diverge if the process dies mid-way.
+    pub fn empty_folder(&self, account_id: &str, folder: &str) -> Result<(), CacheError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM messages WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, folder],
+        )?;
+        // Reset the sync bookmark too — the next incremental fetch
+        // starts from scratch against the now-empty mailbox instead
+        // of asking for "everything after the last seen UID".
+        tx.execute(
+            "DELETE FROM folder_sync_state WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, folder],
+        )?;
+        tx.execute(
+            "UPDATE folders SET unread_count = 0
+             WHERE account_id = ?1 AND name = ?2",
+            params![account_id, folder],
+        )?;
+        tx.commit()?;
+        info!("Emptied cache for '{account_id}' / '{folder}' (folder cleared)");
+        Ok(())
+    }
+
+    /// Flip every cached envelope in a folder to read and zero the
+    /// folder's unread badge — the cache half of "Mark all as read"
+    /// (#483). The whole-folder analogue of
+    /// [`Self::mark_envelope_read`]: one UPDATE instead of a per-UID
+    /// loop, and the badge goes straight to 0 rather than
+    /// decrementing (the server-side `1:*` STORE this pairs with
+    /// leaves nothing unread, including messages we never cached).
+    /// Transactional for the same atomicity reason as the single-UID
+    /// variant.
+    pub fn mark_folder_read(&self, account_id: &str, folder: &str) -> Result<(), CacheError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE messages SET is_read = 1
+             WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, folder],
+        )?;
+        tx.execute(
+            "UPDATE folders SET unread_count = 0
+             WHERE account_id = ?1 AND name = ?2",
+            params![account_id, folder],
+        )?;
+        tx.commit()?;
+        info!("Marked all cached envelopes read for '{account_id}' / '{folder}'");
+        Ok(())
+    }
+
     // ── Folders ─────────────────────────────────────────────────
 
     /// Replace the cached folder list for an account.

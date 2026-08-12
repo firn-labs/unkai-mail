@@ -2175,6 +2175,81 @@ pub async fn rename_folder(
     result
 }
 
+/// Permanently delete every message in a folder (#483) — the
+/// "Clear Spam Folder" context-menu action. The frontend gates the
+/// affordance to Junk-type folders, but the command itself is
+/// folder-agnostic on purpose: the account's Junk mailbox name is
+/// something the frontend already resolved (it's the row the user
+/// right-clicked), so re-deriving it here via `pick_junk_folder`
+/// could disagree with what's on screen.
+///
+/// Server-first, cache-second — the opposite order from
+/// `set_message_read`'s optimistic write. A permanent bulk delete
+/// that fails halfway must NOT leave the UI pretending the folder is
+/// empty, so the cache is only cleared once IMAP confirms.
+pub async fn clear_folder(
+    account_id: String,
+    folder: String,
+    cache: &Cache,
+    ui: &dyn UiNotifier,
+) -> Result<u32, UnkaiError> {
+    let account = load_account(cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Err(UnkaiError::Other(
+            "Clearing folders via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    let mut client = connect_imap(&account).await?;
+    let result = client.delete_all_messages(&folder).await;
+    let _ = client.logout().await;
+    let deleted = result?;
+
+    // Server says the mailbox is empty — mirror that locally: drop
+    // the envelope rows + sync bookmark, zero the badge, repaint the
+    // tray count, and nudge MailList to re-read the (now empty)
+    // cache view.
+    if let Err(e) = cache.empty_folder(&account_id, &folder) {
+        tracing::warn!("cache.empty_folder after clear_folder failed: {e}");
+    }
+    refresh_unread_badge(cache, ui);
+    emit_mail_flags_updated(ui, &account_id, &folder);
+
+    Ok(deleted)
+}
+
+/// Mark every message in a folder as read (#483) — the "Mark all as
+/// read" context-menu action. Follows `set_message_read`'s
+/// optimistic shape: cache first so the badge zeroes instantly, then
+/// the whole-mailbox `\Seen` STORE propagates to the server. If the
+/// network half fails the cache is briefly optimistic; the next
+/// flag-refresh reconcile pass pulls it back in line, same as a
+/// failed single-message toggle.
+pub async fn mark_folder_read(
+    account_id: String,
+    folder: String,
+    cache: &Cache,
+    ui: &dyn UiNotifier,
+) -> Result<(), UnkaiError> {
+    let account = load_account(cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Err(UnkaiError::Other(
+            "Marking folders read via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    if let Err(e) = cache.mark_folder_read(&account_id, &folder) {
+        tracing::warn!("cache.mark_folder_read failed: {e}");
+    }
+    refresh_unread_badge(cache, ui);
+    emit_mail_flags_updated(ui, &account_id, &folder);
+
+    let mut client = connect_imap(&account).await?;
+    let result = client.mark_all_as_read(&folder).await;
+    let _ = client.logout().await;
+    result
+}
+
 // ── Cache-first read commands ───────────────────────────────────
 //
 // These return whatever's in the local cache instantly so the UI has

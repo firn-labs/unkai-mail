@@ -305,6 +305,12 @@
    *  hidden. */
   let deleteConfirm = $state<{ folder: Folder } | null>(null)
 
+  /** "Are you sure?" modal for the spam-folder wipe (#483). Null
+   *  when hidden. Separate from `deleteConfirm` because the two
+   *  actions destroy different things (the folder's *messages* vs
+   *  the folder itself) and need distinct copy. */
+  let clearSpamConfirm = $state<{ folder: Folder } | null>(null)
+
   /** Busy flag shared across the three mutations — disables the
    *  context-menu actions and the confirm button while an IMAP
    *  command is in flight to keep the user from double-submitting. */
@@ -385,7 +391,7 @@
     // fresh row should clear the noise.
     renamingFolder = null
     newFolderInput = null
-    contextMenu = { folder, ...clampToViewport(cursorAnchor(e), 200, 150) }
+    contextMenu = { folder, ...clampToViewport(cursorAnchor(e), 200, 220) }
   }
 
   /** Join a parent path with a child segment using the parent's
@@ -500,6 +506,48 @@
   function cancelDelete() {
     deleteConfirm = null
     folderOpError = ''
+  }
+
+  /** Wipe every message out of the spam folder (#483). Permanent —
+   *  gated behind the `clearSpamConfirm` modal. The backend clears
+   *  the cache rows and fires `mail-flags-updated` +
+   *  `unread-count-updated` on success, so MailList empties itself
+   *  via the parent's refresh token; we only re-read the folder
+   *  badges here for instant feedback. */
+  async function confirmClearSpam() {
+    if (!clearSpamConfirm || folderOpBusy) return
+    const { folder } = clearSpamConfirm
+    folderOpBusy = true
+    try {
+      await api.mail.clearFolder({ accountId, folder: folder.name })
+      clearSpamConfirm = null
+      await reloadCachedFolders(accountId)
+    } catch (e) {
+      folderOpError = formatError(e) || m.sidebar_clear_spam_failed()
+    } finally {
+      folderOpBusy = false
+    }
+  }
+
+  function cancelClearSpam() {
+    clearSpamConfirm = null
+    folderOpError = ''
+  }
+
+  /** Mark every message in a folder as read (#483). Non-destructive
+   *  and reversible per-message, so no confirm modal — it fires
+   *  straight from the context menu. Errors surface via the inline
+   *  `folderOpError` strip under the folder list. */
+  async function markAllRead(folder: Folder) {
+    folderOpBusy = true
+    try {
+      await api.mail.markFolderRead({ accountId, folder: folder.name })
+      await reloadCachedFolders(accountId)
+    } catch (e) {
+      folderOpError = formatError(e) || m.sidebar_mark_all_read_failed()
+    } finally {
+      folderOpBusy = false
+    }
   }
 
   /** Extract just the last segment of an IMAP folder path, using
@@ -646,6 +694,17 @@
       name === 'junk' ||
       name === 'papierkorb'
     )
+  }
+
+  /** True when a folder is the account's Junk / Spam mailbox —
+      gates the "Clear Spam Folder" context-menu action (#483).
+      Same attribute + name fallbacks as the junk branch of
+      `standardRank`. */
+  function isJunk(f: Folder): boolean {
+    const name = f.name.toLowerCase()
+    const attrs = f.attributes.map((a) => a.toLowerCase())
+    const has = (k: string) => attrs.some((a) => a.includes(k))
+    return has('junk') || has('spam') || name === 'spam' || name === 'junk'
   }
 
   /** Pick an icon for a folder. Resolution chain, highest priority
@@ -924,7 +983,7 @@
             // Reuse the same `contextMenu` state that the
             // right-click handler populates so both surfaces
             // share one menu component.
-            contextMenu = { folder, ...clampToViewport({ x: r.right + 4, y: r.top }, 200, 150) }
+            contextMenu = { folder, ...clampToViewport({ x: r.right + 4, y: r.top }, 200, 220) }
           }}
         >⋯</button>
       </div>
@@ -1170,6 +1229,7 @@
      resolution in save_draft / archive / trash flows. -->
 {#if contextMenu}
   {@const stdFolder = standardRank(contextMenu.folder) !== -1}
+  {@const outboxRow = contextMenu.folder.name === OUTBOX_FOLDER}
   <div
     class="fixed z-60 min-w-44 rounded-xl glass-float py-1 text-sm"
     style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
@@ -1201,6 +1261,22 @@
       <Icon name="emoji" size={16} />
       <span>Change icon…</span>
     </button>
+    <!-- #483: whole-folder read toggle. Hidden for the synthetic
+         local-only Outbox — its rows have no `\Seen` flag to set. -->
+    {#if !outboxRow}
+      <button
+        class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-primary-500/10 transition-colors duration-150 ease-out disabled:opacity-50 disabled:hover:bg-transparent"
+        disabled={folderOpBusy}
+        onclick={() => {
+          const f = contextMenu!.folder
+          contextMenu = null
+          void markAllRead(f)
+        }}
+      >
+        <Icon name="read" size={16} />
+        <span>{m.sidebar_menu_mark_all_read()}</span>
+      </button>
+    {/if}
     <button
       class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-primary-500/10 transition-colors duration-150 ease-out disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy || stdFolder}
@@ -1215,6 +1291,23 @@
       <Icon name="compose" size={16} />
       <span>Rename</span>
     </button>
+    <!-- #483: bulk-empty the spam folder. Only offered on the
+         account's Junk mailbox — it's the one folder where "throw
+         everything away unread" is the normal gesture. -->
+    {#if isJunk(contextMenu.folder)}
+      <button
+        class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 transition-colors duration-150 ease-out text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+        disabled={folderOpBusy}
+        onclick={() => {
+          const f = contextMenu!.folder
+          contextMenu = null
+          clearSpamConfirm = { folder: f }
+        }}
+      >
+        <Icon name="trash" size={16} />
+        <span>{m.sidebar_menu_clear_spam()}</span>
+      </button>
+    {/if}
     <button
       class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 transition-colors duration-150 ease-out text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy || stdFolder}
@@ -1264,6 +1357,42 @@
           disabled={folderOpBusy}
           onclick={() => void confirmDelete()}
         >{folderOpBusy ? 'Deleting…' : 'Delete'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Clear-spam confirmation modal (#483). Same shell as the
+     delete-folder confirm above — this one destroys the folder's
+     *messages* (permanently, no trash detour), not the folder
+     itself, so it gets its own copy. -->
+{#if clearSpamConfirm}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget) cancelClearSpam() }}
+  >
+    <div class="glass-float rounded-2xl w-96 max-w-full p-5">
+      <h3 class="text-base font-semibold mb-2">{m.sidebar_clear_spam_title()}</h3>
+      <p class="text-sm text-surface-700 dark:text-surface-300 mb-4">
+        {m.sidebar_clear_spam_body({ folder: displayName(clearSpamConfirm.folder) })}
+      </p>
+      {#if folderOpError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{folderOpError}</p>
+      {/if}
+      <div class="flex justify-end gap-2">
+        <button
+          class="btn preset-outlined-surface-500"
+          disabled={folderOpBusy}
+          onclick={cancelClearSpam}
+        >{m.sidebar_clear_spam_cancel()}</button>
+        <button
+          class="btn preset-filled-error-500"
+          disabled={folderOpBusy}
+          onclick={() => void confirmClearSpam()}
+        >{folderOpBusy ? m.sidebar_clear_spam_confirming() : m.sidebar_clear_spam_confirm()}</button>
       </div>
     </div>
   </div>

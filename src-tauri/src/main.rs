@@ -870,6 +870,16 @@ fn check_urls(
 }
 
 #[tauri::command]
+async fn clear_folder(
+    account_id: String,
+    folder: String,
+    cache: State<'_, Cache>,
+    ctx: State<'_, AppContext>,
+) -> Result<u32, UnkaiError> {
+    cmds::mail::clear_folder(account_id, folder, &cache, ctx.ui.as_ref()).await
+}
+
+#[tauri::command]
 async fn count_outbox(cache: State<'_, Cache>) -> Result<u32, UnkaiError> {
     cmds::compose::count_outbox(&cache).await
 }
@@ -1802,6 +1812,16 @@ async fn mark_as_read(
     ctx: State<'_, AppContext>,
 ) -> Result<(), UnkaiError> {
     cmds::mail::mark_as_read(account_id, folder, uid, &cache, ctx.ui.as_ref()).await
+}
+
+#[tauri::command]
+async fn mark_folder_read(
+    account_id: String,
+    folder: String,
+    cache: State<'_, Cache>,
+    ctx: State<'_, AppContext>,
+) -> Result<(), UnkaiError> {
+    cmds::mail::mark_folder_read(account_id, folder, &cache, ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
@@ -3426,6 +3446,8 @@ fn main() {
             create_folder,
             delete_folder,
             rename_folder,
+            clear_folder,
+            mark_folder_read,
             mark_as_read,
             set_message_read,
             set_message_flagged,
