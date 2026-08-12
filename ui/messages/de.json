@@ -480,6 +480,11 @@
   "mail_view_chip_signed_untrusted_tooltip": "Die Signatur ist gültig, aber das Signaturzertifikat wurde nicht von einer vertrauenswürdigen Stelle ausgestellt und ist keines, das du gespeichert hast.",
   "mail_view_chip_signed_expired": "Signiert (Zertifikat abgelaufen)",
   "mail_view_chip_signed_expired_tooltip": "Die Signatur ist gültig, aber das Signaturzertifikat liegt außerhalb seines Gültigkeitszeitraums.",
+  "mail_view_links_all_safe": "Alle Links sicher",
+  "mail_view_links_all_safe_tooltip": "Alle {count} Links in dieser Nachricht wurden mit URLhaus geprüft — keine bekannten Bedrohungen.",
+  "mail_view_link_pill_unsafe": "Unsicher",
+  "mail_view_link_unsafe_tooltip_exact": "URLhaus hat diese URL gemeldet — Bedrohung: {threat}",
+  "mail_view_link_unsafe_tooltip_domain": "URLhaus hat andere URLs dieser Domain gemeldet — Bedrohung: {threat}",
 
   "contact_form_section_encryption": "Verschlüsselung",
   "contact_form_label_pgp_keys": "Öffentliche Schlüssel & Zertifikate",
