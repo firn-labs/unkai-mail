@@ -187,6 +187,30 @@
     conversationView = true,
   }: Props = $props()
 
+  // ── Trash detection (#504) ──────────────────────────────────
+  // Gates the "Restore to Inbox" affordances (context-menu entry +
+  // hover quick-action).  Mirrors the Rust-side `pick_trash_folder`
+  // name-hint list — the authoritative `\Trash` special-use
+  // attribute lives on the server and we don't propagate it to the
+  // frontend yet, so this is the same pragmatic heuristic App.svelte
+  // uses for its Drafts / Sent folder checks.  Multi-word hints
+  // match anywhere in the path; the short generic names only match
+  // the last path segment exactly, so a user folder like
+  // "Projects/Binders" never triggers it.
+  const TRASH_NAME_HINTS = ['trash', 'deleted items', 'deleted messages', 'papierkorb', 'corbeille']
+  const TRASH_SEGMENT_NAMES = ['bin', 'deleted']
+  function isTrashFolderName(name: string): boolean {
+    const lower = name.toLowerCase()
+    const segment = lower.split('/').pop() ?? lower
+    return (
+      TRASH_NAME_HINTS.some((h) => lower.includes(h)) ||
+      TRASH_SEGMENT_NAMES.includes(segment)
+    )
+  }
+  const isTrashFolder = $derived(
+    unifiedSpecialKind(folder) === 'trash' || isTrashFolderName(folder),
+  )
+
   // ── Conversation-view grouping (#277) ───────────────────────
   // Bundles every envelope that shares an RFC 5322 thread root
   // into a single inbox row — the standard conversation-view
@@ -1653,6 +1677,21 @@
     movingGroup = affectedEnvelopes(env, { expandThread: true })
   }
 
+  /** Restore a trashed row back to the Inbox (#504).  Move-shaped,
+      so it gets the same scoping as `quickMove`: multi-select group
+      + whole-thread expansion when the target is a thread head.
+      `moveGroupToFolder` supplies the optimistic removal, rollback
+      on failure, and per-account batching — important in the
+      unified Trash where each row's source folder differs.  The
+      literal `INBOX` is canonical across IMAP servers (see
+      `unifiedFolders.ts`), so it's the right destination for every
+      account without a folder lookup.  We don't track which folder
+      a message was deleted *from*, so Inbox is the honest,
+      predictable target rather than a guessed "original" folder. */
+  function quickRestore(env: EmailEnvelope) {
+    void moveGroupToFolder(affectedEnvelopes(env, { expandThread: true }), 'INBOX')
+  }
+
   async function toggleEnvelopeRead(env: EmailEnvelope) {
     const next = !env.is_read
     env.is_read = next
@@ -2212,6 +2251,23 @@
                 quickMove(env)
               }}
             ><Icon name="move-to-folder" size={16} /></button>
+            {#if isTrashFolder}
+              <!-- Restore from trash (#504) — only rendered inside the
+                   Trash folder (per-account or unified), where "get
+                   this mail back" is the triage gesture that matters
+                   most.  Sits next to Delete so restore-vs-discard
+                   reads as one decision point. -->
+              <button
+                type="button"
+                class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
+                title={m.maillist_action_restore()}
+                aria-label={m.maillist_action_restore()}
+                onclick={(e) => {
+                  e.stopPropagation()
+                  quickRestore(env)
+                }}
+              ><Icon name="undo" size={16} /></button>
+            {/if}
             <button
               type="button"
               class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
@@ -2354,6 +2410,30 @@
         {/if}
       </span>
     </button>
+    {#if isTrashFolder}
+      <!-- Restore from trash (#504).  Move-shaped, so it scopes to
+           `ctxGroupForMove` — right-clicking a thread head restores
+           the whole conversation, matching "Move to folder…" one
+           entry up. -->
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+        onclick={() => {
+          if (!contextMenu) return
+          void moveGroupToFolder(ctxGroupForMove, 'INBOX')
+          closeContextMenu()
+        }}
+      >
+        <Icon name="undo" size={16} />
+        <span>
+          {#if moveGroupSize > 1}
+            {m.maillist_action_restore_group({ count: moveGroupSize })}
+          {:else}
+            {m.maillist_action_restore()}
+          {/if}
+        </span>
+      </button>
+    {/if}
     <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
     <!-- Priority picker (#414): a label row plus three inline
          choice buttons rather than a nested submenu — compact and

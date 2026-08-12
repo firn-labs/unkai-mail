@@ -431,6 +431,8 @@
   "maillist_action_mark_group_unread": "{count} als ungelesen markieren",
   "maillist_action_move": "In Ordner verschieben…",
   "maillist_action_move_group": "{count} Nachrichten in Ordner verschieben…",
+  "maillist_action_restore": "In den Posteingang wiederherstellen",
+  "maillist_action_restore_group": "{count} Nachrichten in den Posteingang wiederherstellen",
   "maillist_action_delete": "Löschen",
   "maillist_action_delete_group": "{count} Nachrichten löschen",
 
