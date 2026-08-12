@@ -209,10 +209,11 @@
         Trades the privacy default for convenience. */
     autoLoadRemoteImages?: boolean
     /** App-wide master toggle (#165) for the URLhaus link
-     *  checker.  When true, every link in the rendered body
-     *  gets a green "Safe" / red "Unsafe" pill, and clicks on
-     *  unsafe links go through a confirm modal.  When false,
-     *  links open without interception. */
+     *  checker.  When true, unsafe links in the rendered body
+     *  get a red "Unsafe" pill (clicks go through a confirm
+     *  modal) and an all-clear chip renders in the header when
+     *  every link checked out (#482).  When false, links open
+     *  without interception. */
     linkCheckEnabled?: boolean
     /** True when this `MailView` is the root of a popped-out
         standalone window (#104).  Hides the "Open in window"
@@ -1851,9 +1852,11 @@
   // Two-pass render.  Pass 1 (`processedHtml` above) is synchronous and
   // gives us the sanitised HTML immediately.  Pass 2 walks that HTML for
   // <a href> nodes, batches them into one `check_urls` IPC, and produces
-  // an annotated HTML string with green / red pills inserted next to
-  // each link.  Until pass 2 completes the user sees the sanitised body
-  // *without* pills — never with a flash of the wrong colour.
+  // an annotated HTML string with a red pill inserted next to each
+  // unsafe link; when every link checks out the body stays untouched
+  // and a single all-clear chip renders in the header instead (#482).
+  // Until pass 2 completes the user sees the sanitised body *without*
+  // pills — never with a flash of the wrong colour.
   //
   // Verdicts are cached per message-id so re-opening the same message
   // doesn't re-run the lookup; the cache is cleared whenever `email`
@@ -1923,20 +1926,21 @@
     return out
   }
 
-  /** Inject pill spans next to each <a href> based on the verdict
-   *  map.  When the master toggle is off (or no verdicts have
-   *  arrived yet) returns the input verbatim — no pills. */
+  /** Inject a red pill span before each <a href> whose verdict is
+   *  `'unsafe'` and tag the anchor for the click interceptor.
+   *  Safe links get no per-link pill (#482) — the all-clear is a
+   *  single chip in the header instead, so a newsletter with 20
+   *  links doesn't drown the body in green badges. */
   function annotateLinkPills(
     html: string,
     verdicts: Record<string, LinkVerdict>,
   ): string {
-    if (Object.keys(verdicts).length === 0) return html
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html')
       doc.querySelectorAll('a[href]').forEach((a) => {
         const href = (a.getAttribute('href') ?? '').trim()
         const v = verdicts[href]
-        if (!v || v.verdict === 'off') return
+        if (!v || v.verdict !== 'unsafe') return
         // Style is intentionally inline so it survives a future
         // Tailwind purge of class names that don't appear in any
         // .svelte file directly.  Pills sit immediately before
@@ -1944,32 +1948,21 @@
         // visually attach to the URL they describe.
         const pill = doc.createElement('span')
         pill.setAttribute('data-unkai-link-pill', v.verdict)
-        if (v.verdict === 'unsafe') {
-          pill.style.cssText =
-            'display:inline-block;font-size:0.7rem;font-weight:600;' +
-            'padding:0.1rem 0.4rem;margin-right:0.25rem;border-radius:9999px;' +
-            'background:#dc2626;color:#fff;vertical-align:middle;'
-          pill.textContent = 'Unsafe'
-          if (v.threat) {
-            pill.title = v.exact
-              ? `URLhaus flagged this URL — threat: ${v.threat}`
-              : `URLhaus has flagged other URLs on this domain — threat: ${v.threat}`
-          }
-          // Mark the anchor so the click handler knows to
-          // intercept and show the confirm modal.
-          a.setAttribute('data-unkai-unsafe-link', '1')
-          if (v.threat) a.setAttribute('data-unkai-threat', v.threat)
-          if (v.exact) a.setAttribute('data-unkai-link-exact', '1')
-        } else {
-          // Safe pill stays understated — a green dot pill so it
-          // doesn't draw the eye away from the actual content.
-          pill.style.cssText =
-            'display:inline-block;font-size:0.7rem;font-weight:600;' +
-            'padding:0.1rem 0.4rem;margin-right:0.25rem;border-radius:9999px;' +
-            'background:#16a34a;color:#fff;vertical-align:middle;'
-          pill.textContent = 'Safe'
-          pill.title = 'No known threat indicators on URLhaus'
+        pill.style.cssText =
+          'display:inline-block;font-size:0.7rem;font-weight:600;' +
+          'padding:0.1rem 0.4rem;margin-right:0.25rem;border-radius:9999px;' +
+          'background:#dc2626;color:#fff;vertical-align:middle;'
+        pill.textContent = m.mail_view_link_pill_unsafe()
+        if (v.threat) {
+          pill.title = v.exact
+            ? m.mail_view_link_unsafe_tooltip_exact({ threat: v.threat })
+            : m.mail_view_link_unsafe_tooltip_domain({ threat: v.threat })
         }
+        // Mark the anchor so the click handler knows to
+        // intercept and show the confirm modal.
+        a.setAttribute('data-unkai-unsafe-link', '1')
+        if (v.threat) a.setAttribute('data-unkai-threat', v.threat)
+        if (v.exact) a.setAttribute('data-unkai-link-exact', '1')
         a.parentNode?.insertBefore(pill, a)
       })
       return doc.body.innerHTML
@@ -1979,8 +1972,25 @@
     }
   }
 
+  /** #482 — header-chip summary over the verdict map.  `null` while
+   *  the check is off, still pending, or the message has no
+   *  checkable links; otherwise the checked/unsafe counts.  `'off'`
+   *  verdicts (master toggle off on the backend) count as unchecked
+   *  so the chip never claims an all-clear it didn't verify. */
+  let linkSafetySummary = $derived.by(() => {
+    if (!linkCheckEnabled) return null
+    const checked = Object.values(linkVerdicts).filter((v) => v.verdict !== 'off')
+    if (checked.length === 0) return null
+    return {
+      total: checked.length,
+      unsafe: checked.filter((v) => v.verdict === 'unsafe').length,
+    }
+  })
+
+  // Re-serialising the DOM is only worth it when there's a red pill
+  // to insert — an all-safe message renders the processed HTML as-is.
   let annotatedHtml = $derived(
-    !linkCheckEnabled || Object.keys(linkVerdicts).length === 0
+    !linkCheckEnabled || (linkSafetySummary?.unsafe ?? 0) === 0
       ? processedHtml.html
       : annotateLinkPills(processedHtml.html, linkVerdicts),
   )
@@ -2548,6 +2558,22 @@
         signerFingerprint={email.signer_fingerprint}
         decrypted={!!(email.body_text || email.body_html)}
       />
+      <!-- #482 — one all-clear chip when every checked link came
+           back safe, instead of a green pill on each of the N
+           links in the body.  Unsafe links keep their inline red
+           pill (rendered by annotateLinkPills), so this chip and
+           the red pills are mutually exclusive. -->
+      {#if linkSafetySummary && linkSafetySummary.unsafe === 0}
+        <div class="flex flex-wrap gap-2 mt-1" data-test="link-safety-all-clear">
+          <span
+            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-success-100 text-success-800 dark:bg-success-900/40 dark:text-success-200"
+            title={m.mail_view_links_all_safe_tooltip({ count: linkSafetySummary.total })}
+          >
+            <Icon name="success" size={14} />
+            {m.mail_view_links_all_safe()}
+          </span>
+        </div>
+      {/if}
       {#if (email.protection === 'encrypted' || email.protection === 'signed-and-encrypted')
         && !email.body_text && !email.body_html}
         <!-- #57 — Decrypt prompt.  Appears when the receive path

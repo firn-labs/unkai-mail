@@ -479,6 +479,11 @@
   "mail_view_chip_signed_untrusted_tooltip": "The signature is valid, but the signing certificate isn't issued by a trusted authority and isn't one you've saved.",
   "mail_view_chip_signed_expired": "Signed (certificate expired)",
   "mail_view_chip_signed_expired_tooltip": "The signature is valid, but the signing certificate is outside its validity period.",
+  "mail_view_links_all_safe": "All links safe",
+  "mail_view_links_all_safe_tooltip": "All {count} links in this message were checked against URLhaus — no known threats.",
+  "mail_view_link_pill_unsafe": "Unsafe",
+  "mail_view_link_unsafe_tooltip_exact": "URLhaus flagged this URL — threat: {threat}",
+  "mail_view_link_unsafe_tooltip_domain": "URLhaus has flagged other URLs on this domain — threat: {threat}",
 
   "contact_form_section_encryption": "Encryption",
   "contact_form_label_pgp_keys": "Public keys & certificates",
