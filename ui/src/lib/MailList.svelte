@@ -2213,7 +2213,7 @@
           >
             <button
               type="button"
-              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm {env.is_starred ? 'text-amber-500' : ''}"
+              class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn shadow-sm {env.is_starred ? 'text-amber-500' : ''}"
               title={env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
               aria-label={env.is_starred ? m.mail_action_unflag() : m.mail_action_flag()}
               onclick={(e) => {
@@ -2223,7 +2223,7 @@
             ><Icon name="flag" size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm {env.is_pinned ? 'text-primary-500' : ''}"
+              class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn shadow-sm {env.is_pinned ? 'text-primary-500' : ''}"
               title={env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
               aria-label={env.is_pinned ? m.mail_action_unpin() : m.mail_action_pin()}
               onclick={(e) => {
@@ -2233,7 +2233,7 @@
             ><Icon name="pin" size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-lg flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
+              class="w-7 h-7 rounded-lg flex items-center justify-center text-sm quick-action-btn shadow-sm"
               title={env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
               aria-label={env.is_read ? m.maillist_action_mark_unread() : m.maillist_action_mark_read()}
               onclick={(e) => {
@@ -2243,7 +2243,7 @@
             ><Icon name={env.is_read ? 'unread' : 'read'} size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
+              class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn shadow-sm"
               title={m.maillist_action_move()}
               aria-label={m.maillist_action_move()}
               onclick={(e) => {
@@ -2259,7 +2259,7 @@
                    reads as one decision point. -->
               <button
                 type="button"
-                class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
+                class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn shadow-sm"
                 title={m.maillist_action_restore()}
                 aria-label={m.maillist_action_restore()}
                 onclick={(e) => {
@@ -2270,7 +2270,7 @@
             {/if}
             <button
               type="button"
-              class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+              class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn quick-action-btn-danger shadow-sm"
               title={m.maillist_action_delete()}
               aria-label={m.maillist_action_delete()}
               onclick={(e) => {

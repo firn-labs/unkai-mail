@@ -181,6 +181,44 @@ body {
   background: color-mix(in oklab, var(--color-surface-800) 55%, var(--color-surface-900));
 }
 
+/* ── Hover quick-action buttons (#506) ───────────────────────────────── */
+/* The hover-revealed per-row action clusters (MailList, NotesView,
+   TasksView) float directly over the row's own text, so the fill must
+   be fully opaque — any translucency lets the subject line bleed
+   through the icon. The hover tint is composited OVER the opaque fill
+   via color-mix; a translucent `hover:bg-primary-500/10` utility would
+   REPLACE the fill instead, making the button nearly transparent at
+   the exact moment the user targets it. The hairline border gives the
+   cluster an edge in light mode, where an opaque surface-50 button is
+   otherwise invisible against a surface-50-ish row. */
+.quick-action-btn {
+  background: var(--color-surface-50);
+  border: 1px solid color-mix(in oklab, var(--color-surface-500) 30%, transparent);
+}
+
+.quick-action-btn:hover {
+  background: color-mix(in oklab, var(--color-primary-500) 12%, var(--color-surface-50));
+}
+
+[data-mode='dark'] .quick-action-btn {
+  background: var(--color-surface-800);
+}
+
+[data-mode='dark'] .quick-action-btn:hover {
+  background: color-mix(in oklab, var(--color-primary-500) 15%, var(--color-surface-800));
+}
+
+/* Destructive variant — neutral at rest, red on hover, same contract
+   as the settings-panel icon-button vocabulary. */
+.quick-action-btn-danger:hover {
+  background: color-mix(in oklab, var(--color-red-500) 15%, var(--color-surface-50));
+  color: var(--color-red-500);
+}
+
+[data-mode='dark'] .quick-action-btn-danger:hover {
+  background: color-mix(in oklab, var(--color-red-500) 20%, var(--color-surface-800));
+}
+
 /* ── Email body renderer ─────────────────────────────────────────────── */
 /* Scoped resets for HTML email content injected via {@html}. We can't
    scope <style> tags from the email (they're stripped by DOMPurify), but

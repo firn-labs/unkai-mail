@@ -1186,7 +1186,7 @@
               >
                 <button
                   type="button"
-                  class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-primary-500/10 shadow-sm"
+                  class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn shadow-sm"
                   title="Move to folder"
                   aria-label="Move to folder"
                   onclick={(e) => {
@@ -1198,7 +1198,7 @@
                 </button>
                 <button
                   type="button"
-                  class="w-7 h-7 rounded-lg flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+                  class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn quick-action-btn-danger shadow-sm"
                   title="Delete"
                   aria-label="Delete"
                   onclick={(e) => {
