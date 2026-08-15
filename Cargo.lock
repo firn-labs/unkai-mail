@@ -7344,7 +7344,7 @@ dependencies = [
 name = "unkai-app"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dirs 6.0.0",
  "font-kit",
@@ -7407,7 +7407,7 @@ dependencies = [
 name = "unkai-carddav"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "ical",
  "quick-xml 0.41.0",
  "reqwest 0.12.28",
@@ -7422,7 +7422,7 @@ dependencies = [
 name = "unkai-commands"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dirs 6.0.0",
  "font-kit",
@@ -7501,7 +7501,7 @@ name = "unkai-imap"
 version = "0.2.0"
 dependencies = [
  "async-imap",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "futures",
  "mail-parser",
@@ -7537,7 +7537,7 @@ name = "unkai-mcp"
 version = "0.2.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "futures",
  "getrandom 0.4.3",
@@ -7580,7 +7580,7 @@ dependencies = [
 name = "unkai-smtp"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "lettre",
  "mail-parser",
@@ -7599,7 +7599,7 @@ name = "unkai-store"
 version = "0.2.0"
 dependencies = [
  "aes-gcm",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dirs 6.0.0",
  "getrandom 0.4.3",
