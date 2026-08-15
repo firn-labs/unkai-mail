@@ -188,7 +188,7 @@ zeroize = "1.8"
 # transport — no client features, and crucially no `reqwest`/TLS
 # features: the server binds plain HTTP on 127.0.0.1 only, so no
 # second TLS stack appears next to the vendored-OpenSSL build.
-rmcp = { version = "2.2", default-features = false, features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "3.1", default-features = false, features = ["server", "transport-streamable-http-server"] }
 # HTTP framework the MCP endpoint is mounted in.  rmcp's
 # `StreamableHttpService` is a tower `Service`, and axum is the
 # thinnest maintained way to wrap it with the middleware we need
