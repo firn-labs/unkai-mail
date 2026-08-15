@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   scan:
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.5.0
     with:
       # Recursively scan every lockfile in the repo (Cargo.lock at
       # workspace root + ui/package-lock.json).
