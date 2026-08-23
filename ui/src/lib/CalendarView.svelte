@@ -1336,15 +1336,15 @@
         aria-label={m.calendar_view_new_event()}
       ><Icon name="plus" size={14} /></button>
       <!-- Import .ics (#518) — secondary action, so tonal-surface
-           like Sync. Same `download` glyph the Contacts import CTA
-           uses, so "bring a file into the app" reads consistently. -->
+           like Sync. The `upload` glyph: the user is pushing a file
+           INTO the app, so the arrow points up, not down. -->
       <button
         class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
         disabled={importableCalendars.length === 0}
         onclick={openImport}
         title={m.calendar_import_title()}
         aria-label={m.calendar_import_button()}
-      ><Icon name="download" size={14} /></button>
+      ><Icon name="upload" size={14} /></button>
       <button
         class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
         disabled={accounts.length === 0 || syncing}
