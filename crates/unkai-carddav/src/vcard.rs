@@ -147,7 +147,9 @@ pub struct VcardEmail {
 }
 
 /// Parse a single vCard string. The input is the raw `BEGIN:VCARD … END:VCARD`
-/// block; the `ical` parser returns at most one card from it.
+/// block; only the first card is read even if more follow. A missing
+/// UID is an error here — the sync paths need a stable identifier and
+/// must not fabricate one (see the `ParsedVcard::uid` doc).
 pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, UnkaiError> {
     let reader = std::io::BufReader::new(raw.as_bytes());
     let mut parser = VcardParser::new(reader);
@@ -157,6 +159,58 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, UnkaiError> {
         .ok_or_else(|| UnkaiError::Protocol("empty vCard".to_string()))?
         .map_err(|e| UnkaiError::Protocol(format!("vCard parse: {e}")))?;
 
+    let parsed = card_to_parsed(&card);
+    if parsed.uid.is_empty() {
+        return Err(UnkaiError::Protocol("vCard missing UID".to_string()));
+    }
+    Ok(parsed)
+}
+
+/// Parse a whole `.vcf` file, which may concatenate any number of
+/// `BEGIN:VCARD … END:VCARD` blocks — the standard shape of a
+/// multi-contact addressbook export (#484).
+///
+/// Two deliberate differences from [`parse_vcard`], both because this
+/// feeds the *import* flow rather than sync:
+///
+/// - **Malformed cards are skipped, not fatal** — one broken record in
+///   a 500-contact export shouldn't kill the other 499. Skips are
+///   logged via `tracing::warn!`; the call only errors when *nothing*
+///   in the file parses. Same policy as `unkai_caldav::parse_ics`.
+/// - **A missing UID is tolerated** — the card comes back with an
+///   empty `uid` and the import caller mints a fresh one before
+///   writing. Exports from address-book tools that predate vCard 4
+///   routinely omit UID, and unlike sync there is no existing server
+///   resource the identifier has to line up with.
+pub fn parse_vcards(raw: &str) -> Result<Vec<ParsedVcard>, UnkaiError> {
+    let reader = std::io::BufReader::new(raw.as_bytes());
+    let parser = VcardParser::new(reader);
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+    for card in parser {
+        match card {
+            Ok(c) => out.push(card_to_parsed(&c)),
+            Err(e) => {
+                skipped += 1;
+                tracing::warn!("skipping malformed vCard in import file: {e}");
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(UnkaiError::Protocol(if skipped > 0 {
+            format!("no parseable vCards in file ({skipped} malformed record(s) skipped)")
+        } else {
+            "no vCards found in file".to_string()
+        }));
+    }
+    Ok(out)
+}
+
+/// Walk one parsed card's properties into our flat struct. `uid`
+/// stays an empty string when the card has none — the two public
+/// entry points above decide whether that's an error (sync) or
+/// fixable (import).
+fn card_to_parsed(card: &ical::parser::vcard::component::VcardContact) -> ParsedVcard {
     let mut uid: Option<String> = None;
     let mut formatted_name = String::new();
     let mut structured_display_name = String::new();
@@ -426,9 +480,11 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, UnkaiError> {
         "(unnamed)".to_string()
     };
 
-    let uid = uid.ok_or_else(|| UnkaiError::Protocol("vCard missing UID".to_string()))?;
+    // Treat a `UID:` property with an empty value the same as no UID
+    // at all — an empty identifier can't key anything.
+    let uid = uid.unwrap_or_default().trim().to_string();
 
-    Ok(ParsedVcard {
+    ParsedVcard {
         uid,
         display_name,
         emails,
@@ -454,7 +510,7 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, UnkaiError> {
         geo,
         timezone,
         keys,
-    })
+    }
 }
 
 /// Pull a kind hint for an `IMPP` property — TYPE param wins,
@@ -888,6 +944,49 @@ mod tests {
     fn missing_uid_is_an_error() {
         let raw = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:X\r\nEND:VCARD\r\n";
         assert!(parse_vcard(raw).is_err());
+    }
+
+    // ── parse_vcards — the multi-card import entry point (#484) ──
+
+    #[test]
+    fn parses_multiple_concatenated_cards() {
+        let raw = "BEGIN:VCARD\r\n\
+                   VERSION:3.0\r\n\
+                   UID:one\r\n\
+                   FN:Alice Example\r\n\
+                   END:VCARD\r\n\
+                   BEGIN:VCARD\r\n\
+                   VERSION:4.0\r\n\
+                   UID:two\r\n\
+                   FN:Bob Example\r\n\
+                   EMAIL:bob@example.com\r\n\
+                   END:VCARD\r\n";
+        let cards = parse_vcards(raw).unwrap();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].uid, "one");
+        assert_eq!(cards[0].display_name, "Alice Example");
+        assert_eq!(cards[1].uid, "two");
+        assert_eq!(cards[1].emails[0].value, "bob@example.com");
+    }
+
+    #[test]
+    fn import_keeps_cards_without_uid() {
+        // Unlike the sync path, import tolerates a missing UID — the
+        // caller mints one. The card must come back, uid empty.
+        let raw = "BEGIN:VCARD\r\n\
+                   VERSION:3.0\r\n\
+                   FN:No Uid\r\n\
+                   END:VCARD\r\n";
+        let cards = parse_vcards(raw).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].uid, "");
+        assert_eq!(cards[0].display_name, "No Uid");
+    }
+
+    #[test]
+    fn empty_input_is_an_error_for_import() {
+        assert!(parse_vcards("").is_err());
+        assert!(parse_vcards("this is not a vcard at all").is_err());
     }
 
     #[test]

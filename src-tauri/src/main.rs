@@ -63,7 +63,7 @@ use unkai_commands::compose::{
 };
 use unkai_commands::contacts::{
     AddressbookSummary, ContactCategoryView, ContactGroupView, ContactInput, ContactPhoto,
-    MailingListView, SyncContactsReport,
+    ImportContactsReport, MailingListView, SyncContactsReport,
 };
 use unkai_commands::crypto::{PgpKeyStatus, PgpPublicKeyDto, SmimeCertDto, SmimeCertStatus};
 use unkai_commands::mail::{AttachmentPreviewView, InlineImageView, LinkVerdict};
@@ -1651,6 +1651,18 @@ fn get_unread_counts_by_account(
 #[tauri::command]
 fn get_wipe_policy() -> Result<WipePolicyView, UnkaiError> {
     cmds::settings::get_wipe_policy()
+}
+
+#[tauri::command]
+async fn import_contacts_file(
+    nc_id: String,
+    addressbook_url: String,
+    addressbook_name: String,
+    path: String,
+    cache: State<'_, Cache>,
+) -> Result<ImportContactsReport, UnkaiError> {
+    cmds::contacts::import_contacts_file(nc_id, addressbook_url, addressbook_name, path, &cache)
+        .await
 }
 
 #[tauri::command]
@@ -3542,6 +3554,7 @@ fn main() {
             create_contact,
             update_contact,
             delete_contact,
+            import_contacts_file,
             list_contact_groups,
             create_contact_group,
             update_contact_group,

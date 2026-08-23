@@ -52,6 +52,9 @@ pub mod accounts;
 pub mod calendar;
 pub mod compose;
 pub mod contacts;
+/// CSV parsing for `contacts::import_contacts_file` (#484) — private
+/// because only the contacts domain reads CSV.
+mod contacts_csv;
 pub mod crypto;
 pub mod mail;
 pub mod nextcloud;
