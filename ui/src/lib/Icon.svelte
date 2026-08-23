@@ -64,6 +64,9 @@
     | 'ai'
     // v10 — password reveal toggle (#481)
     | 'eye' | 'eye-off'
+    // v11 — bring a file into the app (#518): Download mirrored
+    // vertically, arrow rising off the same baseline tray.
+    | 'upload'
 </script>
 
 <script lang="ts">
@@ -192,6 +195,8 @@
   // v10
   import Eye from './icons/Eye.svelte'
   import EyeOff from './icons/EyeOff.svelte'
+  // v11
+  import Upload from './icons/Upload.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -323,6 +328,7 @@
     'ai': Ai,
     'eye': Eye,
     'eye-off': EyeOff,
+    'upload': Upload,
   }
   const Cmp = $derived(map[name])
 </script>
