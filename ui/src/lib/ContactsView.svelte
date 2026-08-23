@@ -1659,7 +1659,7 @@
         class="btn preset-tonal-surface w-full inline-flex items-center justify-center gap-1.5"
         onclick={openImport}
       >
-        <Icon name="download" size={14} />
+        <Icon name="upload" size={14} />
         {m.contact_import_button()}
       </button>
     </div>
