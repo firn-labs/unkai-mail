@@ -15,6 +15,7 @@ import type {
   ContactGroupView,
   ContactInput,
   ContactPhoto,
+  ImportContactsReport,
   MailingListView,
   SyncContactsReport,
   SyncStatus,
@@ -35,6 +36,15 @@ export function updateContact(args: { contactId: string; input: ContactInput }):
 
 export function deleteContact(args: { contactId: string }): Promise<void> {
   return call('delete_contact', args)
+}
+
+export function importContactsFile(args: {
+  ncId: string
+  addressbookUrl: string
+  addressbookName: string
+  path: string
+}): Promise<ImportContactsReport> {
+  return call('import_contacts_file', args)
 }
 
 export function getContacts(args: { ncId?: string | null } = {}): Promise<Contact[]> {

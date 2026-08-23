@@ -69,6 +69,6 @@ pub use discovery::{
 pub use sync::{RawContact, SyncDelta, sync_addressbook};
 pub use vcard::{
     ParsedVcard, VcardAddress, VcardEmail, VcardImpp, VcardPhone, VcardStructuredName, build_vcard,
-    parse_vcard,
+    parse_vcard, parse_vcards,
 };
 pub use write::{WriteOutcome, create_contact, delete_contact, update_contact};

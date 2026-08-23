@@ -819,6 +819,141 @@ pub async fn create_contact(
     Ok(row_to_contact(&nc_id, &addressbook_name, &row))
 }
 
+/// Summary of a completed contact import (#484). Follows the
+/// `SyncContactsReport` shape: a long-running, partial-failure-prone
+/// operation returns counts plus per-entry errors instead of failing
+/// wholesale on the first bad record.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportContactsReport {
+    /// Entries found in the file (cards, or CSV rows that weren't
+    /// blank), before dedup and write attempts.
+    pub total: u32,
+    /// Contacts actually created in the target addressbook.
+    pub imported: u32,
+    /// Entries skipped because a contact with the same vCard UID or
+    /// the same email address already exists in this account.
+    pub skipped_duplicates: u32,
+    /// Human-readable reasons for entries that could not be imported
+    /// (unusable rows, per-contact write failures).
+    pub errors: Vec<String>,
+}
+
+/// Import contacts from a `.vcf` / `.vcard` (any number of cards) or
+/// `.csv` file into one addressbook (#484).
+///
+/// Every entry funnels through the same write path as the create
+/// form — `build_vcard` → [`dav_create_contact_for`] (which
+/// short-circuits for local-only sources) → cache upsert — so an
+/// imported contact is indistinguishable from a hand-created one.
+///
+/// Dedup is conservative on purpose: an entry is skipped when the
+/// target account already has a contact with the same vCard UID
+/// (re-importing the same export twice) or sharing an email address
+/// (the same person exported from elsewhere under a different UID).
+/// Contacts without any email are only deduped by UID — matching on
+/// name alone would eat distinct people who happen to share one.
+pub async fn import_contacts_file(
+    nc_id: String,
+    addressbook_url: String,
+    addressbook_name: String,
+    path: String,
+    cache: &Cache,
+) -> Result<ImportContactsReport, UnkaiError> {
+    let account = load_nextcloud_account(&nc_id)?;
+
+    let bytes = std::fs::read(&path).map_err(|e| UnkaiError::Other(format!("read {path}: {e}")))?;
+    let text = crate::contacts_csv::decode_import_text(&bytes);
+
+    // Format detection: extension first, content sniff as fallback so
+    // a renamed or extension-less export still imports.
+    let lower = path.to_lowercase();
+    let is_vcf = lower.ends_with(".vcf")
+        || lower.ends_with(".vcard")
+        || (!lower.ends_with(".csv") && text.to_ascii_uppercase().contains("BEGIN:VCARD"));
+
+    let mut report = ImportContactsReport {
+        total: 0,
+        imported: 0,
+        skipped_duplicates: 0,
+        errors: Vec::new(),
+    };
+
+    let mut cards: Vec<ParsedVcard> = Vec::new();
+    if is_vcf {
+        cards = unkai_carddav::parse_vcards(&text)?;
+    } else {
+        for outcome in crate::contacts_csv::parse_csv_contacts(&text)? {
+            match outcome {
+                crate::contacts_csv::CsvRowOutcome::Card(card) => cards.push(*card),
+                crate::contacts_csv::CsvRowOutcome::Skipped { line, reason } => {
+                    report.total += 1;
+                    report.errors.push(format!("line {line}: {reason}"));
+                }
+            }
+        }
+    }
+    report.total += cards.len() as u32;
+
+    // Existing UIDs + emails for this account, loaded once up front —
+    // O(1) duplicate checks per entry instead of a query per card.
+    // Scoped to the whole account (not just the target book): the
+    // same person in a sibling addressbook is still a duplicate.
+    let existing = cache
+        .list_contacts(Some(&nc_id))
+        .map_err(UnkaiError::from)?;
+    let mut seen_uids: std::collections::HashSet<String> = existing
+        .iter()
+        .map(|c| c.id.rsplit("::").next().unwrap_or("").to_string())
+        .collect();
+    seen_uids.remove("");
+    let mut seen_emails: std::collections::HashSet<String> = existing
+        .iter()
+        .flat_map(|c| c.email.iter())
+        .map(|e| e.value.trim().to_ascii_lowercase())
+        .collect();
+
+    for mut card in cards {
+        // CSV rows and pre-vCard-4 exports carry no UID — mint one,
+        // same convention as the create form.
+        if card.uid.is_empty() {
+            card.uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+        }
+        if seen_uids.contains(&card.uid)
+            || card
+                .emails
+                .iter()
+                .any(|e| seen_emails.contains(&e.value.trim().to_ascii_lowercase()))
+        {
+            report.skipped_duplicates += 1;
+            continue;
+        }
+
+        let vcard = build_vcard(&card);
+        match dav_create_contact_for(&account, &addressbook_url, &card.uid, &vcard).await {
+            Ok(outcome) => {
+                let row = parsed_to_row(&outcome.href, &outcome.etag, &card.uid, &card, vcard);
+                if let Err(e) = cache.upsert_single_contact(&nc_id, &addressbook_name, &row) {
+                    report.errors.push(format!("{}: {e}", card.display_name));
+                    continue;
+                }
+                report.imported += 1;
+                // Later entries in the same file dedupe against the
+                // ones just written, so a file listing one person
+                // twice imports them once.
+                seen_uids.insert(card.uid.clone());
+                for e in &card.emails {
+                    seen_emails.insert(e.value.trim().to_ascii_lowercase());
+                }
+            }
+            Err(e) => {
+                report.errors.push(format!("{}: {e}", card.display_name));
+            }
+        }
+    }
+
+    Ok(report)
+}
+
 /// Replace an existing contact on the server with the form's new
 /// values. `If-Match` on the cached etag means a concurrent edit
 /// on another device surfaces as a 412 (mapped to a readable error)

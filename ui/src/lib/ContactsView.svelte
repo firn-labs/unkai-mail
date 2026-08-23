@@ -10,6 +10,7 @@
    */
 
   import * as api from './api'
+  import type { ImportContactsReport } from './api/types'
   import { anchorRect, cursorAnchor } from './coords'
   import { formatError } from './errors'
   import { m } from '../paraglide/messages'
@@ -273,6 +274,20 @@
   // Cache per-account addressbooks so switching the "save to" account
   // in the new-contact form doesn't re-hit the server.
   let addressbooksByAccount = $state<Record<string, AddressbookSummary[]>>({})
+
+  // ── Import from file (#484) ──────────────────────────────────
+  // Modal state: target account + addressbook + the picked file's
+  // absolute path (the dialog hands us a path; the Rust command does
+  // the file IO, same split as the theme / settings-bundle imports).
+  let importForm = $state<{
+    accountId: string
+    addressbookUrl: string
+    addressbookName: string
+    path: string
+  } | null>(null)
+  let importBusy = $state(false)
+  let importError = $state('')
+  let importReport = $state<ImportContactsReport | null>(null)
 
   // ── Categories + mailing lists (#133 redesign) ───────────────
   interface ContactCategoryView {
@@ -888,6 +903,85 @@
     }
   }
 
+  // ── Import from file (#484) ──────────────────────────────────
+
+  function openImport() {
+    importError = ''
+    importReport = null
+    const accountId = accounts[0]?.id ?? ''
+    importForm = { accountId, addressbookUrl: '', addressbookName: '', path: '' }
+    if (accountId) void setImportAccount(accountId)
+  }
+
+  /** Load (or reuse) the account's addressbooks and default the
+      target to the first one. Deliberately doesn't share
+      `applyAddressbookDefault` — that helper writes the *create
+      form's* fields, and clobbering them from the import modal
+      would surprise the next "New contact". */
+  async function setImportAccount(ncId: string) {
+    if (!importForm) return
+    importForm.accountId = ncId
+    let books = addressbooksByAccount[ncId]
+    if (!books) {
+      try {
+        books = await api.contacts.listNextcloudAddressbooks({ ncId })
+        addressbooksByAccount[ncId] = books
+      } catch (e) {
+        importError = formatError(e)
+        books = []
+      }
+    }
+    // The user may have switched accounts while the listing was in
+    // flight — don't apply a stale default.
+    if (!importForm || importForm.accountId !== ncId) return
+    importForm.addressbookUrl = books[0]?.path ?? ''
+    importForm.addressbookName = books[0]?.name ?? ''
+  }
+
+  function onImportAddressbookChange(path: string) {
+    if (!importForm) return
+    const books = addressbooksByAccount[importForm.accountId] ?? []
+    importForm.addressbookUrl = path
+    importForm.addressbookName = books.find((b) => b.path === path)?.name ?? ''
+  }
+
+  async function pickImportFile() {
+    const picked = await api.platform.openFileDialog({
+      multiple: false,
+      filters: [{ name: 'Contacts', extensions: ['vcf', 'vcard', 'csv'] }],
+    })
+    if (typeof picked === 'string' && importForm) {
+      importForm.path = picked
+      importReport = null
+      importError = ''
+    }
+  }
+
+  /** Display name for the picked file — the dialog returns an
+      absolute path; the basename is all the modal needs to show. */
+  function importFileName(path: string): string {
+    return path.split(/[\\/]/).pop() ?? path
+  }
+
+  async function runImport() {
+    if (!importForm || !importForm.path || !importForm.addressbookUrl || importBusy) return
+    importBusy = true
+    importError = ''
+    try {
+      importReport = await api.contacts.importContactsFile({
+        ncId: importForm.accountId,
+        addressbookUrl: importForm.addressbookUrl,
+        addressbookName: importForm.addressbookName,
+        path: importForm.path,
+      })
+      await reloadContacts()
+    } catch (e) {
+      importError = formatError(e)
+    } finally {
+      importBusy = false
+    }
+  }
+
   function selectContact(id: string) {
     selectedId = id
     deleteConfirm = false
@@ -1052,6 +1146,14 @@
    */
   function onContactsKeydown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return
+    // The import modal sits above everything — Escape closes it
+    // first (unless an import is mid-flight) and never falls
+    // through to the edit form underneath.
+    if (importForm) {
+      if (!importBusy) importForm = null
+      e.preventDefault()
+      return
+    }
     if (selectedId === null) return
     if (saving) return
     if (document.querySelector('[role="listbox"]')) return
@@ -1542,13 +1644,23 @@
          the universal action across this view, and the Lists tab
          already has its own "+ Mailing lists" affordance inline
          with the section header further down the sidebar. -->
-    <div class="p-3">
+    <div class="p-3 space-y-2">
       <button
         class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
         onclick={startNew}
       >
         <span class="text-lg font-semibold leading-none">+</span>
         New contact
+      </button>
+      <!-- Secondary CTA — import from a .vcf / .csv export (#484).
+           Tonal so it reads as the quieter sibling of the primary
+           create action above. -->
+      <button
+        class="btn preset-tonal-surface w-full inline-flex items-center justify-center gap-1.5"
+        onclick={openImport}
+      >
+        <Icon name="download" size={14} />
+        {m.contact_import_button()}
       </button>
     </div>
     <!-- Tab strip.  Buttons explicitly stop propagation +
@@ -2974,6 +3086,115 @@
           disabled={newListBusy || !newListForm.name.trim()}
           onclick={() => void commitNewMailingList()}
         >{newListBusy ? 'Creating…' : 'Create'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Import-contacts modal (#484) — pick a file + target addressbook,
+     run the import, then show the report in place so the user sees
+     what was skipped and why before closing. -->
+{#if importForm}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget && !importBusy) importForm = null }}
+  >
+    <div class="glass-float rounded-2xl w-md max-w-full p-5">
+      <h3 class="text-base font-semibold mb-1">{m.contact_import_title()}</h3>
+      <p class="text-xs text-on-glass-muted mb-4">{m.contact_import_intro()}</p>
+
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <label class="label">
+          <span>{m.contact_import_label_account()}</span>
+          <Select
+            value={importForm.accountId}
+            options={accounts.map((a) => ({
+              value: a.id,
+              label: a.display_name ?? a.username,
+            }))}
+            onchange={(v) => void setImportAccount(v)}
+          />
+        </label>
+        <label class="label">
+          <span>{m.contact_import_label_addressbook()}</span>
+          <Select
+            value={importForm.addressbookUrl}
+            options={(addressbooksByAccount[importForm.accountId] ?? []).map((b) => ({
+              value: b.path,
+              label: b.display_name ?? b.name,
+            }))}
+            onchange={(v) => onImportAddressbookChange(v)}
+          />
+        </label>
+      </div>
+
+      <div class="text-xs text-surface-500 mb-1">{m.contact_import_label_file()}</div>
+      <div class="flex items-center gap-2 mb-4">
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          disabled={importBusy}
+          onclick={() => void pickImportFile()}
+        >
+          <Icon name="attachment" size={14} />
+          {m.contact_import_choose_file()}
+        </button>
+        <span class="text-sm truncate min-w-0 {importForm.path ? '' : 'text-on-glass-muted'}">
+          {importForm.path ? importFileName(importForm.path) : m.contact_import_no_file()}
+        </span>
+      </div>
+
+      {#if importReport}
+        <div class="mb-3">
+          <div
+            class="inline-flex items-center gap-1 text-xs text-success-500"
+            aria-live="polite"
+          >
+            <Icon name="success" size={14} />
+            <span>{m.contact_import_summary({
+              imported: importReport.imported,
+              total: importReport.total,
+              skipped: importReport.skipped_duplicates,
+            })}</span>
+          </div>
+          {#if importReport.errors.length > 0}
+            <p class="text-xs text-surface-500 mt-2 mb-1">{m.contact_import_errors_label()}</p>
+            <ul class="text-xs text-red-500 max-h-32 overflow-y-auto space-y-0.5">
+              {#each importReport.errors as err}
+                <li class="wrap-break-word">{err}</li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
+
+      {#if importError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{importError}</p>
+      {/if}
+
+      <div class="flex justify-end gap-2">
+        {#if importReport}
+          <button
+            class="btn preset-filled-primary-500"
+            onclick={() => (importForm = null)}
+          >{m.contact_import_close()}</button>
+        {:else}
+          <button
+            class="btn preset-outlined-surface-500"
+            disabled={importBusy}
+            onclick={() => (importForm = null)}
+          >{m.contact_import_cancel()}</button>
+          <button
+            class="btn preset-filled-primary-500 inline-flex items-center gap-1.5"
+            disabled={importBusy || !importForm.path || !importForm.addressbookUrl}
+            onclick={() => void runImport()}
+          >
+            {#if importBusy}<Icon name="loading" size={14} />{/if}
+            {importBusy ? m.contact_import_running() : m.contact_import_run()}
+          </button>
+        {/if}
       </div>
     </div>
   </div>

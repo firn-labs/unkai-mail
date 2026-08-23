@@ -33,6 +33,19 @@ export type FileEntry = any
 export type Folder = any
 export type GeocodeResult = any
 /**
+ * Backend `ImportContactsReport` (#484) — summary of a contact file
+ * import. Typed for real because the import dialog renders every
+ * field. Keys are snake_case: the Rust struct has no serde rename.
+ */
+export interface ImportContactsReport {
+  /** Entries found in the file before dedup / write attempts. */
+  total: number
+  imported: number
+  skipped_duplicates: number
+  /** Per-entry failure reasons (unusable rows, write errors). */
+  errors: string[]
+}
+/**
  * Backend `InlineImageView` (#471) — one `cid:`-referenceable image
  * part with its bytes. Typed for real rather than aliased to `any`
  * because the renderer matches on every field.
