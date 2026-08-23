@@ -1139,6 +1139,35 @@ END:VCALENDAR\r\n";
     }
 
     #[test]
+    fn parses_multiple_vevents_in_one_file() {
+        // A calendar export carries many VEVENTs in one VCALENDAR —
+        // the .ics import (#518) walks all of them, so the parser
+        // must return every event, in file order, each with its own
+        // UID intact.
+        let ics = "BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+BEGIN:VEVENT\r\n\
+UID:first@example.com\r\n\
+SUMMARY:First\r\n\
+DTSTART:20260420T090000Z\r\n\
+DTEND:20260420T093000Z\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:second@example.com\r\n\
+SUMMARY:Second\r\n\
+DTSTART:20260421T140000Z\r\n\
+DTEND:20260421T150000Z\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+        let events = parse_ics(ics).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, "first@example.com");
+        assert_eq!(events[0].summary, "First");
+        assert_eq!(events[1].id, "second@example.com");
+        assert_eq!(events[1].summary, "Second");
+    }
+
+    #[test]
     fn captures_rrule_rdate_exdate() {
         let ics = "BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\

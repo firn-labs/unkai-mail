@@ -55,7 +55,7 @@ use unkai_store::{Cache, account_store, app_settings, credentials, link_check, s
 
 use unkai_commands::accounts::ProbedCert;
 use unkai_commands::calendar::{
-    AttendeeAvailability, CalendarEventInput, CalendarSummary, InviteSummary,
+    AttendeeAvailability, CalendarEventInput, CalendarSummary, ImportCalendarReport, InviteSummary,
     NextcloudMapsCapability, SyncCalendarsReport,
 };
 use unkai_commands::compose::{
@@ -1651,6 +1651,16 @@ fn get_unread_counts_by_account(
 #[tauri::command]
 fn get_wipe_policy() -> Result<WipePolicyView, UnkaiError> {
     cmds::settings::get_wipe_policy()
+}
+
+#[tauri::command]
+async fn import_calendar_file(
+    calendar_id: String,
+    path: String,
+    cache: State<'_, Cache>,
+    ctx: State<'_, AppContext>,
+) -> Result<ImportCalendarReport, UnkaiError> {
+    cmds::calendar::import_calendar_file(calendar_id, path, &cache, ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
@@ -3554,6 +3564,7 @@ fn main() {
             create_contact,
             update_contact,
             delete_contact,
+            import_calendar_file,
             import_contacts_file,
             list_contact_groups,
             create_contact_group,

@@ -31,6 +31,7 @@
    */
 
   import * as api from './api'
+  import type { ImportCalendarReport } from './api/types'
   import type { UnlistenFn } from '@tauri-apps/api/event'
   import { clampToViewport, cursorAnchor, pointerOffsetIn } from './coords'
   import { formatError } from './errors'
@@ -304,6 +305,22 @@
       e.preventDefault()
       newCalendarForm = null
       calendarOpError = ''
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  })
+
+  // Esc dismisses the import modal (#518) — same shortcut as the
+  // "New calendar" modal above, with the same listbox guard so an
+  // open calendar-picker dropdown closes first.
+  $effect(() => {
+    if (!importForm) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (document.querySelector('[role="listbox"]')) return
+      if (importBusy) return
+      e.preventDefault()
+      importForm = null
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
@@ -1088,6 +1105,62 @@
     await reloadFromCache(loadedRangeStart, loadedRangeEnd)
   }
 
+  // ── Import from file (#518) ─────────────────────────────────
+  // Mirrors the ContactsView import modal: pick an `.ics` file +
+  // target calendar, run the backend import, show the report in
+  // place so the user sees what was skipped and why.
+  let importForm = $state<{ calendarId: string; path: string } | null>(null)
+  let importBusy = $state(false)
+  let importError = $state('')
+  let importReport = $state<ImportCalendarReport | null>(null)
+
+  /** Calendars the import can target: everything in the sidebar
+      that isn't read-only (#236). Muted calendars stay eligible —
+      hiding a calendar's events from the grid doesn't make it a
+      wrong place to file new ones. */
+  const importableCalendars = $derived(sidebarCalendars.filter((c) => !c.read_only))
+
+  function openImport() {
+    importError = ''
+    importReport = null
+    importForm = { calendarId: defaultCalendarId(), path: '' }
+  }
+
+  async function pickImportFile() {
+    const picked = await api.platform.openFileDialog({
+      multiple: false,
+      filters: [{ name: 'Calendar', extensions: ['ics'] }],
+    })
+    if (typeof picked === 'string' && importForm) {
+      importForm.path = picked
+      importReport = null
+      importError = ''
+    }
+  }
+
+  /** Display name for the picked file — the dialog returns an
+      absolute path; the basename is all the modal needs to show. */
+  function importFileName(path: string): string {
+    return path.split(/[\\/]/).pop() ?? path
+  }
+
+  async function runImport() {
+    if (!importForm || !importForm.path || !importForm.calendarId || importBusy) return
+    importBusy = true
+    importError = ''
+    try {
+      importReport = await api.calendar.importCalendarFile({
+        calendarId: importForm.calendarId,
+        path: importForm.path,
+      })
+      await reloadFromCache(loadedRangeStart, loadedRangeEnd)
+    } catch (e) {
+      importError = formatError(e)
+    } finally {
+      importBusy = false
+    }
+  }
+
   // ── Click-and-drag in the time grid ─────────────────────────
   /** Map a vertical pixel offset inside a day column to a minute of
       the day, snapped to 15-minute increments so dragged events line
@@ -1262,6 +1335,16 @@
         title={m.calendar_view_new_event_title()}
         aria-label={m.calendar_view_new_event()}
       ><Icon name="plus" size={14} /></button>
+      <!-- Import .ics (#518) — secondary action, so tonal-surface
+           like Sync. Same `download` glyph the Contacts import CTA
+           uses, so "bring a file into the app" reads consistently. -->
+      <button
+        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+        disabled={importableCalendars.length === 0}
+        onclick={openImport}
+        title={m.calendar_import_title()}
+        aria-label={m.calendar_import_button()}
+      ><Icon name="download" size={14} /></button>
       <button
         class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
         disabled={accounts.length === 0 || syncing}
@@ -2028,6 +2111,103 @@
           disabled={calendarOpBusy}
           onclick={() => void confirmCalendarDelete()}
         >{calendarOpBusy ? 'Deleting…' : 'Delete'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Import-events modal (#518) — pick an .ics file + target calendar,
+     run the import, then show the report in place so the user sees
+     what was skipped and why before closing. Same shape as the
+     ContactsView import modal. -->
+{#if importForm}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget && !importBusy) importForm = null }}
+  >
+    <div class="glass-float rounded-2xl w-md max-w-full p-5">
+      <h3 class="text-base font-semibold mb-1">{m.calendar_import_title()}</h3>
+      <p class="text-xs text-on-glass-muted mb-4">{m.calendar_import_intro()}</p>
+
+      <label class="label mb-3">
+        <span>{m.calendar_import_label_calendar()}</span>
+        <Select
+          value={importForm.calendarId}
+          options={importableCalendars.map((c) => ({
+            value: c.id,
+            label: c.display_name,
+          }))}
+          onchange={(v) => { if (importForm) importForm.calendarId = v }}
+        />
+      </label>
+
+      <div class="text-xs text-surface-500 mb-1">{m.calendar_import_label_file()}</div>
+      <div class="flex items-center gap-2 mb-4">
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          disabled={importBusy}
+          onclick={() => void pickImportFile()}
+        >
+          <Icon name="attachment" size={14} />
+          {m.calendar_import_choose_file()}
+        </button>
+        <span class="text-sm truncate min-w-0 {importForm.path ? '' : 'text-on-glass-muted'}">
+          {importForm.path ? importFileName(importForm.path) : m.calendar_import_no_file()}
+        </span>
+      </div>
+
+      {#if importReport}
+        <div class="mb-3">
+          <div
+            class="inline-flex items-center gap-1 text-xs text-success-500"
+            aria-live="polite"
+          >
+            <Icon name="success" size={14} />
+            <span>{m.calendar_import_summary({
+              imported: importReport.imported,
+              total: importReport.total,
+              skipped: importReport.skipped_duplicates,
+            })}</span>
+          </div>
+          {#if importReport.errors.length > 0}
+            <p class="text-xs text-surface-500 mt-2 mb-1">{m.calendar_import_errors_label()}</p>
+            <ul class="text-xs text-red-500 max-h-32 overflow-y-auto space-y-0.5">
+              {#each importReport.errors as err}
+                <li class="wrap-break-word">{err}</li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
+
+      {#if importError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{importError}</p>
+      {/if}
+
+      <div class="flex justify-end gap-2">
+        {#if importReport}
+          <button
+            class="btn preset-filled-primary-500"
+            onclick={() => (importForm = null)}
+          >{m.calendar_import_close()}</button>
+        {:else}
+          <button
+            class="btn preset-outlined-surface-500"
+            disabled={importBusy}
+            onclick={() => (importForm = null)}
+          >{m.calendar_import_cancel()}</button>
+          <button
+            class="btn preset-filled-primary-500 inline-flex items-center gap-1.5"
+            disabled={importBusy || !importForm.path || !importForm.calendarId}
+            onclick={() => void runImport()}
+          >
+            {#if importBusy}<Icon name="loading" size={14} />{/if}
+            {importBusy ? m.calendar_import_running() : m.calendar_import_run()}
+          </button>
+        {/if}
       </div>
     </div>
   </div>
