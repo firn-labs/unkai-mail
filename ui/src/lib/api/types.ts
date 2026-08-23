@@ -33,6 +33,19 @@ export type FileEntry = any
 export type Folder = any
 export type GeocodeResult = any
 /**
+ * Backend `ImportCalendarReport` (#518) — summary of an `.ics` file
+ * import. Typed for real because the import dialog renders every
+ * field. Keys are snake_case: the Rust struct has no serde rename.
+ */
+export interface ImportCalendarReport {
+  /** VEVENTs found in the file before dedup / write attempts. */
+  total: number
+  imported: number
+  skipped_duplicates: number
+  /** Per-entry failure reasons (recurrence exceptions, write errors). */
+  errors: string[]
+}
+/**
  * Backend `ImportContactsReport` (#484) — summary of a contact file
  * import. Typed for real because the import dialog renders every
  * field. Keys are snake_case: the Rust struct has no serde rename.

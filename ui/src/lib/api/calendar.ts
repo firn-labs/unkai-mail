@@ -14,6 +14,7 @@ import type {
   CalendarEventInput,
   CalendarSummary,
   GeocodeResult,
+  ImportCalendarReport,
   InviteSummary,
   NextcloudMapsCapability,
   SyncCalendarsReport,
@@ -175,6 +176,13 @@ export function downloadCalendarFromMessage(args: {
 
 export function parseIcsFile(args: { path: string }): Promise<CalendarEvent[]> {
   return call('parse_ics_file', args)
+}
+
+export function importCalendarFile(args: {
+  calendarId: string
+  path: string
+}): Promise<ImportCalendarReport> {
+  return call('import_calendar_file', args)
 }
 
 export function geocodeSearch(args: {

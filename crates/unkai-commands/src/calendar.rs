@@ -2374,3 +2374,133 @@ pub fn parse_ics_file(path: String) -> Result<Vec<unkai_core::models::CalendarEv
         .map_err(|e| UnkaiError::Other(format!("read {path}: {e}")))?;
     unkai_caldav::ical::parse_ics(&body)
 }
+
+/// Summary of a completed calendar import (#518). Same shape as the
+/// contacts `ImportContactsReport`: a partial-failure-prone batch
+/// operation returns counts plus per-entry reasons instead of
+/// failing wholesale on the first bad VEVENT.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportCalendarReport {
+    /// VEVENTs found in the file, before dedup and write attempts.
+    pub total: u32,
+    /// Events actually created in the target calendar.
+    pub imported: u32,
+    /// Entries skipped because an event with the same iCalendar UID
+    /// already exists on one of the user's calendars.
+    pub skipped_duplicates: u32,
+    /// Human-readable reasons for entries that could not be imported
+    /// (recurrence exceptions, per-event write failures).
+    pub errors: Vec<String>,
+}
+
+/// Import every VEVENT from an `.ics` file into one calendar (#518).
+///
+/// Each event funnels through the same write path as the create
+/// form — `build_ics` → [`dav_create_event_for`] (which
+/// short-circuits for local-only sources) → cache upsert — so an
+/// imported event is indistinguishable from a hand-created one.
+///
+/// Two deliberate departures from a byte-faithful copy:
+///
+/// - **The file's UID is kept**, not re-minted. That makes dedup
+///   possible (re-importing the same export is a no-op) and keeps
+///   the event's identity for any later iMIP traffic about it.
+///   Dedup checks the whole account, not just the target calendar —
+///   the same event living on a sibling calendar is still a
+///   duplicate.
+/// - **ATTENDEE lines are dropped.** The create path stamps the
+///   current user as ORGANIZER (Sabre rejects attendees without
+///   one), and an ORGANIZER matching the user's principal makes
+///   Nextcloud's iTIP broker mail an invitation to every attendee —
+///   importing an old calendar export must never spray invites at
+///   hundreds of past participants. Events land as plain copies;
+///   reminders, recurrence, and everything else survive.
+///
+/// Recurrence *exceptions* (VEVENTs carrying `RECURRENCE-ID`) are
+/// skipped with a per-entry note: CalDAV requires master and
+/// overrides to share one resource, and the single-VEVENT
+/// `build_ics` writer can't express that. The master series still
+/// imports, so only the individually-modified occurrences revert
+/// to the series shape.
+pub async fn import_calendar_file(
+    calendar_id: String,
+    path: String,
+    cache: &Cache,
+    ui: &dyn UiNotifier,
+) -> Result<ImportCalendarReport, UnkaiError> {
+    let (nc_id, calendar_path) =
+        cache
+            .get_calendar_server_path(&calendar_id)?
+            .ok_or_else(|| {
+                UnkaiError::Other(format!(
+                    "calendar '{calendar_id}' is not in the local cache — refresh and try again"
+                ))
+            })?;
+    let account = load_nextcloud_account(&nc_id)?;
+
+    let body = std::fs::read_to_string(&path)
+        .map_err(|e| UnkaiError::Other(format!("read {path}: {e}")))?;
+    let events = unkai_caldav::ical::parse_ics(&body)?;
+
+    let mut report = ImportCalendarReport {
+        total: events.len() as u32,
+        imported: 0,
+        skipped_duplicates: 0,
+        errors: Vec::new(),
+    };
+
+    // UIDs written during this run — a file listing the same UID
+    // twice imports it once instead of erroring on the second PUT.
+    let mut seen_uids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for mut event in events {
+        let label = if event.summary.is_empty() {
+            event.id.clone()
+        } else {
+            event.summary.clone()
+        };
+        if event.recurrence_id.is_some() {
+            report.errors.push(format!(
+                "{label}: modified occurrence of a recurring series skipped"
+            ));
+            continue;
+        }
+        let uid = event.id.clone();
+        if seen_uids.contains(&uid) || cache.find_event_id_by_uid(&uid)?.is_some() {
+            report.skipped_duplicates += 1;
+            continue;
+        }
+
+        event.attendees.clear();
+        let ics = caldav_build_ics(&event, None, None);
+        match dav_create_event_for(&account, &calendar_path, &uid, &ics).await {
+            Ok(outcome) => {
+                let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
+                if let Err(e) = cache.upsert_single_event(&calendar_id, &row) {
+                    report.errors.push(format!("{label}: {e}"));
+                    continue;
+                }
+                report.imported += 1;
+                seen_uids.insert(uid);
+            }
+            Err(e) => {
+                flag_calendar_read_only_on_forbidden(ui, cache, &calendar_id, &e);
+                // A calendar flipped read-only mid-import fails the
+                // same way for every remaining event — stop early
+                // with one clear reason instead of N copies.
+                if matches!(e, UnkaiError::CalDavWriteForbidden(_)) {
+                    report.errors.push(format!("{label}: {e}"));
+                    break;
+                }
+                report.errors.push(format!("{label}: {e}"));
+            }
+        }
+    }
+
+    if report.imported > 0 {
+        ui.calendars_updated(&CalendarsUpdatedPayload {
+            nextcloud_account_id: Some(nc_id),
+        });
+    }
+    Ok(report)
+}
