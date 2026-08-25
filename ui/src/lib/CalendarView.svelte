@@ -1313,14 +1313,16 @@
 </script>
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
-  <!-- Header -->
+  <!-- Stacked header (#522): title above its icon-only actions,
+       docked LEFT like the other integration views so the
+       controls stay in the viewing angle on wide monitors.  No
+       search bar here, so the left cluster stands alone. -->
   <div
-    class="flex items-center justify-between px-6 py-3 border-b glass-panel"
+    class="flex items-center px-6 py-3 border-b glass-panel"
   >
-    <div class="flex items-center gap-3">
-      <h2 class="text-xl font-semibold">Calendar</h2>
-    </div>
-    <div class="flex items-center gap-2">
+    <div class="min-w-0 flex flex-col items-start gap-2">
+      <h2 class="text-xl font-semibold truncate">Calendar</h2>
+      <div class="flex items-center gap-2 shrink-0">
       <!-- Icon-only header actions matching the canonical shape
            used by SharesView / TalkView / FilesView.  "New event"
            stays filled-primary because it's the page's primary
@@ -1352,6 +1354,7 @@
         title={syncing ? m.calendar_view_syncing() : m.calendar_view_sync_title()}
         aria-label={syncing ? m.calendar_view_syncing() : m.calendar_view_sync()}
       ><Icon name={syncing ? 'loading' : 'sync'} size={14} /></button>
+      </div>
     </div>
   </div>
 

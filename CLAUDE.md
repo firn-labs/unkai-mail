@@ -132,6 +132,7 @@ These are project-wide affordances we expect Claude to apply automatically when 
   - **Buttons**: the icon-only `preset-outlined-surface-500` shape documented above (one shape, optional red-hover overlay for destructive). No tonal/filled wide-text buttons for per-row actions.
   - **Text inputs**: `class="input flex-1 text-sm px-2 py-1 rounded-lg"` (Sidebar rename + EncryptionSettings passphrase) or the slightly larger `class="input ... text-sm px-3 py-1.5 rounded-lg"` (SecuritySettings hardware-key + passphrase enrollment). Pick the one that matches the panel you're in — don't introduce a third variant. The default Skeleton `input` border carries enough "type here" signal; don't pile on `border-2 border-surface-400` overrides.
   - **Toggle rows**: toggle on the left, then a `flex-1` column with the label + saved-badge / off-state hint + any dependent sub-form (so the form aligns with the label, not the toggle button). Canonical refs: `SecuritySettings` Key Encryption toggle, `EncryptionSettings` Unlock automatically toggle.
+- **Form fields and dropdowns are outline-only and slim (#522).** A stack of wide filled boxes reads heavy and dated on the app canvas, so form/editor fields render with a **transparent fill** — the 1px `.input` border alone carries the "type here" signal — at `text-sm` with `SearchInput`'s slim `py-1.5` height. Implement it as ONE scoped rule on the form's wrapper class, not per-field utilities: `Select` and `DateField` triggers carry the same `.input` class as raw inputs, so `background-color: transparent; padding-block: 0.375rem` on `.<form-scope> .input, .<form-scope> .textarea` flattens text inputs, textareas, AND dropdowns together and keeps mixed rows (kind picker + input) even without every control's padding utilities having to agree. Being unlayered, the scoped rule deliberately beats Tailwind's layered padding utilities — leave a comment saying so. The central `app.css` border, placeholder, and primary focus-ring styling stays untouched, and field labels drop to the small muted voice (`0.75rem`, surface-500). Canonical ref: `.contact-form` in `ContactsView.svelte`. Migration is lazy — apply the scoped treatment when you're already touching a form. (`SearchInput` fields keep their central styling as-is, and controls sitting on glass surfaces keep the translucent fill — the #453 contrast calibration depends on it.)
 
 When in doubt, look at how `ContactsView` (mailing-list rows) and `Sidebar` (mail-folder rows) implement these — they're the canonical reference.
 
@@ -140,21 +141,22 @@ When in doubt, look at how `ContactsView` (mailing-list rows) and `Sidebar` (mai
 These conventions apply to every full-pane view the `IconRail` routes to — `FilesView`, `CalendarView`, `TalkView`, `NotesView`, `ContactsView`, `SharesView`. They emerged from the #117 redesign that unified those views into one design language; future integration views should follow the same shape from day one rather than re-inventing.
 
 - **No Close button in the header.** The `IconRail` owns navigation back to the inbox — every Close button in an integration view duplicates the rail's job. Drop the button *and* the `onclose` prop entirely; don't leave a dead prop behind. (Settings is the one exception: it's reached via the rail but uses its own shell.)
-- **Three-slot header when the view has a search bar.** Title pinned left, centered `SearchInput`, action buttons pinned right. Symmetric `flex-1` slots keep the search visually centered as the translated title length changes (German vs. English):
+- **Stacked header: title above its action buttons, docked LEFT (#522).** The left slot stacks the view title on top of the icon-only action-button row. Rationale: every integration view's interactive content (nav sidebar, list columns) hugs the left edge, so right-pinned actions drift out of the user's viewing angle on wide monitors — the left-docked stack keeps the actions directly above the columns they act on. When the view has a search bar it stays horizontally centered, with an empty `flex-1` right spacer mirroring the left slot so the search doesn't drift as the title/actions width changes (German vs. English):
   ```html
-  <div class="flex items-center gap-3 px-6 py-3 border-b ...">
-    <div class="flex-1 min-w-0 flex justify-start">
+  <div class="flex items-center gap-3 px-6 py-3 border-b glass-panel">
+    <div class="flex-1 min-w-0 flex flex-col items-start gap-2">
       <h2 class="text-xl font-semibold truncate">…</h2>
+      <div class="flex items-center gap-2 shrink-0">
+        … icon-only action buttons …
+      </div>
     </div>
     <div class="flex-1 flex justify-center min-w-0">
       <SearchInput bind:value={query} placeholder={…} class="w-full max-w-md" />
     </div>
-    <div class="flex-1 flex justify-end items-center gap-2">
-      … icon-only action buttons …
-    </div>
+    <div class="flex-1"></div>
   </div>
   ```
-  When there's no search bar (`CalendarView` today), a plain `flex items-center justify-between` is fine — the 3-slot is only needed to keep a centered child visually centered as the side slots change width.
+  When there's no search bar (`CalendarView` today), the same left cluster stands alone — drop the center/right slots. A master-detail view whose search filters one specific column (`ContactsView`) also skips the header search and instead puts the `SearchInput` in a slim bordered row at the top of that column, directly above the list it filters — never both. Whatever the variant, the header's contents must not change between a view's internal tabs/modes, so its height never jumps.
 - **Shared `SearchInput` component**, never re-inline the magnifier-icon + clear-X pattern. [`ui/src/lib/SearchInput.svelte`](ui/src/lib/SearchInput.svelte) wraps the canonical magnifier + Skeleton `.input` + clear-X shape and is used by every "Search …" surface (mail, contacts, notes, shares, files, talk). Accepts a `children` snippet that renders inside the relative wrapper, so callers that need a popover can anchor it to the input's bounding box without re-pasting the absolute positioning. (The mail `SearchBar`'s search-syntax documentation deliberately does NOT use this — passive focus-anchored dropdowns over the mail list read as noise under the glass chrome, so it lives in a standard modal popup; see #460. The `SearchBar` itself is a slim single row whose filter glyph opens an advanced-search popout that *builds* the operator query visibly into the input — structured fields and the query string are one source of truth, and the From/To fields reuse `AddressAutocomplete` in `pickMode="replace-address"`.)
   - **The clear-X assigns `value = ''` programmatically**, which doesn't fire the underlying input's native `input` event. Callers debouncing keystrokes should react via `$effect(() => { void value; scheduleSearch() })` rather than `oninput=`, otherwise the clear button won't kick off a re-search. Canonical ref: `SearchBar.svelte`'s `$effect`-based scheduler.
 - **Header action buttons are icon-only** — the same shape vocabulary as the per-row icon buttons but at the page level. Always carry both `title=` (tooltip) **and** `aria-label=` (screen reader) since the visible text label is gone; neither is optional.

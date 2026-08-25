@@ -3645,7 +3645,7 @@
       </div>
     {:else if currentView === 'contacts'}
       <div class="flex-1 min-w-0">
-        <ContactsView onclose={goToInbox} />
+        <ContactsView />
       </div>
     {:else if currentView === 'calendar'}
       <div class="flex-1 min-w-0">
