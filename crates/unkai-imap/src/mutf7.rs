@@ -90,10 +90,8 @@ fn decode_payload(payload: &str) -> Option<String> {
     }
     // mUTF-7 stores UTF-16 BE. Build a `Vec<u16>` then convert to
     // a String — `from_utf16` handles surrogate pairs correctly.
-    let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
-        .collect();
+    let (pairs, _) = raw.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&c| u16::from_be_bytes(c)).collect();
     String::from_utf16(&units).ok()
 }
 
