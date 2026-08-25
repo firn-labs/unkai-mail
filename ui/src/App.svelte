@@ -3669,7 +3669,6 @@
     {:else if currentView === 'notes'}
       <div class="flex-1 min-w-0">
         <NotesView
-          onclose={goToInbox}
           oncompose={openCompose}
           mailAccountId={activeAccountId}
           onopenmail={openMailRef}

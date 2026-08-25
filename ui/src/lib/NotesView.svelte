@@ -2,7 +2,9 @@
   /**
    * NotesView — sidebar-routed Nextcloud Notes browser + editor.
    *
-   * Three-column layout (#138):
+   * Stacked view header (#522/#525): title above the icon-only
+   * New note + Sync actions, docked left per the integration-view
+   * shell.  Below it, a three-column layout (#138):
    *   Sidebar  → folder tree built from `/`-separated category
    *              paths, plus virtuals (All / Favorites /
    *              Uncategorized).  Same WebDAV-style nesting that NC's
@@ -35,6 +37,7 @@
   import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
+  import { m } from '../paraglide/messages'
   import type { ComposeInitial } from './Compose.svelte'
   import Icon from './Icon.svelte'
   import SearchInput from './SearchInput.svelte'
@@ -70,7 +73,6 @@
     | { kind: 'category'; path: string }
 
   interface Props {
-    onclose: () => void
     /** Open Compose with the given prefill (used for "Send as email"). */
     oncompose: (initial: ComposeInitial) => void
     /** Active *mail* account id (#260).  Distinct from the Notes
@@ -86,7 +88,6 @@
     onopenmail?: (accountId: string, folder: string, uid: number) => void
   }
   const {
-    onclose,
     oncompose,
     mailAccountId = null,
     onopenmail,
@@ -98,6 +99,11 @@
   let notes = $state<Note[]>([])
   let loading = $state(false)
   let error = $state('')
+  /** True while a header-triggered sync round-trip is in flight —
+   *  drives the sync button's `loading` icon swap (CLAUDE.md
+   *  header-action idiom).  The background polling timer stays
+   *  silent and never touches this flag. */
+  let syncing = $state(false)
 
   /** Folders the user has explicitly created via "+ Add folder"
    *  but hasn't yet populated.  Persisted per-account in
@@ -199,7 +205,19 @@
         void syncNow()
       }
     } catch (e) {
-      error = formatError(e) || 'Failed to load Nextcloud accounts'
+      error = formatError(e) || m.notes_view_err_load_accounts()
+    }
+  }
+
+  /** Header sync button — the same round-trip the timer runs, but
+   *  with the `loading` icon swap so the user sees it working. */
+  async function manualSync() {
+    if (syncing) return
+    syncing = true
+    try {
+      await syncNow()
+    } finally {
+      syncing = false
     }
   }
 
@@ -235,7 +253,7 @@
         selectedId = null
       }
     } catch (e) {
-      error = formatError(e) || 'Failed to load notes'
+      error = formatError(e) || m.notes_view_err_load()
     } finally {
       loading = false
     }
@@ -243,11 +261,10 @@
 
   /** Network refresh — pulls every note from NC, applies the
    *  delta to the cache, then refreshes our in-memory list.
-   *  Always silent now: there's no user-facing refresh button,
-   *  so this only runs from the boot path and the 120 s polling
-   *  timer.  We do still surface errors via the existing `error`
-   *  string when the cache happens to be empty so the user
-   *  understands why their list is blank. */
+   *  Runs from the boot path, the 120 s polling timer, and the
+   *  header sync button (via `manualSync`, which adds the
+   *  loading-icon swap).  Silent on failure unless the cache is
+   *  empty — then the `error` string explains the blank list. */
   async function syncNow() {
     if (!accountId) return
     try {
@@ -284,7 +301,7 @@
       // background polling errors (we have a populated cache) are
       // noise that don't help the user.
       if (notes.length === 0) {
-        error = formatError(e) || 'Failed to sync notes'
+        error = formatError(e) || m.notes_view_err_sync()
       } else {
         console.warn('background notes sync failed', e)
       }
@@ -545,7 +562,7 @@
       }
       folderDeleteConfirm = null
     } catch (e) {
-      error = formatError(e) || 'Failed to remove folder'
+      error = formatError(e) || m.notes_view_err_remove_folder()
     } finally {
       folderOpBusy = false
     }
@@ -601,7 +618,7 @@
         savePendingFolders()
       }
     } catch (e) {
-      error = formatError(e) || 'Failed to move note'
+      error = formatError(e) || m.notes_view_err_move()
     }
   }
 
@@ -622,7 +639,7 @@
     )
     // Some browsers want a `text/plain` fallback for the drag
     // image / outside-app drag preview.
-    e.dataTransfer.setData('text/plain', note.title || '(untitled)')
+    e.dataTransfer.setData('text/plain', note.title || m.notes_view_untitled())
   }
 
   function isNoteDrag(e: DragEvent): boolean {
@@ -679,7 +696,7 @@
         saveStatus = ''
       }
     } catch (e) {
-      error = formatError(e) || 'Failed to delete note'
+      error = formatError(e) || m.notes_view_err_delete()
     }
   }
 
@@ -765,7 +782,7 @@
       }
       openNote(created)
     } catch (e) {
-      error = formatError(e) || 'Failed to create note'
+      error = formatError(e) || m.notes_view_err_create()
     }
   }
 
@@ -773,15 +790,15 @@
     if (!accountId || selectedId == null) return
     const note = notes.find((n) => n.id === selectedId)
     if (!note) return
-    const label = note.title.trim() || 'this note'
-    if (!confirm(`Delete ${label}? This cannot be undone.`)) return
+    const label = note.title.trim() || m.notes_view_this_note()
+    if (!confirm(m.notes_view_delete_confirm({ title: label }))) return
     try {
       await api.notes.deleteNextcloudNote({ ncId: accountId, noteId: note.id })
       notes = notes.filter((n) => n.id !== note.id)
       selectedId = null
       saveStatus = ''
     } catch (e) {
-      error = formatError(e) || 'Failed to delete note'
+      error = formatError(e) || m.notes_view_err_delete()
     }
   }
 
@@ -803,7 +820,7 @@
       notes = [updated, ...rest].sort((a, b) => b.modified - a.modified)
       if (selectedId === updated.id) draftEtag = updated.etag
     } catch (e) {
-      error = formatError(e) || 'Failed to update favorite'
+      error = formatError(e) || m.notes_view_err_favorite()
     }
   }
 
@@ -863,7 +880,7 @@
     const note = notes.find((n) => n.id === selectedId)
     if (!note) return
     oncompose({
-      subject: note.title || '(untitled note)',
+      subject: note.title || m.notes_view_untitled_note(),
       body: note.content,
       bodyAboveSignature: true,
     })
@@ -903,42 +920,59 @@
   }
 </script>
 
-<div class="h-full flex bg-surface-50 dark:bg-surface-900">
+<div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
+  <!-- Stacked header (#522) — the standard integration-view shell:
+       title above its icon-only actions, docked LEFT so the
+       controls stay in the viewing angle near the columns they act
+       on.  No header search — the list column carries its own
+       SearchInput directly above the rows it filters (the
+       master-detail variant, same as ContactsView).  The header
+       renders even with zero accounts (actions just disable) so
+       its height never changes. -->
+  <div class="flex items-center gap-3 px-6 py-3 border-b glass-panel">
+    <div class="flex-1 min-w-0 flex flex-col items-start gap-2">
+      <h2 class="text-xl font-semibold truncate">{m.notes_view_title()}</h2>
+      <div class="flex items-center gap-2 shrink-0">
+        <button
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+          disabled={!accountId}
+          onclick={newNote}
+          title={m.notes_view_new_note()}
+          aria-label={m.notes_view_new_note()}
+        ><Icon name="plus" size={14} /></button>
+        <button
+          class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+          disabled={!accountId || syncing}
+          onclick={() => void manualSync()}
+          title={syncing ? m.notes_view_syncing() : m.notes_view_sync_title()}
+          aria-label={syncing ? m.notes_view_syncing() : m.notes_view_sync()}
+        ><Icon name={syncing ? 'loading' : 'sync'} size={14} /></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="flex-1 min-h-0 flex">
   {#if accounts.length === 0 && !loading}
     <div class="flex-1 flex items-center justify-center text-sm text-surface-500 p-8 text-center">
-      Connect a Nextcloud account first (Settings → Nextcloud) to use Notes.
+      {m.notes_view_no_account()}
     </div>
   {:else}
-    <!-- Sidebar: New-note CTA + virtuals + folder tree + add-folder.
-         Layout mirrors the mail Sidebar (Compose at top, navigation
-         tree below) so the two views feel coherent. -->
+    <!-- Sidebar: virtuals + folder tree + add-folder.  The New
+         note CTA lives in the view header's action slot (#522),
+         so the column starts with navigation like the other
+         integration views. -->
     <aside
       class="shrink-0 border-r glass-panel flex flex-col text-sm"
       use:resizableSidebar={{ key: 'notes.navSidebar', defaultWidth: 224, min: 160, max: 480 }}
     >
-      <!-- Primary action — same shape + filled-primary preset as
-           the mail Compose CTA.  Plus glyph matches the per-row
-           "+ Add …" pattern used elsewhere in the app (no
-           standalone plus icon in the registry). -->
-      <div class="p-3">
-        <button
-          class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
-          onclick={newNote}
-          disabled={!accountId}
-        >
-          <span class="text-lg font-semibold leading-none">+</span>
-          New note
-        </button>
-      </div>
-
-      <div class="flex-1 min-h-0 overflow-y-auto pb-2">
+      <div class="flex-1 min-h-0 overflow-y-auto py-2">
         <!-- Virtuals -->
         <button
           class="notes-side-row {selectionMatches(selection, { kind: 'all' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'all' })}
         >
           <span class="notes-side-icon"><Icon name="notes" size={16} /></span>
-          <span class="flex-1 truncate text-left">All notes</span>
+          <span class="flex-1 truncate text-left">{m.notes_view_all_notes()}</span>
           <span class="notes-side-count">{totalNotes}</span>
         </button>
         <button
@@ -954,7 +988,7 @@
               ? ''
               : 'text-warning-500'}"
           ><Icon name="star" size={16} /></span>
-          <span class="flex-1 truncate text-left">Favorites</span>
+          <span class="flex-1 truncate text-left">{m.notes_view_favorites()}</span>
           <span class="notes-side-count">{favoriteCount}</span>
         </button>
         <button
@@ -965,7 +999,7 @@
           ondrop={(e) => void onFolderDrop(e, '')}
         >
           <span class="notes-side-icon text-base font-semibold leading-none">?</span>
-          <span class="flex-1 truncate text-left">Uncategorized</span>
+          <span class="flex-1 truncate text-left">{m.notes_view_uncategorized()}</span>
           <span class="notes-side-count">{uncategorizedCount}</span>
         </button>
 
@@ -1002,7 +1036,7 @@
                   e.stopPropagation()
                   toggleCollapsed(node.path)
                 }}
-                aria-label={isCollapsed ? 'Expand folder' : 'Collapse folder'}
+                aria-label={isCollapsed ? m.notes_view_expand_folder() : m.notes_view_collapse_folder()}
               >
                 {isCollapsed ? '▸' : '▾'}
               </button>
@@ -1027,8 +1061,8 @@
             <button
               type="button"
               class="notes-side-more {menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}"
-              title="Folder actions"
-              aria-label="Folder actions"
+              title={m.notes_view_folder_actions()}
+              aria-label={m.notes_view_folder_actions()}
               onclick={(e) => {
                 e.stopPropagation()
                 const r = anchorRect(e.currentTarget as HTMLElement)
@@ -1060,7 +1094,7 @@
               bind:value={newFolderName}
               type="text"
               class="notes-side-draft-input"
-              placeholder="New folder (use / for nested)"
+              placeholder={m.notes_view_new_folder_placeholder()}
               onkeydown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault()
@@ -1082,7 +1116,7 @@
           disabled={!accountId || creatingFolder}
         >
           <Icon name="add-folder" size={14} />
-          <span>Add folder</span>
+          <span>{m.notes_view_add_folder()}</span>
         </button>
       </div>
     </aside>
@@ -1106,7 +1140,7 @@
       <div class="border-b border-surface-200 dark:border-surface-700 p-2">
         <SearchInput
           bind:value={searchQuery}
-          placeholder="Search notes"
+          placeholder={m.notes_view_search_placeholder()}
         />
       </div>
 
@@ -1126,17 +1160,17 @@
 
       <div class="flex-1 min-h-0 overflow-y-auto">
         {#if loading && notes.length === 0}
-          <div class="p-6 text-center text-sm text-surface-500">Loading…</div>
+          <div class="p-6 text-center text-sm text-surface-500">{m.notes_view_loading()}</div>
         {:else if error && notes.length === 0}
           <div class="p-4 text-sm text-red-500">{error}</div>
         {:else if filteredNotes.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">
             {#if searchQuery.trim()}
-              No notes match <strong>"{searchQuery.trim()}"</strong>.
+              {m.notes_view_no_match({ query: searchQuery.trim() })}
             {:else if selection.kind === 'all'}
-              No notes yet. Click <strong>New note</strong> to create one.
+              {m.notes_view_empty()}
             {:else}
-              No notes in this folder.
+              {m.notes_view_empty_folder()}
             {/if}
           </div>
         {:else}
@@ -1159,7 +1193,7 @@
                     {#if n.favorite}
                       <span class="text-warning-500 shrink-0"><Icon name="star" size={12} /></span>
                     {/if}
-                    <span class="truncate">{n.title || '(untitled)'}</span>
+                    <span class="truncate">{n.title || m.notes_view_untitled()}</span>
                   </span>
                   <span class="text-xs text-surface-500 shrink-0">{fmtDate(n.modified)}</span>
                 </div>
@@ -1187,8 +1221,8 @@
                 <button
                   type="button"
                   class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn shadow-sm"
-                  title="Move to folder"
-                  aria-label="Move to folder"
+                  title={m.notes_view_move_to_folder()}
+                  aria-label={m.notes_view_move_to_folder()}
                   onclick={(e) => {
                     e.stopPropagation()
                     startMoveNote(n)
@@ -1199,8 +1233,8 @@
                 <button
                   type="button"
                   class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn quick-action-btn-danger shadow-sm"
-                  title="Delete"
-                  aria-label="Delete"
+                  title={m.notes_view_delete()}
+                  aria-label={m.notes_view_delete()}
                   onclick={(e) => {
                     e.stopPropagation()
                     void quickDeleteNote(n)
@@ -1219,7 +1253,7 @@
     <div class="flex-1 min-w-0 flex flex-col">
         {#if selectedId == null}
           <div class="flex-1 flex items-center justify-center text-sm text-surface-500">
-            Select a note from the list, or create a new one.
+            {m.notes_view_editor_empty()}
           </div>
         {:else}
           {@const open = notes.find((n) => n.id === selectedId)}
@@ -1227,50 +1261,60 @@
             <div class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
               <input
                 class="input flex-1 text-base font-semibold px-3 py-2 rounded-lg"
-                placeholder="Title (optional — derived from the first line if empty)"
+                placeholder={m.notes_view_title_placeholder()}
                 bind:value={draftTitle}
                 oninput={scheduleSave}
               />
               {#if saveStatus === 'saving'}
-                <span class="text-xs text-surface-400">Saving…</span>
+                <span class="text-xs text-surface-400">{m.notes_view_saving()}</span>
               {:else if saveStatus === 'saved'}
-                <span class="text-xs text-success-500">Saved</span>
+                <span class="text-xs text-success-500">{m.notes_view_saved()}</span>
               {:else if saveStatus === 'error'}
-                <span class="text-xs text-error-500">Save failed</span>
+                <span class="text-xs text-error-500">{m.notes_view_save_failed()}</span>
               {/if}
+              <!-- Icon-only action row on the project's single
+                   outlined-surface base (CLAUDE.md button
+                   vocabulary): the star's fill colour carries the
+                   favorite state, the eye toggles the rendered
+                   preview, and Delete stays neutral at rest with
+                   the red hover overlay marking it destructive. -->
               <button
-                class="btn btn-sm preset-outlined-warning-500 inline-flex items-center justify-center"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={toggleFavorite}
-                title={open.favorite ? 'Unstar' : 'Star'}
-                aria-label={open.favorite ? 'Unstar note' : 'Star note'}
+                title={open.favorite ? m.notes_view_unstar() : m.notes_view_star()}
+                aria-label={open.favorite ? m.notes_view_unstar() : m.notes_view_star()}
+                aria-pressed={open.favorite}
               >
                 <Icon
                   name="star"
-                  size={16}
-                  class={open.favorite ? 'text-warning-500' : 'text-surface-400'}
+                  size={14}
+                  class={open.favorite ? 'text-warning-500' : ''}
                 />
               </button>
               <button
-                class="btn btn-sm preset-outlined-surface-500"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                 onclick={() => (showPreview = !showPreview)}
-                title={showPreview ? 'Hide rendered preview' : 'Show rendered preview'}
+                title={showPreview ? m.notes_view_preview_hide() : m.notes_view_preview_show()}
+                aria-label={showPreview ? m.notes_view_preview_hide() : m.notes_view_preview_show()}
                 aria-pressed={showPreview}
-              >{showPreview ? 'Source' : 'Preview'}</button>
-              <button
-                class="btn btn-sm preset-outlined-primary-500 inline-flex items-center justify-center"
-                onclick={sendAsMail}
-                title="Send as mail"
-                aria-label="Open Compose with this note as the message body"
               >
-                <Icon name="email-envelope" size={16} />
+                <Icon name={showPreview ? 'eye-off' : 'eye'} size={14} />
               </button>
               <button
-                class="btn btn-sm preset-outlined-error-500 inline-flex items-center justify-center"
-                onclick={deleteSelected}
-                title="Delete note"
-                aria-label="Delete note"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+                onclick={sendAsMail}
+                title={m.notes_view_send_as_mail()}
+                aria-label={m.notes_view_send_as_mail_aria()}
               >
-                <Icon name="trash" size={16} />
+                <Icon name="email-envelope" size={14} />
+              </button>
+              <button
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                onclick={deleteSelected}
+                title={m.notes_view_delete_note()}
+                aria-label={m.notes_view_delete_note()}
+              >
+                <Icon name="trash" size={14} />
               </button>
             </div>
 
@@ -1286,6 +1330,7 @@
         {/if}
     </div>
   {/if}
+  </div>
 </div>
 
 <!-- Move-to-folder modal — same shape as `MoveFolderPicker.svelte`
@@ -1299,7 +1344,7 @@
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
     role="dialog"
     aria-modal="true"
-    aria-label="Move note to folder"
+    aria-label={m.notes_view_move_to_folder()}
     tabindex="-1"
     onclick={(e) => {
       if (e.target === e.currentTarget) movingNote = null
@@ -1307,11 +1352,11 @@
   >
     <div class="glass-float rounded-2xl flex flex-col w-[420px] max-w-[90vw] max-h-[80vh]">
       <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
-        <h2 class="text-base font-semibold">Move to folder</h2>
+        <h2 class="text-base font-semibold">{m.notes_view_move_to_folder()}</h2>
         <button
           class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
           onclick={() => (movingNote = null)}
-          aria-label="Close"
+          aria-label={m.notes_view_close()}
         >✕</button>
       </header>
 
@@ -1319,7 +1364,7 @@
         <input
           type="text"
           class="input w-full text-sm px-2 py-1 rounded-lg"
-          placeholder="Filter folders…"
+          placeholder={m.notes_view_filter_folders()}
           bind:value={moveFilter}
         />
       </div>
@@ -1327,8 +1372,7 @@
       <div class="flex-1 overflow-y-auto px-2 py-2">
         {#if allFolderPaths.length === 0 && currentCat === ''}
           <p class="px-3 py-2 text-xs text-surface-500">
-            No folders yet. Create one with "+ Add folder" in the
-            sidebar.
+            {m.notes_view_move_no_folders()}
           </p>
         {:else}
           <!-- Uncategorized first; disabled when the note is
@@ -1340,10 +1384,10 @@
                 : 'hover:bg-primary-500/10'}"
             disabled={currentCat === ''}
             onclick={() => pickMoveTarget('')}
-            title={currentCat === '' ? 'Already uncategorized' : 'Move to Uncategorized'}
+            title={currentCat === '' ? m.notes_view_already_uncategorized() : m.notes_view_move_to_uncategorized()}
           >
             <span class="text-base font-semibold leading-none w-4 text-center">?</span>
-            <span class="flex-1">Uncategorized</span>
+            <span class="flex-1">{m.notes_view_uncategorized()}</span>
           </button>
 
           {@const filteredPaths = (() => {
@@ -1364,14 +1408,14 @@
                     : 'hover:bg-primary-500/10'}"
                 disabled={isCurrent}
                 onclick={() => pickMoveTarget(path)}
-                title={isCurrent ? 'Already in this folder' : `Move to ${path}`}
+                title={isCurrent ? m.notes_view_already_in_folder() : m.notes_view_move_to_path({ path })}
               >
                 <Icon name="files" size={16} class="shrink-0" />
                 <span class="flex-1 truncate">{path}</span>
               </button>
             {/each}
           {:else if moveFilter.trim()}
-            <p class="px-3 py-2 text-xs text-surface-500">No folders match.</p>
+            <p class="px-3 py-2 text-xs text-surface-500">{m.notes_view_move_no_match()}</p>
           {/if}
         {/if}
       </div>
@@ -1396,7 +1440,7 @@
       onclick={() => startRemoveFolder(folderMenu!.path)}
     >
       <Icon name="delete-folder" size={16} />
-      <span>Remove folder</span>
+      <span>{m.notes_view_remove_folder()}</span>
     </button>
   </div>
 {/if}
@@ -1416,26 +1460,27 @@
   >
     <div class="glass-float rounded-2xl p-5 max-w-md w-full mx-4">
       <h2 class="text-base font-semibold mb-2">
-        Remove folder "{folderDeleteConfirm.path}"?
+        {m.notes_view_folder_delete_title({ path: folderDeleteConfirm.path })}
       </h2>
       <p class="text-sm text-surface-600 dark:text-surface-300 mb-4">
-        {folderDeleteConfirm.affectedCount}
-        {folderDeleteConfirm.affectedCount === 1 ? 'note' : 'notes'}
-        in this folder (and any sub-folders) will be moved to
-        <strong>Uncategorized</strong>.  The notes themselves
-        aren't deleted.
+        {folderDeleteConfirm.affectedCount === 1
+          ? m.notes_view_folder_delete_body_one()
+          : m.notes_view_folder_delete_body_many({ count: folderDeleteConfirm.affectedCount })}
       </p>
+      <!-- Labelled buttons deliberately — a destructive confirm
+           should read as words, not glyphs (same trade the
+           contact delete confirm makes). -->
       <div class="flex items-center justify-end gap-2">
         <button
           class="btn btn-sm preset-tonal"
           onclick={cancelRemoveFolder}
           disabled={folderOpBusy}
-        >Cancel</button>
+        >{m.notes_view_cancel()}</button>
         <button
           class="btn btn-sm preset-filled-error-500"
           onclick={confirmRemoveFolder}
           disabled={folderOpBusy}
-        >{folderOpBusy ? 'Removing…' : 'Remove'}</button>
+        >{folderOpBusy ? m.notes_view_removing() : m.notes_view_remove()}</button>
       </div>
     </div>
   </div>
