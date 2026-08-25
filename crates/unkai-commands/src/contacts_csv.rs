@@ -473,10 +473,8 @@ fn row_to_card(columns: &[ColumnRole], fields: &[String]) -> Option<ParsedVcard>
         .join(" ");
         if !assembled.is_empty() {
             card.display_name = assembled;
-        } else if let Some(first) = card.emails.first() {
-            card.display_name = first.value.clone();
         } else {
-            return None;
+            card.display_name = card.emails.first()?.value.clone();
         }
     }
     card.structured_name = name;
