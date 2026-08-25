@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::{
@@ -91,7 +91,7 @@ impl ServerHandler for UnkaiMcp {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         let Some(tool) = self.registry.get(&request.name) else {
             return Err(ErrorData::invalid_params(
                 format!("unknown tool: {}", request.name),
@@ -143,7 +143,11 @@ impl ServerHandler for UnkaiMcp {
             ));
         }
 
-        tool.invoke(self.ctx.clone(), request.arguments).await
+        // rmcp 3 wraps tool outcomes in `CallToolResponse` (Complete /
+        // InputRequired / Task); our registry tools always complete.
+        tool.invoke(self.ctx.clone(), request.arguments)
+            .await
+            .map(CallToolResponse::from)
     }
 }
 
