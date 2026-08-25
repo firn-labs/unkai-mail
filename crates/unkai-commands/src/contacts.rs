@@ -486,7 +486,10 @@ pub fn unescape_vcard_text(s: &str) -> String {
 
 #[cfg(test)]
 pub mod vcard_key_decode_tests {
-    use super::{decode_vcard_key_value, decode_vcard_smime_cert_value, unescape_vcard_text};
+    use super::{
+        Cache, ContactRow, decode_vcard_key_value, decode_vcard_smime_cert_value, get_contacts,
+        unescape_vcard_text,
+    };
 
     #[test]
     fn unescape_round_trips_armored_newlines() {
@@ -614,11 +617,78 @@ pub mod vcard_key_decode_tests {
         assert!(decode_vcard_key_value(untyped).is_some());
         assert!(decode_vcard_smime_cert_value(untyped).is_none());
     }
+
+    // --- Extended-field hydration (#523) ---------------------------------
+
+    #[test]
+    fn get_contacts_recovers_extended_vcard_fields_from_the_cache() {
+        // Regression for #523: the contacts list is what repopulates
+        // the edit form, so gender / languages / nickname etc. must
+        // survive the cache round-trip — a stripped list made the
+        // form look unsaved and the next save cleared the fields on
+        // the server.
+        let cache = Cache::open_in_memory().expect("in-memory cache");
+        let vcard_raw = concat!(
+            "BEGIN:VCARD\r\n",
+            "VERSION:4.0\r\n",
+            "UID:u-ext\r\n",
+            "FN:Alex Morgan\r\n",
+            "NICKNAME:Alex\r\n",
+            "GENDER:F\r\n",
+            "LANG:de\r\n",
+            "LANG:en\r\n",
+            "END:VCARD\r\n"
+        );
+        cache
+            .apply_contact_delta(
+                "nc1",
+                "contacts",
+                None,
+                &[ContactRow {
+                    href: "/dav/u-ext.vcf".into(),
+                    etag: "etag-1".into(),
+                    vcard_uid: "u-ext".into(),
+                    display_name: "Alex Morgan".into(),
+                    emails: Vec::new(),
+                    phones: Vec::new(),
+                    organization: None,
+                    photo_mime: None,
+                    photo_data: None,
+                    title: None,
+                    birthday: None,
+                    note: None,
+                    addresses: Vec::new(),
+                    urls: Vec::new(),
+                    vcard_raw: vcard_raw.into(),
+                    kind: String::new(),
+                    member_uids: Vec::new(),
+                    categories: Vec::new(),
+                }],
+                &[],
+                Some("t1"),
+                None,
+            )
+            .expect("apply delta");
+
+        let contacts = get_contacts(Some("nc1".into()), &cache).expect("list contacts");
+        assert_eq!(contacts.len(), 1);
+        let c = &contacts[0];
+        assert_eq!(c.nickname.as_deref(), Some("Alex"));
+        assert_eq!(c.gender.as_deref(), Some("F"));
+        assert_eq!(c.languages, vec!["de".to_string(), "en".to_string()]);
+    }
 }
 
 /// Cache-only list of contacts, optionally scoped to a single NC account.
+///
+/// Hydrates the extended vCard 4 fields (#143) from each row's cached
+/// body — this list is the single source the contacts view *and* its
+/// edit form read from, so it must carry every field the form can
+/// round-trip (#523).
 pub fn get_contacts(nc_id: Option<String>, cache: &Cache) -> Result<Vec<Contact>, UnkaiError> {
-    cache.list_contacts(nc_id.as_deref()).map_err(Into::into)
+    cache
+        .list_contacts(nc_id.as_deref(), hydrate_extended_vcard_fields)
+        .map_err(Into::into)
 }
 
 /// Substring search over cached contacts — feeds the compose
@@ -898,8 +968,10 @@ pub async fn import_contacts_file(
     // O(1) duplicate checks per entry instead of a query per card.
     // Scoped to the whole account (not just the target book): the
     // same person in a sibling addressbook is still a duplicate.
+    // No hydrate closure — the dup-check only reads UIDs + emails,
+    // which are columnar.
     let existing = cache
-        .list_contacts(Some(&nc_id))
+        .list_contacts(Some(&nc_id), |_, _| {})
         .map_err(UnkaiError::from)?;
     let mut seen_uids: std::collections::HashSet<String> = existing
         .iter()
@@ -2059,56 +2131,57 @@ pub fn parsed_to_row(
     }
 }
 
+/// #143: re-parse a cached vCard body and fill in the extended
+/// vCard 4 fields the cache schema doesn't store as dedicated
+/// columns (structured-name parts, nickname, anniversary, gender,
+/// impp, role, languages, geo, timezone, keys).  Round-tripping
+/// through the cached body avoids a schema migration; cost is one
+/// parse per contact, which is negligible (the parser is
+/// microseconds for a typical vCard).  When parsing fails —
+/// corrupt cached body, malformed server data, etc. — the fields
+/// keep their defaults so the rest of the contact still renders.
+///
+/// Used both for single rows freshly written by a save
+/// (`row_to_contact`) and as the hydrate closure `get_contacts`
+/// injects into `Cache::list_contacts` (#523 — the list is what
+/// repopulates the edit form, so leaving these defaulted there
+/// made the form render empty and the *next* save clear the
+/// fields on the server).
+pub fn hydrate_extended_vcard_fields(contact: &mut Contact, vcard_raw: &str) {
+    let Ok(parsed) = unkai_carddav::parse_vcard(vcard_raw) else {
+        return;
+    };
+    contact.structured_name = unkai_core::models::StructuredName {
+        family: parsed.structured_name.family,
+        given: parsed.structured_name.given,
+        additional: parsed.structured_name.additional,
+        prefix: parsed.structured_name.prefix,
+        suffix: parsed.structured_name.suffix,
+    };
+    contact.nickname = parsed.nickname;
+    contact.anniversary = parsed.anniversary;
+    contact.gender = parsed.gender;
+    contact.impp = parsed
+        .impp
+        .into_iter()
+        .map(|i| unkai_core::models::ContactImpp {
+            kind: i.kind,
+            value: i.value,
+        })
+        .collect();
+    contact.role = parsed.role;
+    contact.languages = parsed.languages;
+    contact.geo = parsed.geo;
+    contact.timezone = parsed.timezone;
+    contact.keys = parsed.keys;
+}
+
 /// Hydrate a freshly-written `ContactRow` into a UI-facing
 /// `Contact`. The composite id has to match the one the store
 /// uses internally (`{nc_account_id}::{vcard_uid}`) so the next
 /// `get_contacts` call returns the same record.
 pub fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) -> Contact {
-    // #143: re-parse `vcard_raw` to recover the extended vCard 4
-    // fields the cache schema doesn't store as dedicated columns
-    // (structured-name parts, nickname, anniversary, gender, impp,
-    // role, languages, geo, timezone, keys).  Round-tripping
-    // through the cached body avoids a schema migration; cost is
-    // one parse per contact returned to the UI, which is
-    // negligible (the parser is microseconds for a typical
-    // vCard).  When parsing fails — corrupt cached body, malformed
-    // server data, etc. — we fall back to defaults so the rest of
-    // the contact still renders.
-    let extra = unkai_carddav::parse_vcard(&row.vcard_raw).ok();
-    let structured_name = extra
-        .as_ref()
-        .map(|p| unkai_core::models::StructuredName {
-            family: p.structured_name.family.clone(),
-            given: p.structured_name.given.clone(),
-            additional: p.structured_name.additional.clone(),
-            prefix: p.structured_name.prefix.clone(),
-            suffix: p.structured_name.suffix.clone(),
-        })
-        .unwrap_or_default();
-    let nickname = extra.as_ref().and_then(|p| p.nickname.clone());
-    let anniversary = extra.as_ref().and_then(|p| p.anniversary.clone());
-    let gender = extra.as_ref().and_then(|p| p.gender.clone());
-    let impp: Vec<unkai_core::models::ContactImpp> = extra
-        .as_ref()
-        .map(|p| {
-            p.impp
-                .iter()
-                .map(|i| unkai_core::models::ContactImpp {
-                    kind: i.kind.clone(),
-                    value: i.value.clone(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let role = extra.as_ref().and_then(|p| p.role.clone());
-    let languages = extra
-        .as_ref()
-        .map(|p| p.languages.clone())
-        .unwrap_or_default();
-    let geo = extra.as_ref().and_then(|p| p.geo.clone());
-    let timezone = extra.as_ref().and_then(|p| p.timezone.clone());
-    let keys = extra.as_ref().map(|p| p.keys.clone()).unwrap_or_default();
-    Contact {
+    let mut contact = Contact {
         id: format!("{nc_account_id}::{}", row.vcard_uid),
         nextcloud_account_id: nc_account_id.to_string(),
         addressbook: addressbook.to_string(),
@@ -2125,17 +2198,19 @@ pub fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) 
         urls: row.urls.clone(),
         kind: row.kind.clone(),
         categories: row.categories.clone(),
-        structured_name,
-        nickname,
-        anniversary,
-        gender,
-        impp,
-        role,
-        languages,
-        geo,
-        timezone,
-        keys,
-    }
+        structured_name: unkai_core::models::StructuredName::default(),
+        nickname: None,
+        anniversary: None,
+        gender: None,
+        impp: Vec::new(),
+        role: None,
+        languages: Vec::new(),
+        geo: None,
+        timezone: None,
+        keys: Vec::new(),
+    };
+    hydrate_extended_vcard_fields(&mut contact, &row.vcard_raw);
+    contact
 }
 
 pub fn load_contact_handle(

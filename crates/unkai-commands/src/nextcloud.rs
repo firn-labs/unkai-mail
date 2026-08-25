@@ -817,8 +817,10 @@ pub async fn list_nextcloud_groups(cache: &Cache) -> Result<Vec<NextcloudGroupVi
     // this lets us recover emails even when the OCS user-profile
     // endpoint hides them (regular users querying other users
     // only get a display name, not the email field).
+    // No hydrate closure — this map only reads UIDs, names, and
+    // emails, which are columnar.
     let cache_uid_email: std::collections::HashMap<String, (String, String)> = cache
-        .list_contacts(None)
+        .list_contacts(None, |_, _| {})
         .unwrap_or_default()
         .into_iter()
         .filter_map(|c| {

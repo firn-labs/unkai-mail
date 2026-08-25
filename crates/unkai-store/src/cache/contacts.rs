@@ -284,39 +284,66 @@ impl Cache {
     /// addressbook into 30+ MB of IPC traffic. `photo_mime` is kept
     /// as a presence flag; the UI uses `get_contact_photo` to fetch
     /// the bytes on demand for whichever rows it actually paints.
-    pub fn list_contacts(&self, nc_account_id: Option<&str>) -> Result<Vec<Contact>, CacheError> {
+    ///
+    /// `hydrate` runs once per row with the row's cached `vcard_raw`
+    /// so the caller can recover the extended vCard 4 fields (#143:
+    /// structured name, nickname, anniversary, gender, impp, role,
+    /// languages, geo, timezone, keys) that have no dedicated columns
+    /// in this table (#523 — without this, the contact form showed
+    /// those fields empty and the next save cleared them on the
+    /// server). Injected as a closure so this crate stays a dep leaf
+    /// without a vCard parser — same pattern as `backfill_addresses`.
+    /// Callers that only need the columnar fields (ids, names,
+    /// emails) pass `|_, _| {}`.
+    pub fn list_contacts<F>(
+        &self,
+        nc_account_id: Option<&str>,
+        mut hydrate: F,
+    ) -> Result<Vec<Contact>, CacheError>
+    where
+        F: FnMut(&mut Contact, &str),
+    {
         let conn = self.conn()?;
         let mut stmt;
+        let map_row = |r: &rusqlite::Row<'_>| {
+            let contact = row_to_contact_no_photo(r)?;
+            let vcard_raw: Option<String> = r.get(14)?;
+            Ok((contact, vcard_raw))
+        };
         let rows = match nc_account_id {
             Some(nc) => {
                 stmt = conn.prepare(
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
                             phones_json, organization, photo_mime,
                             title, birthday, note, addresses_json, urls_json,
-                            categories_json, addressbook
+                            categories_json, addressbook, vcard_raw
                      FROM contacts
                      WHERE nextcloud_account_id = ?1
                        AND COALESCE(kind, '') != 'group'
                      ORDER BY display_name COLLATE NOCASE",
                 )?;
-                stmt.query_map(params![nc], row_to_contact_no_photo)?
+                stmt.query_map(params![nc], map_row)?
             }
             None => {
                 stmt = conn.prepare(
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
                             phones_json, organization, photo_mime,
                             title, birthday, note, addresses_json, urls_json,
-                            categories_json, addressbook
+                            categories_json, addressbook, vcard_raw
                      FROM contacts
                      WHERE COALESCE(kind, '') != 'group'
                      ORDER BY display_name COLLATE NOCASE",
                 )?;
-                stmt.query_map([], row_to_contact_no_photo)?
+                stmt.query_map([], map_row)?
             }
         };
         let mut out = Vec::new();
         for r in rows {
-            out.push(r?);
+            let (mut contact, vcard_raw) = r?;
+            if let Some(raw) = vcard_raw.as_deref().filter(|s| !s.is_empty()) {
+                hydrate(&mut contact, raw);
+            }
+            out.push(contact);
         }
         Ok(out)
     }
@@ -1050,12 +1077,13 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         urls: serde_json::from_str(&urls_json).unwrap_or_default(),
         kind: String::new(),
         categories: serde_json::from_str(&categories_json).unwrap_or_default(),
-        // #143 — extended vCard 4 fields aren't materialised in
-        // this cache row.  Callers that surface the contact form
-        // (`row_to_contact` in src-tauri) re-parse `vcard_raw` to
-        // recover them; this lighter list-rendering path leaves
-        // them defaulted because the autocomplete / search /
-        // list-view UIs don't show them.
+        // #143 — extended vCard 4 fields aren't materialised as
+        // columns in this table, so they start defaulted here.
+        // `list_contacts` recovers them via its injected `hydrate`
+        // closure (which re-parses `vcard_raw` in `unkai-commands`);
+        // `search_contacts` deliberately leaves them defaulted —
+        // the compose-autocomplete rows it feeds only ever render
+        // name + email (#523).
         structured_name: unkai_core::models::StructuredName::default(),
         nickname: None,
         anniversary: None,
@@ -1278,7 +1306,7 @@ mod tests {
             )
             .unwrap();
 
-        let after_update = cache.list_contacts(Some("nc1")).unwrap();
+        let after_update = cache.list_contacts(Some("nc1"), |_, _| {}).unwrap();
         assert_eq!(after_update[0].display_name, "Alice Updated");
 
         // Now delete by the href the row was stored at.
@@ -1295,6 +1323,36 @@ mod tests {
             .unwrap();
 
         assert_eq!(cache.count_contacts("nc1").unwrap(), 0);
+    }
+
+    #[test]
+    fn list_contacts_feeds_vcard_raw_to_the_hydrate_closure() {
+        // #523 — the closure is how callers recover the extended
+        // vCard 4 fields this table has no columns for. This crate
+        // has no vCard parser, so the test only proves the contract:
+        // the closure sees each row's cached body and its mutations
+        // survive into the returned list.
+        let cache = open_test_cache();
+        cache
+            .apply_contact_delta(
+                "nc1",
+                "contacts",
+                None,
+                &[row("u1", "Alex Morgan", "alex@example.com")],
+                &[],
+                Some("t1"),
+                None,
+            )
+            .unwrap();
+
+        let contacts = cache
+            .list_contacts(Some("nc1"), |c, raw| {
+                assert!(raw.contains("UID:u1"));
+                c.nickname = Some("hydrated".into());
+            })
+            .unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].nickname.as_deref(), Some("hydrated"));
     }
 
     #[test]
