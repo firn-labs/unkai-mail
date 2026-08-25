@@ -129,7 +129,7 @@ base64 = "0.23"
 # (#164).  Used to seal the master key under a per-credential
 # PRF output so the plain key never persists in the keychain
 # once FIDO mode is enabled.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 # PBKDF2-HMAC-SHA-256 for the passphrase-derived master-key wrap
 # (#164).  Sibling shape to the FIDO PRF wrap — same envelope,
 # different way to produce the 32-byte unwrap key.  Doubles as
