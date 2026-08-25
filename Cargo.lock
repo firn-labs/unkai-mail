@@ -7446,7 +7446,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -7491,7 +7491,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-caldav"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -7509,7 +7509,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-carddav"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "ical",
@@ -7524,7 +7524,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-commands"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -7556,7 +7556,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "hex",
@@ -7572,7 +7572,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-crypto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "openssl",
  "pgp",
@@ -7588,7 +7588,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-discovery"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hickory-resolver",
  "quick-xml 0.41.0",
@@ -7602,7 +7602,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-imap"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-imap",
  "base64 0.23.1",
@@ -7622,7 +7622,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-jmap"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "chrono",
@@ -7638,7 +7638,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -7667,7 +7667,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-nextcloud"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "quick-xml 0.41.0",
@@ -7682,7 +7682,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-smtp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -7700,7 +7700,7 @@ dependencies = [
 
 [[package]]
 name = "unkai-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "base64 0.23.1",
