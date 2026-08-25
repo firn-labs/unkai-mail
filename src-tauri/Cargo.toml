@@ -107,7 +107,7 @@ windows = { version = "0.62", features = ["Win32_UI_Shell"] }
 # can attach an `on_activated` click callback — the plugin exposes
 # no desktop click event, and clicking a new-mail / reminder toast
 # has to focus the window and deep-link to the message.
-tauri-winrt-notification = "0.7"
+tauri-winrt-notification = "0.8"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
