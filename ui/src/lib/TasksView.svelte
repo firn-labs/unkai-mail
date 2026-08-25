@@ -2,7 +2,9 @@
   /**
    * TasksView — rail-routed Nextcloud Tasks browser + editor (#92).
    *
-   * Three-column layout mirroring NotesView:
+   * Stacked view header (#522/#525): title above the icon-only
+   * New task + Sync actions, docked left per the integration-view
+   * shell.  Below it, a three-column layout mirroring NotesView:
    *
    *   Sidebar → virtual buckets (All / Today / Overdue / Completed)
    *             plus one row per task list (CalDAV collection that
@@ -37,6 +39,7 @@
   import { isNextcloudSource } from './ncSources'
   import { onDestroy, onMount } from 'svelte'
   import { formatError } from './errors'
+  import { m } from '../paraglide/messages'
   import DateField from './DateField.svelte'
   import Icon from './Icon.svelte'
   import SearchInput from './SearchInput.svelte'
@@ -113,6 +116,11 @@
   let tasks = $state<Task[]>([])
   let loading = $state(false)
   let error = $state('')
+  /** True while a header-triggered sync round-trip is in flight —
+   *  drives the sync button's `loading` icon swap (CLAUDE.md
+   *  header-action idiom).  The background polling timer stays
+   *  silent and never touches this flag. */
+  let syncing = $state(false)
   let selection = $state<Selection>({ kind: 'all' })
 
   let selectedUid = $state<string | null>(null)
@@ -172,7 +180,19 @@
         void syncNow()
       }
     } catch (e) {
-      error = formatError(e) || 'Failed to load Nextcloud accounts'
+      error = formatError(e) || m.tasks_view_err_load_accounts()
+    }
+  }
+
+  /** Header sync button — the same round-trip the timer runs, but
+   *  with the `loading` icon swap so the user sees it working. */
+  async function manualSync() {
+    if (syncing) return
+    syncing = true
+    try {
+      await syncNow()
+    } finally {
+      syncing = false
     }
   }
 
@@ -212,7 +232,7 @@
         selectedUid = null
       }
     } catch (e) {
-      error = formatError(e) || 'Failed to load tasks'
+      error = formatError(e) || m.tasks_view_err_load()
     } finally {
       loading = false
     }
@@ -245,7 +265,7 @@
       tasks = latestTasks
     } catch (e) {
       if (tasks.length === 0) {
-        error = formatError(e) || 'Failed to sync tasks'
+        error = formatError(e) || m.tasks_view_err_sync()
       } else {
         console.warn('background tasks sync failed', e)
       }
@@ -580,7 +600,7 @@
         }
       }
     } catch (e) {
-      error = formatError(e) || 'Failed to update task'
+      error = formatError(e) || m.tasks_view_err_update()
     }
   }
 
@@ -603,7 +623,7 @@
       // Rollback on failure so the swatch state matches the cache.
       const i = lists.findIndex((x) => x.id === l.id)
       if (i !== -1) lists[i] = { ...lists[i], muted: !newMuted }
-      error = formatError(e) || 'Failed to update list visibility'
+      error = formatError(e) || m.tasks_view_err_visibility()
     }
   }
 
@@ -611,7 +631,7 @@
     if (!accountId || selectedUid == null) return
     const t = tasks.find((x) => x.uid === selectedUid)
     if (!t) return
-    if (!confirm(`Delete "${t.summary || '(untitled task)'}"? This cannot be undone.`)) return
+    if (!confirm(m.tasks_view_delete_confirm({ title: t.summary || m.tasks_view_untitled() }))) return
     try {
       await api.tasks.deleteNextcloudTask({
         ncId: accountId,
@@ -622,7 +642,7 @@
       selectedUid = null
       saveStatus = ''
     } catch (e) {
-      error = formatError(e) || 'Failed to delete task'
+      error = formatError(e) || m.tasks_view_err_delete()
     }
   }
 
@@ -640,7 +660,7 @@
         saveStatus = ''
       }
     } catch (e) {
-      error = formatError(e) || 'Failed to delete task'
+      error = formatError(e) || m.tasks_view_err_delete()
     }
   }
 
@@ -678,7 +698,7 @@
         : firstNewListId
     newTaskListId = seed || ''
     if (!newTaskListId) {
-      error = 'Connect a Nextcloud account with at least one task list first.'
+      error = m.tasks_view_no_list_error()
       return
     }
     // Reset every field so the modal opens clean — without this
@@ -738,7 +758,7 @@
       newReminderTime = ''
       newPriority = 0
     } catch (e) {
-      error = formatError(e) || 'Failed to create task'
+      error = formatError(e) || m.tasks_view_err_create()
     } finally {
       creatingInFlight = false
     }
@@ -793,9 +813,9 @@
     due.setHours(0, 0, 0, 0)
     const dayMs = 24 * 60 * 60 * 1000
     const diffDays = Math.round((due.getTime() - today.getTime()) / dayMs)
-    if (diffDays === 0) return 'Today'
-    if (diffDays === 1) return 'Tomorrow'
-    if (diffDays === -1) return 'Yesterday'
+    if (diffDays === 0) return m.tasks_view_due_today()
+    if (diffDays === 1) return m.tasks_view_due_tomorrow()
+    if (diffDays === -1) return m.tasks_view_due_yesterday()
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
   }
 
@@ -809,9 +829,9 @@
   }
 
   function priorityLabel(p: number): string {
-    if (p >= 1 && p <= 4) return 'High'
-    if (p === 5) return 'Medium'
-    if (p >= 6 && p <= 9) return 'Low'
+    if (p >= 1 && p <= 4) return m.tasks_view_priority_high()
+    if (p === 5) return m.tasks_view_priority_medium()
+    if (p >= 6 && p <= 9) return m.tasks_view_priority_low()
     return ''
   }
 
@@ -841,40 +861,57 @@
   })
 </script>
 
-<div class="h-full flex bg-surface-50 dark:bg-surface-900">
+<div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
+  <!-- Stacked header (#522) — the standard integration-view shell:
+       title above its icon-only actions, docked LEFT so the
+       controls stay in the viewing angle near the columns they act
+       on.  No header search — the list column carries its own
+       SearchInput directly above the rows it filters (the
+       master-detail variant, same as ContactsView / NotesView).
+       The header renders even with zero accounts (actions just
+       disable) so its height never changes. -->
+  <div class="flex items-center gap-3 px-6 py-3 border-b glass-panel">
+    <div class="flex-1 min-w-0 flex flex-col items-start gap-2">
+      <h2 class="text-xl font-semibold truncate">{m.tasks_view_title()}</h2>
+      <div class="flex items-center gap-2 shrink-0">
+        <button
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+          disabled={!accountId || lists.length === 0}
+          onclick={startCreate}
+          title={m.tasks_view_new_task()}
+          aria-label={m.tasks_view_new_task()}
+        ><Icon name="plus" size={14} /></button>
+        <button
+          class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+          disabled={!accountId || syncing}
+          onclick={() => void manualSync()}
+          title={syncing ? m.tasks_view_syncing() : m.tasks_view_sync_title()}
+          aria-label={syncing ? m.tasks_view_syncing() : m.tasks_view_sync()}
+        ><Icon name={syncing ? 'loading' : 'sync'} size={14} /></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="flex-1 min-h-0 flex">
   {#if accounts.length === 0 && !loading}
     <div class="flex-1 flex items-center justify-center text-sm text-surface-500 p-8 text-center">
-      Connect a Nextcloud account first (Settings → Nextcloud) to use Tasks.
+      {m.tasks_view_no_account()}
     </div>
   {:else}
-    <!-- Sidebar: virtuals + task lists.  Mirrors NotesView's nav
-         column shape so the two integration views feel coherent. -->
+    <!-- Sidebar: virtuals + task lists.  The New task CTA lives in
+         the view header's action slot (#522), so the column starts
+         with navigation like the other integration views. -->
     <aside
       class="shrink-0 border-r glass-panel flex flex-col text-sm"
       use:resizableSidebar={{ key: 'tasks.navSidebar', defaultWidth: 224, min: 160, max: 480 }}
     >
-      <!-- Primary action — same shape + filled-primary preset as
-           NotesView's "+ New note" / mail Compose CTA. -->
-      <div class="p-3">
-        <button
-          class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
-          onclick={startCreate}
-          disabled={!accountId || lists.length === 0}
-          title="New task"
-          aria-label="New task"
-        >
-          <Icon name="plus" size={16} />
-          <span>New task</span>
-        </button>
-      </div>
-
-      <div class="flex-1 min-h-0 overflow-y-auto pb-2">
+      <div class="flex-1 min-h-0 overflow-y-auto py-2">
         <button
           class="tasks-side-row {selectionMatches(selection, { kind: 'all' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'all' })}
         >
           <span class="tasks-side-icon"><Icon name="tasks" size={16} /></span>
-          <span class="flex-1 truncate text-left">All open</span>
+          <span class="flex-1 truncate text-left">{m.tasks_view_all_open()}</span>
           <span class="tasks-side-count">{allCount}</span>
         </button>
         <button
@@ -882,7 +919,7 @@
           onclick={() => (selection = { kind: 'today' })}
         >
           <span class="tasks-side-icon text-warning-500"><Icon name="today" size={16} /></span>
-          <span class="flex-1 truncate text-left">Today</span>
+          <span class="flex-1 truncate text-left">{m.tasks_view_today()}</span>
           <span class="tasks-side-count">{todayCount}</span>
         </button>
         <button
@@ -890,7 +927,7 @@
           onclick={() => (selection = { kind: 'overdue' })}
         >
           <span class="tasks-side-icon text-red-500"><Icon name="warning" size={16} /></span>
-          <span class="flex-1 truncate text-left">Overdue</span>
+          <span class="flex-1 truncate text-left">{m.tasks_view_overdue()}</span>
           <span class="tasks-side-count">{overdueCount}</span>
         </button>
         <button
@@ -898,7 +935,7 @@
           onclick={() => (selection = { kind: 'completed' })}
         >
           <span class="tasks-side-icon text-success-500"><Icon name="success" size={16} /></span>
-          <span class="flex-1 truncate text-left">Completed</span>
+          <span class="flex-1 truncate text-left">{m.tasks_view_completed()}</span>
           <span class="tasks-side-count">{completedCount}</span>
         </button>
 
@@ -922,8 +959,8 @@
               style={isMuted
                 ? `background-color: transparent; border-color: ${l.color || '#6b7280'};`
                 : `background-color: ${l.color || '#6b7280'}; border-color: ${l.color || '#6b7280'};`}
-              title={isMuted ? 'Show tasks in the virtual buckets' : 'Hide tasks from the virtual buckets'}
-              aria-label={isMuted ? 'Show list tasks' : 'Hide list tasks'}
+              title={isMuted ? m.tasks_view_unmute_title() : m.tasks_view_mute_title()}
+              aria-label={isMuted ? m.tasks_view_unmute() : m.tasks_view_mute()}
               onclick={(e) => {
                 e.stopPropagation()
                 void toggleListMuted(l)
@@ -940,7 +977,7 @@
         {/each}
         {#if lists.length === 0 && !loading}
           <p class="px-4 py-3 text-xs text-surface-500">
-            No task lists yet. Create one in the Nextcloud Tasks app, then refresh here.
+            {m.tasks_view_no_lists()}
           </p>
         {/if}
       </div>
@@ -953,7 +990,7 @@
       use:resizableSidebar={{ key: 'tasks.listColumn', defaultWidth: 320, min: 240, max: 600 }}
     >
       <div class="border-b border-surface-200 dark:border-surface-700 p-2">
-        <SearchInput bind:value={searchQuery} placeholder="Search tasks" />
+        <SearchInput bind:value={searchQuery} placeholder={m.tasks_view_search_placeholder()} />
       </div>
 
       {#if accounts.length > 1}
@@ -972,19 +1009,19 @@
 
       <div class="flex-1 min-h-0 overflow-y-auto">
         {#if loading && tasks.length === 0}
-          <div class="p-6 text-center text-sm text-surface-500">Loading…</div>
+          <div class="p-6 text-center text-sm text-surface-500">{m.tasks_view_loading()}</div>
         {:else if error && tasks.length === 0}
           <div class="p-4 text-sm text-red-500">{error}</div>
         {:else if tasks.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">
-            No tasks yet.  Click <strong>New task</strong> in the sidebar to create one.
+            {m.tasks_view_empty()}
           </div>
         {:else if filteredTasks.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">
             {#if searchQuery.trim()}
-              No tasks match <strong>"{searchQuery.trim()}"</strong>.
+              {m.tasks_view_no_match({ query: searchQuery.trim() })}
             {:else}
-              No tasks in this view.
+              {m.tasks_view_empty_view()}
             {/if}
           </div>
         {:else}
@@ -1006,8 +1043,8 @@
                   class="mt-0.5 w-4 h-4 rounded border border-surface-400 dark:border-surface-500
                          inline-flex items-center justify-center shrink-0
                          {completed ? 'bg-success-500 border-success-500 text-white' : 'hover:border-primary-500'}"
-                  title={completed ? 'Mark as not done' : 'Mark as done'}
-                  aria-label={completed ? 'Mark as not done' : 'Mark as done'}
+                  title={completed ? m.tasks_view_mark_not_done() : m.tasks_view_mark_done()}
+                  aria-label={completed ? m.tasks_view_mark_not_done() : m.tasks_view_mark_done()}
                   aria-pressed={completed}
                   onclick={(e) => {
                     e.stopPropagation()
@@ -1027,7 +1064,7 @@
                       class="text-sm truncate flex-1
                              {completed ? 'line-through text-surface-400' : 'text-surface-900 dark:text-surface-100'}"
                     >
-                      {t.summary || '(untitled task)'}
+                      {t.summary || m.tasks_view_untitled()}
                     </span>
                     {#if t.due}
                       <span class="text-xs shrink-0 {dueClasses(t)}">{fmtDue(t.due)}</span>
@@ -1056,7 +1093,7 @@
                     {#if sourceMail}
                       <span class="text-[10px] inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary-500/10 text-primary-500">
                         <Icon name="email-envelope" size={11} />
-                        <span>Mail</span>
+                        <span>{m.tasks_view_mail_chip()}</span>
                       </span>
                     {/if}
                   </div>
@@ -1075,8 +1112,8 @@
                   <button
                     type="button"
                     class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn shadow-sm"
-                    title="Open source mail"
-                    aria-label="Open source mail"
+                    title={m.tasks_view_open_source_mail()}
+                    aria-label={m.tasks_view_open_source_mail()}
                     onclick={(e) => {
                       e.stopPropagation()
                       openSourceMail(t)
@@ -1088,8 +1125,8 @@
                 <button
                   type="button"
                   class="w-7 h-7 rounded-lg flex items-center justify-center quick-action-btn quick-action-btn-danger shadow-sm"
-                  title="Delete"
-                  aria-label="Delete"
+                  title={m.tasks_view_delete()}
+                  aria-label={m.tasks_view_delete()}
                   onclick={(e) => {
                     e.stopPropagation()
                     void quickDelete(t)
@@ -1108,7 +1145,7 @@
     <div class="flex-1 min-w-0 flex flex-col">
       {#if selectedUid == null}
         <div class="flex-1 flex items-center justify-center text-sm text-surface-500">
-          Select a task from the list, or create a new one.
+          {m.tasks_view_editor_empty()}
         </div>
       {:else}
         {@const open = tasks.find((t) => t.uid === selectedUid)}
@@ -1117,22 +1154,22 @@
           <div class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
             <input
               class="input flex-1 text-base font-semibold px-3 py-2 rounded-lg"
-              placeholder="Task title"
+              placeholder={m.tasks_view_title_placeholder()}
               bind:value={draftSummary}
               oninput={scheduleSave}
             />
             {#if saveStatus === 'saving'}
-              <span class="text-xs text-surface-400">Saving…</span>
+              <span class="text-xs text-surface-400">{m.tasks_view_saving()}</span>
             {:else if saveStatus === 'saved'}
-              <span class="text-xs text-success-500">Saved</span>
+              <span class="text-xs text-success-500">{m.tasks_view_saved()}</span>
             {:else if saveStatus === 'error'}
-              <span class="text-xs text-error-500">Save failed</span>
+              <span class="text-xs text-error-500">{m.tasks_view_save_failed()}</span>
             {/if}
             <button
               class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
               onclick={() => void toggleCompletion(open)}
-              title={isCompleted(open) ? 'Mark as not done' : 'Mark as done'}
-              aria-label={isCompleted(open) ? 'Mark as not done' : 'Mark as done'}
+              title={isCompleted(open) ? m.tasks_view_mark_not_done() : m.tasks_view_mark_done()}
+              aria-label={isCompleted(open) ? m.tasks_view_mark_not_done() : m.tasks_view_mark_done()}
               aria-pressed={isCompleted(open)}
             >
               <!-- Icon shows the action the button performs.  When
@@ -1142,29 +1179,41 @@
                    done" and shows the same checkmark with a
                    diagonal slash through it — visually "undo this
                    check". -->
-              <Icon name={isCompleted(open) ? 'not-done' : 'success'} size={16} />
+              <Icon name={isCompleted(open) ? 'not-done' : 'success'} size={14} />
             </button>
+            <!-- Delete keeps the shared outlined base and turns red
+                 only on hover — the destructive variant from the
+                 CLAUDE.md button vocabulary. -->
             <button
-              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
               onclick={deleteSelected}
-              title="Delete task"
-              aria-label="Delete task"
+              title={m.tasks_view_delete_task()}
+              aria-label={m.tasks_view_delete_task()}
             >
-              <Icon name="trash" size={16} />
+              <Icon name="trash" size={14} />
             </button>
             <button
               class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
               onclick={clearSelection}
-              title="Close"
-              aria-label="Close"
+              title={m.tasks_view_close_editor()}
+              aria-label={m.tasks_view_close_editor()}
             >
-              <Icon name="close" size={16} />
+              <Icon name="close" size={14} />
             </button>
           </div>
 
-          <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4 text-sm">
+          <!-- `.tasks-form` scopes the #522 outline-only field
+               treatment (see the style block): transparent fills at
+               SearchInput's slim height for the inputs, textarea,
+               select, and the DateField / TimeField triggers alike.
+               The editor sits on the plain canvas, so the
+               transparent treatment applies — the New-task modal
+               below deliberately does NOT get the class because it
+               sits on glass, where the #453 contrast calibration
+               depends on the translucent fill. -->
+          <div class="tasks-form flex-1 min-h-0 overflow-y-auto p-5 space-y-4 text-sm">
             <div>
-              <span class="block text-xs text-surface-500 mb-1">Reminder</span>
+              <span class="block text-xs text-surface-500 mb-1">{m.tasks_view_reminder()}</span>
               <!-- Shared DateField + TimeField pair (#126) — same
                    calendar-grid + slot-list pickers EventEditor
                    renders for VEVENT start / end, so a user
@@ -1185,14 +1234,14 @@
                 <div class="flex-1 min-w-0 max-w-48">
                   <DateField
                     id="tasks-editor-reminder-date"
-                    ariaLabel="Reminder date"
+                    ariaLabel={m.tasks_view_reminder_date()}
                     bind:value={draftDueDate}
                   />
                 </div>
                 <div class="w-28">
                   <TimeField
                     id="tasks-editor-reminder-time"
-                    ariaLabel="Reminder time"
+                    ariaLabel={m.tasks_view_reminder_time()}
                     bind:value={draftDueTime}
                   />
                 </div>
@@ -1208,33 +1257,33 @@
                       draftDueTime = ''
                       scheduleSave()
                     }}
-                  >Clear reminder</button>
+                  >{m.tasks_view_clear_reminder()}</button>
                 {/if}
               </div>
             </div>
 
             <div>
-              <label class="block text-xs text-surface-500 mb-1" for="tasks-editor-priority">Priority</label>
+              <label class="block text-xs text-surface-500 mb-1" for="tasks-editor-priority">{m.tasks_view_priority()}</label>
               <select
                 id="tasks-editor-priority"
                 class="select text-sm px-2 py-1 rounded-lg"
                 bind:value={draftPriority}
                 onchange={scheduleSave}
               >
-                <option value={0}>None</option>
-                <option value={1}>High</option>
-                <option value={5}>Medium</option>
-                <option value={9}>Low</option>
+                <option value={0}>{m.tasks_view_priority_none()}</option>
+                <option value={1}>{m.tasks_view_priority_high()}</option>
+                <option value={5}>{m.tasks_view_priority_medium()}</option>
+                <option value={9}>{m.tasks_view_priority_low()}</option>
               </select>
             </div>
 
             <div>
-              <label class="block text-xs text-surface-500 mb-1" for="tasks-editor-desc">Description</label>
+              <label class="block text-xs text-surface-500 mb-1" for="tasks-editor-desc">{m.tasks_view_description()}</label>
               <textarea
                 id="tasks-editor-desc"
                 class="textarea w-full text-sm px-2 py-1 rounded-lg"
                 rows="6"
-                placeholder="Add details…"
+                placeholder={m.tasks_view_description_placeholder()}
                 bind:value={draftDescription}
                 oninput={scheduleSave}
               ></textarea>
@@ -1242,20 +1291,20 @@
 
             {#if sourceMail}
               <div>
-                <p class="block text-xs text-surface-500 mb-1">Source</p>
+                <p class="block text-xs text-surface-500 mb-1">{m.tasks_view_source()}</p>
                 <button
                   class="inline-flex items-center gap-1.5 text-sm px-2 py-1 rounded-lg
                          bg-primary-500/10 text-primary-500 hover:bg-primary-500/20"
                   onclick={() => openSourceMail(open)}
-                  title="Open the mail this task was created from"
+                  title={m.tasks_view_source_mail_title()}
                 >
                   <Icon name="email-envelope" size={14} />
-                  <span>Open source mail</span>
+                  <span>{m.tasks_view_open_source_mail()}</span>
                 </button>
               </div>
             {:else if open.url}
               <div>
-                <p class="block text-xs text-surface-500 mb-1">URL</p>
+                <p class="block text-xs text-surface-500 mb-1">{m.tasks_view_url()}</p>
                 <a
                   class="text-sm text-primary-500 hover:underline break-all"
                   href={open.url}
@@ -1266,7 +1315,7 @@
             {/if}
 
             <div class="text-xs text-surface-500">
-              <span>List:</span>
+              <span>{m.tasks_view_list_label()}</span>
               <span
                 class="inline-flex items-center gap-1 ml-1"
               >
@@ -1283,6 +1332,7 @@
       {/if}
     </div>
   {/if}
+  </div>
 </div>
 
 <!-- New-task modal — CLAUDE.md modal idiom: backdrop +
@@ -1298,7 +1348,7 @@
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
     role="dialog"
     aria-modal="true"
-    aria-label="New task"
+    aria-label={m.tasks_view_new_task()}
     tabindex="-1"
     onclick={(e) => {
       if (e.target === e.currentTarget) cancelCreate()
@@ -1311,18 +1361,18 @@
     }}
   >
     <div class="glass-float rounded-2xl w-lg max-w-full max-h-[90vh] overflow-y-auto p-5">
-      <h2 class="text-base font-semibold mb-3">New task</h2>
+      <h2 class="text-base font-semibold mb-3">{m.tasks_view_new_task()}</h2>
 
       <div class="space-y-3 text-sm">
         <div>
-          <label class="block text-xs text-surface-500 mb-1" for="new-task-summary">Title</label>
+          <label class="block text-xs text-surface-500 mb-1" for="new-task-summary">{m.tasks_view_field_title()}</label>
           <input
             id="new-task-summary"
             bind:this={newSummaryInput}
             bind:value={newSummary}
             type="text"
             class="input w-full text-sm px-3 py-2 rounded-lg"
-            placeholder="What needs doing?"
+            placeholder={m.tasks_view_new_title_placeholder()}
             onkeydown={(e) => {
               if (e.key === 'Enter' && newSummary.trim() && newTaskListId && !creatingInFlight) {
                 e.preventDefault()
@@ -1334,7 +1384,7 @@
 
         {#if sidebarLists.length > 0}
           <div>
-            <label class="block text-xs text-surface-500 mb-1" for="new-task-list">Task list</label>
+            <label class="block text-xs text-surface-500 mb-1" for="new-task-list">{m.tasks_view_field_list()}</label>
             <select
               id="new-task-list"
               class="select w-full text-sm px-2 py-1.5 rounded-lg"
@@ -1352,19 +1402,19 @@
         {/if}
 
         <div>
-          <span class="block text-xs text-surface-500 mb-1">Reminder</span>
+          <span class="block text-xs text-surface-500 mb-1">{m.tasks_view_reminder()}</span>
           <div class="flex items-center gap-2">
             <div class="flex-1 min-w-0 max-w-48">
               <DateField
                 id="new-task-reminder-date"
-                ariaLabel="Reminder date"
+                ariaLabel={m.tasks_view_reminder_date()}
                 bind:value={newReminderDate}
               />
             </div>
             <div class="w-28">
               <TimeField
                 id="new-task-reminder-time"
-                ariaLabel="Reminder time"
+                ariaLabel={m.tasks_view_reminder_time()}
                 bind:value={newReminderTime}
               />
             </div>
@@ -1375,54 +1425,80 @@
                   newReminderDate = ''
                   newReminderTime = ''
                 }}
-              >Clear</button>
+              >{m.tasks_view_clear()}</button>
             {/if}
           </div>
         </div>
 
         <div>
-          <label class="block text-xs text-surface-500 mb-1" for="new-task-priority">Priority</label>
+          <label class="block text-xs text-surface-500 mb-1" for="new-task-priority">{m.tasks_view_priority()}</label>
           <select
             id="new-task-priority"
             class="select w-full text-sm px-2 py-1.5 rounded-lg"
             bind:value={newPriority}
           >
-            <option value={0}>None</option>
-            <option value={1}>High</option>
-            <option value={5}>Medium</option>
-            <option value={9}>Low</option>
+            <option value={0}>{m.tasks_view_priority_none()}</option>
+            <option value={1}>{m.tasks_view_priority_high()}</option>
+            <option value={5}>{m.tasks_view_priority_medium()}</option>
+            <option value={9}>{m.tasks_view_priority_low()}</option>
           </select>
         </div>
 
         <div>
-          <label class="block text-xs text-surface-500 mb-1" for="new-task-description">Description</label>
+          <label class="block text-xs text-surface-500 mb-1" for="new-task-description">{m.tasks_view_description()}</label>
           <textarea
             id="new-task-description"
             bind:value={newDescription}
             rows="4"
             class="textarea w-full text-sm px-2 py-1.5 rounded-lg"
-            placeholder="Add details…"
+            placeholder={m.tasks_view_description_placeholder()}
           ></textarea>
         </div>
       </div>
 
+      <!-- Icon-only confirm / cancel — same pair AND order as the
+           inline-form convention: commit (`save-draft`, with the
+           `loading` swap) on the left, cancel (`close`) on the
+           right, tooltips + aria carrying the labels. -->
       <div class="flex items-center justify-end gap-2 mt-5">
         <button
-          class="btn btn-sm preset-filled-primary-500"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
           onclick={() => void commitCreate()}
           disabled={!newSummary.trim() || !newTaskListId || creatingInFlight}
-        >{creatingInFlight ? 'Creating…' : 'Create task'}</button>
+          title={creatingInFlight ? m.tasks_view_creating() : m.tasks_view_create()}
+          aria-label={creatingInFlight ? m.tasks_view_creating() : m.tasks_view_create()}
+        ><Icon name={creatingInFlight ? 'loading' : 'save-draft'} size={14} /></button>
         <button
-          class="btn btn-sm preset-tonal"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           onclick={cancelCreate}
           disabled={creatingInFlight}
-        >Cancel</button>
+          title={m.tasks_view_cancel()}
+          aria-label={m.tasks_view_cancel()}
+        ><Icon name="close" size={14} /></button>
       </div>
     </div>
   </div>
 {/if}
 
 <style>
+  /* Outline-only form controls (#522, via #525).  Same treatment as
+     ContactsView's `.contact-form`: inside the editor the central
+     `.input` / `.textarea` / `.select` fill goes transparent — the
+     1px border alone carries the "type here" signal — and
+     `padding-block` unifies every control (raw inputs, textarea,
+     select, and the DateField / TimeField triggers that carry the
+     `.input` class) at SearchInput's slim py-1.5 height.  Being
+     unlayered, these rules deliberately win over the per-control
+     Tailwind padding utilities.  Scoped to the editor pane only:
+     the New-task modal sits on glass, where fields keep the
+     translucent fill (#453 contrast calibration). */
+  :global(.tasks-form .input),
+  :global(.tasks-form .textarea),
+  :global(.tasks-form .select) {
+    background-color: transparent;
+    padding-block: 0.375rem;
+  }
+
   /* Sidebar rows match NotesView's `.notes-side-row` shape so the
      two integration views speak the same visual language.  Defined
      here rather than imported from NotesView to keep this view
