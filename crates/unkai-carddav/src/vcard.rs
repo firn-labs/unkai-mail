@@ -930,6 +930,24 @@ mod tests {
     }
 
     #[test]
+    fn languages_and_note_round_trip_through_build_and_parse() {
+        // #522 regression net: LANG entries and NOTE must survive a
+        // build → parse cycle, since the update path re-parses the
+        // vCard it just built to hydrate the cache row.
+        let card = ParsedVcard {
+            uid: "rt-1".into(),
+            display_name: "Alice Example".into(),
+            languages: vec!["en".into(), "de".into()],
+            note: Some("hello".into()),
+            ..Default::default()
+        };
+        let raw = build_vcard(&card);
+        let p = parse_vcard(&raw).unwrap();
+        assert_eq!(p.languages, vec!["en".to_string(), "de".to_string()]);
+        assert_eq!(p.note.as_deref(), Some("hello"));
+    }
+
+    #[test]
     fn falls_back_to_n_when_fn_absent() {
         let raw = "BEGIN:VCARD\r\n\
                    VERSION:3.0\r\n\

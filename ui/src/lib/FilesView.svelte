@@ -221,9 +221,11 @@
 <svelte:window onkeydown={onSharePromptKeydown} />
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
-  <!-- Three-slot header: title pinned left, centered search,
-       action buttons (New folder, Refresh) pinned right.  Same
-       layout as SharesView / TalkView so the rail-routed
+  <!-- Stacked header (#522): title above its icon-only actions
+       (New folder, Refresh), docked LEFT so the controls stay in
+       the viewing angle near the content on wide monitors; search
+       centered via the empty right spacer slot.  Same layout as
+       SharesView / TalkView / ContactsView so the rail-routed
        integration views all feel like one app.  Icon-only buttons
        follow the canonical CLAUDE.md shape: filled-primary for
        the primary New folder CTA, tonal-surface for the secondary
@@ -231,8 +233,24 @@
   <div
     class="flex items-center gap-3 px-6 py-3 border-b glass-panel"
   >
-    <div class="flex-1 min-w-0 flex justify-start">
+    <div class="flex-1 min-w-0 flex flex-col items-start gap-2">
       <h2 class="text-xl font-semibold truncate">Nextcloud Files</h2>
+      <div class="flex items-center gap-2 shrink-0">
+        <button
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+          disabled={!accountId || !startCreateFolderRef}
+          onclick={() => startCreateFolderRef?.()}
+          title={m.files_view_new_folder_title()}
+          aria-label={m.files_view_new_folder()}
+        ><Icon name="add-folder" size={14} /></button>
+        <button
+          class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+          disabled={!accountId || !refreshRef || refreshing}
+          onclick={() => void doRefresh()}
+          title={refreshing ? m.files_view_refreshing() : m.files_view_refresh_title()}
+          aria-label={refreshing ? m.files_view_refreshing() : m.files_view_refresh()}
+        ><Icon name={refreshing ? 'loading' : 'refresh'} size={14} /></button>
+      </div>
     </div>
     <div class="flex-1 flex justify-center min-w-0">
       <SearchInput
@@ -241,22 +259,7 @@
         class="w-full max-w-md"
       />
     </div>
-    <div class="flex-1 flex justify-end items-center gap-2">
-      <button
-        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
-        disabled={!accountId || !startCreateFolderRef}
-        onclick={() => startCreateFolderRef?.()}
-        title={m.files_view_new_folder_title()}
-        aria-label={m.files_view_new_folder()}
-      ><Icon name="add-folder" size={14} /></button>
-      <button
-        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
-        disabled={!accountId || !refreshRef || refreshing}
-        onclick={() => void doRefresh()}
-        title={refreshing ? m.files_view_refreshing() : m.files_view_refresh_title()}
-        aria-label={refreshing ? m.files_view_refreshing() : m.files_view_refresh()}
-      ><Icon name={refreshing ? 'loading' : 'refresh'} size={14} /></button>
-    </div>
+    <div class="flex-1"></div>
   </div>
 
   <!-- The shared browser fills the rest. The browser itself owns

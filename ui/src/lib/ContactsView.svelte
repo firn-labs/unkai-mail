@@ -24,11 +24,6 @@
   import { contactsStore, contactPhotoSrc } from './contactsStore.svelte'
   import { resizableSidebar } from './resizableSidebar'
 
-  interface Props {
-    onclose: () => void
-  }
-  const { onclose }: Props = $props()
-
   // ── Types (mirror the Rust models) ──────────────────────────
   interface NextcloudAccount {
     id: string
@@ -255,6 +250,12 @@
   // touching JSON IPC. Without this round-trip the vCard rebuild
   // on save would drop the avatar.
   let selectedPhotoBytes = $state<number[] | null>(null)
+  /** True after the user clicks "Remove photo" — needed because a
+   *  null photo payload means "no change" to the backend merge (so
+   *  a save racing the lazy byte load can't wipe the avatar), so
+   *  removal has to be signalled explicitly: buildInput sends
+   *  `photo_mime: ''` (the empty-string-clears contract, #522). */
+  let photoRemoved = $state(false)
   let saving = $state(false)
   let formError = $state('')
   let deleteConfirm = $state(false)
@@ -779,11 +780,15 @@
     }
   }
 
-  function openEmojiPickerFor(ml: MailingListView, anchor: HTMLElement) {
-    const r = anchorRect(anchor)
-    emojiPickerTop = r.bottom + 4
-    emojiPickerLeft = r.left
+  /** Swap the open three-dot menu for the emoji picker at the same
+   *  fixed anchor — the menu is where the user's attention already
+   *  is, and its coordinates are the only ones still valid once the
+   *  menu unmounts. */
+  function openEmojiPickerAtMenu(ml: MailingListView) {
+    emojiPickerTop = menuTop
+    emojiPickerLeft = menuLeft
     emojiPickerFor = ml.id
+    openMenuFor = null
   }
 
   async function pickMailingListEmoji(ml: MailingListView, emoji: string | null) {
@@ -1002,6 +1007,7 @@
     formKeys = (c.keys ?? []).map((k) => ({ value: k }))
     formAddresses = (c.addresses ?? []).map((a) => ({ ...a }))
     selectedPhotoBytes = null
+    photoRemoved = false
     formPhotoMime = c.photo_mime ?? null
     // We still need the bytes (not just a URL) so save can re-emit
     // them in the vCard — without this, an edit drops the avatar.
@@ -1041,6 +1047,7 @@
     formKeys = []
     formAddresses = []
     selectedPhotoBytes = null
+    photoRemoved = false
     formPhotoMime = null
     // ── #143 ───────────────────────────────────────────────
     formFamily = ''
@@ -1195,6 +1202,20 @@
     // `selectedPhotoBytes`, that gives us a complete photo
     // payload regardless of whether the avatar came from the
     // server or from a fresh upload.
+    //
+    // Fold un-committed chip drafts in at save time — typing a
+    // language / category and clicking Save without pressing
+    // Enter would otherwise silently drop the value (#522).
+    const languages = [...formLanguages]
+    const langDraft = formLanguageDraft.trim()
+    if (langDraft && !languages.some((l) => l.toLowerCase() === langDraft.toLowerCase())) {
+      languages.push(langDraft)
+    }
+    const categories = [...formCategories]
+    const catDraft = formCategoryDraft.trim()
+    if (catDraft && !categories.some((c) => c.toLowerCase() === catDraft.toLowerCase())) {
+      categories.push(catDraft)
+    }
     return {
       display_name: formName.trim(),
       // Drop empty-value rows the same way phones do — an unfilled
@@ -1208,11 +1229,22 @@
         .filter((p) => p.value.trim())
         .map((p) => ({ kind: p.kind, value: p.value.trim() })),
       organization: formOrg.trim() || null,
-      photo_mime: formPhotoMime,
-      photo_data: formPhotoMime ? selectedPhotoBytes : null,
-      title: formTitle.trim() || null,
-      birthday: formBirthday.trim() || null,
-      note: formNote.trim() || null,
+      // Photo: bytes present = replace; `photo_mime: ''` with no
+      // bytes = explicit removal (empty-string-clears contract);
+      // both null = leave the server's photo alone (protects a
+      // save that races the lazy photo-byte load).
+      photo_mime: photoRemoved ? '' : formPhotoMime,
+      photo_data: !photoRemoved && formPhotoMime ? selectedPhotoBytes : null,
+      // The optional scalar fields below MUST send the empty string
+      // (not null) when cleared: the Rust merge treats an explicit
+      // empty string as "delete this property" but cannot tell JSON
+      // null from an omitted key (serde maps both to None), and an
+      // omitted key means "preserve whatever the server has" — so a
+      // null here made clearing a saved note/title/etc. impossible
+      // (#522).
+      title: formTitle.trim(),
+      birthday: formBirthday.trim(),
+      note: formNote.trim(),
       urls: formWebsites
         .map((w) => w.value.trim())
         .filter((u) => u.length > 0),
@@ -1241,16 +1273,18 @@
         prefix: formPrefix.trim(),
         suffix: formSuffix.trim(),
       },
-      nickname: formNickname.trim() || null,
-      anniversary: formAnniversary.trim() || null,
-      gender: formGender.trim() || null,
-      role: formRole.trim() || null,
-      timezone: formTimezone.trim() || null,
+      // Same empty-string-clears contract as title / birthday /
+      // note above.
+      nickname: formNickname.trim(),
+      anniversary: formAnniversary.trim(),
+      gender: formGender.trim(),
+      role: formRole.trim(),
+      timezone: formTimezone.trim(),
       impp: formImpp
         .filter((i) => i.value.trim())
         .map((i) => ({ kind: i.kind, value: i.value.trim() })),
-      languages: [...formLanguages],
-      categories: [...formCategories],
+      languages,
+      categories,
     }
   }
 
@@ -1299,6 +1333,7 @@
               : 'image/jpeg'
       selectedPhotoBytes = Array.from(bytes)
       formPhotoMime = mime
+      photoRemoved = false
     } catch (e) {
       console.warn('pickPhoto failed', e)
     }
@@ -1309,6 +1344,10 @@
    *  save.  Falls back to the existing photoSrc when no fresh
    *  upload has happened yet. */
   function formAvatarSrc(): string | null {
+    // After an explicit removal the cached photo must not bleed
+    // back in through the fallback below — the preview showing
+    // the old avatar made "Remove photo" look like a no-op.
+    if (photoRemoved) return null
     if (selectedPhotoBytes && formPhotoMime) {
       // Build a data URL from the in-memory bytes.  Small enough
       // for typical avatars (a few hundred KB) that the base64
@@ -1626,48 +1665,61 @@
 
 <svelte:window onkeydown={onContactsKeydown} />
 
-<div class="h-full flex bg-surface-50 dark:bg-surface-900">
-  <!-- ── Sidebar — Contacts heading, tab strip, and (when on
-       the Contacts tab) addressbooks + Contact Groups.  The
-       sidebar stays mounted on the Mailing lists tab so the
-       tab strip + heading don't move; only the navigation
-       sections collapse. ───────────────────────────────────── -->
+<div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
+  <!-- Stacked header (#522) — the standard integration-view shell:
+       title above its icon-only actions, docked LEFT so the
+       controls stay in the viewing angle near the columns they act
+       on.  No header search in this view — each tab's search sits
+       in the middle column directly above the list it filters
+       (contacts on the Contacts tab, members on the Lists tab), so
+       both tabs share one pattern and the header never changes
+       height. -->
+  <div class="flex items-center gap-3 px-6 py-3 border-b glass-panel">
+    <div class="flex-1 min-w-0 flex flex-col items-start gap-2">
+      <h2 class="text-xl font-semibold truncate">{m.contacts_view_title()}</h2>
+      <div class="flex items-center gap-2 shrink-0">
+      <button
+        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+        disabled={accounts.length === 0}
+        onclick={startNew}
+        title={m.contact_form_new_heading()}
+        aria-label={m.contact_form_new_heading()}
+      ><Icon name="plus" size={14} /></button>
+      <button
+        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+        disabled={accounts.length === 0}
+        onclick={openImport}
+        title={m.contact_import_button()}
+        aria-label={m.contact_import_button()}
+      ><Icon name="upload" size={14} /></button>
+      <button
+        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+        disabled={accounts.length === 0 || syncing}
+        onclick={() => void syncInBackground()}
+        title={syncing ? m.contacts_view_syncing() : m.contacts_view_sync_title()}
+        aria-label={syncing ? m.contacts_view_syncing() : m.contacts_view_sync()}
+      ><Icon name={syncing ? 'loading' : 'sync'} size={14} /></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="flex-1 min-h-0 flex">
+  <!-- ── Sidebar — tab strip and (when on the Contacts tab)
+       addressbooks + Contact Groups.  The sidebar stays mounted
+       on the Mailing lists tab so the tab strip doesn't move;
+       only the navigation sections collapse. ────────────────── -->
   <aside
     class="shrink-0 border-r glass-panel flex flex-col"
     use:resizableSidebar={{ key: 'contacts.navSidebar', defaultWidth: 224, min: 160, max: 480 }}
   >
-    <!-- Primary action — same shape + filled-primary preset as
-         the mail Compose CTA / Notes' "New note" button.  Back
-         navigation lives in the app-wide IconRail; the per-tab
-         title was redundant with the active tab strip below.
-         "+ New contact" stays on both tabs — creating contacts is
-         the universal action across this view, and the Lists tab
-         already has its own "+ Mailing lists" affordance inline
-         with the section header further down the sidebar. -->
-    <div class="p-3 space-y-2">
-      <button
-        class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5"
-        onclick={startNew}
-      >
-        <span class="text-lg font-semibold leading-none">+</span>
-        New contact
-      </button>
-      <!-- Secondary CTA — import from a .vcf / .csv export (#484).
-           Tonal so it reads as the quieter sibling of the primary
-           create action above. -->
-      <button
-        class="btn preset-tonal-surface w-full inline-flex items-center justify-center gap-1.5"
-        onclick={openImport}
-      >
-        <Icon name="upload" size={14} />
-        {m.contact_import_button()}
-      </button>
-    </div>
-    <!-- Tab strip.  Buttons explicitly stop propagation +
-         set activeTab on a separate handler so any pending
-         document-level click-outside listener can't race the
-         state update on the first transition. -->
-    <div class="px-3 pt-2 flex gap-1">
+    <!-- Tab strip.  New contact / Import / Sync moved to the view
+         header's action slot (#522) so the sidebar starts with
+         navigation, like the other integration views.  Buttons
+         explicitly stop propagation + set activeTab on a separate
+         handler so any pending document-level click-outside
+         listener can't race the state update on the first
+         transition. -->
+    <div class="px-3 pt-3 flex gap-1">
       <button
         type="button"
         class="flex-1 px-2 py-2 text-sm rounded-lg transition-colors {activeTab === 'contacts'
@@ -1752,12 +1804,10 @@
                  {dragOver ? 'ring-2 ring-primary-500' : ''}"
           oncontextmenu={(e) => {
             e.preventDefault()
-            const action = prompt(
-              `"${c.name}" — type: rename / delete`,
-              '',
-            )?.trim()
-            if (action === 'rename') void renameCategory(c.name)
-            else if (action === 'delete') void deleteCategory(c.name)
+            const p = cursorAnchor(e)
+            menuTop = p.y
+            menuLeft = p.x
+            openMenuFor = `cat:${c.name}`
           }}
           ondragover={(e) => {
             if (!draggedContactId) return
@@ -1785,44 +1835,24 @@
           <span class="w-6 text-center">{(c.name || '?').slice(0, 1).toUpperCase()}</span>
           <span class="flex-1 truncate">{c.name}</span>
           <span class="text-xs text-surface-500 mr-1">{c.memberCount}</span>
-          <!-- Three-dot menu: rename, delete, toggle "use as
-               mailing list".  Replaces the previous inline
-               swatch — clearer for first-time users since the
-               actions read as labelled words rather than a
-               coloured square. -->
-          <div class="relative shrink-0">
-            <button
-              class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none"
-              title="More actions"
-              aria-label="Contact Group actions"
-              onclick={(e) => {
-                e.stopPropagation()
-                const r = anchorRect(e.currentTarget as HTMLElement)
-                menuTop = r.top
-                menuLeft = r.right + 6
-                openMenuFor = openMenuFor === `cat:${c.name}` ? null : `cat:${c.name}`
-              }}
-            >⋯</button>
-            {#if openMenuFor === `cat:${c.name}`}
-              <div
-                class="z-30 w-56 py-1 rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
-                style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
-                onclick={(e) => e.stopPropagation()}
-                role="menu"
-                tabindex="-1"
-                onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
-              >
-                <button
-                  class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
-                  onclick={() => { openMenuFor = null; void renameCategory(c.name) }}
-                >Rename…</button>
-                <button
-                  class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
-                  onclick={() => { openMenuFor = null; void deleteCategory(c.name) }}
-                >Delete</button>
-              </div>
-            {/if}
-          </div>
+          <!-- Three-dot trigger: rename / delete.  The menu itself
+               renders at the component root (see the bottom of the
+               template) — the glass sidebar's backdrop-filter makes
+               this aside the containing block for position:fixed
+               descendants, so a menu nested here would be offset by
+               the aside's own viewport position. -->
+          <button
+            class="w-5 h-5 rounded shrink-0 text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none"
+            title="More actions"
+            aria-label="Contact Group actions"
+            onclick={(e) => {
+              e.stopPropagation()
+              const r = anchorRect(e.currentTarget as HTMLElement)
+              menuTop = r.top
+              menuLeft = r.right + 6
+              openMenuFor = openMenuFor === `cat:${c.name}` ? null : `cat:${c.name}`
+            }}
+          >⋯</button>
         </div>
       {/each}
       {#if categories.length === 0}
@@ -1929,61 +1959,10 @@
               >⋯</button>
             {/if}
           </div>
-          {#if openMenuFor === `ml:${ml.id}` && ml.source !== 'team'}
-            <div
-              class="z-30 w-56 py-1 rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
-              style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
-              onclick={(e) => e.stopPropagation()}
-              onmousedown={(e) => e.stopPropagation()}
-              role="menu"
-              tabindex="-1"
-              onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
-            >
-              <button
-                class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
-                onclick={() => { openMenuFor = null; startRenameMailingList(ml) }}
-              >Rename</button>
-              <button
-                class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
-                onclick={(e) => {
-                  // Anchor the picker to the row, not the menu
-                  // item — the menu closes immediately so its
-                  // bounding rect is gone by the time we render.
-                  const row = (e.currentTarget as HTMLElement).closest('.relative') as HTMLElement | null
-                  openMenuFor = null
-                  if (row) openEmojiPickerFor(ml, row)
-                }}
-              >{ml.emoji ? 'Change emoji' : 'Set emoji'}</button>
-              {#if ml.emoji}
-                <button
-                  class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
-                  onclick={() => { openMenuFor = null; void pickMailingListEmoji(ml, null) }}
-                >Remove emoji</button>
-              {/if}
-              {#if ml.source === 'manual'}
-                <button
-                  class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
-                  onclick={() => { openMenuFor = null; void deleteManualMailingList(ml.id, ml.name) }}
-                >Delete</button>
-              {/if}
-            </div>
-          {/if}
-          {#if emojiPickerFor === ml.id}
-            <div
-              class="z-40"
-              style="position: fixed; top: {emojiPickerTop}px; left: {emojiPickerLeft}px;"
-              role="menu"
-              tabindex="-1"
-              onclick={(e) => e.stopPropagation()}
-              onmousedown={(e) => e.stopPropagation()}
-              onkeydown={(e) => { if (e.key === 'Escape') emojiPickerFor = null }}
-            >
-              <EmojiPicker
-                value={ml.emoji}
-                onpick={(emoji) => void pickMailingListEmoji(ml, emoji)}
-              />
-            </div>
-          {/if}
+          <!-- The three-dot menu + emoji picker render at the
+               component root (see the bottom of the template) so
+               their position:fixed anchoring escapes the glass
+               sidebar's backdrop-filter containing block. -->
         </div>
       {/snippet}
 
@@ -2038,13 +2017,11 @@
     use:resizableSidebar={{ key: 'contacts.listColumn', defaultWidth: 320, min: 240, max: 600 }}
   >
     {#if activeTab === 'contacts'}
-    <!-- Search bar — same shape as `SearchBar.svelte` in the mail
-         view + the Notes UI: pill `.input` field with a magnifier
-         left adornment and an `×` clear button on the right when
-         there's a query.  "+ New contact" moved to the sidebar's
-         CTA slot so this row is search-only. -->
+    <!-- Search sits directly above the list it filters — same
+         placement as the Lists tab's member search, so the two
+         tabs share one pattern (#522). -->
     <div class="border-b border-surface-200 dark:border-surface-700 p-2">
-      <SearchInput bind:value={query} placeholder="Search contacts" />
+      <SearchInput bind:value={query} placeholder={m.contacts_view_search_placeholder()} />
     </div>
 
     <div class="flex-1 overflow-y-auto pb-3">
@@ -2054,7 +2031,7 @@
         <p class="px-3 py-2 text-xs text-red-500">{error}</p>
       {:else if contacts.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500">
-          No contacts yet. Click “New contact” to add one.
+          {m.contacts_view_empty()}
         </p>
       {:else if filteredContacts.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500">No matches for “{query}”.</p>
@@ -2126,49 +2103,40 @@
           })
         : []}
       <div class="flex-1 flex flex-col overflow-hidden">
-        <div class="p-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
-          <h3 class="text-base font-semibold flex-1 truncate">{ml.name}</h3>
-          <span class="text-xs text-surface-500">
-            {ml.members.filter((m) => m.email).length} / {ml.members.length}
-          </span>
-        </div>
-        <!-- Search bar — same pill shape as the Contacts tab +
-             Notes search row.  `pickerOpen` swaps the bound query
-             so the same input alternates between filtering members
-             and filtering the contact-picker pool.  The compact
-             "+ Add contact" / "Done" toggle sits below the search
-             on its own row, anchored right via `self-end`. -->
-        <div class="border-b border-surface-200 dark:border-surface-700 p-2 flex flex-col">
+        <!-- Search row — mirrors the Contacts tab: search directly
+             above the list it filters, no list-name heading (the
+             sidebar's selected row already says which list is
+             open).  `pickerOpen` swaps the bound query so the same
+             input alternates between filtering members and
+             filtering the contact-picker pool; the icon button
+             beside it toggles the picker — `plus` (filled-primary
+             CTA) to start adding, `close` (tonal) to finish. -->
+        <div class="border-b border-surface-200 dark:border-surface-700 p-2 flex items-center gap-2">
           {#if pickerOpen}
             <SearchInput
               bind:value={pickerQuery}
-              placeholder="Search contacts to add"
+              placeholder={m.contacts_view_search_add_placeholder()}
+              class="flex-1 min-w-0"
             />
           {:else}
             <SearchInput
               bind:value={memberQuery}
-              placeholder="Search members"
+              placeholder={m.contacts_view_search_members_placeholder()}
+              class="flex-1 min-w-0"
             />
           {/if}
           {#if editable}
-            <!-- Compact "+ Add contact" / "Done" toggle — same
-                 shape as NC Files' "+ New folder" affordance:
-                 primary-text, no border, subtle primary halo on
-                 hover.  Sits below the search bar, anchored left. -->
             <button
-              class="self-start mt-2 inline-flex items-center gap-1 text-sm text-primary-500 hover:bg-primary-500/10 rounded-lg px-2 py-1"
+              class="btn btn-sm {pickerOpen
+                ? 'preset-tonal-surface'
+                : 'preset-filled-primary-500'} inline-flex items-center justify-center shrink-0"
+              title={pickerOpen ? m.contacts_view_add_member_done() : m.contacts_view_add_member()}
+              aria-label={pickerOpen ? m.contacts_view_add_member_done() : m.contacts_view_add_member()}
               onclick={() => {
                 pickerOpen = !pickerOpen
                 pickerQuery = ''
               }}
-            >
-              {#if pickerOpen}
-                Done
-              {:else}
-                <span class="font-semibold">+</span>
-                Add contact
-              {/if}
-            </button>
+            ><Icon name={pickerOpen ? 'close' : 'plus'} size={14} /></button>
           {/if}
         </div>
         <div class="flex-1 overflow-y-auto pb-3">
@@ -2276,7 +2244,7 @@
   <main class="flex-1 flex flex-col overflow-y-auto">
     {#if selectedId === null}
       <div class="flex-1 flex items-center justify-center text-surface-500 text-sm">
-        Pick a contact on the left, or click “New contact”.
+        {m.contacts_view_pick_hint()}
       </div>
     {:else if !editing && selectedId !== 'new' && selectedContact}
       <!-- ── Read-only view mode (#143 follow-up) ─────────────
@@ -2304,14 +2272,19 @@
               {m.contact_form_from_account({ account: accountLabel(selectedContact.nextcloud_account_id) })}
             </span>
           </div>
+          <!-- Icon-only Edit / Delete pair — the EncryptionSettings
+               title-row shape: identical outlined base for both,
+               red hover overlay marking Delete as destructive.
+               The delete-confirm branch keeps its labelled buttons
+               deliberately — a destructive confirm should read as
+               words, not glyphs. -->
           <div class="flex items-center gap-2 shrink-0">
             <button
-              class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
               onclick={startEdit}
-            >
-              <Icon name="compose" size={16} />
-              <span>{m.contact_view_button_edit()}</span>
-            </button>
+              title={m.contact_view_button_edit()}
+              aria-label={m.contact_view_button_edit()}
+            ><Icon name="compose" size={14} /></button>
             {#if deleteConfirm}
               <span class="text-xs text-surface-500">Really delete?</span>
               <button
@@ -2326,12 +2299,11 @@
               >Keep</button>
             {:else}
               <button
-                class="btn btn-sm preset-tonal text-red-500 inline-flex items-center gap-1.5"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
                 onclick={() => (deleteConfirm = true)}
-              >
-                <Icon name="trash" size={16} />
-                <span>{m.contact_view_button_delete()}</span>
-              </button>
+                title={m.contact_view_button_delete()}
+                aria-label={m.contact_view_button_delete()}
+              ><Icon name="trash" size={14} /></button>
             {/if}
           </div>
         </div>
@@ -2518,7 +2490,14 @@
         {/if}
       </div>
     {:else}
-      <div class="max-w-2xl w-full mx-auto p-6 flex flex-col gap-4">
+      <!-- The `.contact-form` scope (see the style block below)
+           flattens every `.input`-shaped control in this form —
+           text inputs, textarea, and the `Select` / `DateField`
+           triggers, which carry the same class — to a transparent
+           outline-only fill and one slim SearchInput-height
+           padding, so mixed rows (kind picker + input) stay even
+           without per-control padding utilities having to agree. -->
+      <div class="contact-form max-w-2xl w-full mx-auto p-6 flex flex-col gap-4">
         <!-- ── #143: avatar banner (click to upload) ─────────── -->
         <div class="flex items-center gap-4">
           <button
@@ -2548,13 +2527,14 @@
                 {m.contact_form_from_account({ account: accountLabel(selectedContact.nextcloud_account_id) })}
               </span>
             {/if}
-            {#if selectedPhotoBytes}
+            {#if selectedPhotoBytes || formPhotoMime}
               <button
                 type="button"
                 class="text-xs text-error-500 hover:bg-red-500/20 rounded-lg px-2 py-1 self-start mt-1"
                 onclick={() => {
                   selectedPhotoBytes = null
                   formPhotoMime = null
+                  photoRemoved = true
                 }}
               >{m.contact_form_remove_photo()}</button>
             {/if}
@@ -2568,34 +2548,34 @@
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_prefix()}</span>
-                <input class="input rounded-lg" bind:value={formPrefix} placeholder="Dr." />
+                <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formPrefix} placeholder="Dr." />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_suffix()}</span>
-                <input class="input rounded-lg" bind:value={formSuffix} placeholder="Jr." />
+                <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formSuffix} placeholder="Jr." />
               </label>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_given_name()}</span>
-                <input class="input rounded-lg" bind:value={formGiven} placeholder="Jane" />
+                <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formGiven} placeholder="Jane" />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_family_name()}</span>
-                <input class="input rounded-lg" bind:value={formFamily} placeholder="Doe" />
+                <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formFamily} placeholder="Doe" />
               </label>
             </div>
             <label class="label">
               <span>{m.contact_form_label_additional_names()}</span>
-              <input class="input rounded-lg" bind:value={formAdditional} placeholder={m.contact_form_hint_additional_names()} />
+              <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formAdditional} placeholder={m.contact_form_hint_additional_names()} />
             </label>
             <label class="label">
               <span>{m.contact_form_label_display_name()} <span class="text-surface-500">({m.contact_form_hint_display_name_auto()})</span></span>
-              <input class="input rounded-lg" bind:value={formName} placeholder="Jane Doe" />
+              <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formName} placeholder="Jane Doe" />
             </label>
             <label class="label">
               <span>{m.contact_form_label_nickname()}</span>
-              <input class="input rounded-lg" bind:value={formNickname} placeholder="JD" />
+              <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formNickname} placeholder="JD" />
             </label>
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
@@ -2615,7 +2595,7 @@
             </div>
             <label class="label">
               <span>{m.contact_form_label_gender()}</span>
-              <input class="input rounded-lg" bind:value={formGender} placeholder={m.contact_form_placeholder_gender()} />
+              <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formGender} placeholder={m.contact_form_placeholder_gender()} />
             </label>
           </div>
         </details>
@@ -2632,14 +2612,14 @@
                     <Select bind:value={email.kind} options={emailKindOptions} />
                   </div>
                   <input
-                    class="input flex-1 rounded-lg"
+                    class="input flex-1 text-sm px-3 py-2 rounded-lg"
                     type="email"
                     bind:value={email.value}
                     placeholder="jane@example.com"
                   />
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeEmail(i)}
@@ -2648,11 +2628,11 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="btn btn-sm preset-outlined-surface-500 self-start inline-flex items-center justify-center"
                 aria-label={m.contact_form_button_add_email()}
                 title={m.contact_form_button_add_email()}
                 onclick={addEmail}
-              >+</button>
+              ><Icon name="plus" size={14} /></button>
             </div>
 
             <div class="space-y-2">
@@ -2663,13 +2643,13 @@
                     <Select bind:value={phone.kind} options={phoneKindOptions} />
                   </div>
                   <input
-                    class="input flex-1 rounded-lg"
+                    class="input flex-1 text-sm px-3 py-2 rounded-lg"
                     bind:value={phone.value}
                     placeholder="+1 555 0100"
                   />
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removePhone(i)}
@@ -2678,11 +2658,11 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="btn btn-sm preset-outlined-surface-500 self-start inline-flex items-center justify-center"
                 aria-label={m.contact_form_button_add_phone()}
                 title={m.contact_form_button_add_phone()}
                 onclick={addPhone}
-              >+</button>
+              ><Icon name="plus" size={14} /></button>
             </div>
 
             <div class="space-y-2">
@@ -2693,13 +2673,13 @@
                     <Select bind:value={im.kind} options={imppKindOptions} />
                   </div>
                   <input
-                    class="input flex-1 rounded-lg"
+                    class="input flex-1 text-sm px-3 py-2 rounded-lg"
                     bind:value={im.value}
                     placeholder={m.contact_form_placeholder_impp()}
                   />
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeImpp(i)}
@@ -2708,11 +2688,11 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="btn btn-sm preset-outlined-surface-500 self-start inline-flex items-center justify-center"
                 aria-label={m.contact_form_button_add_impp()}
                 title={m.contact_form_button_add_impp()}
                 onclick={addImpp}
-              >+</button>
+              ><Icon name="plus" size={14} /></button>
             </div>
           </div>
         </details>
@@ -2724,38 +2704,41 @@
             <div class="grid grid-cols-2 gap-3">
               <label class="label">
                 <span>{m.contact_form_label_organization()}</span>
-                <input class="input rounded-lg" bind:value={formOrg} placeholder="Example Corp" />
+                <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formOrg} placeholder="Example Corp" />
               </label>
               <label class="label">
                 <span>{m.contact_form_label_job_title()}</span>
-                <input class="input rounded-lg" bind:value={formTitle} placeholder="Product Manager" />
+                <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formTitle} placeholder="Product Manager" />
               </label>
             </div>
             <label class="label">
               <span>{m.contact_form_label_role()} <span class="text-surface-500">({m.contact_form_hint_role()})</span></span>
-              <input class="input rounded-lg" bind:value={formRole} placeholder="Project Lead" />
+              <input class="input text-sm px-3 py-2 rounded-lg" bind:value={formRole} placeholder="Project Lead" />
             </label>
             <div>
               <span class="text-sm font-medium mb-1 block">{m.contact_form_label_categories()}</span>
+              <!-- Chips matching the read-only view's category
+                   pills, with an inline X per chip to remove —
+                   same pattern as the languages chip list below. -->
               {#if formCategories.length > 0}
-                <ul class="contact-form-line-list mb-2">
+                <div class="flex flex-wrap gap-1.5 mb-2">
                   {#each formCategories as cat, i (cat)}
-                    <li class="contact-form-line-row">
-                      <span class="text-sm">{cat}</span>
+                    <span class="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 text-xs">
+                      {cat}
                       <button
                         type="button"
-                        class="ml-auto text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
+                        class="inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-primary-500/25"
                         aria-label={m.contact_form_button_remove()}
                         title={m.contact_form_button_remove()}
                         onclick={() => removeChip(formCategories, i, (next) => (formCategories = next))}
-                      ><Icon name="trash" size={14} /></button>
-                    </li>
+                      ><Icon name="close" size={10} /></button>
+                    </span>
                   {/each}
-                </ul>
+                </div>
               {/if}
               <div class="relative">
                 <input
-                  class="input rounded-lg w-full"
+                  class="input w-full text-sm px-3 py-2 rounded-lg"
                   bind:value={formCategoryDraft}
                   placeholder={m.contact_form_placeholder_chip()}
                   onfocus={() => (categoryFieldFocused = true)}
@@ -2838,22 +2821,22 @@
                     }}
                   />
                   <div class="grid grid-cols-2 gap-2">
-                    <input class="input rounded-lg" bind:value={addr.locality} placeholder={m.contact_form_placeholder_city()} />
-                    <input class="input rounded-lg" bind:value={addr.region} placeholder={m.contact_form_placeholder_region()} />
+                    <input class="input text-sm px-3 py-2 rounded-lg" bind:value={addr.locality} placeholder={m.contact_form_placeholder_city()} />
+                    <input class="input text-sm px-3 py-2 rounded-lg" bind:value={addr.region} placeholder={m.contact_form_placeholder_region()} />
                   </div>
                   <div class="grid grid-cols-2 gap-2">
-                    <input class="input rounded-lg" bind:value={addr.postal_code} placeholder={m.contact_form_placeholder_postal()} />
-                    <input class="input rounded-lg" bind:value={addr.country} placeholder={m.contact_form_placeholder_country()} />
+                    <input class="input text-sm px-3 py-2 rounded-lg" bind:value={addr.postal_code} placeholder={m.contact_form_placeholder_postal()} />
+                    <input class="input text-sm px-3 py-2 rounded-lg" bind:value={addr.country} placeholder={m.contact_form_placeholder_country()} />
                   </div>
                 </div>
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="btn btn-sm preset-outlined-surface-500 self-start inline-flex items-center justify-center"
                 aria-label={m.contact_form_button_add_address()}
                 title={m.contact_form_button_add_address()}
                 onclick={addAddress}
-              >+</button>
+              ><Icon name="plus" size={14} /></button>
             </div>
 
             <div class="space-y-2">
@@ -2861,14 +2844,14 @@
               {#each formWebsites as site, i (i)}
                 <div class="flex items-center gap-2">
                   <input
-                    class="input flex-1 rounded-lg"
+                    class="input flex-1 text-sm px-3 py-2 rounded-lg"
                     type="url"
                     bind:value={site.value}
                     placeholder="https://example.com"
                   />
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeWebsite(i)}
@@ -2877,11 +2860,11 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="btn btn-sm preset-outlined-surface-500 self-start inline-flex items-center justify-center"
                 aria-label={m.contact_form_button_add_website()}
                 title={m.contact_form_button_add_website()}
                 onclick={addWebsite}
-              >+</button>
+              ><Icon name="plus" size={14} /></button>
             </div>
           </div>
         </details>
@@ -2895,14 +2878,14 @@
               {#each formKeys as key, i (i)}
                 <div class="flex items-start gap-2">
                   <textarea
-                    class="input flex-1 rounded-lg font-mono text-xs"
+                    class="input flex-1 px-3 py-2 rounded-lg font-mono text-xs"
                     rows="4"
                     bind:value={key.value}
                     placeholder={m.contact_form_placeholder_pgp_key()}
                   ></textarea>
                   <button
                     type="button"
-                    class="text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeKey(i)}
@@ -2911,11 +2894,11 @@
               {/each}
               <button
                 type="button"
-                class="self-start text-primary-500 hover:bg-primary-500/10 rounded-lg inline-flex items-center justify-center w-7 h-7 text-lg font-semibold leading-none"
+                class="btn btn-sm preset-outlined-surface-500 self-start inline-flex items-center justify-center"
                 aria-label={m.contact_form_button_add_pgp_key()}
                 title={m.contact_form_button_add_pgp_key()}
                 onclick={addKey}
-              >+</button>
+              ><Icon name="plus" size={14} /></button>
               <p class="text-xs text-surface-400 leading-snug">
                 {m.contact_form_hint_pgp_keys()}
               </p>
@@ -2931,18 +2914,20 @@
               <span class="text-sm font-medium mb-1 block">{m.contact_form_label_languages()}</span>
               <div class="flex flex-wrap gap-1.5 mb-2">
                 {#each formLanguages as lang, i (lang)}
-                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700 text-xs">
+                  <span class="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700 text-xs">
                     {lang}
                     <button
                       type="button"
-                      class="hover:text-error-500 leading-none"
+                      class="inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-surface-400/30"
+                      aria-label={m.contact_form_button_remove()}
+                      title={m.contact_form_button_remove()}
                       onclick={() => removeChip(formLanguages, i, (next) => (formLanguages = next))}
-                    >×</button>
+                    ><Icon name="close" size={10} /></button>
                   </span>
                 {/each}
               </div>
               <input
-                class="input rounded-lg"
+                class="input text-sm px-3 py-2 rounded-lg"
                 bind:value={formLanguageDraft}
                 placeholder={m.contact_form_placeholder_languages()}
                 onkeydown={(e) => {
@@ -2954,12 +2939,21 @@
                     })
                   }
                 }}
+                onblur={() => {
+                  // Commit on blur too — a value typed without
+                  // pressing Enter shouldn't look lost.  Save has
+                  // its own draft fold-in as the safety net (#522).
+                  commitChipDraft(formLanguages, formLanguageDraft, (next, draft) => {
+                    formLanguages = next
+                    formLanguageDraft = draft
+                  })
+                }}
               />
             </div>
             <label class="label">
               <span>{m.contact_form_label_timezone()}</span>
               <input
-                class="input rounded-lg"
+                class="input text-sm px-3 py-2 rounded-lg"
                 bind:value={formTimezone}
                 placeholder={m.contact_form_placeholder_timezone()}
               />
@@ -2967,7 +2961,7 @@
             <label class="label">
               <span>{m.contact_form_label_notes()}</span>
               <textarea
-                class="textarea rounded-lg"
+                class="textarea text-sm px-3 py-2 rounded-lg"
                 rows="3"
                 bind:value={formNote}
                 placeholder={m.contact_form_placeholder_notes()}
@@ -3010,23 +3004,114 @@
         <!-- Edit / create form action row.  Delete moved to the
              read-only view mode (top-right corner of that
              screen) so the editing path stays focused on
-             "commit or discard the in-flight changes". -->
+             "commit or discard the in-flight changes".  Icon-only
+             confirm / cancel pair per the CLAUDE.md inline-form
+             convention: `save-draft` for commit (swapping to
+             `loading` mid-save), `close` for cancel. -->
         <div class="flex items-center gap-2 pt-2">
           <button
-            class="btn preset-filled-primary-500"
+            class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
             disabled={saving}
             onclick={saveContact}
-          >
-            {saving ? 'Saving…' : selectedId === 'new' ? 'Create contact' : 'Save changes'}
-          </button>
-          <button class="btn preset-tonal" disabled={saving} onclick={cancelEdit}>
-            Cancel
-          </button>
+            title={saving ? m.contact_form_button_saving() : m.contact_form_button_save()}
+            aria-label={saving ? m.contact_form_button_saving() : m.contact_form_button_save()}
+          ><Icon name={saving ? 'loading' : 'save-draft'} size={14} /></button>
+          <button
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+            disabled={saving}
+            onclick={cancelEdit}
+            title={m.contact_form_button_cancel()}
+            aria-label={m.contact_form_button_cancel()}
+          ><Icon name="close" size={14} /></button>
         </div>
       </div>
     {/if}
   </main>
+  </div>
 </div>
+
+<!-- ── Sidebar row menus + emoji picker ─────────────────────────
+     Rendered at the component root, OUTSIDE the glass sidebar:
+     `.glass-panel`'s backdrop-filter makes the aside a containing
+     block for position:fixed descendants, so a menu nested in a
+     row would be offset by the aside's own viewport position
+     instead of landing on the coordinates we measured (#522). -->
+{#if openMenuFor && openMenuFor.startsWith('cat:')}
+  {@const catMenuName = openMenuFor.slice('cat:'.length)}
+  <div
+    class="z-30 w-56 py-1 rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+    style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
+    onclick={(e) => e.stopPropagation()}
+    onmousedown={(e) => e.stopPropagation()}
+    role="menu"
+    tabindex="-1"
+    onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
+  >
+    <button
+      class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
+      onclick={() => { openMenuFor = null; void renameCategory(catMenuName) }}
+    >Rename…</button>
+    <button
+      class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
+      onclick={() => { openMenuFor = null; void deleteCategory(catMenuName) }}
+    >Delete</button>
+  </div>
+{/if}
+{#if openMenuFor && openMenuFor.startsWith('ml:')}
+  {@const menuListId = openMenuFor.slice('ml:'.length)}
+  {@const menuList = mailingLists.find((l) => l.id === menuListId)}
+  {#if menuList && menuList.source !== 'team'}
+    <div
+      class="z-30 w-56 py-1 rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+      style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
+      onclick={(e) => e.stopPropagation()}
+      onmousedown={(e) => e.stopPropagation()}
+      role="menu"
+      tabindex="-1"
+      onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
+    >
+      <button
+        class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
+        onclick={() => { openMenuFor = null; startRenameMailingList(menuList) }}
+      >Rename</button>
+      <button
+        class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
+        onclick={() => openEmojiPickerAtMenu(menuList)}
+      >{menuList.emoji ? 'Change emoji' : 'Set emoji'}</button>
+      {#if menuList.emoji}
+        <button
+          class="w-full text-left px-3 py-2 hover:bg-primary-500/10"
+          onclick={() => { openMenuFor = null; void pickMailingListEmoji(menuList, null) }}
+        >Remove emoji</button>
+      {/if}
+      {#if menuList.source === 'manual'}
+        <button
+          class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
+          onclick={() => { openMenuFor = null; void deleteManualMailingList(menuList.id, menuList.name) }}
+        >Delete</button>
+      {/if}
+    </div>
+  {/if}
+{/if}
+{#if emojiPickerFor}
+  {@const pickerList = mailingLists.find((l) => l.id === emojiPickerFor)}
+  {#if pickerList}
+    <div
+      class="z-40"
+      style="position: fixed; top: {emojiPickerTop}px; left: {emojiPickerLeft}px;"
+      role="menu"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+      onmousedown={(e) => e.stopPropagation()}
+      onkeydown={(e) => { if (e.key === 'Escape') emojiPickerFor = null }}
+    >
+      <EmojiPicker
+        value={pickerList.emoji}
+        onpick={(emoji) => void pickMailingListEmoji(pickerList, emoji)}
+      />
+    </div>
+  {/if}
+{/if}
 
 <!-- New mailing list modal — name + emoji avatar.  Mirrors the
      calendar create modal's shape so the UX feels consistent. -->
@@ -3075,17 +3160,25 @@
         <p class="text-xs text-red-500 mb-3 wrap-break-word">{newListError}</p>
       {/if}
 
+      <!-- Icon-only confirm / cancel — same pair AND order as the
+           inline-form convention: commit (`save-draft`, with the
+           `loading` swap) on the left, cancel (`close`) on the
+           right, tooltips + aria carrying the labels. -->
       <div class="flex justify-end gap-2">
         <button
-          class="btn preset-outlined-surface-500"
-          disabled={newListBusy}
-          onclick={() => (newListForm = null)}
-        >Cancel</button>
-        <button
-          class="btn preset-filled-primary-500"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
           disabled={newListBusy || !newListForm.name.trim()}
           onclick={() => void commitNewMailingList()}
-        >{newListBusy ? 'Creating…' : 'Create'}</button>
+          title={newListBusy ? m.contacts_view_list_creating() : m.contacts_view_list_create()}
+          aria-label={newListBusy ? m.contacts_view_list_creating() : m.contacts_view_list_create()}
+        ><Icon name={newListBusy ? 'loading' : 'save-draft'} size={14} /></button>
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          disabled={newListBusy}
+          onclick={() => (newListForm = null)}
+          title={m.contacts_view_list_cancel()}
+          aria-label={m.contacts_view_list_cancel()}
+        ><Icon name="close" size={14} /></button>
       </div>
     </div>
   </div>
@@ -3201,6 +3294,29 @@
 {/if}
 
 <style>
+  /* Compact field labels (#522) — Skeleton's `.label` span default
+     reads one size too large next to the text-sm inputs; align
+     with the settings panels' small muted label voice instead. */
+  :global(.contact-form .label > span) {
+    font-size: 0.75rem;
+    color: var(--color-surface-500);
+  }
+
+  /* Outline-only form controls (#522).  A long stack of wide
+     filled boxes reads heavy on the plain canvas, so inside this
+     form the central `.input` fill goes transparent — the border
+     alone carries the "type here" signal, and the app-wide primary
+     focus ring is untouched.  `padding-block` unifies every
+     control (raw inputs, textarea, and the Select / DateField
+     triggers that ship their own py-2) at SearchInput's slim
+     py-1.5 height; being unlayered, these rules deliberately win
+     over the per-control padding utilities. */
+  :global(.contact-form .input),
+  :global(.contact-form .textarea) {
+    background-color: transparent;
+    padding-block: 0.375rem;
+  }
+
   /* #143 — flat collapsible section header.  No card chrome /
      background; just a clickable title with a chevron and an
      underline so groups are visually separated without the
@@ -3242,24 +3358,6 @@
     flex-direction: column;
     gap: 0.875rem;
     padding-top: 0.875rem;
-  }
-
-  /* Categories list — flat rows with a coloured left bar instead
-     of pill chips, per the cleaner look the user asked for. */
-  :global(.contact-form-line-list) {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    list-style: none;
-    padding: 0;
-    margin: 0;
-  }
-  :global(.contact-form-line-row) {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.25rem 0.5rem 0.25rem 0.625rem;
-    border-left: 3px solid var(--color-primary-500);
   }
 
   /* #143 follow-up: read-only view-mode chrome.  No card

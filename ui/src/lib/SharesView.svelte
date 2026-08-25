@@ -408,18 +408,27 @@
 <svelte:window onkeydown={onEditKeydown} />
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
-  <!-- Three-slot header: title pinned left, search centered, refresh
-       pinned right.  Each side slot is `flex-1` with a directional
-       justify so the centered slot remains visually centered on the
-       window regardless of how wide either side ends up — the title
-       grows by translation length, the action button is fixed-width
-       at btn-sm.  Without the symmetric flex-1 the search drifts
-       off-center as either side changes. -->
+  <!-- Stacked header (#522): title above its icon-only actions,
+       docked LEFT so the controls stay in the viewing angle on
+       wide monitors; search centered.  Each side slot is `flex-1`
+       (the right one an empty spacer) so the centered slot remains
+       visually centered on the window regardless of how wide the
+       left cluster ends up — without the symmetric flex-1 the
+       search drifts off-center as the title/actions change. -->
   <div
     class="flex items-center gap-3 px-6 py-3 border-b glass-panel"
   >
-    <div class="flex-1 min-w-0 flex justify-start">
+    <div class="flex-1 min-w-0 flex flex-col items-start gap-2">
       <h2 class="text-xl font-semibold truncate">{m.shares_view_title()}</h2>
+      <div class="flex items-center gap-2 shrink-0">
+        <button
+          class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
+          disabled={!accountId || loading}
+          onclick={() => refresh()}
+          title={loading ? m.shares_view_refreshing() : m.shares_view_refresh_title()}
+          aria-label={loading ? m.shares_view_refreshing() : m.shares_view_refresh()}
+        ><Icon name={loading ? 'loading' : 'refresh'} size={14} /></button>
+      </div>
     </div>
     <div class="flex-1 flex justify-center min-w-0">
       <SearchInput
@@ -428,15 +437,7 @@
         class="w-full max-w-md"
       />
     </div>
-    <div class="flex-1 flex justify-end">
-      <button
-        class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
-        disabled={!accountId || loading}
-        onclick={() => refresh()}
-        title={loading ? m.shares_view_refreshing() : m.shares_view_refresh_title()}
-        aria-label={loading ? m.shares_view_refreshing() : m.shares_view_refresh()}
-      ><Icon name={loading ? 'loading' : 'refresh'} size={14} /></button>
-    </div>
+    <div class="flex-1"></div>
   </div>
 
   {#if accounts.length === 0}

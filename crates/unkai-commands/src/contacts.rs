@@ -999,13 +999,23 @@ pub async fn update_contact(
     if input.photo_data.is_some() {
         parsed.photo_mime = input.photo_mime.clone();
         parsed.photo_data = input.photo_data.clone();
+    } else if matches!(input.photo_mime.as_deref(), Some("")) {
+        // Empty-string mime with no bytes = explicit "remove the
+        // avatar" (the same empty-string-clears contract as the
+        // scalar fields below).  A data-less `None` still means
+        // "no change", so a save racing the UI's lazy photo-byte
+        // load can't wipe the avatar (#522).
+        parsed.photo_mime = None;
+        parsed.photo_data = None;
     }
-    // Extended fields: a UI that surfaces them sends the new value
-    // (or `None` to clear); a UI that doesn't sends `Option::None`
-    // for the *whole field*, in which case we leave the cached
-    // value alone. The distinction is made via `serde(default)` on
-    // `ContactInput` — `None` only ever appears when the JSON omits
-    // the key entirely, never when the user explicitly cleared it.
+    // Extended fields: a UI that surfaces a field sends its new
+    // value, with the EMPTY STRING meaning "clear this property";
+    // a UI that doesn't surface the field omits the key, which
+    // deserialises to `None` and leaves the cached value alone.
+    // Note that serde cannot tell an explicit JSON `null` from an
+    // omitted key — both become `None` — so senders must use ""
+    // (never null) to clear.  A null here once made deleting a
+    // saved note impossible (#522).
     if let Some(t) = &input.title {
         parsed.title = if t.is_empty() { None } else { Some(t.clone()) };
     }
@@ -1920,12 +1930,12 @@ pub fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
                 value: p.value.clone(),
             })
             .collect(),
-        organization: input.organization.clone(),
-        photo_mime: input.photo_mime.clone(),
+        organization: non_empty(&input.organization),
+        photo_mime: non_empty(&input.photo_mime),
         photo_data: input.photo_data.clone(),
-        title: input.title.clone(),
-        birthday: input.birthday.clone(),
-        note: input.note.clone(),
+        title: non_empty(&input.title),
+        birthday: non_empty(&input.birthday),
+        note: non_empty(&input.note),
         addresses: input
             .addresses
             .as_ref()
@@ -1958,9 +1968,9 @@ pub fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
                 suffix: n.suffix.clone(),
             })
             .unwrap_or_default(),
-        nickname: input.nickname.clone(),
-        anniversary: input.anniversary.clone(),
-        gender: input.gender.clone(),
+        nickname: non_empty(&input.nickname),
+        anniversary: non_empty(&input.anniversary),
+        gender: non_empty(&input.gender),
         impp: input
             .impp
             .as_ref()
@@ -1973,12 +1983,23 @@ pub fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
                     .collect()
             })
             .unwrap_or_default(),
-        role: input.role.clone(),
+        role: non_empty(&input.role),
         languages: input.languages.clone().unwrap_or_default(),
-        geo: input.geo.clone(),
-        timezone: input.timezone.clone(),
+        geo: non_empty(&input.geo),
+        timezone: non_empty(&input.timezone),
         keys: input.keys.clone().unwrap_or_default(),
     }
+}
+
+/// Normalise an optional scalar form field: the UI sends the empty
+/// string for "no value" (see the empty-string-clears contract on
+/// `update_contact`), and the vCard builder shouldn't emit an empty
+/// property line for it on the create path.
+fn non_empty(v: &Option<String>) -> Option<String> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Build a `ContactRow` from a freshly-PUT vCard's outcome. Extracted
