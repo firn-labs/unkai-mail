@@ -629,7 +629,9 @@ mod tests {
     fn cp1252_fallback_decodes_umlauts() {
         // "Jürgen" with a Latin-1/CP-1252 ü (0xFC) — invalid UTF-8.
         let bytes = b"Name,E-mail Address\nJ\xfcrgen,ju@example.com\n";
-        assert!(std::str::from_utf8(bytes).is_err());
+        #[allow(invalid_from_utf8)]
+        let premise = std::str::from_utf8(bytes);
+        assert!(premise.is_err());
         let text = decode_import_text(bytes);
         let c = cards(&text);
         assert_eq!(c[0].display_name, "Jürgen");

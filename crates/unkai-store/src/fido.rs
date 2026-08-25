@@ -83,7 +83,7 @@
 //! read.
 
 use aes_gcm::{
-    Aes256Gcm, Key, Nonce,
+    Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, Payload},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
@@ -314,10 +314,11 @@ pub fn wrap_master_key(
     }
     let mut nonce_bytes = [0u8; NONCE_LEN];
     fill(&mut nonce_bytes).map_err(|e| UnkaiError::Storage(format!("wrap nonce RNG: {e}")))?;
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aes_key));
+    let cipher = Aes256Gcm::new_from_slice(aes_key)
+        .map_err(|e| UnkaiError::Storage(format!("AES-GCM key: {e}")))?;
     let ct = cipher
         .encrypt(
-            Nonce::from_slice(&nonce_bytes),
+            &Nonce::from(nonce_bytes),
             Payload {
                 msg: master_key,
                 aad: credential_id,
@@ -376,22 +377,24 @@ pub fn unwrap_master_key(wrap: &WrappedKey, prf_output: &[u8]) -> Result<Vec<u8>
     let credential_id = B64
         .decode(wrap.credential_id.as_bytes())
         .map_err(|e| UnkaiError::Storage(format!("wrap credential_id b64: {e}")))?;
-    let nonce_bytes = B64
+    let nonce_bytes: [u8; NONCE_LEN] = B64
         .decode(wrap.nonce.as_bytes())
-        .map_err(|e| UnkaiError::Storage(format!("wrap nonce b64: {e}")))?;
-    if nonce_bytes.len() != NONCE_LEN {
-        return Err(UnkaiError::Storage(format!(
-            "wrap nonce must be {NONCE_LEN} bytes, got {}",
-            nonce_bytes.len()
-        )));
-    }
+        .map_err(|e| UnkaiError::Storage(format!("wrap nonce b64: {e}")))?
+        .try_into()
+        .map_err(|v: Vec<u8>| {
+            UnkaiError::Storage(format!(
+                "wrap nonce must be {NONCE_LEN} bytes, got {}",
+                v.len()
+            ))
+        })?;
     let ct = B64
         .decode(wrap.ciphertext.as_bytes())
         .map_err(|e| UnkaiError::Storage(format!("wrap ciphertext b64: {e}")))?;
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(prf_output));
+    let cipher = Aes256Gcm::new_from_slice(prf_output)
+        .map_err(|e| UnkaiError::Storage(format!("AES-GCM key: {e}")))?;
     let pt = cipher
         .decrypt(
-            Nonce::from_slice(&nonce_bytes),
+            &Nonce::from(nonce_bytes),
             Payload {
                 msg: &ct,
                 aad: &credential_id,
