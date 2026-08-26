@@ -2814,7 +2814,13 @@
          links keep their inline red pill (annotateLinkPills), so
          this box and the red pills are mutually exclusive. -->
     {#if linkSafetySummary && linkSafetySummary.unsafe === 0}
-      <div class="px-6 pt-3">
+      <!-- #529 — `py-3` + `border-b` (not `pt-3` alone): the strip
+           sits directly above the body's scroll container, so
+           without its own bottom gap and terminating border the
+           scrolled mail slides flush against the badge and reads
+           as overlap.  Same closing shape as the attachments row
+           and the read-receipt / remote-images banners. -->
+      <div class="px-6 py-3 border-b border-surface-200 dark:border-surface-700">
         <div
           class="rounded-lg border border-success-300 bg-success-50 dark:border-success-700 dark:bg-success-900/30 p-3 text-sm flex items-center gap-3 text-success-800 dark:text-success-200"
           data-test="link-safety-all-clear"
