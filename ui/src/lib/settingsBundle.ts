@@ -22,13 +22,21 @@
 // each account.
 
 import * as api from './api'
+import { TRUSTED_SENDERS_BUNDLE_KEY, trustedSendersLocalKey } from './trustedSenders'
 
 /**
  * `localStorage` keys that carry user-visible state we want to
- * back up.  Adding a new key here means it'll automatically be
- * included in the next bundle write.  Keep this list curated:
- * arbitrary keys (like one-shot dismissed-banner flags) probably
- * don't deserve to ride along between machines.
+ * back up, stored under the same name locally and in the bundle.
+ * Adding a new key here means it'll automatically be included in
+ * the next bundle write.  Keep this list curated: arbitrary keys
+ * (like one-shot dismissed-banner flags) probably don't deserve
+ * to ride along between machines.
+ *
+ * Profile-scoped keys (#535) can NOT ride here verbatim — their
+ * local names embed the profile id, which differs across
+ * machines.  They keep a stable wire name in the bundle and are
+ * mapped explicitly in `collectLocalStorage` / `applyLocalStorage`
+ * below; the trusted-senders list is the first of those.
  */
 const SYNCED_LOCAL_STORAGE_KEYS = [
   // FIDO unlock toggle (#164).  The wraps live in the keychain
@@ -41,10 +49,6 @@ const SYNCED_LOCAL_STORAGE_KEYS = [
   // `navigator.language`.  Survives bundle import so a user who
   // pinned `de` on machine A doesn't get English on machine B.
   'PARAGLIDE_LOCALE',
-  // Trusted-senders allow-list for remote-image autoload.
-  // Stored as a JSON array; we copy it verbatim so the import
-  // path doesn't have to know its inner shape.
-  'unkai-trusted-senders',
 ] as const
 
 /**
@@ -59,6 +63,15 @@ export function collectLocalStorage(): Record<string, string> {
       const v = localStorage.getItem(key)
       if (v !== null) out[key] = v
     }
+    // Trusted senders: profile-scoped local key → stable wire
+    // name (settings sync is per-profile, so the bundle carries
+    // exactly this profile's list).  Copied verbatim so the
+    // import path doesn't have to know its inner shape.
+    const tsKey = trustedSendersLocalKey()
+    if (tsKey) {
+      const v = localStorage.getItem(tsKey)
+      if (v !== null) out[TRUSTED_SENDERS_BUNDLE_KEY] = v
+    }
   } catch {
     // localStorage may be unavailable in some webview modes; the
     // bundle still works — it'll just carry an empty map.
@@ -68,9 +81,9 @@ export function collectLocalStorage(): Record<string, string> {
 
 /**
  * Write each key from `map` back into `localStorage`.  Keys not
- * present in `map` but present in `SYNCED_LOCAL_STORAGE_KEYS` are
- * removed — restoring a bundle should mirror the source machine's
- * state, not merge with whatever was already there.
+ * present in `map` but expected here are removed — restoring a
+ * bundle should mirror the source machine's state, not merge with
+ * whatever was already there.
  */
 export function applyLocalStorage(map: Record<string, string>) {
   try {
@@ -80,6 +93,18 @@ export function applyLocalStorage(map: Record<string, string>) {
         localStorage.removeItem(key)
       } else {
         localStorage.setItem(key, v)
+      }
+    }
+    // Trusted senders: stable wire name → this profile's scoped
+    // key.  Skipped while the window's profile id is still
+    // resolving — the next bundle write re-syncs.
+    const tsKey = trustedSendersLocalKey()
+    if (tsKey) {
+      const v = map[TRUSTED_SENDERS_BUNDLE_KEY]
+      if (v === undefined) {
+        localStorage.removeItem(tsKey)
+      } else {
+        localStorage.setItem(tsKey, v)
       }
     }
   } catch {

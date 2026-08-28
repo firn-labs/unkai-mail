@@ -9,6 +9,14 @@ vi.mock('./settingsBundle', () => ({
   notifySettingsChanged: notifyMock,
 }))
 
+// The profile-scoped-key helper (#535) resolves the window's
+// profile via an IPC round-trip — stub it with a fixed id so the
+// storage key is deterministic and no Tauri runtime is needed.
+vi.mock('./profileLocalStorage', () => ({
+  profileScopedKey: (suffix: string) => `unkai.test-profile.${suffix}`,
+  adoptLegacyKey: () => {},
+}))
+
 // In-memory localStorage stub.  vitest's default `environment:
 // 'node'` doesn't ship one; we set this on `globalThis` before
 // importing the module under test so the import-time module
