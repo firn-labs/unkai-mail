@@ -769,19 +769,22 @@ fn open_default_apps_settings() -> Result<(), UnkaiError> {
 fn add_account(
     account: Account,
     password: String,
-    cache: State<'_, Cache>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::accounts::add_account(account, password, &cache, &notify)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::accounts::add_account(account, password, &h.ctx.cache, &h.sync_notify)
 }
 
 #[tauri::command]
 async fn add_contact_to_category(
     contact_id: String,
     category: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::add_contact_to_category(contact_id, category, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::add_contact_to_category(contact_id, category, &h.ctx.cache).await
 }
 
 #[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
@@ -794,8 +797,10 @@ async fn add_dav_account(
     use_contacts: bool,
     use_calendars: bool,
     trusted_certs: Option<Vec<unkai_core::models::TrustedCert>>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<NextcloudAccount, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::nextcloud::add_dav_account(
         display_name,
         server_url,
@@ -804,7 +809,7 @@ async fn add_dav_account(
         use_contacts,
         use_calendars,
         trusted_certs,
-        &cache,
+        &h.ctx.cache,
     )
     .await
 }
@@ -814,9 +819,11 @@ fn add_local_dav_account(
     display_name: String,
     use_contacts: bool,
     use_calendars: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<NextcloudAccount, UnkaiError> {
-    cmds::nextcloud::add_local_dav_account(display_name, use_contacts, use_calendars, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::add_local_dav_account(display_name, use_contacts, use_calendars, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -848,9 +855,11 @@ async fn archive_message(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::archive_message(account_id, folder, uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::archive_message(account_id, folder, uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -858,55 +867,70 @@ async fn archive_messages(
     account_id: String,
     folder: String,
     uids: Vec<u32>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<u32>, UnkaiError> {
-    cmds::mail::archive_messages(account_id, folder, uids, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::archive_messages(account_id, folder, uids, &h.ctx.cache).await
 }
 
 #[tauri::command]
-async fn check_mail_now(ctx: State<'_, AppContext>) -> Result<(), UnkaiError> {
-    cmds::mail::check_mail_now(&ctx).await
+async fn check_mail_now(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::check_mail_now(&h.ctx).await
 }
 
 #[tauri::command]
 fn check_urls(
     urls: Vec<String>,
-    cache: State<'_, Cache>,
-    settings: State<'_, SharedSettings>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<LinkVerdict>, UnkaiError> {
-    cmds::mail::check_urls(urls, &cache, &settings)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::check_urls(urls, &h.ctx.cache, &h.ctx.settings)
 }
 
 #[tauri::command]
 async fn clear_folder(
     account_id: String,
     folder: String,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<u32, UnkaiError> {
-    cmds::mail::clear_folder(account_id, folder, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::clear_folder(account_id, folder, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
-async fn count_outbox(cache: State<'_, Cache>) -> Result<u32, UnkaiError> {
-    cmds::compose::count_outbox(&cache).await
+async fn count_outbox(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<u32, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::count_outbox(&h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn count_outbox_by_account(
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<std::collections::HashMap<String, u32>, UnkaiError> {
-    cmds::compose::count_outbox_by_account(&cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::count_outbox_by_account(&h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn create_calendar_event(
     calendar_id: String,
     input: CalendarEventInput,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<CalendarEvent, UnkaiError> {
-    cmds::calendar::create_calendar_event(calendar_id, input, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::create_calendar_event(calendar_id, input, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
@@ -915,9 +939,18 @@ async fn create_contact(
     addressbook_url: String,
     addressbook_name: String,
     input: ContactInput,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Contact, UnkaiError> {
-    cmds::contacts::create_contact(nc_id, addressbook_url, addressbook_name, input, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::create_contact(
+        nc_id,
+        addressbook_url,
+        addressbook_name,
+        input,
+        &h.ctx.cache,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -927,15 +960,17 @@ async fn create_contact_group(
     addressbook_name: String,
     display_name: String,
     member_uids: Vec<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<ContactGroupView, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::contacts::create_contact_group(
         nc_id,
         addressbook_url,
         addressbook_name,
         display_name,
         member_uids,
-        &cache,
+        &h.ctx.cache,
     )
     .await
 }
@@ -944,9 +979,11 @@ async fn create_contact_group(
 async fn create_folder(
     account_id: String,
     name: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::create_folder(account_id, name, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::create_folder(account_id, name, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -954,9 +991,11 @@ async fn create_nextcloud_calendar(
     nc_id: String,
     display_name: String,
     color: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<CalendarSummary, UnkaiError> {
-    cmds::calendar::create_nextcloud_calendar(nc_id, display_name, color, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::create_nextcloud_calendar(nc_id, display_name, color, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -976,9 +1015,11 @@ async fn create_nextcloud_note(
     title: String,
     content: String,
     category: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<unkai_core::models::Note, UnkaiError> {
-    cmds::notes::create_nextcloud_note(nc_id, title, content, category, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::notes::create_nextcloud_note(nc_id, title, content, category, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1016,8 +1057,10 @@ async fn create_nextcloud_task(
     due_tz: Option<String>,
     priority: Option<u8>,
     url: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Task, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::tasks::create_nextcloud_task(
         nc_id,
         list_id,
@@ -1027,7 +1070,7 @@ async fn create_nextcloud_task(
         due_tz,
         priority,
         url,
-        &cache,
+        &h.ctx.cache,
     )
     .await
 }
@@ -1042,8 +1085,10 @@ async fn create_nextcloud_task_from_mail(
     uid: u32,
     subject: String,
     from: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Task, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::tasks::create_nextcloud_task_from_mail(
         nc_id,
         list_id,
@@ -1052,7 +1097,7 @@ async fn create_nextcloud_task_from_mail(
         uid,
         subject,
         from,
-        &cache,
+        &h.ctx.cache,
     )
     .await
 }
@@ -1082,13 +1127,22 @@ async fn create_talk_room(
 }
 
 #[tauri::command]
-fn database_status(cache: State<'_, Cache>) -> Result<DatabaseStatusView, UnkaiError> {
-    cmds::settings::database_status(&cache)
+fn database_status(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<DatabaseStatusView, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::database_status(&h.ctx.cache)
 }
 
 #[tauri::command]
-fn debug_link_check(url: String, cache: State<'_, Cache>) -> Result<serde_json::Value, UnkaiError> {
-    cmds::mail::debug_link_check(url, &cache)
+fn debug_link_check(
+    url: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<serde_json::Value, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::debug_link_check(url, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1097,42 +1151,62 @@ async fn decrypt_message(
     folder: String,
     uid: u32,
     pgp_passphrase: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Email, UnkaiError> {
-    cmds::crypto::decrypt_message(account_id, folder, uid, pgp_passphrase, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::decrypt_message(account_id, folder, uid, pgp_passphrase, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn delete_calendar_event(
     event_id: String,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::delete_calendar_event(event_id, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::delete_calendar_event(event_id, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
-async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::contacts::delete_contact(contact_id, &cache).await
+async fn delete_contact(
+    contact_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::delete_contact(contact_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
-async fn delete_contact_category(name: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::contacts::delete_contact_category(name, &cache).await
+async fn delete_contact_category(
+    name: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::delete_contact_category(name, &h.ctx.cache).await
 }
 
 #[tauri::command]
-async fn delete_contact_group(group_id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::contacts::delete_contact_group(group_id, &cache).await
+async fn delete_contact_group(
+    group_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::delete_contact_group(group_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn delete_folder(
     account_id: String,
     name: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::delete_folder(account_id, name, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::delete_folder(account_id, name, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1140,26 +1214,32 @@ async fn delete_message(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::delete_message(account_id, folder, uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::delete_message(account_id, folder, uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn delete_nextcloud_calendar(
     calendar_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::delete_nextcloud_calendar(calendar_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::delete_nextcloud_calendar(calendar_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn delete_nextcloud_note(
     nc_id: String,
     note_id: u64,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::notes::delete_nextcloud_note(nc_id, note_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::notes::delete_nextcloud_note(nc_id, note_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1178,18 +1258,21 @@ async fn delete_nextcloud_task(
     nc_id: String,
     list_id: String,
     uid: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::tasks::delete_nextcloud_task(nc_id, list_id, uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::tasks::delete_nextcloud_task(nc_id, list_id, uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn delete_outbox_entry(
     id: i64,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::compose::delete_outbox_entry(id, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::delete_outbox_entry(id, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
@@ -1219,8 +1302,12 @@ async fn detect_nc_maps(
 }
 
 #[tauri::command]
-fn disable_fido_only_mode(cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::settings::disable_fido_only_mode(&cache)
+fn disable_fido_only_mode(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::disable_fido_only_mode(&h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1231,8 +1318,13 @@ async fn discover_account_settings(
 }
 
 #[tauri::command]
-async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::calendar::dismiss_cancelled_event(uid, &cache).await
+async fn dismiss_cancelled_event(
+    uid: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::dismiss_cancelled_event(uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1250,9 +1342,11 @@ async fn download_calendar_from_message(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<Vec<u8>>, UnkaiError> {
-    cmds::calendar::download_calendar_from_message(account_id, folder, uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::download_calendar_from_message(account_id, folder, uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1262,15 +1356,17 @@ async fn download_decrypted_attachment(
     uid: u32,
     part_id: u32,
     pgp_passphrase: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<u8>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::crypto::download_decrypted_attachment(
         account_id,
         folder,
         uid,
         part_id,
         pgp_passphrase,
-        &cache,
+        &h.ctx.cache,
     )
     .await
 }
@@ -1281,9 +1377,11 @@ async fn download_email_attachment(
     folder: String,
     uid: u32,
     part_id: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<u8>, UnkaiError> {
-    cmds::mail::download_email_attachment(account_id, folder, uid, part_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::download_email_attachment(account_id, folder, uid, part_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1300,10 +1398,11 @@ async fn download_nextcloud_file(
 #[tauri::command]
 async fn edit_outbox_entry(
     id: i64,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<OutboxRowDto, UnkaiError> {
-    cmds::compose::edit_outbox_entry(id, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::edit_outbox_entry(id, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
@@ -1316,9 +1415,11 @@ async fn expunge_draft_after_send(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::compose::expunge_draft_after_send(account_id, folder, uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::expunge_draft_after_send(account_id, folder, uid, &h.ctx.cache).await
 }
 
 /// #477 — "Download settings" with the save dialog on the Rust
@@ -1328,8 +1429,10 @@ async fn expunge_draft_after_send(
 async fn export_settings_bundle(
     local_storage: std::collections::HashMap<String, String>,
     app: AppHandle,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<String>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     let Some(path) = pick_save_path(
         &app,
         "Save Unkai settings backup",
@@ -1340,7 +1443,7 @@ async fn export_settings_bundle(
     else {
         return Ok(None);
     };
-    cmds::settings::export_settings_bundle_to_path(&path, local_storage, &cache).await?;
+    cmds::settings::export_settings_bundle_to_path(&path, local_storage, &h.ctx.cache).await?;
     Ok(Some(path.display().to_string()))
 }
 
@@ -1349,17 +1452,21 @@ async fn fetch_envelopes(
     account_id: String,
     folder: String,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::fetch_envelopes(account_id, folder, limit, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::fetch_envelopes(account_id, folder, limit, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn fetch_folders(
     account_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<Folder>, UnkaiError> {
-    cmds::mail::fetch_folders(account_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::fetch_folders(account_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1368,9 +1475,11 @@ async fn fetch_inline_images(
     folder: String,
     uid: u32,
     pgp_passphrase: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<InlineImageView>, UnkaiError> {
-    cmds::mail::fetch_inline_images(account_id, folder, uid, pgp_passphrase, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::fetch_inline_images(account_id, folder, uid, pgp_passphrase, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1378,10 +1487,11 @@ async fn fetch_message(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Email, UnkaiError> {
-    cmds::mail::fetch_message(ctx.ui.as_ref(), account_id, folder, uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::fetch_message(h.ctx.ui.as_ref(), account_id, folder, uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1390,9 +1500,11 @@ async fn fetch_older_envelopes(
     folder: String,
     before_uid: u32,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::fetch_older_envelopes(account_id, folder, before_uid, limit, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::fetch_older_envelopes(account_id, folder, before_uid, limit, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1400,27 +1512,34 @@ async fn fetch_older_unified_envelopes(
     folder: String,
     before_uid_per_account: std::collections::HashMap<String, u32>,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::fetch_older_unified_envelopes(folder, before_uid_per_account, limit, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::fetch_older_unified_envelopes(folder, before_uid_per_account, limit, &h.ctx.cache)
+        .await
 }
 
 #[tauri::command]
 async fn fetch_unified_envelopes(
     folder: String,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::fetch_unified_envelopes(folder, limit, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::fetch_unified_envelopes(folder, limit, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn fetch_unified_special_envelopes(
     special: String,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::fetch_unified_special_envelopes(special, limit, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::fetch_unified_special_envelopes(special, limit, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1429,18 +1548,28 @@ fn fido_enroll(
     salt_b64: String,
     prf_output_b64: String,
     label: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::settings::fido_enroll(credential_id_b64, salt_b64, prf_output_b64, label, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::fido_enroll(
+        credential_id_b64,
+        salt_b64,
+        prf_output_b64,
+        label,
+        &h.ctx.cache,
+    )
 }
 
 #[tauri::command]
 fn fido_enroll_passphrase(
     passphrase: String,
     label: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::settings::fido_enroll_passphrase(passphrase, label, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::fido_enroll_passphrase(passphrase, label, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1483,20 +1612,29 @@ async fn find_nextcloud_user_by_email(
 async fn geocode_search(
     query: String,
     lang: Option<String>,
-    cache: State<'_, Cache>,
-    settings: State<'_, SharedSettings>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<cmds::geocode::GeocodeResult>, UnkaiError> {
-    cmds::calendar::geocode_search(query, lang, &cache, &settings).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::geocode_search(query, lang, &h.ctx.cache, &h.ctx.settings).await
 }
 
 #[tauri::command]
-fn get_accounts(cache: State<'_, Cache>) -> Result<Vec<Account>, UnkaiError> {
-    cmds::accounts::get_accounts(&cache)
+fn get_accounts(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<Account>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::accounts::get_accounts(&h.ctx.cache)
 }
 
 #[tauri::command]
-async fn get_app_settings(settings: State<'_, SharedSettings>) -> Result<AppSettings, UnkaiError> {
-    cmds::settings::get_app_settings(&settings).await
+async fn get_app_settings(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<AppSettings, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::get_app_settings(&h.ctx.settings).await
 }
 
 #[tauri::command]
@@ -1504,9 +1642,11 @@ fn get_attachment_previews(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<AttachmentPreviewView>, UnkaiError> {
-    cmds::mail::get_attachment_previews(account_id, folder, uid, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_attachment_previews(account_id, folder, uid, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1515,14 +1655,16 @@ async fn get_attendee_availability(
     attendee_emails: Vec<String>,
     range_start: chrono::DateTime<chrono::Utc>,
     range_end: chrono::DateTime<chrono::Utc>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<AttendeeAvailability>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::calendar::get_attendee_availability(
         nc_id,
         attendee_emails,
         range_start,
         range_end,
-        &cache,
+        &h.ctx.cache,
     )
     .await
 }
@@ -1530,9 +1672,11 @@ async fn get_attendee_availability(
 #[tauri::command]
 fn get_cached_calendars(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<CalendarSummary>, UnkaiError> {
-    cmds::calendar::get_cached_calendars(nc_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::get_cached_calendars(nc_id, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1540,9 +1684,11 @@ fn get_cached_envelopes(
     account_id: String,
     folder: String,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::get_cached_envelopes(account_id, folder, limit, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_cached_envelopes(account_id, folder, limit, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1550,17 +1696,21 @@ fn get_cached_events(
     calendar_ids: Vec<String>,
     range_start: chrono::DateTime<chrono::Utc>,
     range_end: chrono::DateTime<chrono::Utc>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<CalendarEvent>, UnkaiError> {
-    cmds::calendar::get_cached_events(calendar_ids, range_start, range_end, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::get_cached_events(calendar_ids, range_start, range_end, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn get_cached_folders(
     account_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<Folder>, UnkaiError> {
-    cmds::mail::get_cached_folders(account_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_cached_folders(account_id, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1568,41 +1718,51 @@ fn get_cached_message(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<Email>, UnkaiError> {
-    cmds::mail::get_cached_message(account_id, folder, uid, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_cached_message(account_id, folder, uid, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn get_calendars_sync_status(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<SyncStatus, UnkaiError> {
-    cmds::calendar::get_calendars_sync_status(nc_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::get_calendars_sync_status(nc_id, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn get_contact_photo(
     contact_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<ContactPhoto>, UnkaiError> {
-    cmds::contacts::get_contact_photo(contact_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::get_contact_photo(contact_id, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn get_contacts(
     nc_id: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<Contact>, UnkaiError> {
-    cmds::contacts::get_contacts(nc_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::get_contacts(nc_id, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn get_contacts_sync_status(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<SyncStatus, UnkaiError> {
-    cmds::contacts::get_contacts_sync_status(nc_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::get_contacts_sync_status(nc_id, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1610,23 +1770,31 @@ fn get_envelopes_by_thread(
     account_id: String,
     folder: String,
     thread_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::get_envelopes_by_thread(account_id, folder, thread_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_envelopes_by_thread(account_id, folder, thread_id, &h.ctx.cache)
 }
 
 #[tauri::command]
 async fn get_event_partstat_for_user(
     uid: String,
     attendee_hint: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<String>, UnkaiError> {
-    cmds::calendar::get_event_partstat_for_user(uid, attendee_hint, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::get_event_partstat_for_user(uid, attendee_hint, &h.ctx.cache).await
 }
 
 #[tauri::command]
-fn get_link_check_status(cache: State<'_, Cache>) -> Result<link_check::UrlhausStatus, UnkaiError> {
-    cmds::mail::get_link_check_status(&cache)
+fn get_link_check_status(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<link_check::UrlhausStatus, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_link_check_status(&h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1642,9 +1810,11 @@ fn get_nextcloud_accounts(
 async fn get_nextcloud_note(
     nc_id: String,
     note_id: u64,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<unkai_core::models::Note, UnkaiError> {
-    cmds::notes::get_nextcloud_note(nc_id, note_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::notes::get_nextcloud_note(nc_id, note_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1661,17 +1831,21 @@ async fn get_nextcloud_user_email(
 async fn get_receipt_status(
     account_id: String,
     message_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<unkai_store::SentReceiptStatus>, UnkaiError> {
-    cmds::mail::get_receipt_status(account_id, message_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_receipt_status(account_id, message_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn get_rsvp_response(
     uid: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<String>, UnkaiError> {
-    cmds::calendar::get_rsvp_response(uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::get_rsvp_response(uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1680,38 +1854,53 @@ fn get_settings_sync_state() -> Result<SettingsSyncStateView, UnkaiError> {
 }
 
 #[tauri::command]
-fn get_tasks_sync_status(nc_id: String, cache: State<'_, Cache>) -> Result<SyncStatus, UnkaiError> {
-    cmds::tasks::get_tasks_sync_status(nc_id, &cache)
+fn get_tasks_sync_status(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<SyncStatus, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::tasks::get_tasks_sync_status(nc_id, &h.ctx.cache)
 }
 
 #[tauri::command]
-fn get_total_unread(cache: State<'_, Cache>) -> Result<u32, UnkaiError> {
-    cmds::mail::get_total_unread(&cache)
+fn get_total_unread(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<u32, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_total_unread(&h.ctx.cache)
 }
 
 #[tauri::command]
 fn get_unified_cached_envelopes(
     folder: String,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::get_unified_cached_envelopes(folder, limit, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_unified_cached_envelopes(folder, limit, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn get_unified_special_cached_envelopes(
     special: String,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::get_unified_special_cached_envelopes(special, limit, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_unified_special_cached_envelopes(special, limit, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn get_unread_counts_by_account(
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<std::collections::HashMap<String, u32>, UnkaiError> {
-    cmds::mail::get_unread_counts_by_account(&cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::get_unread_counts_by_account(&h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1723,10 +1912,11 @@ fn get_wipe_policy() -> Result<WipePolicyView, UnkaiError> {
 async fn import_calendar_file(
     calendar_id: String,
     path: String,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<ImportCalendarReport, UnkaiError> {
-    cmds::calendar::import_calendar_file(calendar_id, path, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::import_calendar_file(calendar_id, path, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
@@ -1735,20 +1925,30 @@ async fn import_contacts_file(
     addressbook_url: String,
     addressbook_name: String,
     path: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<ImportContactsReport, UnkaiError> {
-    cmds::contacts::import_contacts_file(nc_id, addressbook_url, addressbook_name, path, &cache)
-        .await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::import_contacts_file(
+        nc_id,
+        addressbook_url,
+        addressbook_name,
+        path,
+        &h.ctx.cache,
+    )
+    .await
 }
 
 #[tauri::command]
 async fn import_custom_theme(
     source_path: String,
     label: Option<String>,
-    settings: State<'_, SharedSettings>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<CustomTheme, UnkaiError> {
-    cmds::settings::import_custom_theme(ctx.ui.as_ref(), source_path, label, &settings).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::import_custom_theme(h.ctx.ui.as_ref(), source_path, label, &h.ctx.settings)
+        .await
 }
 
 /// Result of a completed `import_settings_bundle`: where the bundle
@@ -1767,21 +1967,26 @@ struct SettingsBundleImport {
 #[tauri::command]
 async fn import_settings_bundle(
     app: AppHandle,
-    cache: State<'_, Cache>,
-    settings: State<'_, SharedSettings>,
-    mcp: State<'_, McpServer>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<SettingsBundleImport>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     let Some(path) = pick_open_path(
         &app,
-        "Import Unkai settings backup",
-        ("Unkai settings", &["json"]),
+        "Import Unkai h.ctx.settings backup",
+        ("Unkai h.ctx.settings", &["json"]),
     )
     .await?
     else {
         return Ok(None);
     };
-    let local_storage =
-        cmds::settings::import_settings_bundle_from_path(&path, &cache, &settings, &mcp).await?;
+    let local_storage = cmds::settings::import_settings_bundle_from_path(
+        &path,
+        &h.ctx.cache,
+        &h.ctx.settings,
+        &h.mcp,
+    )
+    .await?;
     Ok(Some(SettingsBundleImport {
         path: path.display().to_string(),
         local_storage,
@@ -1789,35 +1994,59 @@ async fn import_settings_bundle(
 }
 
 #[tauri::command]
-fn is_event_in_calendar(uid: String, cache: State<'_, Cache>) -> Result<bool, UnkaiError> {
-    cmds::calendar::is_event_in_calendar(uid, &cache)
+fn is_event_in_calendar(
+    uid: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<bool, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::is_event_in_calendar(uid, &h.ctx.cache)
 }
 
 #[tauri::command]
-fn is_invite_cancelled(uid: String, cache: State<'_, Cache>) -> Result<bool, UnkaiError> {
-    cmds::calendar::is_invite_cancelled(uid, &cache)
+fn is_invite_cancelled(
+    uid: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<bool, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::is_invite_cancelled(uid, &h.ctx.cache)
 }
 
 #[tauri::command]
-async fn list_all_outbox(cache: State<'_, Cache>) -> Result<Vec<OutboxRowDto>, UnkaiError> {
-    cmds::compose::list_all_outbox(&cache).await
+async fn list_all_outbox(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<OutboxRowDto>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::list_all_outbox(&h.ctx.cache).await
 }
 
 #[tauri::command]
 fn list_contact_categories(
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<ContactCategoryView>, UnkaiError> {
-    cmds::contacts::list_contact_categories(&cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::list_contact_categories(&h.ctx.cache)
 }
 
 #[tauri::command]
-fn list_contact_groups(cache: State<'_, Cache>) -> Result<Vec<ContactGroupView>, UnkaiError> {
-    cmds::contacts::list_contact_groups(&cache)
+fn list_contact_groups(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<ContactGroupView>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::list_contact_groups(&h.ctx.cache)
 }
 
 #[tauri::command]
-async fn list_mailing_lists(cache: State<'_, Cache>) -> Result<Vec<MailingListView>, UnkaiError> {
-    cmds::contacts::list_mailing_lists(&cache).await
+async fn list_mailing_lists(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<MailingListView>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::list_mailing_lists(&h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1853,17 +2082,21 @@ async fn list_nextcloud_files(
 
 #[tauri::command]
 async fn list_nextcloud_groups(
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<NextcloudGroupView>, UnkaiError> {
-    cmds::nextcloud::list_nextcloud_groups(&cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::list_nextcloud_groups(&h.ctx.cache).await
 }
 
 #[tauri::command]
 fn list_nextcloud_notes(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<unkai_core::models::Note>, UnkaiError> {
-    cmds::notes::list_nextcloud_notes(nc_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::notes::list_nextcloud_notes(nc_id, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1879,22 +2112,31 @@ async fn list_nextcloud_shares(
 #[tauri::command]
 fn list_nextcloud_task_lists(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<TaskList>, UnkaiError> {
-    cmds::tasks::list_nextcloud_task_lists(nc_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::tasks::list_nextcloud_task_lists(nc_id, &h.ctx.cache)
 }
 
 #[tauri::command]
-fn list_nextcloud_tasks(nc_id: String, cache: State<'_, Cache>) -> Result<Vec<Task>, UnkaiError> {
-    cmds::tasks::list_nextcloud_tasks(nc_id, &cache)
+fn list_nextcloud_tasks(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<Task>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::tasks::list_nextcloud_tasks(nc_id, &h.ctx.cache)
 }
 
 #[tauri::command]
 async fn list_outbox(
     account_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<OutboxRowDto>, UnkaiError> {
-    cmds::compose::list_outbox(account_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::list_outbox(account_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1922,42 +2164,58 @@ async fn mark_as_read(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::mark_as_read(account_id, folder, uid, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::mark_as_read(account_id, folder, uid, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
 async fn mark_folder_read(
     account_id: String,
     folder: String,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::mark_folder_read(account_id, folder, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::mark_folder_read(account_id, folder, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
-async fn mcp_generate_token(mcp: State<'_, McpServer>) -> Result<String, UnkaiError> {
-    cmds::settings::mcp_generate_token(&mcp).await
+async fn mcp_generate_token(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<String, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::mcp_generate_token(&h.mcp).await
 }
 
 #[tauri::command]
 async fn mcp_list_tools(
-    settings: State<'_, SharedSettings>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<McpToolView>, UnkaiError> {
-    cmds::settings::mcp_list_tools(&settings).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::mcp_list_tools(&h.ctx.settings).await
 }
 
 #[tauri::command]
-async fn mcp_revoke_token(mcp: State<'_, McpServer>) -> Result<(), UnkaiError> {
-    cmds::settings::mcp_revoke_token(&mcp).await
+async fn mcp_revoke_token(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::mcp_revoke_token(&h.mcp).await
 }
 
 #[tauri::command]
-async fn mcp_server_status(mcp: State<'_, McpServer>) -> Result<McpServerStatus, UnkaiError> {
-    cmds::settings::mcp_server_status(&mcp).await
+async fn mcp_server_status(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<McpServerStatus, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::mcp_server_status(&h.mcp).await
 }
 
 #[tauri::command]
@@ -1971,9 +2229,11 @@ async fn move_message(
     folder: String,
     uid: u32,
     dest_folder: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::move_message(account_id, folder, uid, dest_folder, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::move_message(account_id, folder, uid, dest_folder, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1982,9 +2242,11 @@ async fn move_messages(
     folder: String,
     uids: Vec<u32>,
     dest_folder: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<u32>, UnkaiError> {
-    cmds::mail::move_messages(account_id, folder, uids, dest_folder, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::move_messages(account_id, folder, uids, dest_folder, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2000,10 +2262,11 @@ async fn nc_probe_settings_bundle(
 #[tauri::command]
 async fn nc_restore_settings_bundle(
     nc_id: String,
-    cache: State<'_, Cache>,
-    settings: State<'_, SharedSettings>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
-    cmds::settings::nc_restore_settings_bundle(nc_id, &cache, &settings).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::nc_restore_settings_bundle(nc_id, &h.ctx.cache, &h.ctx.settings).await
 }
 
 #[tauri::command]
@@ -2021,10 +2284,11 @@ async fn nextcloud_file_preview(
 #[tauri::command]
 async fn notify_settings_changed(
     local_storage: std::collections::HashMap<String, String>,
-    storage: State<'_, SharedLocalStorage>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::settings::notify_settings_changed(local_storage, &storage, &notify).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::notify_settings_changed(local_storage, &h.local_storage, &h.sync_notify).await
 }
 
 #[tauri::command]
@@ -2126,17 +2390,21 @@ fn pgp_enable_unlock_automatically(
 #[tauri::command]
 fn pgp_get_account_key_status(
     account_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<PgpKeyStatus, UnkaiError> {
-    cmds::crypto::pgp_get_account_key_status(account_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::pgp_get_account_key_status(account_id, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn pgp_get_keys_for_email(
     email: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<PgpPublicKeyDto>, UnkaiError> {
-    cmds::crypto::pgp_get_keys_for_email(email, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::pgp_get_keys_for_email(email, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2149,38 +2417,58 @@ async fn pgp_import_private_key(
     account_id: String,
     armored_key: String,
     passphrase: String,
-    cache: State<'_, Cache>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<String, UnkaiError> {
-    cmds::crypto::pgp_import_private_key(account_id, armored_key, passphrase, &cache, &notify).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::pgp_import_private_key(
+        account_id,
+        armored_key,
+        passphrase,
+        &h.ctx.cache,
+        &h.sync_notify,
+    )
+    .await
 }
 
 #[tauri::command]
 fn pgp_import_public_key(
     armored_key: String,
     email_hint: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<String, UnkaiError> {
-    cmds::crypto::pgp_import_public_key(armored_key, email_hint, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::pgp_import_public_key(armored_key, email_hint, &h.ctx.cache)
 }
 
 #[tauri::command]
-fn pgp_list_public_keys(cache: State<'_, Cache>) -> Result<Vec<PgpPublicKeyDto>, UnkaiError> {
-    cmds::crypto::pgp_list_public_keys(&cache)
+fn pgp_list_public_keys(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<PgpPublicKeyDto>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::pgp_list_public_keys(&h.ctx.cache)
 }
 
 #[tauri::command]
 fn pgp_remove_private_key(
     account_id: String,
-    cache: State<'_, Cache>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::crypto::pgp_remove_private_key(account_id, &cache, &notify)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::pgp_remove_private_key(account_id, &h.ctx.cache, &h.sync_notify)
 }
 
 #[tauri::command]
-fn pgp_remove_public_key(fingerprint: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::crypto::pgp_remove_public_key(fingerprint, &cache)
+fn pgp_remove_public_key(
+    fingerprint: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::pgp_remove_public_key(fingerprint, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2214,14 +2502,21 @@ fn put_attachment_preview(
     part_id: u32,
     mime: String,
     base64: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::put_attachment_preview(account_id, folder, uid, part_id, mime, base64, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::put_attachment_preview(account_id, folder, uid, part_id, mime, base64, &h.ctx.cache)
 }
 
 #[tauri::command]
-fn record_cancelled_invite(uid: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::calendar::record_cancelled_invite(uid, &cache)
+fn record_cancelled_invite(
+    uid: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::record_cancelled_invite(uid, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2235,49 +2530,64 @@ async fn refresh_nextcloud_capabilities(
 }
 
 #[tauri::command]
-async fn refresh_urlhaus_now(cache: State<'_, Cache>) -> Result<u32, UnkaiError> {
-    cmds::mail::refresh_urlhaus_now(&cache).await
+async fn refresh_urlhaus_now(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<u32, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::refresh_urlhaus_now(&h.ctx.cache).await
 }
 
 #[tauri::command]
 fn remove_account(
     id: String,
-    cache: State<'_, Cache>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::accounts::remove_account(id, &cache, &notify)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::accounts::remove_account(id, &h.ctx.cache, &h.sync_notify)
 }
 
 #[tauri::command]
 async fn remove_contact_from_category(
     contact_id: String,
     category: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::remove_contact_from_category(contact_id, category, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::remove_contact_from_category(contact_id, category, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn remove_custom_theme(
     id: String,
-    settings: State<'_, SharedSettings>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::settings::remove_custom_theme(ctx.ui.as_ref(), id, &settings).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::remove_custom_theme(h.ctx.ui.as_ref(), id, &h.ctx.settings).await
 }
 
 #[tauri::command]
-fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::nextcloud::remove_nextcloud_account(id, &cache)
+fn remove_nextcloud_account(
+    id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::remove_nextcloud_account(id, &h.ctx.cache)
 }
 
 #[tauri::command]
 async fn rename_contact_category(
     old: String,
     new: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::rename_contact_category(old, new, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::rename_contact_category(old, new, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2285,18 +2595,22 @@ async fn rename_folder(
     account_id: String,
     old_name: String,
     new_name: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::rename_folder(account_id, old_name, new_name, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::rename_folder(account_id, old_name, new_name, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn rename_mailing_list(
     id: String,
     new_name: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::rename_mailing_list(id, new_name, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::rename_mailing_list(id, new_name, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2318,9 +2632,11 @@ async fn respond_mdn_request(
     uid: u32,
     decline: bool,
     automatic: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::respond_mdn_request(account_id, folder, uid, decline, automatic, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::respond_mdn_request(account_id, folder, uid, decline, automatic, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2329,23 +2645,33 @@ async fn respond_to_invite(
     raw_ics: String,
     partstat: String,
     attendee_hint: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::respond_to_invite(calendar_id, raw_ics, partstat, attendee_hint, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::respond_to_invite(calendar_id, raw_ics, partstat, attendee_hint, &h.ctx.cache)
+        .await
 }
 
 #[tauri::command]
-async fn retry_outbox_entry(id: i64, ctx: State<'_, AppContext>) -> Result<(), UnkaiError> {
-    cmds::compose::retry_outbox_entry(id, &ctx).await
+async fn retry_outbox_entry(
+    id: i64,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::retry_outbox_entry(id, &h.ctx).await
 }
 
 #[tauri::command]
 async fn retry_outbox_entry_with_passphrase(
     id: i64,
     pgp_passphrase: String,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::compose::retry_outbox_entry_with_passphrase(id, pgp_passphrase, &ctx).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::retry_outbox_entry_with_passphrase(id, pgp_passphrase, &h.ctx).await
 }
 
 #[tauri::command]
@@ -2353,9 +2679,11 @@ async fn rsvp_existing_event(
     event_id: String,
     partstat: String,
     attendee_hint: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::rsvp_existing_event(event_id, partstat, attendee_hint, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::rsvp_existing_event(event_id, partstat, attendee_hint, &h.ctx.cache).await
 }
 
 /// #477 — attachment Download with the "Save As" dialog on the
@@ -2372,8 +2700,10 @@ async fn save_attachment_as(
     file_name: String,
     pgp_passphrase: Option<String>,
     app: AppHandle,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<String>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     let Some(path) = pick_save_path(&app, "Save attachment", &file_name, None).await? else {
         return Ok(None);
     };
@@ -2384,7 +2714,7 @@ async fn save_attachment_as(
         uid,
         part_id,
         pgp_passphrase,
-        &cache,
+        &h.ctx.cache,
     )
     .await?;
     Ok(Some(path.display().to_string()))
@@ -2395,18 +2725,22 @@ async fn save_draft(
     account_id: String,
     email: OutgoingEmail,
     replace_source: Option<DraftReplaceSource>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<SavedDraft, UnkaiError> {
-    cmds::compose::save_draft(account_id, email, replace_source, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::save_draft(account_id, email, replace_source, &h.ctx.cache).await
 }
 
 #[tauri::command]
 fn search_contacts(
     query: String,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<Contact>, UnkaiError> {
-    cmds::contacts::search_contacts(query, limit, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::search_contacts(query, limit, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2414,9 +2748,11 @@ fn search_emails(
     query: String,
     scope: Option<SearchScope>,
     filters: Option<SearchFilters>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<SearchHit>, UnkaiError> {
-    cmds::mail::search_emails(query, scope, filters, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::search_emails(query, scope, filters, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2425,9 +2761,11 @@ async fn search_imap_server(
     folder: String,
     query: String,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::search_imap_server(account_id, folder, query, limit, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::search_imap_server(account_id, folder, query, limit, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2437,9 +2775,12 @@ async fn search_imap_server_older(
     query: String,
     before_uid: u32,
     limit: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<EmailEnvelope>, UnkaiError> {
-    cmds::mail::search_imap_server_older(account_id, folder, query, before_uid, limit, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::search_imap_server_older(account_id, folder, query, before_uid, limit, &h.ctx.cache)
+        .await
 }
 
 #[tauri::command]
@@ -2449,15 +2790,17 @@ async fn send_email(
     replied_to: Option<RepliedToRef>,
     outbox_source: Option<OutboxSourceRef>,
     pgp_passphrase: Option<String>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<i64, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::compose::send_email(
         account_id,
         email,
         replied_to,
         outbox_source,
         pgp_passphrase,
-        &ctx,
+        &h.ctx,
     )
     .await
 }
@@ -2471,27 +2814,33 @@ fn set_account_password(id: String, password: String) -> Result<(), UnkaiError> 
 fn set_category_use_as_mailing_list(
     name: String,
     enabled: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::set_category_use_as_mailing_list(name, enabled, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::set_category_use_as_mailing_list(name, enabled, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn set_contact_group_emoji(
     group_id: String,
     emoji: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::set_contact_group_emoji(group_id, emoji, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::set_contact_group_emoji(group_id, emoji, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn set_contact_group_hidden(
     group_id: String,
     hidden: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::set_contact_group_hidden(group_id, hidden, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::set_contact_group_hidden(group_id, hidden, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2499,37 +2848,43 @@ fn set_folder_icon(
     account_id: String,
     folder_name: String,
     icon: Option<String>,
-    cache: State<'_, Cache>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::set_folder_icon(account_id, folder_name, icon, &cache, &notify)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::set_folder_icon(account_id, folder_name, icon, &h.ctx.cache, &h.sync_notify)
 }
 
 #[tauri::command]
 async fn set_logo_style(
     style: String,
-    settings: State<'_, SharedSettings>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::settings::set_logo_style(ctx.ui.as_ref(), style, &settings).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::set_logo_style(h.ctx.ui.as_ref(), style, &h.ctx.settings).await
 }
 
 #[tauri::command]
 fn set_mailing_list_emoji(
     id: String,
     emoji: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::set_mailing_list_emoji(id, emoji, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::set_mailing_list_emoji(id, emoji, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn set_mailing_list_hidden(
     id: String,
     hidden: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::contacts::set_mailing_list_hidden(id, hidden, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::set_mailing_list_hidden(id, hidden, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2538,9 +2893,11 @@ async fn set_message_flagged(
     folder: String,
     uid: u32,
     flagged: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::set_message_flagged(account_id, folder, uid, flagged, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::set_message_flagged(account_id, folder, uid, flagged, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2549,9 +2906,11 @@ async fn set_message_pinned(
     folder: String,
     uid: u32,
     pinned: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::set_message_pinned(account_id, folder, uid, pinned, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::set_message_pinned(account_id, folder, uid, pinned, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2560,9 +2919,11 @@ async fn set_message_priority(
     folder: String,
     uid: u32,
     priority: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::set_message_priority(account_id, folder, uid, priority, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::set_message_priority(account_id, folder, uid, priority, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2571,10 +2932,19 @@ async fn set_message_read(
     folder: String,
     uid: u32,
     read: bool,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::set_message_read(account_id, folder, uid, read, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::set_message_read(
+        account_id,
+        folder,
+        uid,
+        read,
+        &h.ctx.cache,
+        h.ctx.ui.as_ref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2583,53 +2953,65 @@ async fn set_message_reminder(
     folder: String,
     uid: u32,
     remind_at: Option<i64>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::mail::set_message_reminder(account_id, folder, uid, remind_at, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::mail::set_message_reminder(account_id, folder, uid, remind_at, &h.ctx.cache).await
 }
 
 #[tauri::command]
 fn set_nextcloud_calendar_hidden(
     calendar_id: String,
     hidden: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::set_nextcloud_calendar_hidden(calendar_id, hidden, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::set_nextcloud_calendar_hidden(calendar_id, hidden, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn set_nextcloud_calendar_muted(
     calendar_id: String,
     muted: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::set_nextcloud_calendar_muted(calendar_id, muted, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::set_nextcloud_calendar_muted(calendar_id, muted, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn set_nextcloud_task_list_hidden(
     task_list_id: String,
     hidden: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::tasks::set_nextcloud_task_list_hidden(task_list_id, hidden, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::tasks::set_nextcloud_task_list_hidden(task_list_id, hidden, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn set_nextcloud_task_list_muted(
     task_list_id: String,
     muted: bool,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::tasks::set_nextcloud_task_list_muted(task_list_id, muted, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::tasks::set_nextcloud_task_list_muted(task_list_id, muted, &h.ctx.cache)
 }
 
 #[tauri::command]
 async fn set_settings_sync_target(
     target_nc_id: Option<String>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::settings::set_settings_sync_target(target_nc_id, &notify).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::set_settings_sync_target(target_nc_id, &h.sync_notify).await
 }
 
 #[tauri::command]
@@ -2665,17 +3047,21 @@ fn smime_enable_unlock_automatically(
 #[tauri::command]
 fn smime_get_account_cert_status(
     account_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<SmimeCertStatus, UnkaiError> {
-    cmds::crypto::smime_get_account_cert_status(account_id, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::smime_get_account_cert_status(account_id, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn smime_get_certs_for_email(
     email: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<SmimeCertDto>, UnkaiError> {
-    cmds::crypto::smime_get_certs_for_email(email, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::smime_get_certs_for_email(email, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2688,41 +3074,57 @@ fn smime_import_pkcs12(
     account_id: String,
     pkcs12_base64: String,
     passphrase: String,
-    cache: State<'_, Cache>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<String, UnkaiError> {
-    cmds::crypto::smime_import_pkcs12(account_id, pkcs12_base64, passphrase, &cache, &notify)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::smime_import_pkcs12(
+        account_id,
+        pkcs12_base64,
+        passphrase,
+        &h.ctx.cache,
+        &h.sync_notify,
+    )
 }
 
 #[tauri::command]
 fn smime_import_public_cert(
     cert_data: String,
     email_hint: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<String, UnkaiError> {
-    cmds::crypto::smime_import_public_cert(cert_data, email_hint, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::smime_import_public_cert(cert_data, email_hint, &h.ctx.cache)
 }
 
 #[tauri::command]
-fn smime_list_public_certs(cache: State<'_, Cache>) -> Result<Vec<SmimeCertDto>, UnkaiError> {
-    cmds::crypto::smime_list_public_certs(&cache)
+fn smime_list_public_certs(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<SmimeCertDto>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::smime_list_public_certs(&h.ctx.cache)
 }
 
 #[tauri::command]
 fn smime_remove_private_cert(
     account_id: String,
-    cache: State<'_, Cache>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::crypto::smime_remove_private_cert(account_id, &cache, &notify)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::smime_remove_private_cert(account_id, &h.ctx.cache, &h.sync_notify)
 }
 
 #[tauri::command]
 fn smime_remove_public_cert(
     fingerprint: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::crypto::smime_remove_public_cert(fingerprint, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::smime_remove_public_cert(fingerprint, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2747,50 +3149,62 @@ async fn start_nextcloud_login(
 #[tauri::command]
 async fn sync_calendar_by_id(
     calendar_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::sync_calendar_by_id(calendar_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::sync_calendar_by_id(calendar_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn sync_nextcloud_calendars(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<SyncCalendarsReport, UnkaiError> {
-    cmds::calendar::sync_nextcloud_calendars(nc_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::sync_nextcloud_calendars(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn sync_nextcloud_contacts(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<SyncContactsReport, UnkaiError> {
-    cmds::contacts::sync_nextcloud_contacts(nc_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::sync_nextcloud_contacts(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn sync_nextcloud_notes(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<unkai_core::models::Note>, UnkaiError> {
-    cmds::notes::sync_nextcloud_notes(nc_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::notes::sync_nextcloud_notes(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn sync_nextcloud_task_lists(
     nc_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<TaskList>, UnkaiError> {
-    cmds::tasks::sync_nextcloud_task_lists(nc_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::tasks::sync_nextcloud_task_lists(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
 async fn sync_nextcloud_tasks(
     nc_id: String,
     list_id: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<Task>, UnkaiError> {
-    cmds::tasks::sync_nextcloud_tasks(nc_id, list_id, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::tasks::sync_nextcloud_tasks(nc_id, list_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2818,9 +3232,11 @@ async fn tombstone_draft_for_expunge(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::compose::tombstone_draft_for_expunge(account_id, folder, uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::compose::tombstone_draft_for_expunge(account_id, folder, uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2828,61 +3244,74 @@ async fn try_auto_decrypt_message(
     account_id: String,
     folder: String,
     uid: u32,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<Email>, UnkaiError> {
-    cmds::crypto::try_auto_decrypt_message(account_id, folder, uid, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::crypto::try_auto_decrypt_message(account_id, folder, uid, &h.ctx.cache).await
 }
 
 #[tauri::command]
-fn unlock_with_passphrase(passphrase: String, cache: State<'_, Cache>) -> Result<(), UnkaiError> {
-    cmds::settings::unlock_with_passphrase(passphrase, &cache)
+fn unlock_with_passphrase(
+    passphrase: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::unlock_with_passphrase(passphrase, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn unlock_with_prf(
     credential_id_b64: String,
     prf_output_b64: String,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::settings::unlock_with_prf(credential_id_b64, prf_output_b64, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::unlock_with_prf(credential_id_b64, prf_output_b64, &h.ctx.cache)
 }
 
 #[tauri::command]
 fn update_account(
     account: Account,
-    cache: State<'_, Cache>,
-    notify: State<'_, SettingsSyncNotify>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::accounts::update_account(account, &cache, &notify)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::accounts::update_account(account, &h.ctx.cache, &h.sync_notify)
 }
 
 #[tauri::command]
 async fn update_app_settings(
     new_settings: AppSettings,
-    settings: State<'_, SharedSettings>,
-    notify: State<'_, SettingsSyncNotify>,
-    mcp: State<'_, McpServer>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::settings::update_app_settings(new_settings, &settings, &notify, &mcp).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::update_app_settings(new_settings, &h.ctx.settings, &h.sync_notify, &h.mcp).await
 }
 
 #[tauri::command]
 async fn update_calendar_event(
     event_id: String,
     input: CalendarEventInput,
-    cache: State<'_, Cache>,
-    ctx: State<'_, AppContext>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<CalendarEvent, UnkaiError> {
-    cmds::calendar::update_calendar_event(event_id, input, &cache, ctx.ui.as_ref()).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::update_calendar_event(event_id, input, &h.ctx.cache, h.ctx.ui.as_ref()).await
 }
 
 #[tauri::command]
 async fn update_contact(
     contact_id: String,
     input: ContactInput,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Contact, UnkaiError> {
-    cmds::contacts::update_contact(contact_id, input, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::update_contact(contact_id, input, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2890,18 +3319,22 @@ async fn update_contact_group(
     group_id: String,
     display_name: Option<String>,
     member_uids: Option<Vec<String>>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<ContactGroupView, UnkaiError> {
-    cmds::contacts::update_contact_group(group_id, display_name, member_uids, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::update_contact_group(group_id, display_name, member_uids, &h.ctx.cache).await
 }
 
 #[tauri::command]
 fn update_nextcloud_account_trusted_certs(
     nc_id: String,
     trusted_certs: Vec<unkai_core::models::TrustedCert>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<NextcloudAccount, UnkaiError> {
-    cmds::nextcloud::update_nextcloud_account_trusted_certs(nc_id, trusted_certs, &cache)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::update_nextcloud_account_trusted_certs(nc_id, trusted_certs, &h.ctx.cache)
 }
 
 #[tauri::command]
@@ -2909,9 +3342,11 @@ async fn update_nextcloud_calendar(
     calendar_id: String,
     display_name: Option<String>,
     color: Option<String>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::update_nextcloud_calendar(calendar_id, display_name, color, &cache).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::update_nextcloud_calendar(calendar_id, display_name, color, &h.ctx.cache).await
 }
 
 #[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
@@ -2924,10 +3359,19 @@ async fn update_nextcloud_note(
     content: Option<String>,
     category: Option<String>,
     favorite: Option<bool>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<unkai_core::models::Note, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::notes::update_nextcloud_note(
-        nc_id, note_id, etag, title, content, category, favorite, &cache,
+        nc_id,
+        note_id,
+        etag,
+        title,
+        content,
+        category,
+        favorite,
+        &h.ctx.cache,
     )
     .await
 }
@@ -2984,8 +3428,10 @@ async fn update_nextcloud_task(
     clear_completed: Option<bool>,
     url: Option<String>,
     categories: Option<Vec<String>>,
-    cache: State<'_, Cache>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Task, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::tasks::update_nextcloud_task(
         nc_id,
         list_id,
@@ -3002,7 +3448,7 @@ async fn update_nextcloud_task(
         clear_completed,
         url,
         categories,
-        &cache,
+        &h.ctx.cache,
     )
     .await
 }
