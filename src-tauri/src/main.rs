@@ -22,6 +22,7 @@ mod badge;
 mod notifier;
 mod registry;
 mod tray;
+mod windows;
 
 use std::sync::{Arc, Mutex};
 
@@ -70,7 +71,7 @@ use unkai_commands::nextcloud::{
 use unkai_commands::settings::{
     DatabaseStatusView, FidoStatusView, McpToolView, SettingsSyncStateView, WipePolicyView,
 };
-use unkai_commands::state::{SharedSettings, SystemFontsCache};
+use unkai_commands::state::SystemFontsCache;
 use unkai_commands::support::SyncStatus;
 use unkai_commands::system::{OfficeOpenResult, PdfOpenResult};
 
@@ -116,9 +117,11 @@ fn get_notification_icon_path(state: State<'_, NotificationIconPath>) -> String 
 /// triple of the message a clicked notification refers to.  The
 /// frontend routes it through the same in-view open path the Notes
 /// `mail://` deep-link uses.  Window focus happens on the Rust
-/// side (`show_main_window`) before the event is emitted, because
-/// JS `setFocus()` from a background window is unreliable on
-/// Windows (`SetForegroundWindow` lock).
+/// side before the event is emitted, because JS `setFocus()` from
+/// a background window is unreliable on Windows
+/// (`SetForegroundWindow` lock).  Since #535 the payload also
+/// carries the owning profile, so the click focuses *that*
+/// profile's window and only its shell handles the deep link.
 #[cfg(any(target_os = "linux", windows))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +129,7 @@ struct NotificationClickPayload {
     account_id: String,
     folder: String,
     uid: u32,
+    profile_id: String,
 }
 
 /// Assemble the optional deep-link target from the three optional
@@ -138,25 +142,39 @@ fn notification_click_target(
     account_id: Option<String>,
     folder: Option<String>,
     uid: Option<u32>,
+    profile_id: String,
 ) -> Option<NotificationClickPayload> {
     match (account_id, folder, uid) {
         (Some(account_id), Some(folder), Some(uid)) => Some(NotificationClickPayload {
             account_id,
             folder,
             uid,
+            profile_id,
         }),
         _ => None,
     }
 }
 
-/// Focus the main window and tell the frontend which message the
-/// clicked notification referred to (#415).  Shared by the Linux
-/// action handler and the Windows toast-activation callback.
+/// Focus the owning profile's window and tell it which message the
+/// clicked notification referred to (#415/#535).  Shared by the
+/// Linux action handler and the Windows toast-activation callback.
 #[cfg(any(target_os = "linux", windows))]
 fn handle_notification_click(app: &AppHandle, payload: &NotificationClickPayload) {
-    let _ = show_main_window(app);
-    if let Err(e) = app.emit("notification-clicked", payload) {
-        tracing::warn!("failed to emit notification-clicked event: {e}");
+    if let Err(e) = windows::focus_or_create_profile_window(app, &payload.profile_id) {
+        tracing::warn!("notification-click window raise failed: {e}");
+    }
+    // Target the profile's primary windows only — with several
+    // profiles open, a broadcast would deep-link every shell at
+    // once.  If the window had to be re-created above, the fresh
+    // webview may miss this emit (no listener yet); the click then
+    // just focuses the window, which is the pre-#415 behaviour.
+    let reg = app.state::<ProfileRegistry>();
+    for label in reg.labels_for_profile(&payload.profile_id) {
+        if windows::is_primary_label(&label)
+            && let Err(e) = app.emit_to(label.as_str(), "notification-clicked", payload)
+        {
+            tracing::warn!("failed to emit notification-clicked event: {e}");
+        }
     }
 }
 
@@ -182,6 +200,7 @@ fn handle_notification_click(app: &AppHandle, payload: &NotificationClickPayload
 /// no notification daemon running).
 #[cfg(target_os = "linux")]
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri shim: params mirror the IPC payload + managed state
 fn send_native_notification(
     app: AppHandle,
     title: String,
@@ -190,9 +209,16 @@ fn send_native_notification(
     folder: Option<String>,
     uid: Option<u32>,
     icon: State<'_, NotificationIconPath>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<bool, UnkaiError> {
     use notify_rust::{Hint, Notification};
-    let target = notification_click_target(account_id, folder, uid);
+    let target = notification_click_target(
+        account_id,
+        folder,
+        uid,
+        reg.profile_for_label(window.label()),
+    );
     let mut n = Notification::new();
     n.summary(&title)
         .body(&body)
@@ -241,6 +267,7 @@ fn send_native_notification(
 /// click deep-link is lost.
 #[cfg(windows)]
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri shim: params mirror the IPC payload + managed state
 fn send_native_notification(
     app: AppHandle,
     title: String,
@@ -249,10 +276,17 @@ fn send_native_notification(
     folder: Option<String>,
     uid: Option<u32>,
     icon: State<'_, NotificationIconPath>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<bool, UnkaiError> {
     use tauri_winrt_notification::{IconCrop, Toast};
 
-    let target = notification_click_target(account_id, folder, uid);
+    let target = notification_click_target(
+        account_id,
+        folder,
+        uid,
+        reg.profile_for_label(window.label()),
+    );
     let mut toast = Toast::new("com.unkai.mail").title(&title).text1(&body);
     if !icon.0.as_os_str().is_empty() {
         toast = toast.icon(&icon.0, IconCrop::Square, "Unkai Mail");
@@ -303,8 +337,10 @@ fn send_native_notification(
 /// stay in lockstep.
 #[cfg(windows)]
 fn set_app_user_model_id() {
-    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
-    use windows::core::HSTRING;
+    // `::windows` = the windows-rs crate — the leading `::`
+    // disambiguates from our own `crate::windows` module (#535).
+    use ::windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    use ::windows::core::HSTRING;
 
     let aumid = HSTRING::from("com.unkai.mail");
     // SAFETY: the function takes a PCWSTR derived from a live
@@ -477,25 +513,6 @@ fn rebuild_decoration_input_region(win: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "linux"))]
 fn rebuild_decoration_input_region(_win: &tauri::WebviewWindow) {}
 
-/// Bring the main window to the front. Called from the tray's
-/// left-click handler, the tray menu's "Open Unkai" item, and the
-/// `show_main_window` command.
-fn show_main_window(app: &AppHandle) -> Result<(), UnkaiError> {
-    let win = app
-        .get_webview_window("main")
-        .ok_or_else(|| UnkaiError::Other("main window not found".into()))?;
-    // show() may be a no-op if the window is already visible, but
-    // unminimize() + set_focus() still make sense in that case.
-    let _ = win.show();
-    let _ = win.unminimize();
-    let _ = win.set_focus();
-    // Every caller here is un-hiding a window that was previously
-    // unmapped — at startup, or out of the tray — which is exactly
-    // when the decoration's input region goes stale (#470).
-    rebuild_decoration_input_region(&win);
-    Ok(())
-}
-
 // ── Native file dialogs (#477) ──────────────────────────────────
 //
 // The dialog and the file IO it gates both live on the Rust side,
@@ -587,9 +604,71 @@ fn logo_protocol(
         .expect("build logo response")
 }
 
+/// Raise the app for callers with no profile of their own — kept
+/// under its historical name because the frontend wrapper
+/// (`api/system.ts`) invokes it as `show_main_window_cmd`; since
+/// #535 "the main window" means the most recently focused primary
+/// window.
 #[tauri::command]
 fn show_main_window_cmd(app: AppHandle) -> Result<(), UnkaiError> {
-    show_main_window(&app)
+    windows::show_primary_window(&app).map(|_| ())
+}
+
+// ── Profile windows (#535) ──────────────────────────────────────
+
+/// Focus the profile's primary window, creating one (plus its
+/// runtime context) when none exists — the rail switcher's "Open
+/// in new window".
+#[tauri::command]
+async fn open_profile_window(id: String, app: AppHandle) -> Result<(), UnkaiError> {
+    windows::focus_or_create_profile_window(&app, &id)
+}
+
+/// Switch the calling window to another profile in place (#535).
+/// Window labels are immutable in Tauri, so the switch is a
+/// registry remap: every subsequent command from this window
+/// resolves to the new profile.  The frontend follows up by
+/// resetting its view state and reloading through the stores.
+#[tauri::command]
+async fn switch_window_profile(
+    id: String,
+    app: AppHandle,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    if !windows::is_primary_label(window.label()) {
+        return Err(UnkaiError::Other(
+            "only a profile's main window can switch profiles".into(),
+        ));
+    }
+    windows::ensure_profile_context(&app, &id)?;
+    reg.map_window(window.label(), &id);
+    // The switched-to profile is now the one the user is looking
+    // at — bookmark it and persist the last-used order.
+    if reg.note_focused(window.label(), &id) {
+        windows::persist_last_used(reg.paths().clone(), id);
+    }
+    Ok(())
+}
+
+/// Map a popout window's label to the calling window's profile
+/// BEFORE the popout is created, so its very first command already
+/// resolves correctly (#535).  The shared frontend popout helper
+/// awaits this ahead of `new WebviewWindow(...)`.
+#[tauri::command]
+fn register_popout_window(
+    label: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    if windows::is_primary_label(&label) {
+        return Err(UnkaiError::Other(
+            "popout labels must not collide with profile windows".into(),
+        ));
+    }
+    let profile_id = reg.profile_for_label(window.label());
+    reg.map_window(&label, &profile_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1295,22 +1374,34 @@ async fn delete_outbox_entry(
 }
 
 #[tauri::command]
-fn delete_profile(
+async fn delete_profile(
     id: String,
     window: tauri::Window,
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
     // The body owns the refusal policy; the shell only knows which
-    // profiles are live: the caller's own, and every profile with
-    // an open runtime context in the registry.
-    cmds::profiles::delete_profile(
+    // profiles are live: the caller's own, and every profile some
+    // window is currently mapped to (#535).  Pre-flight the policy
+    // so a refusal never costs the context teardown below.
+    let open = reg.profiles_with_windows();
+    cmds::profiles::ensure_deletable(&id, &h.ctx.profile.id, &open, reg.paths())?;
+    // A window-less profile may still hold an open runtime context
+    // (background sync keeps running after its last window closes)
+    // — shut it down so the cache pool releases its files before
+    // the secure wipe.
+    registry::shutdown_profile_context(&reg, &id).await;
+    let result = cmds::profiles::delete_profile(
         h.ctx.ui.as_ref(),
         id,
         &h.ctx.profile.id,
-        &reg.open_profile_ids(),
+        &open,
         reg.paths(),
-    )
+    );
+    // Repaint the tray badge without the deleted profile's
+    // contribution (`remove_profile` dropped its unread entry).
+    refresh_unread_badge(&h.ctx.cache, h.ctx.ui.as_ref());
+    result
 }
 
 #[tauri::command]
@@ -3668,6 +3759,18 @@ fn main() {
         tracing::warn!("MCP token migration failed (token stays on the legacy entry): {e}");
     }
 
+    // Captured for `.setup()`'s startup fan-out (#535): in `All`
+    // mode every profile gets a window at boot, with the resolved
+    // startup profile as the primary one in the static "main"
+    // window.  `Fixed` / `LastUsed` open only that primary.
+    let startup_mode = registry.startup.clone();
+    let secondary_profile_ids: Vec<String> = registry
+        .profiles
+        .iter()
+        .map(|p| p.id.clone())
+        .filter(|id| *id != profile.id)
+        .collect();
+
     tauri::Builder::default()
         // single-instance MUST come before any plugin that cares
         // about second-launch argv (here: deep-link).  With the
@@ -3681,15 +3784,31 @@ fn main() {
         // through deep-link.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             tracing::debug!("single-instance argv received: {argv:?}");
+            // Raise first so the mailto (if any) lands in a window
+            // the user is looking at.  #535: "the" window is the
+            // most recently focused profile window, and the mailto
+            // event targets exactly that window — a broadcast
+            // would open a compose in every profile's shell.
+            // (Full profile-aware external-open routing is chunk
+            // 5; here a second launch simply must not regress.)
+            let raised = windows::show_primary_window(app);
             for arg in &argv {
                 if arg.to_lowercase().starts_with("mailto:") {
+                    // Buffer + targeted emit, same shape as the
+                    // deep-link path below: the buffer covers a
+                    // window whose listeners aren't up yet, the
+                    // frontend listener drains the buffer alongside
+                    // the event so nothing is delivered twice.
                     buffer_mailto_url(arg);
-                    if let Err(e) = app.emit("unkai://mailto", arg.clone()) {
+                    if let Ok(r) = &raised
+                        && !r.created
+                        && let Err(e) = app.emit_to(r.window.label(), "unkai://mailto", arg.clone())
+                    {
                         tracing::warn!("emit single-instance mailto failed: {e}");
                     }
                 }
             }
-            if let Err(e) = show_main_window(app) {
+            if let Err(e) = raised {
                 tracing::warn!("single-instance window raise failed: {e}");
             }
         }))
@@ -3720,18 +3839,59 @@ fn main() {
         .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
         .register_uri_scheme_protocol("unkai-logo", logo_protocol)
-        // Keep the window→profile map in step with window
-        // lifecycle: a destroyed window's label must not keep
-        // resolving to a profile (labels are reusable, and chunk 4
-        // remaps them on switch-in-place).
+        // Window lifecycle ↔ profile registry (#533/#535).  One
+        // handler for every window — primary or popout — so none
+        // of this logic is re-installed per window:
+        //
+        //   * Destroyed → drop the label→profile mapping (labels
+        //     are reusable, and switch-in-place remaps them).
+        //     Closing a profile's LAST window deliberately keeps
+        //     its runtime context and background loops running —
+        //     sync and notifications continue, and the tray keeps
+        //     the aggregate badge.  Only `delete_profile` and app
+        //     exit tear contexts down.
+        //   * CloseRequested on a primary window → minimize to
+        //     tray when the window's *current* profile says so.
+        //     Resolved through the registry at event time, never a
+        //     captured settings Arc — a switch-in-place must flip
+        //     the behaviour with the profile.
+        //   * Focused on a primary window → bookmark it as the
+        //     window tray clicks / second launches / deep links
+        //     raise, and keep the profile `last_used` order fresh.
         .on_window_event(|window, event| {
-            if let WindowEvent::Destroyed = event
-                && let Some(reg) = window.app_handle().try_state::<ProfileRegistry>()
-            {
-                reg.unmap_window(window.label());
+            let Some(reg) = window.app_handle().try_state::<ProfileRegistry>() else {
+                return;
+            };
+            match event {
+                WindowEvent::Destroyed => {
+                    reg.unmap_window(window.label());
+                }
+                WindowEvent::CloseRequested { api, .. } => {
+                    if windows::is_primary_label(window.label())
+                        && let Ok(h) = reg.handle_for_label(window.label())
+                    {
+                        // `blocking_read` is safe here: window
+                        // events fire off the async runtime.
+                        let should_hide = h.ctx.settings.blocking_read().minimize_to_tray;
+                        if should_hide {
+                            api.prevent_close();
+                            let _ = window.hide();
+                        }
+                    }
+                }
+                WindowEvent::Focused(true) if windows::is_primary_label(window.label()) => {
+                    let profile_id = reg.profile_for_label(window.label());
+                    // Persist `last_used` only when the focused
+                    // PROFILE changed — not on every focus flip
+                    // between windows of the same profile.
+                    if reg.note_focused(window.label(), &profile_id) {
+                        windows::persist_last_used(reg.paths().clone(), profile_id);
+                    }
+                }
+                _ => {}
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             // Windows toast attribution.  Without an explicit
             // AppUserModelID the OS falls back to the launching
             // process's AUMID — for `cargo tauri dev` that's the
@@ -3804,18 +3964,33 @@ fn main() {
                     }
                     // Buffer + emit covers the race where the OS
                     // delivers the URL after `setup` returns but
-                    // before App.svelte's `onMount` has wired up
-                    // the listener: the buffer catches it and the
+                    // before App.svelte's mount has wired up the
+                    // listener: the buffer catches it and the
                     // frontend's `take_pending_mailto_urls` poll
-                    // drains it on mount.  Live arrivals from a
-                    // user who is already in the app go through
-                    // the event path.
+                    // drains it on mount.  #535: the emit targets
+                    // the most recently focused profile window
+                    // (a broadcast would open a compose in every
+                    // profile's shell), and the frontend listener
+                    // drains the buffer alongside the event so the
+                    // duplicate entry can't be replayed by a later
+                    // profile window's mount.
                     buffer_mailto_url(&s);
-                    if let Err(e) = handle_for_links.emit("unkai://mailto", s.clone()) {
-                        tracing::warn!("emit deep-link mailto failed: {e}");
-                    }
-                    if let Err(e) = show_main_window(&handle_for_links) {
-                        tracing::warn!("deep-link window raise failed: {e}");
+                    match windows::show_primary_window(&handle_for_links) {
+                        Ok(raised) if !raised.created => {
+                            if let Err(e) = handle_for_links.emit_to(
+                                raised.window.label(),
+                                "unkai://mailto",
+                                s.clone(),
+                            ) {
+                                tracing::warn!("emit deep-link mailto failed: {e}");
+                            }
+                        }
+                        // A freshly created window drains the
+                        // buffer on mount — no emit needed.
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!("deep-link window raise failed: {e}");
+                        }
                     }
                 }
             });
@@ -3854,6 +4029,11 @@ fn main() {
                 let reg = app.state::<ProfileRegistry>();
                 let startup_id = reg.startup_profile_id().to_string();
                 reg.map_window("main", &startup_id);
+                // Seed the focus bookmark so tray clicks / second
+                // launches have a target even when the app boots
+                // straight into the tray and no focus event ever
+                // fires (#535).
+                reg.note_focused("main", &startup_id);
                 let handle = registry::build_profile_handle(app.handle(), &startup_id, reg.paths())
                     .map_err(|e| format!("failed to open the startup profile: {e}"))?;
                 reg.insert_profile(&startup_id, handle.clone());
@@ -3971,7 +4151,10 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => {
-                        if let Err(e) = show_main_window(app) {
+                        // #535: raises the most recently focused
+                        // profile window (the tray is shared
+                        // chrome with no profile of its own).
+                        if let Err(e) = windows::show_primary_window(app) {
                             tracing::warn!("tray open failed: {e}");
                         }
                     }
@@ -3987,14 +4170,21 @@ fn main() {
                             });
                         }
                     }
-                    "compose" => {
-                        if let Err(e) = show_main_window(app) {
-                            tracing::warn!("tray compose open failed: {e}");
+                    "compose" => match windows::show_primary_window(app) {
+                        // Target the raised window — a broadcast
+                        // would open a compose in every profile's
+                        // shell (#535).  A freshly created window
+                        // has no listeners yet; the user still
+                        // lands in the shell and can compose from
+                        // there.
+                        Ok(raised) if !raised.created => {
+                            if let Err(e) = app.emit_to(raised.window.label(), "open-compose", ()) {
+                                tracing::warn!("failed to emit open-compose: {e}");
+                            }
                         }
-                        if let Err(e) = app.emit("open-compose", ()) {
-                            tracing::warn!("failed to emit open-compose: {e}");
-                        }
-                    }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("tray compose open failed: {e}"),
+                    },
                     "quit" => app.exit(0),
                     other => tracing::debug!("unknown tray menu id: {other}"),
                 })
@@ -4005,42 +4195,31 @@ fn main() {
                         button_state: MouseButtonState::Up,
                         ..
                     } = event
-                        && let Err(e) = show_main_window(tray.app_handle())
+                        && let Err(e) = windows::show_primary_window(tray.app_handle())
                     {
                         tracing::warn!("tray left-click show failed: {e}");
                     }
                 })
                 .build(app)?;
 
-            // ── Close-to-tray wiring ────────────────────────────
+            // ── First show ──────────────────────────────────────
             //
-            // We clone the settings Arc out of managed state so the
-            // window-event closure (which is `Fn`, not `FnMut`, and
-            // not async) can consult the current preference on every
-            // close attempt. `blocking_read` is safe here: the window
-            // event thread is already off the async runtime.
+            // Close-to-tray lives in the builder-level
+            // `.on_window_event` handler since #535 — resolved per
+            // window through the registry, so `profile-*` windows
+            // and switched-in-place windows behave by their own
+            // profile's preference.
+            //
+            // The main window starts hidden (`visible: false` in
+            // tauri.conf.json) so we don't paint it with the
+            // bundled storm icon for a frame before the user's
+            // chosen logo style is applied above.  Now that the
+            // icon is in place, decide whether to show it:
+            //   - `start_minimized` true → leave it hidden, app
+            //     boots straight into the tray.
+            //   - otherwise → show the window with the correct
+            //     icon already painted in the titlebar / taskbar.
             if let Some(main_window) = app.get_webview_window("main") {
-                let settings_for_close: SharedSettings = ctx.settings.clone();
-                let close_window = main_window.clone();
-                main_window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        let should_hide = settings_for_close.blocking_read().minimize_to_tray;
-                        if should_hide {
-                            api.prevent_close();
-                            let _ = close_window.hide();
-                        }
-                    }
-                });
-
-                // The main window starts hidden (`visible: false` in
-                // tauri.conf.json) so we don't paint it with the
-                // bundled storm icon for a frame before the user's
-                // chosen logo style is applied above.  Now that the
-                // icon is in place, decide whether to show it:
-                //   - `start_minimized` true → leave it hidden, app
-                //     boots straight into the tray.
-                //   - otherwise → show the window with the correct
-                //     icon already painted in the titlebar / taskbar.
                 let should_hide_on_start = ctx.settings.blocking_read().start_minimized;
                 if !should_hide_on_start {
                     let _ = main_window.show();
@@ -4051,6 +4230,32 @@ fn main() {
                 }
             } else {
                 tracing::warn!("main window not found at setup time");
+            }
+
+            // ── Startup fan-out (#535) ──────────────────────────
+            //
+            // `All` mode: one window per profile.  The resolved
+            // startup profile already owns the static "main"
+            // window above; every other profile gets its context
+            // built and a `profile-*` window created here, each
+            // honouring its own `start_minimized` preference.
+            // Failures are per-profile and non-fatal — one broken
+            // profile must not stop the rest of the app booting.
+            if matches!(startup_mode, StartupMode::All) {
+                for id in &secondary_profile_ids {
+                    if let Err(e) = windows::ensure_profile_context(app.handle(), id) {
+                        tracing::warn!("startup fan-out: profile '{id}' failed to open: {e}");
+                        continue;
+                    }
+                    let reg = app.state::<ProfileRegistry>();
+                    let show = reg
+                        .context_for(id)
+                        .and_then(|h| h.ctx.settings.try_read().map(|s| !s.start_minimized).ok())
+                        .unwrap_or(true);
+                    if let Err(e) = windows::create_profile_window(app.handle(), id, show) {
+                        tracing::warn!("startup fan-out: profile '{id}' window failed: {e}");
+                    }
+                }
             }
 
             // Paint the initial badge from whatever's already in the
@@ -4328,6 +4533,10 @@ fn main() {
             delete_profile,
             get_startup_mode,
             set_startup_mode,
+            // #535 — profile windows
+            open_profile_window,
+            switch_window_profile,
+            register_popout_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Unkai");

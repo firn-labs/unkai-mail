@@ -105,13 +105,29 @@ pub fn update_profile(
     Ok(updated)
 }
 
+/// Pre-flight the deletion policy without deleting anything
+/// (#535).  The desktop shell calls this before shutting down a
+/// window-less profile's runtime context, so a refusal (last
+/// profile, still visible in a window, …) never costs a context
+/// teardown-and-rebuild.
+pub fn ensure_deletable(
+    id: &str,
+    active_profile_id: &str,
+    open_profile_ids: &[String],
+    paths: &ProfilePaths,
+) -> Result<(), UnkaiError> {
+    let registry = load_registry(paths)?;
+    check_deletable(&registry, id, active_profile_id, open_profile_ids)
+}
+
 /// Delete a profile and securely destroy its local data.
 ///
 /// `active_profile_id` is the calling window's profile;
-/// `open_profile_ids` are the profiles with a live runtime context
-/// (in chunk 3 that is only the startup profile — chunk 4 adds
-/// context shutdown so closed profiles become deletable while
-/// others run).  Both are refused, as is the last remaining profile.
+/// `open_profile_ids` are the profiles some live window is mapped
+/// to (#535 — a window-less profile's context is shut down by the
+/// shell before this runs, so its cache files are unlocked for the
+/// wipe below).  Both are refused, as is the last remaining
+/// profile.
 ///
 /// Destruction order follows the account-removal precedent: secrets
 /// and files go first, the registry row last, so "this profile

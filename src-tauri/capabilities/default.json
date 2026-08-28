@@ -1,8 +1,18 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for the Unkai main window and any popped-out standalone windows (mail #104, compose #110, reminder #203, event-editor #304, signature-editor #314).",
-  "windows": ["main", "mail-*", "compose-*", "reminder-*", "event-editor-*", "signature-editor-*"],
+  "description": "Default capabilities for the Unkai profile windows (main + profile-* #535) and any popped-out standalone windows (mail #104, compose #110, reminder #203, event-editor #304, signature-editor #314, mail-file, attachment viewer).",
+  "windows": [
+    "main",
+    "profile-*",
+    "mail-*",
+    "mailfile-*",
+    "compose-*",
+    "reminder-*",
+    "event-editor-*",
+    "signature-editor-*",
+    "att-*"
+  ],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",
