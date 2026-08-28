@@ -142,8 +142,9 @@ pub async fn office_open_attachment(
     filename: String,
     data: Vec<u8>,
     content_type: Option<String>,
+    cache: &Cache,
 ) -> Result<OfficeOpenResult, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     ensure_temp_dir(&account, &app_password).await?;
@@ -190,8 +191,12 @@ pub async fn office_open_attachment(
 /// 404 is swallowed by `delete_path`, network blips bubble up but
 /// the frontend logs and moves on — leftover files get caught by
 /// `office_sweep_temp` at next connect.
-pub async fn office_close_attachment(nc_id: String, temp_path: String) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn office_close_attachment(
+    nc_id: String,
+    temp_path: String,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::delete_path(
         &account.server_url,
@@ -232,8 +237,9 @@ pub async fn pdf_open_attachment(
     filename: String,
     data: Vec<u8>,
     content_type: Option<String>,
+    cache: &Cache,
 ) -> Result<PdfOpenResult, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     ensure_temp_dir(&account, &app_password).await?;
@@ -269,8 +275,12 @@ pub async fn pdf_open_attachment(
 /// DELETE the temp PDF the frontend opened. Same cleanup path as
 /// Office — kept as its own command so the frontend's per-viewer
 /// dispatch stays straightforward.
-pub async fn pdf_close_attachment(nc_id: String, temp_path: String) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn pdf_close_attachment(
+    nc_id: String,
+    temp_path: String,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::delete_path(
         &account.server_url,
@@ -288,8 +298,8 @@ pub async fn pdf_close_attachment(nc_id: String, temp_path: String) -> Result<()
 /// DELETE every entry whose `last_modified` is older than the cutoff,
 /// so an in-flight viewer window in another Unkai instance doesn't
 /// have its file pulled out from under it.
-pub async fn office_sweep_temp(nc_id: String) -> Result<u32, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn office_sweep_temp(nc_id: String, cache: &Cache) -> Result<u32, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     // If the temp dir doesn't exist yet (fresh install / first

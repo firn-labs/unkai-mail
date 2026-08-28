@@ -3,6 +3,7 @@
 //! Mirrors `ui/src/lib/api/talk.ts`.
 
 use unkai_core::UnkaiError;
+use unkai_store::Cache;
 use unkai_store::credentials;
 
 use crate::support::load_nextcloud_account;
@@ -18,8 +19,11 @@ use crate::support::load_nextcloud_account;
 
 /// List every Talk room the connected Nextcloud user is a participant
 /// of. Drives the sidebar's "Talk Rooms" group.
-pub async fn list_talk_rooms(nc_id: String) -> Result<Vec<unkai_nextcloud::TalkRoom>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn list_talk_rooms(
+    nc_id: String,
+    cache: &Cache,
+) -> Result<Vec<unkai_nextcloud::TalkRoom>, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::list_rooms(
         &account.server_url,
@@ -57,8 +61,9 @@ pub async fn create_talk_room(
     object_type: Option<String>,
     object_id: Option<String>,
     room_type: Option<u8>,
+    cache: &Cache,
 ) -> Result<unkai_nextcloud::TalkRoom, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::create_room(
         &account.server_url,
@@ -86,8 +91,9 @@ pub async fn set_talk_room_public(
     nc_id: String,
     room_token: String,
     public: bool,
+    cache: &Cache,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::set_room_public(
         &account.server_url,
@@ -156,16 +162,19 @@ pub async fn add_talk_participant(
     nc_id: String,
     room_token: String,
     participant: unkai_nextcloud::ParticipantSource,
+    cache: &Cache,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let mut cache = std::collections::HashMap::new();
+    // Lookup memo for the promotion helper — deliberately not
+    // named `cache` so it can't be mistaken for the DB handle.
+    let mut lookup_memo = std::collections::HashMap::new();
     let resolved = promote_email_to_user_if_internal(
         &account.server_url,
         &account.username,
         &app_password,
         &participant,
-        &mut cache,
+        &mut lookup_memo,
     )
     .await;
     unkai_nextcloud::add_participant(
@@ -193,17 +202,20 @@ pub async fn add_talk_participants(
     nc_id: String,
     room_token: String,
     participants: Vec<unkai_nextcloud::ParticipantSource>,
+    cache: &Cache,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    let mut cache = std::collections::HashMap::new();
+    // Lookup memo for the promotion helper — deliberately not
+    // named `cache` so it can't be mistaken for the DB handle.
+    let mut lookup_memo = std::collections::HashMap::new();
     for p in &participants {
         let resolved = promote_email_to_user_if_internal(
             &account.server_url,
             &account.username,
             &app_password,
             p,
-            &mut cache,
+            &mut lookup_memo,
         )
         .await;
         unkai_nextcloud::add_participant(
@@ -223,8 +235,12 @@ pub async fn add_talk_participants(
 /// whenever the user discards a draft that minted a room earlier
 /// in the session — without it, the room would dangle empty in the
 /// user's Talk list with no context.
-pub async fn delete_talk_room(nc_id: String, room_token: String) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn delete_talk_room(
+    nc_id: String,
+    room_token: String,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::delete_room(
         &account.server_url,
@@ -243,8 +259,9 @@ pub async fn rename_talk_room(
     nc_id: String,
     room_token: String,
     new_name: String,
+    cache: &Cache,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::rename_room(
         &account.server_url,

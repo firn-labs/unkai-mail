@@ -824,8 +824,11 @@ async fn add_talk_participant(
     nc_id: String,
     room_token: String,
     participant: unkai_nextcloud::ParticipantSource,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::talk::add_talk_participant(nc_id, room_token, participant).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::talk::add_talk_participant(nc_id, room_token, participant, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -833,8 +836,11 @@ async fn add_talk_participants(
     nc_id: String,
     room_token: String,
     participants: Vec<unkai_nextcloud::ParticipantSource>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::talk::add_talk_participants(nc_id, room_token, participants).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::talk::add_talk_participants(nc_id, room_token, participants, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -954,8 +960,14 @@ async fn create_nextcloud_calendar(
 }
 
 #[tauri::command]
-async fn create_nextcloud_directory(nc_id: String, path: String) -> Result<(), UnkaiError> {
-    cmds::nextcloud::create_nextcloud_directory(nc_id, path).await
+async fn create_nextcloud_directory(
+    nc_id: String,
+    path: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::create_nextcloud_directory(nc_id, path, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -977,9 +989,20 @@ async fn create_nextcloud_share(
     label: Option<String>,
     permissions: Option<u8>,
     expire_date: Option<String>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<NextcloudShareResult, UnkaiError> {
-    cmds::nextcloud::create_nextcloud_share(nc_id, path, password, label, permissions, expire_date)
-        .await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::create_nextcloud_share(
+        nc_id,
+        path,
+        password,
+        label,
+        permissions,
+        expire_date,
+        &h.ctx.cache,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
@@ -1042,7 +1065,10 @@ async fn create_talk_room(
     object_type: Option<String>,
     object_id: Option<String>,
     room_type: Option<u8>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<unkai_nextcloud::TalkRoom, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
     cmds::talk::create_talk_room(
         nc_id,
         room_name,
@@ -1050,6 +1076,7 @@ async fn create_talk_room(
         object_type,
         object_id,
         room_type,
+        &h.ctx.cache,
     )
     .await
 }
@@ -1136,8 +1163,14 @@ async fn delete_nextcloud_note(
 }
 
 #[tauri::command]
-async fn delete_nextcloud_share(nc_id: String, share_id: String) -> Result<(), UnkaiError> {
-    cmds::nextcloud::delete_nextcloud_share(nc_id, share_id).await
+async fn delete_nextcloud_share(
+    nc_id: String,
+    share_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::delete_nextcloud_share(nc_id, share_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1160,8 +1193,14 @@ async fn delete_outbox_entry(
 }
 
 #[tauri::command]
-async fn delete_talk_room(nc_id: String, room_token: String) -> Result<(), UnkaiError> {
-    cmds::talk::delete_talk_room(nc_id, room_token).await
+async fn delete_talk_room(
+    nc_id: String,
+    room_token: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::talk::delete_talk_room(nc_id, room_token, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1170,8 +1209,13 @@ async fn detect_jmap(host: String) -> Result<Option<String>, UnkaiError> {
 }
 
 #[tauri::command]
-async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, UnkaiError> {
-    cmds::calendar::detect_nc_maps(nc_id).await
+async fn detect_nc_maps(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<NextcloudMapsCapability, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::detect_nc_maps(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1243,8 +1287,14 @@ async fn download_email_attachment(
 }
 
 #[tauri::command]
-async fn download_nextcloud_file(nc_id: String, path: String) -> Result<Vec<u8>, UnkaiError> {
-    cmds::nextcloud::download_nextcloud_file(nc_id, path).await
+async fn download_nextcloud_file(
+    nc_id: String,
+    path: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<u8>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::download_nextcloud_file(nc_id, path, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1422,8 +1472,11 @@ fn fido_verify_prf(credential_id_b64: String, prf_output_b64: String) -> Result<
 async fn find_nextcloud_user_by_email(
     nc_id: String,
     email: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<NextcloudUserLookup>, UnkaiError> {
-    cmds::nextcloud::find_nextcloud_user_by_email(nc_id, email).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::find_nextcloud_user_by_email(nc_id, email, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1577,8 +1630,12 @@ fn get_link_check_status(cache: State<'_, Cache>) -> Result<link_check::UrlhausS
 }
 
 #[tauri::command]
-fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, UnkaiError> {
-    cmds::nextcloud::get_nextcloud_accounts()
+fn get_nextcloud_accounts(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<NextcloudAccount>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::get_nextcloud_accounts(&h.ctx.cache)
 }
 
 #[tauri::command]
@@ -1591,8 +1648,13 @@ async fn get_nextcloud_note(
 }
 
 #[tauri::command]
-async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, UnkaiError> {
-    cmds::nextcloud::get_nextcloud_user_email(nc_id).await
+async fn get_nextcloud_user_email(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Option<String>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::get_nextcloud_user_email(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1759,18 +1821,34 @@ async fn list_mailing_lists(cache: State<'_, Cache>) -> Result<Vec<MailingListVi
 }
 
 #[tauri::command]
-async fn list_nextcloud_addressbooks(nc_id: String) -> Result<Vec<AddressbookSummary>, UnkaiError> {
-    cmds::contacts::list_nextcloud_addressbooks(nc_id).await
+async fn list_nextcloud_addressbooks(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<AddressbookSummary>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::contacts::list_nextcloud_addressbooks(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
-async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>, UnkaiError> {
-    cmds::calendar::list_nextcloud_calendars(nc_id).await
+async fn list_nextcloud_calendars(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<CalendarSummary>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::list_nextcloud_calendars(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
-async fn list_nextcloud_files(nc_id: String, path: String) -> Result<Vec<FileEntry>, UnkaiError> {
-    cmds::nextcloud::list_nextcloud_files(nc_id, path).await
+async fn list_nextcloud_files(
+    nc_id: String,
+    path: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<FileEntry>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::list_nextcloud_files(nc_id, path, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1789,8 +1867,13 @@ fn list_nextcloud_notes(
 }
 
 #[tauri::command]
-async fn list_nextcloud_shares(nc_id: String) -> Result<Vec<NextcloudShareRow>, UnkaiError> {
-    cmds::nextcloud::list_nextcloud_shares(nc_id).await
+async fn list_nextcloud_shares(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<NextcloudShareRow>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::list_nextcloud_shares(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1825,8 +1908,13 @@ async fn list_system_fonts(cache: State<'_, SystemFontsCache>) -> Result<Vec<Str
 }
 
 #[tauri::command]
-async fn list_talk_rooms(nc_id: String) -> Result<Vec<unkai_nextcloud::TalkRoom>, UnkaiError> {
-    cmds::talk::list_talk_rooms(nc_id).await
+async fn list_talk_rooms(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<unkai_nextcloud::TalkRoom>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::talk::list_talk_rooms(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1902,8 +1990,11 @@ async fn move_messages(
 #[tauri::command]
 async fn nc_probe_settings_bundle(
     nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>, UnkaiError> {
-    cmds::settings::nc_probe_settings_bundle(nc_id).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::nc_probe_settings_bundle(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1920,8 +2011,11 @@ async fn nextcloud_file_preview(
     nc_id: String,
     path: String,
     size: Option<u32>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<Vec<u8>>, UnkaiError> {
-    cmds::nextcloud::nextcloud_file_preview(nc_id, path, size).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::nextcloud_file_preview(nc_id, path, size, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1934,8 +2028,14 @@ async fn notify_settings_changed(
 }
 
 #[tauri::command]
-async fn office_close_attachment(nc_id: String, temp_path: String) -> Result<(), UnkaiError> {
-    cmds::system::office_close_attachment(nc_id, temp_path).await
+async fn office_close_attachment(
+    nc_id: String,
+    temp_path: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::system::office_close_attachment(nc_id, temp_path, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1944,13 +2044,21 @@ async fn office_open_attachment(
     filename: String,
     data: Vec<u8>,
     content_type: Option<String>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<OfficeOpenResult, UnkaiError> {
-    cmds::system::office_open_attachment(nc_id, filename, data, content_type).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::system::office_open_attachment(nc_id, filename, data, content_type, &h.ctx.cache).await
 }
 
 #[tauri::command]
-async fn office_sweep_temp(nc_id: String) -> Result<u32, UnkaiError> {
-    cmds::system::office_sweep_temp(nc_id).await
+async fn office_sweep_temp(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<u32, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::system::office_sweep_temp(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1979,8 +2087,14 @@ fn parse_ics_file(path: String) -> Result<Vec<unkai_core::models::CalendarEvent>
 }
 
 #[tauri::command]
-async fn pdf_close_attachment(nc_id: String, temp_path: String) -> Result<(), UnkaiError> {
-    cmds::system::pdf_close_attachment(nc_id, temp_path).await
+async fn pdf_close_attachment(
+    nc_id: String,
+    temp_path: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::system::pdf_close_attachment(nc_id, temp_path, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -1989,8 +2103,11 @@ async fn pdf_open_attachment(
     filename: String,
     data: Vec<u8>,
     content_type: Option<String>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<PdfOpenResult, UnkaiError> {
-    cmds::system::pdf_open_attachment(nc_id, filename, data, content_type).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::system::pdf_open_attachment(nc_id, filename, data, content_type, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2071,8 +2188,12 @@ async fn poll_nextcloud_login(
     poll_endpoint: String,
     poll_token: String,
     trusted_certs: Option<Vec<unkai_core::models::TrustedCert>>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<Option<NextcloudAccount>, UnkaiError> {
-    cmds::nextcloud::poll_nextcloud_login(poll_endpoint, poll_token, trusted_certs).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::poll_nextcloud_login(poll_endpoint, poll_token, trusted_certs, &h.ctx.cache)
+        .await
 }
 
 #[tauri::command]
@@ -2104,8 +2225,13 @@ fn record_cancelled_invite(uid: String, cache: State<'_, Cache>) -> Result<(), U
 }
 
 #[tauri::command]
-async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccount, UnkaiError> {
-    cmds::nextcloud::refresh_nextcloud_capabilities(nc_id).await
+async fn refresh_nextcloud_capabilities(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<NextcloudAccount, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::refresh_nextcloud_capabilities(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2178,8 +2304,11 @@ async fn rename_talk_room(
     nc_id: String,
     room_token: String,
     new_name: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::talk::rename_talk_room(nc_id, room_token, new_name).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::talk::rename_talk_room(nc_id, room_token, new_name, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2508,8 +2637,11 @@ async fn set_talk_room_public(
     nc_id: String,
     room_token: String,
     public: bool,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::talk::set_talk_room_public(nc_id, room_token, public).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::talk::set_talk_room_public(nc_id, room_token, public, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2807,9 +2939,19 @@ async fn update_nextcloud_share(
     password: Option<String>,
     permissions: Option<u8>,
     expire_date: Option<String>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::nextcloud::update_nextcloud_share(nc_id, share_id, password, permissions, expire_date)
-        .await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::update_nextcloud_share(
+        nc_id,
+        share_id,
+        password,
+        permissions,
+        expire_date,
+        &h.ctx.cache,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2817,8 +2959,11 @@ async fn update_nextcloud_share_label(
     nc_id: String,
     share_id: String,
     label: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::nextcloud::update_nextcloud_share_label(nc_id, share_id, label).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::update_nextcloud_share_label(nc_id, share_id, label, &h.ctx.cache).await
 }
 
 #[allow(clippy::too_many_arguments)] // Tauri command: each arg maps to a frontend invoke parameter
@@ -2868,8 +3013,11 @@ async fn upload_to_nextcloud(
     path: String,
     data: Vec<u8>,
     content_type: Option<String>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<String, UnkaiError> {
-    cmds::nextcloud::upload_to_nextcloud(nc_id, path, data, content_type).await
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::upload_to_nextcloud(nc_id, path, data, content_type, &h.ctx.cache).await
 }
 
 // ── App entry point ─────────────────────────────────────────────

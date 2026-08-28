@@ -873,7 +873,7 @@ pub async fn create_contact(
     input: ContactInput,
     cache: &Cache,
 ) -> Result<Contact, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let parsed = input_to_parsed(&uid, &input);
@@ -929,7 +929,7 @@ pub async fn import_contacts_file(
     path: String,
     cache: &Cache,
 ) -> Result<ImportContactsReport, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     let bytes = std::fs::read(&path).map_err(|e| UnkaiError::Other(format!("read {path}: {e}")))?;
     let text = crate::contacts_csv::decode_import_text(&bytes);
@@ -1036,7 +1036,7 @@ pub async fn update_contact(
     cache: &Cache,
 ) -> Result<Contact, UnkaiError> {
     let handle = load_contact_handle(cache, &contact_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
 
     // Merge the form fields over the existing parsed vCard so fields
     // the edit form doesn't surface (addresses, birthday, urls, note,
@@ -1196,7 +1196,7 @@ pub async fn update_contact(
 /// fresh state on the next sync.
 pub async fn delete_contact(contact_id: String, cache: &Cache) -> Result<(), UnkaiError> {
     let handle = load_contact_handle(cache, &contact_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
 
     dav_delete_contact_for(&account, &handle.href, &handle.etag).await?;
 
@@ -1412,7 +1412,7 @@ where
     F: FnOnce(&mut Vec<String>) -> bool,
 {
     let handle = load_contact_handle(cache, contact_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
     let mut parsed = match unkai_carddav::parse_vcard(&handle.vcard_raw) {
         Ok(p) => p,
         Err(_) => ParsedVcard {
@@ -1744,7 +1744,7 @@ pub async fn create_contact_group(
     member_uids: Vec<String>,
     cache: &Cache,
 ) -> Result<ContactGroupView, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let parsed = ParsedVcard {
@@ -1799,7 +1799,7 @@ pub async fn update_contact_group(
     cache: &Cache,
 ) -> Result<ContactGroupView, UnkaiError> {
     let handle = load_contact_handle(cache, &group_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
 
     let mut parsed = match unkai_carddav::parse_vcard(&handle.vcard_raw) {
         Ok(p) => p,
@@ -1868,7 +1868,7 @@ pub async fn update_contact_group(
 /// Delete a contact group from the server + local cache.
 pub async fn delete_contact_group(group_id: String, cache: &Cache) -> Result<(), UnkaiError> {
     let handle = load_contact_handle(cache, &group_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
     dav_delete_contact_for(&account, &handle.href, &handle.etag).await?;
     cache
         .delete_contact_by_id(&group_id)
@@ -1918,8 +1918,9 @@ pub struct AddressbookSummary {
 /// the list can change between logins and we want a fresh view.
 pub async fn list_nextcloud_addressbooks(
     nc_id: String,
+    cache: &Cache,
 ) -> Result<Vec<AddressbookSummary>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     // A local source has exactly the one addressbook seeded at add
     // time (#413) — nothing to probe.
     if account.is_local() {

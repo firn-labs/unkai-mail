@@ -59,7 +59,7 @@ pub async fn sync_nextcloud_notes(
     nc_id: String,
     cache: &Cache,
 ) -> Result<Vec<unkai_core::models::Note>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let server = unkai_nextcloud::list_notes(
         &account.server_url,
@@ -85,7 +85,7 @@ pub async fn get_nextcloud_note(
     note_id: u64,
     cache: &Cache,
 ) -> Result<unkai_core::models::Note, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let server = unkai_nextcloud::get_note(
         &account.server_url,
@@ -111,7 +111,7 @@ pub async fn create_nextcloud_note(
     category: String,
     cache: &Cache,
 ) -> Result<unkai_core::models::Note, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let server = unkai_nextcloud::create_note(
         &account.server_url,
@@ -146,7 +146,7 @@ pub async fn update_nextcloud_note(
     favorite: Option<bool>,
     cache: &Cache,
 ) -> Result<unkai_core::models::Note, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let server = unkai_nextcloud::update_note(
         &account.server_url,
@@ -176,7 +176,7 @@ pub async fn delete_nextcloud_note(
     note_id: u64,
     cache: &Cache,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::delete_note(
         &account.server_url,
