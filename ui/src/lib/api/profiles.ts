@@ -46,6 +46,26 @@ export function deleteProfile(args: { id: string }): Promise<void> {
   return call('delete_profile', args)
 }
 
+/**
+ * Focus the profile's window, creating one (plus its runtime
+ * context) when none exists (#535) — the rail switcher's "Open in
+ * new window".
+ */
+export function openProfileWindow(args: { id: string }): Promise<void> {
+  return call('open_profile_window', args)
+}
+
+/**
+ * Switch THIS window to another profile in place (#535).  The
+ * backend remaps the window's registry entry; afterwards every
+ * command from this window resolves to the new profile.  The
+ * caller must reset its view state and reload through the stores
+ * — `App.svelte`'s `switchProfile` owns that sequence.
+ */
+export function switchWindowProfile(args: { id: string }): Promise<void> {
+  return call('switch_window_profile', args)
+}
+
 export function getStartupMode(): Promise<StartupMode> {
   return call('get_startup_mode')
 }

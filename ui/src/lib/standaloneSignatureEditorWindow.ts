@@ -21,6 +21,8 @@
  * signal the main window uses to re-enable its inline editor.
  */
 
+import { openPopout, takePopoutPayload } from './standalonePopoutWindow'
+
 /** What we hand to the standalone window. */
 export interface SignatureEditorPopoutPayload {
   /** Account row id this signature belongs to.  The popout looks
@@ -42,20 +44,18 @@ const STORAGE_KEY_PREFIX = 'unkai-signature-popout-'
 export async function openSignatureEditorInStandaloneWindow(
   payload: SignatureEditorPopoutPayload,
 ): Promise<void> {
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-  const key = crypto.randomUUID().replaceAll('-', '')
-  // Stash before opening so the new window can read it as soon as
-  // its JS mounts — no race because both windows share the same
-  // localStorage origin.
-  localStorage.setItem(STORAGE_KEY_PREFIX + key, JSON.stringify(payload))
-  new WebviewWindow(`signature-editor-${key}`, {
-    url: `index.html?view=signature-editor&key=${key}`,
-    title: `Signature — ${payload.accountLabel}`,
-    width: 900,
-    height: 700,
-    minWidth: 500,
-    minHeight: 400,
-    focus: true,
+  await openPopout({
+    view: 'signature-editor',
+    payloadPrefix: STORAGE_KEY_PREFIX,
+    payload,
+    window: {
+      title: `Signature — ${payload.accountLabel}`,
+      width: 900,
+      height: 700,
+      minWidth: 500,
+      minHeight: 400,
+      focus: true,
+    },
   })
 }
 
@@ -67,16 +67,7 @@ export async function openSignatureEditorInStandaloneWindow(
 export function takeSignatureEditorPopoutPayload(
   key: string,
 ): SignatureEditorPopoutPayload | null {
-  const fullKey = STORAGE_KEY_PREFIX + key
-  const raw = localStorage.getItem(fullKey)
-  if (!raw) return null
-  localStorage.removeItem(fullKey)
-  try {
-    return JSON.parse(raw) as SignatureEditorPopoutPayload
-  } catch (e) {
-    console.warn('takeSignatureEditorPopoutPayload: malformed JSON', e)
-    return null
-  }
+  return takePopoutPayload<SignatureEditorPopoutPayload>(STORAGE_KEY_PREFIX, key)
 }
 
 /* The popout's event names live in the typed registry in `api/events`

@@ -32,12 +32,11 @@ const sources = import.meta.glob(
   { query: '?raw', import: 'default', eager: true },
 ) as Record<string, string>
 
-/* Files allowed to touch @tauri-apps at runtime (window plumbing). */
-const ALLOWED_FILES = [
-  /\/lib\/standalone\w+Window\.ts$/,
-  /\/lib\/reminderPopupWindow\.ts$/,
-  /\/lib\/attachmentOpen\.ts$/,
-]
+/* Files allowed to touch @tauri-apps at runtime (window plumbing).
+ * Since #535 all popout creation funnels through the shared
+ * `standalonePopoutWindow.ts` helper — the per-kind wrappers and
+ * `attachmentOpen.ts` no longer import @tauri-apps at all. */
+const ALLOWED_FILES = [/\/lib\/standalone\w+Window\.ts$/]
 
 /* Import forms allowed anywhere. */
 const TYPE_ONLY_EVENT_IMPORT =
