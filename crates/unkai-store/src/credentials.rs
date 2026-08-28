@@ -60,10 +60,10 @@ const SMIME_PASSPHRASE_SERVICE: &str = "unkai-mail-smime-passphrase";
 
 /// Keychain service name for the MCP server's bearer token (#438).
 /// Own service so revoking the AI integration can't touch mail or
-/// Nextcloud credentials and vice versa.  Unlike every service
-/// above this one is *not* per-account — the MCP server is a
-/// single app-wide endpoint — so the entry is keyed by a fixed
-/// user string instead of an account UUID.
+/// Nextcloud credentials and vice versa.  One MCP server runs per
+/// *profile* (#533), so entries are keyed `bearer-token:<profile-id>`
+/// — one token per profile, otherwise a single token would unlock
+/// every profile's data and defeat the isolation.
 ///
 /// The token is the only secret in the MCP surface and the
 /// keychain is the only place it ever persists: it is never
@@ -71,7 +71,9 @@ const SMIME_PASSPHRASE_SERVICE: &str = "unkai-mail-smime-passphrase";
 /// Nextcloud settings-sync bundle.
 const MCP_TOKEN_SERVICE: &str = "unkai-mail-mcp";
 
-/// Fixed keychain "user" for the app-wide MCP bearer token.
+/// Keychain "user" prefix for the per-profile MCP bearer token.
+/// The pre-profile singleton lived under the bare prefix; see
+/// [`migrate_legacy_mcp_token`].
 const MCP_TOKEN_USER: &str = "bearer-token";
 
 fn entry(account_id: &str) -> Result<Entry, UnkaiError> {
@@ -163,32 +165,33 @@ pub fn delete_nextcloud_password(nc_id: &str) -> Result<(), UnkaiError> {
 
 // ── MCP server bearer token (#438) ─────────────────────────────
 //
-// Same shape as the password APIs above, minus the per-account
-// keying: one app-wide token gates the localhost MCP endpoint.
+// Same shape as the password APIs above, keyed by *profile* id
+// (#533): each profile's MCP server has its own token, so no
+// token grants access across profile boundaries.
 
-fn mcp_token_entry() -> Result<Entry, UnkaiError> {
-    Entry::new(MCP_TOKEN_SERVICE, MCP_TOKEN_USER)
+fn mcp_token_entry(profile_id: &str) -> Result<Entry, UnkaiError> {
+    Entry::new(MCP_TOKEN_SERVICE, &format!("{MCP_TOKEN_USER}:{profile_id}"))
         .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))
 }
 
-/// Store (or overwrite) the MCP bearer token.  Generating a new
-/// token invalidates the old one by definition — there is exactly
-/// one valid token at a time.
-pub fn store_mcp_token(token: &str) -> Result<(), UnkaiError> {
-    mcp_token_entry()?
+/// Store (or overwrite) a profile's MCP bearer token.  Generating
+/// a new token invalidates the old one by definition — there is
+/// exactly one valid token per profile at a time.
+pub fn store_mcp_token(profile_id: &str, token: &str) -> Result<(), UnkaiError> {
+    mcp_token_entry(profile_id)?
         .set_password(token)
         .map_err(|e| UnkaiError::Storage(format!("failed to store MCP token: {e}")))?;
     info!("Stored MCP bearer token in OS keychain");
     Ok(())
 }
 
-/// Retrieve the MCP bearer token, or `Ok(None)` when the user has
-/// never generated one (or has revoked it).  A missing token is a
-/// normal state — the server still runs but rejects every request
-/// with 401 until a token exists — so unlike the password getters
-/// this doesn't map "no entry" to an error.
-pub fn get_mcp_token() -> Result<Option<String>, UnkaiError> {
-    match mcp_token_entry()?.get_password() {
+/// Retrieve a profile's MCP bearer token, or `Ok(None)` when the
+/// user has never generated one (or has revoked it).  A missing
+/// token is a normal state — the server still runs but rejects
+/// every request with 401 until a token exists — so unlike the
+/// password getters this doesn't map "no entry" to an error.
+pub fn get_mcp_token(profile_id: &str) -> Result<Option<String>, UnkaiError> {
+    match mcp_token_entry(profile_id)?.get_password() {
         Ok(token) => Ok(Some(token)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(UnkaiError::Storage(format!(
@@ -199,15 +202,62 @@ pub fn get_mcp_token() -> Result<Option<String>, UnkaiError> {
 
 /// Non-erroring existence probe for the settings UI — same shape
 /// as [`has_pgp_passphrase`].
-pub fn has_mcp_token() -> Result<bool, UnkaiError> {
-    Ok(get_mcp_token()?.is_some())
+pub fn has_mcp_token(profile_id: &str) -> Result<bool, UnkaiError> {
+    Ok(get_mcp_token(profile_id)?.is_some())
+}
+
+/// Move the pre-profile singleton `bearer-token` entry to this
+/// profile's `bearer-token:<id>` account (#533) — the MCP twin of
+/// [`crate::cache::key::migrate_legacy_master_key`].  Only called
+/// when the registry holds exactly one profile, so the target is
+/// unambiguous.  No-ops on a fresh install and on an already-
+/// migrated one; ordering is write-new → read-back-verify →
+/// delete-old so no failure mode drops the user's token.
+pub fn migrate_legacy_mcp_token(profile_id: &str) -> Result<(), UnkaiError> {
+    let legacy = Entry::new(MCP_TOKEN_SERVICE, MCP_TOKEN_USER)
+        .map_err(|e| UnkaiError::Storage(format!("keychain entry init failed: {e}")))?;
+    let token = match legacy.get_password() {
+        Ok(t) => t,
+        Err(keyring::Error::NoEntry) => return Ok(()), // fresh, or already migrated
+        Err(e) => {
+            return Err(UnkaiError::Storage(format!(
+                "failed to read legacy MCP token: {e}"
+            )));
+        }
+    };
+    match get_mcp_token(profile_id)? {
+        None => {
+            store_mcp_token(profile_id, &token)?;
+            if get_mcp_token(profile_id)?.as_deref() != Some(token.as_str()) {
+                return Err(UnkaiError::Storage(
+                    "MCP token migration verification failed — keeping the legacy entry".into(),
+                ));
+            }
+            if let Err(e) = legacy.delete_credential() {
+                // Both copies exist and match; the next boot's
+                // re-run retries the delete.  Not fatal.
+                tracing::warn!("could not delete legacy MCP token entry: {e}");
+            }
+            info!("Migrated MCP bearer token to its per-profile entry");
+            Ok(())
+        }
+        // Crash leftover from a previous run that wrote the new
+        // entry but not the delete: the per-profile token wins,
+        // just retry clearing the legacy copy.
+        Some(_) => {
+            if let Err(e) = legacy.delete_credential() {
+                tracing::warn!("could not delete legacy MCP token entry: {e}");
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Remove the MCP bearer token; no-op if missing.  Revoking cuts
 /// off every connected client immediately (the server compares
 /// against the in-memory copy the caller clears alongside this).
-pub fn delete_mcp_token() -> Result<(), UnkaiError> {
-    match mcp_token_entry()?.delete_credential() {
+pub fn delete_mcp_token(profile_id: &str) -> Result<(), UnkaiError> {
+    match mcp_token_entry(profile_id)?.delete_credential() {
         Ok(()) => {
             info!("Deleted MCP bearer token");
             Ok(())

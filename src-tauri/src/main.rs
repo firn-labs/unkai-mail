@@ -1132,7 +1132,7 @@ fn database_status(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<DatabaseStatusView, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::database_status(&h.ctx.cache)
+    cmds::settings::database_status(&h.ctx.cache, &h.ctx.profile.id)
 }
 
 #[tauri::command]
@@ -1307,7 +1307,7 @@ fn disable_fido_only_mode(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::disable_fido_only_mode(&h.ctx.cache)
+    cmds::settings::disable_fido_only_mode(&h.ctx.cache, &h.ctx.profile.id)
 }
 
 #[tauri::command]
@@ -1406,8 +1406,12 @@ async fn edit_outbox_entry(
 }
 
 #[tauri::command]
-fn enable_fido_only_mode() -> Result<(), UnkaiError> {
-    cmds::settings::enable_fido_only_mode()
+fn enable_fido_only_mode(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::enable_fido_only_mode(&h.ctx.profile.id)
 }
 
 #[tauri::command]
@@ -1443,7 +1447,13 @@ async fn export_settings_bundle(
     else {
         return Ok(None);
     };
-    cmds::settings::export_settings_bundle_to_path(&path, local_storage, &h.ctx.cache).await?;
+    cmds::settings::export_settings_bundle_to_path(
+        &path,
+        local_storage,
+        &h.ctx.cache,
+        &h.ctx.profile,
+    )
+    .await?;
     Ok(Some(path.display().to_string()))
 }
 
@@ -1558,6 +1568,7 @@ fn fido_enroll(
         prf_output_b64,
         label,
         &h.ctx.cache,
+        &h.ctx.profile.id,
     )
 }
 
@@ -1569,7 +1580,7 @@ fn fido_enroll_passphrase(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::fido_enroll_passphrase(passphrase, label, &h.ctx.cache)
+    cmds::settings::fido_enroll_passphrase(passphrase, label, &h.ctx.cache, &h.ctx.profile.id)
 }
 
 #[tauri::command]
@@ -1578,23 +1589,43 @@ fn fido_generate_salt() -> Result<String, UnkaiError> {
 }
 
 #[tauri::command]
-fn fido_remove(credential_id_b64: String) -> Result<(), UnkaiError> {
-    cmds::settings::fido_remove(credential_id_b64)
+fn fido_remove(
+    credential_id_b64: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::fido_remove(credential_id_b64, &h.ctx.profile.id)
 }
 
 #[tauri::command]
-fn fido_status() -> Result<FidoStatusView, UnkaiError> {
-    cmds::settings::fido_status()
+fn fido_status(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<FidoStatusView, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::fido_status(&h.ctx.profile.id)
 }
 
 #[tauri::command]
-fn fido_verify_passphrase(passphrase: String) -> Result<bool, UnkaiError> {
-    cmds::settings::fido_verify_passphrase(passphrase)
+fn fido_verify_passphrase(
+    passphrase: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<bool, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::fido_verify_passphrase(passphrase, &h.ctx.profile.id)
 }
 
 #[tauri::command]
-fn fido_verify_prf(credential_id_b64: String, prf_output_b64: String) -> Result<bool, UnkaiError> {
-    cmds::settings::fido_verify_prf(credential_id_b64, prf_output_b64)
+fn fido_verify_prf(
+    credential_id_b64: String,
+    prf_output_b64: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<bool, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::fido_verify_prf(credential_id_b64, prf_output_b64, &h.ctx.profile.id)
 }
 
 #[tauri::command]
@@ -1849,8 +1880,12 @@ async fn get_rsvp_response(
 }
 
 #[tauri::command]
-fn get_settings_sync_state() -> Result<SettingsSyncStateView, UnkaiError> {
-    cmds::settings::get_settings_sync_state()
+fn get_settings_sync_state(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<SettingsSyncStateView, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::get_settings_sync_state(&h.ctx.profile)
 }
 
 #[tauri::command]
@@ -1904,8 +1939,12 @@ fn get_unread_counts_by_account(
 }
 
 #[tauri::command]
-fn get_wipe_policy() -> Result<WipePolicyView, UnkaiError> {
-    cmds::settings::get_wipe_policy()
+fn get_wipe_policy(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<WipePolicyView, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::get_wipe_policy(&h.ctx.profile.id)
 }
 
 #[tauri::command]
@@ -1947,8 +1986,14 @@ async fn import_custom_theme(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<CustomTheme, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::import_custom_theme(h.ctx.ui.as_ref(), source_path, label, &h.ctx.settings)
-        .await
+    cmds::settings::import_custom_theme(
+        h.ctx.ui.as_ref(),
+        source_path,
+        label,
+        &h.ctx.settings,
+        &h.ctx.profile,
+    )
+    .await
 }
 
 /// Result of a completed `import_settings_bundle`: where the bundle
@@ -1985,6 +2030,7 @@ async fn import_settings_bundle(
         &h.ctx.cache,
         &h.ctx.settings,
         &h.mcp,
+        &h.ctx.profile,
     )
     .await?;
     Ok(Some(SettingsBundleImport {
@@ -2188,7 +2234,7 @@ async fn mcp_generate_token(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<String, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::mcp_generate_token(&h.mcp).await
+    cmds::settings::mcp_generate_token(&h.mcp, &h.ctx.profile.id).await
 }
 
 #[tauri::command]
@@ -2206,7 +2252,7 @@ async fn mcp_revoke_token(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::mcp_revoke_token(&h.mcp).await
+    cmds::settings::mcp_revoke_token(&h.mcp, &h.ctx.profile.id).await
 }
 
 #[tauri::command]
@@ -2219,8 +2265,12 @@ async fn mcp_server_status(
 }
 
 #[tauri::command]
-async fn mcp_token_status() -> Result<bool, UnkaiError> {
-    cmds::settings::mcp_token_status().await
+async fn mcp_token_status(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<bool, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::mcp_token_status(&h.ctx.profile.id).await
 }
 
 #[tauri::command]
@@ -2266,7 +2316,8 @@ async fn nc_restore_settings_bundle(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::nc_restore_settings_bundle(nc_id, &h.ctx.cache, &h.ctx.settings).await
+    cmds::settings::nc_restore_settings_bundle(nc_id, &h.ctx.cache, &h.ctx.settings, &h.ctx.profile)
+        .await
 }
 
 #[tauri::command]
@@ -2566,7 +2617,8 @@ async fn remove_custom_theme(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::remove_custom_theme(h.ctx.ui.as_ref(), id, &h.ctx.settings).await
+    cmds::settings::remove_custom_theme(h.ctx.ui.as_ref(), id, &h.ctx.settings, &h.ctx.profile)
+        .await
 }
 
 #[tauri::command]
@@ -2862,7 +2914,7 @@ async fn set_logo_style(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::set_logo_style(h.ctx.ui.as_ref(), style, &h.ctx.settings).await
+    cmds::settings::set_logo_style(h.ctx.ui.as_ref(), style, &h.ctx.settings, &h.ctx.profile).await
 }
 
 #[tauri::command]
@@ -3011,7 +3063,7 @@ async fn set_settings_sync_target(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::set_settings_sync_target(target_nc_id, &h.sync_notify).await
+    cmds::settings::set_settings_sync_target(target_nc_id, &h.sync_notify, &h.ctx.profile).await
 }
 
 #[tauri::command]
@@ -3027,8 +3079,13 @@ async fn set_talk_room_public(
 }
 
 #[tauri::command]
-fn set_wipe_policy(policy: WipePolicyView) -> Result<(), UnkaiError> {
-    cmds::settings::set_wipe_policy(policy)
+fn set_wipe_policy(
+    policy: WipePolicyView,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::settings::set_wipe_policy(policy, &h.ctx.profile.id)
 }
 
 #[tauri::command]
@@ -3258,7 +3315,7 @@ fn unlock_with_passphrase(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::unlock_with_passphrase(passphrase, &h.ctx.cache)
+    cmds::settings::unlock_with_passphrase(passphrase, &h.ctx.cache, &h.ctx.profile.id)
 }
 
 #[tauri::command]
@@ -3269,7 +3326,12 @@ fn unlock_with_prf(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::unlock_with_prf(credential_id_b64, prf_output_b64, &h.ctx.cache)
+    cmds::settings::unlock_with_prf(
+        credential_id_b64,
+        prf_output_b64,
+        &h.ctx.cache,
+        &h.ctx.profile.id,
+    )
 }
 
 #[tauri::command]
@@ -3289,7 +3351,14 @@ async fn update_app_settings(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::settings::update_app_settings(new_settings, &h.ctx.settings, &h.sync_notify, &h.mcp).await
+    cmds::settings::update_app_settings(
+        new_settings,
+        &h.ctx.settings,
+        &h.sync_notify,
+        &h.mcp,
+        &h.ctx.profile,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3593,7 +3662,18 @@ fn main() {
     // token load is best-effort: a broken keychain shouldn't stop
     // the app from booting, it just leaves the server answering
     // 401 until the user re-generates a token.
-    let mcp_token = credentials::get_mcp_token().unwrap_or_else(|e| {
+    //
+    // Tokens are keyed per profile (#533).  A pre-profile install
+    // left its token under the singleton entry — migrate it, but
+    // only while the registry holds exactly one profile, so the
+    // target is unambiguous (chunks 3+ are what make a second
+    // profile creatable, and by then every token is per-profile).
+    if registry.profiles.len() == 1
+        && let Err(e) = credentials::migrate_legacy_mcp_token(&profile.id)
+    {
+        tracing::warn!("MCP token migration failed (token stays on the legacy entry): {e}");
+    }
+    let mcp_token = credentials::get_mcp_token(&profile.id).unwrap_or_else(|e| {
         tracing::warn!("could not read MCP token from keychain: {e}");
         None
     });
@@ -4059,19 +4139,17 @@ fn main() {
             // pending=true flag from a previous session (set
             // when a quit-while-offline left a push hanging)
             // gets a fresh attempt as soon as we're up.
-            let sync_cache = app.state::<Cache>().inner().clone();
+            let sync_ctx = ctx.clone();
             let sync_storage = app.state::<SharedLocalStorage>().inner().clone();
             let sync_notify = app.state::<SettingsSyncNotify>().inner().0.clone();
             let initial_kick = sync_notify.clone();
             tauri::async_runtime::spawn(async move {
-                settings_sync_worker(sync_cache, sync_storage, sync_notify).await;
+                settings_sync_worker(sync_ctx, sync_storage, sync_notify).await;
             });
             // Kick the worker once so a pending recovery push
             // from a previous session retries on launch.  The
             // worker no-ops cleanly if there's nothing to do.
-            if cmds::state::active_profile()
-                .ok()
-                .and_then(|p| settings_sync::load_state(&p.settings_sync_file()).ok())
+            if settings_sync::load_state(&ctx.profile.settings_sync_file())
                 .map(|s| s.pending && s.target_nc_id.is_some())
                 .unwrap_or(false)
             {

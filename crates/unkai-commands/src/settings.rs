@@ -16,17 +16,8 @@ use unkai_store::settings_bundle;
 use unkai_store::settings_sync;
 
 use crate::notify::UiNotifier;
-use crate::state::{SettingsSyncNotify, SharedLocalStorage, SharedSettings};
+use crate::state::{ProfileInfo, SettingsSyncNotify, SharedLocalStorage, SharedSettings};
 use crate::support::load_nextcloud_account;
-
-/// The active profile's id.  Every keychain-envelope operation in
-/// this module is per-profile (#531) — the id picks the
-/// `master-key:<id>` entry.  Reads the chunk-1 process-global
-/// bridge in `state`; chunk 2 (#533) replaces it with per-window
-/// profile routing.
-fn profile_id() -> Result<&'static str, UnkaiError> {
-    Ok(&crate::state::active_profile()?.id)
-}
 
 // ── FIDO unlock (#164, Phase 1A) ──────────────────────────────
 //
@@ -61,8 +52,8 @@ pub struct FidoStatusView {
 /// the "Hardware authentication" panel and (later) by the boot
 /// path to decide whether to require an unlock before opening the
 /// cache.
-pub fn fido_status() -> Result<FidoStatusView, UnkaiError> {
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+pub fn fido_status(profile_id: &str) -> Result<FidoStatusView, UnkaiError> {
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     Ok(FidoStatusView {
         has_plain_key: env.plain_key.is_some(),
         credentials: env
@@ -102,9 +93,10 @@ pub fn fido_enroll(
     prf_output_b64: String,
     label: String,
     cache: &Cache,
+    profile_id: &str,
 ) -> Result<(), UnkaiError> {
     use unkai_store::fido;
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     // Same fallback as `fido_enroll_passphrase`: prefer the
     // envelope's plain key, fall back to the in-memory copy
     // when FIDO-only mode has cleared plain_key.
@@ -129,7 +121,7 @@ pub fn fido_enroll(
         &salt,
         label,
     )?;
-    unkai_store::cache::key::add_wrap(profile_id()?, wrap)?;
+    unkai_store::cache::key::add_wrap(profile_id, wrap)?;
     Ok(())
 }
 
@@ -143,12 +135,13 @@ pub fn fido_enroll_passphrase(
     passphrase: String,
     label: String,
     cache: &Cache,
+    profile_id: &str,
 ) -> Result<(), UnkaiError> {
     use unkai_store::fido::{self, WrapKind};
     if passphrase.trim().is_empty() {
         return Err(UnkaiError::Other("passphrase must not be empty".into()));
     }
-    let mut env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+    let mut env = unkai_store::cache::key::load_envelope(profile_id)?;
     // Prefer the keychain envelope's plain key (pre-FIDO-only),
     // fall back to the in-memory copy that `unlock_with_*` stashes
     // on the Cache.  The fallback is what makes "Change passphrase"
@@ -183,7 +176,7 @@ pub fn fido_enroll_passphrase(
     // different ids).
     env.wraps.retain(|w| w.kind != WrapKind::Passphrase);
     env.wraps.push(wrap);
-    unkai_store::cache::key::save_envelope(profile_id()?, &env)?;
+    unkai_store::cache::key::save_envelope(profile_id, &env)?;
     Ok(())
 }
 
@@ -193,9 +186,9 @@ pub fn fido_enroll_passphrase(
 /// their passphrase entry on Linux without restructuring boot.
 /// Returns `true` on success, `false` on a wrong passphrase /
 /// no matching wrap, error on storage / crypto failure.
-pub fn fido_verify_passphrase(passphrase: String) -> Result<bool, UnkaiError> {
+pub fn fido_verify_passphrase(passphrase: String, profile_id: &str) -> Result<bool, UnkaiError> {
     use unkai_store::fido::{self, WrapKind};
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     for wrap in &env.wraps {
         if wrap.kind != WrapKind::Passphrase {
             continue;
@@ -217,9 +210,10 @@ pub fn fido_verify_passphrase(passphrase: String) -> Result<bool, UnkaiError> {
 pub fn fido_verify_prf(
     credential_id_b64: String,
     prf_output_b64: String,
+    profile_id: &str,
 ) -> Result<bool, UnkaiError> {
     use unkai_store::fido::{self, WrapKind};
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     let prf = fido::decode_b64(&prf_output_b64)?;
     for wrap in &env.wraps {
         if wrap.kind != WrapKind::FidoPrf {
@@ -238,14 +232,14 @@ pub fn fido_verify_prf(
 /// Remove a registered credential.  Refuses to drop the last wrap
 /// when the keychain is in FIDO-only mode (would orphan the
 /// encrypted DB).
-pub fn fido_remove(credential_id_b64: String) -> Result<(), UnkaiError> {
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+pub fn fido_remove(credential_id_b64: String, profile_id: &str) -> Result<(), UnkaiError> {
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     if env.plain_key.is_none() && env.wraps.len() <= 1 {
         return Err(UnkaiError::Other(
             "Cannot remove the last hardware key while FIDO-only mode is active".into(),
         ));
     }
-    unkai_store::cache::key::remove_wrap(profile_id()?, &credential_id_b64)?;
+    unkai_store::cache::key::remove_wrap(profile_id, &credential_id_b64)?;
     Ok(())
 }
 
@@ -273,8 +267,8 @@ pub struct DatabaseStatusView {
 
 /// Snapshot used by `App.svelte` on mount to decide whether to
 /// route the user to the lock screen or straight into the inbox.
-pub fn database_status(cache: &Cache) -> Result<DatabaseStatusView, UnkaiError> {
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+pub fn database_status(cache: &Cache, profile_id: &str) -> Result<DatabaseStatusView, UnkaiError> {
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     let locked = cache.is_locked();
     let attempts_remaining = match (env.wipe_on_failure, env.max_unlock_attempts) {
         (true, Some(max)) if max > 0 => Some(max.saturating_sub(env.failed_attempts)),
@@ -304,7 +298,7 @@ pub fn database_status(cache: &Cache) -> Result<DatabaseStatusView, UnkaiError> 
 /// Wipe the cache file and clear the keychain envelope.
 /// Triggered when the user exhausts their unlock budget OR
 /// when the envelope's integrity MAC fails.
-pub fn perform_wipe(cache: &Cache) {
+pub fn perform_wipe(cache: &Cache, profile_id: &str) {
     if let Err(e) = cache.wipe_on_disk() {
         tracing::error!("wipe_on_disk failed: {e}");
     }
@@ -317,13 +311,8 @@ pub fn perform_wipe(cache: &Cache) {
         failed_attempts: 0,
         integrity_mac: None,
     };
-    match profile_id() {
-        Ok(pid) => {
-            if let Err(e) = unkai_store::cache::key::save_envelope(pid, &cleared) {
-                tracing::error!("clearing envelope after wipe failed: {e}");
-            }
-        }
-        Err(e) => tracing::error!("clearing envelope after wipe failed: {e}"),
+    if let Err(e) = unkai_store::cache::key::save_envelope(profile_id, &cleared) {
+        tracing::error!("clearing envelope after wipe failed: {e}");
     }
 }
 
@@ -334,11 +323,8 @@ pub fn perform_wipe(cache: &Cache) {
 /// kill+relaunch can't reset the budget.  An invalid envelope
 /// MAC trips the wipe immediately on the next failure regardless
 /// of where the persisted counter sat.
-pub fn note_unlock_failure(cache: &Cache, label: &str) -> UnkaiError {
-    let pid = match profile_id() {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
+pub fn note_unlock_failure(cache: &Cache, label: &str, profile_id: &str) -> UnkaiError {
+    let pid = profile_id;
     let mut env = match unkai_store::cache::key::load_envelope(pid) {
         Ok(e) => e,
         Err(e) => return e,
@@ -363,7 +349,7 @@ pub fn note_unlock_failure(cache: &Cache, label: &str) -> UnkaiError {
                     "Wipe-on-failure policy fired: {attempts} consecutive failed unlock attempts (limit {max})."
                 );
             }
-            perform_wipe(cache);
+            perform_wipe(cache, profile_id);
             return UnkaiError::Auth(if tampered {
                 "Keychain envelope was modified outside Unkai. The encrypted cache has been wiped."
                     .to_string()
@@ -378,27 +364,28 @@ pub fn note_unlock_failure(cache: &Cache, label: &str) -> UnkaiError {
 }
 
 /// Reset the persisted failure counter on a successful unlock.
-pub fn note_unlock_success() {
-    let Ok(pid) = profile_id() else {
-        return;
-    };
-    let Ok(mut env) = unkai_store::cache::key::load_envelope(pid) else {
+pub fn note_unlock_success(profile_id: &str) {
+    let Ok(mut env) = unkai_store::cache::key::load_envelope(profile_id) else {
         return;
     };
     if env.failed_attempts == 0 {
         return;
     }
     env.failed_attempts = 0;
-    if let Err(e) = unkai_store::cache::key::save_envelope(pid, &env) {
+    if let Err(e) = unkai_store::cache::key::save_envelope(profile_id, &env) {
         tracing::warn!("could not reset failure counter: {e}");
     }
 }
 
 /// Unlock the cache from a passphrase.  Tries every passphrase
 /// wrap in the envelope, returns the first match.
-pub fn unlock_with_passphrase(passphrase: String, cache: &Cache) -> Result<(), UnkaiError> {
+pub fn unlock_with_passphrase(
+    passphrase: String,
+    cache: &Cache,
+    profile_id: &str,
+) -> Result<(), UnkaiError> {
     use unkai_store::fido::{self, WrapKind};
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     for wrap in &env.wraps {
         if wrap.kind != WrapKind::Passphrase {
             continue;
@@ -410,11 +397,11 @@ pub fn unlock_with_passphrase(passphrase: String, cache: &Cache) -> Result<(), U
             cache
                 .unlock_with_master_key(hex)
                 .map_err(UnkaiError::from)?;
-            note_unlock_success();
+            note_unlock_success(profile_id);
             return Ok(());
         }
     }
-    Err(note_unlock_failure(cache, "passphrase"))
+    Err(note_unlock_failure(cache, "passphrase", profile_id))
 }
 
 /// Unlock the cache from a FIDO PRF assertion.  Frontend has
@@ -425,9 +412,10 @@ pub fn unlock_with_prf(
     credential_id_b64: String,
     prf_output_b64: String,
     cache: &Cache,
+    profile_id: &str,
 ) -> Result<(), UnkaiError> {
     use unkai_store::fido::{self, WrapKind};
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     let prf = fido::decode_b64(&prf_output_b64)?;
     for wrap in &env.wraps {
         if wrap.kind != WrapKind::FidoPrf || wrap.credential_id != credential_id_b64 {
@@ -435,13 +423,19 @@ pub fn unlock_with_prf(
         }
         let master = match fido::unwrap_master_key(wrap, &prf) {
             Ok(m) => m,
-            Err(_) => return Err(note_unlock_failure(cache, "hardware key PRF output")),
+            Err(_) => {
+                return Err(note_unlock_failure(
+                    cache,
+                    "hardware key PRF output",
+                    profile_id,
+                ));
+            }
         };
         let hex = hex::encode(&master);
         cache
             .unlock_with_master_key(hex)
             .map_err(UnkaiError::from)?;
-        note_unlock_success();
+        note_unlock_success(profile_id);
         return Ok(());
     }
     Err(UnkaiError::Auth(
@@ -455,9 +449,9 @@ pub fn unlock_with_prf(
 /// unless the user has at least one passphrase OR ≥ 2 hardware
 /// keys registered — without a recovery option we'd lock them
 /// out permanently the first time a YubiKey gets lost.
-pub fn enable_fido_only_mode() -> Result<(), UnkaiError> {
+pub fn enable_fido_only_mode(profile_id: &str) -> Result<(), UnkaiError> {
     use unkai_store::fido::WrapKind;
-    let mut env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+    let mut env = unkai_store::cache::key::load_envelope(profile_id)?;
     if env.plain_key.is_none() {
         return Ok(()); // already FIDO-only — idempotent.
     }
@@ -479,7 +473,7 @@ pub fn enable_fido_only_mode() -> Result<(), UnkaiError> {
         ));
     }
     env.plain_key = None;
-    unkai_store::cache::key::save_envelope(profile_id()?, &env)?;
+    unkai_store::cache::key::save_envelope(profile_id, &env)?;
     Ok(())
 }
 
@@ -495,23 +489,23 @@ pub struct WipePolicyView {
     pub max_attempts: Option<u32>,
 }
 
-pub fn get_wipe_policy() -> Result<WipePolicyView, UnkaiError> {
-    let env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+pub fn get_wipe_policy(profile_id: &str) -> Result<WipePolicyView, UnkaiError> {
+    let env = unkai_store::cache::key::load_envelope(profile_id)?;
     Ok(WipePolicyView {
         enabled: env.wipe_on_failure,
         max_attempts: env.max_unlock_attempts,
     })
 }
 
-pub fn set_wipe_policy(policy: WipePolicyView) -> Result<(), UnkaiError> {
-    let mut env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+pub fn set_wipe_policy(policy: WipePolicyView, profile_id: &str) -> Result<(), UnkaiError> {
+    let mut env = unkai_store::cache::key::load_envelope(profile_id)?;
     env.wipe_on_failure = policy.enabled;
     env.max_unlock_attempts = if policy.enabled {
         policy.max_attempts.filter(|n| *n > 0)
     } else {
         None
     };
-    unkai_store::cache::key::save_envelope(profile_id()?, &env)?;
+    unkai_store::cache::key::save_envelope(profile_id, &env)?;
     Ok(())
 }
 
@@ -519,7 +513,7 @@ pub fn set_wipe_policy(policy: WipePolicyView) -> Result<(), UnkaiError> {
 /// master key in the envelope so the next launch opens the
 /// cache without prompting.  Only callable while the cache is
 /// already unlocked (we need the in-memory key).
-pub fn disable_fido_only_mode(cache: &Cache) -> Result<(), UnkaiError> {
+pub fn disable_fido_only_mode(cache: &Cache, profile_id: &str) -> Result<(), UnkaiError> {
     if cache.is_locked() {
         return Err(UnkaiError::Auth(
             "Database must be unlocked before FIDO-only mode can be disabled".into(),
@@ -530,12 +524,12 @@ pub fn disable_fido_only_mode(cache: &Cache) -> Result<(), UnkaiError> {
             "Master key isn't available in memory — unlock the database again before disabling key encryption".into(),
         )
     })?;
-    let mut env = unkai_store::cache::key::load_envelope(profile_id()?)?;
+    let mut env = unkai_store::cache::key::load_envelope(profile_id)?;
     if env.plain_key.is_some() {
         return Ok(()); // already plain — idempotent.
     }
     env.plain_key = Some(key_hex);
-    unkai_store::cache::key::save_envelope(profile_id()?, &env)?;
+    unkai_store::cache::key::save_envelope(profile_id, &env)?;
     Ok(())
 }
 
@@ -548,11 +542,9 @@ pub async fn update_app_settings(
     settings: &SharedSettings,
     notify: &SettingsSyncNotify,
     mcp: &McpServer,
+    profile: &ProfileInfo,
 ) -> Result<(), UnkaiError> {
-    app_settings::save_settings(
-        &crate::state::active_profile()?.app_settings_file(),
-        &new_settings,
-    )?;
+    app_settings::save_settings(&profile.app_settings_file(), &new_settings)?;
     *settings.write().await = new_settings;
     notify.0.notify_one();
     // The MCP server reads `mcp_enabled` / `mcp_port` from these
@@ -573,9 +565,9 @@ pub async fn update_app_settings(
 /// **once** — the frontend shows it a single time and never asks
 /// for it again; afterwards only `mcp_token_status` (a bool) is
 /// available.  Rotating invalidates the previous token instantly.
-pub async fn mcp_generate_token(mcp: &McpServer) -> Result<String, UnkaiError> {
+pub async fn mcp_generate_token(mcp: &McpServer, profile_id: &str) -> Result<String, UnkaiError> {
     let token = unkai_mcp::auth::generate_token()?;
-    credentials::store_mcp_token(&token)?;
+    credentials::store_mcp_token(profile_id, &token)?;
     mcp.set_token(Some(token.clone())).await;
     Ok(token)
 }
@@ -583,8 +575,8 @@ pub async fn mcp_generate_token(mcp: &McpServer) -> Result<String, UnkaiError> {
 /// Revoke the MCP bearer token: every connected client is cut off
 /// on its next request.  The server keeps running (if enabled)
 /// but answers 401 until a new token is generated.
-pub async fn mcp_revoke_token(mcp: &McpServer) -> Result<(), UnkaiError> {
-    credentials::delete_mcp_token()?;
+pub async fn mcp_revoke_token(mcp: &McpServer, profile_id: &str) -> Result<(), UnkaiError> {
+    credentials::delete_mcp_token(profile_id)?;
     mcp.set_token(None).await;
     Ok(())
 }
@@ -592,8 +584,8 @@ pub async fn mcp_revoke_token(mcp: &McpServer) -> Result<(), UnkaiError> {
 /// Whether a bearer token currently exists.  Deliberately a bare
 /// bool — the secret itself is only ever returned by
 /// `mcp_generate_token`.
-pub async fn mcp_token_status() -> Result<bool, UnkaiError> {
-    credentials::has_mcp_token()
+pub async fn mcp_token_status(profile_id: &str) -> Result<bool, UnkaiError> {
+    credentials::has_mcp_token(profile_id)
 }
 
 /// Live server status (running / bound port / endpoint URL /
@@ -685,12 +677,9 @@ pub const UNKAI_SETTINGS_FILE: &str = "/Unkai Mail/settings/settings.json";
 pub async fn build_settings_bundle(
     local_storage: std::collections::HashMap<String, String>,
     cache: &Cache,
+    profile: &ProfileInfo,
 ) -> Result<String, UnkaiError> {
-    let bundle = settings_bundle::build_bundle(
-        cache,
-        &crate::state::active_profile()?.app_settings_file(),
-        local_storage,
-    )?;
+    let bundle = settings_bundle::build_bundle(cache, &profile.app_settings_file(), local_storage)?;
     settings_bundle::serialise(&bundle)
 }
 
@@ -705,14 +694,11 @@ pub async fn apply_settings_bundle(
     cache: &Cache,
     settings: &SharedSettings,
     mcp: &McpServer,
+    profile: &ProfileInfo,
 ) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
     let bundle = settings_bundle::parse(&json)?;
     let new_app_settings = bundle.app_settings.clone();
-    let local_storage = settings_bundle::apply(
-        cache,
-        &crate::state::active_profile()?.app_settings_file(),
-        bundle,
-    )?;
+    let local_storage = settings_bundle::apply(cache, &profile.app_settings_file(), bundle)?;
     *settings.write().await = new_app_settings;
     // The imported bundle may flip `mcp_enabled` / `mcp_port`
     // (#438).  Note the bearer token never travels in a bundle —
@@ -733,8 +719,9 @@ pub async fn export_settings_bundle_to_path(
     path: &std::path::Path,
     local_storage: std::collections::HashMap<String, String>,
     cache: &Cache,
+    profile: &ProfileInfo,
 ) -> Result<(), UnkaiError> {
-    let json = build_settings_bundle(local_storage, cache).await?;
+    let json = build_settings_bundle(local_storage, cache, profile).await?;
     std::fs::write(path, json)
         .map_err(|e| UnkaiError::Other(format!("Failed to write {}: {e}", path.display())))
 }
@@ -750,10 +737,11 @@ pub async fn import_settings_bundle_from_path(
     cache: &Cache,
     settings: &SharedSettings,
     mcp: &McpServer,
+    profile: &ProfileInfo,
 ) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
     let json = std::fs::read_to_string(path)
         .map_err(|e| UnkaiError::Other(format!("Failed to read {}: {e}", path.display())))?;
-    apply_settings_bundle(json, cache, settings, mcp).await
+    apply_settings_bundle(json, cache, settings, mcp, profile).await
 }
 
 /// Frontend-facing view of `settings_sync::SettingsSyncState`.
@@ -766,8 +754,8 @@ pub struct SettingsSyncStateView {
     pub pending: bool,
 }
 
-pub fn get_settings_sync_state() -> Result<SettingsSyncStateView, UnkaiError> {
-    let state = settings_sync::load_state(&crate::state::active_profile()?.settings_sync_file())?;
+pub fn get_settings_sync_state(profile: &ProfileInfo) -> Result<SettingsSyncStateView, UnkaiError> {
+    let state = settings_sync::load_state(&profile.settings_sync_file())?;
     Ok(SettingsSyncStateView {
         target_nc_id: state.target_nc_id,
         pending: state.pending,
@@ -781,8 +769,9 @@ pub fn get_settings_sync_state() -> Result<SettingsSyncStateView, UnkaiError> {
 pub async fn set_settings_sync_target(
     target_nc_id: Option<String>,
     notify: &SettingsSyncNotify,
+    profile: &ProfileInfo,
 ) -> Result<(), UnkaiError> {
-    let sync_file = crate::state::active_profile()?.settings_sync_file();
+    let sync_file = profile.settings_sync_file();
     let mut state = settings_sync::load_state(&sync_file)?;
     if state.target_nc_id == target_nc_id {
         return Ok(());
@@ -854,6 +843,7 @@ pub async fn nc_restore_settings_bundle(
     nc_id: String,
     cache: &Cache,
     settings: &SharedSettings,
+    profile: &ProfileInfo,
 ) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
     let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
@@ -869,11 +859,7 @@ pub async fn nc_restore_settings_bundle(
         .map_err(|e| UnkaiError::Storage(format!("settings bundle on NC is not UTF-8: {e}")))?;
     let bundle = settings_bundle::parse(&json)?;
     let new_app_settings = bundle.app_settings.clone();
-    let local_storage = settings_bundle::apply(
-        cache,
-        &crate::state::active_profile()?.app_settings_file(),
-        bundle,
-    )?;
+    let local_storage = settings_bundle::apply(cache, &profile.app_settings_file(), bundle)?;
     *settings.write().await = new_app_settings;
     Ok(local_storage)
 }
@@ -890,6 +876,7 @@ pub async fn set_logo_style(
     ui: &dyn UiNotifier,
     style: String,
     settings: &SharedSettings,
+    profile: &ProfileInfo,
 ) -> Result<(), UnkaiError> {
     // Which bitmaps exist and which surfaces carry an icon is a shell
     // question, so applying the style lives in the `UiNotifier` impl.
@@ -901,7 +888,7 @@ pub async fn set_logo_style(
 
     let mut s = settings.write().await;
     s.logo_style = style;
-    app_settings::save_settings(&crate::state::active_profile()?.app_settings_file(), &s)?;
+    app_settings::save_settings(&profile.app_settings_file(), &s)?;
     Ok(())
 }
 
@@ -920,8 +907,8 @@ pub async fn set_logo_style(
 
 /// Resolve the active profile's user-themes directory (#531).
 /// Created on demand — first import is what creates the folder.
-pub fn custom_themes_dir() -> Result<std::path::PathBuf, UnkaiError> {
-    let dir = crate::state::active_profile()?.themes_dir();
+pub fn custom_themes_dir(profile: &ProfileInfo) -> Result<std::path::PathBuf, UnkaiError> {
+    let dir = profile.themes_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return Err(UnkaiError::Other(format!(
             "create themes dir {}: {e}",
@@ -971,6 +958,7 @@ pub async fn import_custom_theme(
     source_path: String,
     label: Option<String>,
     settings: &SharedSettings,
+    profile: &ProfileInfo,
 ) -> Result<CustomTheme, UnkaiError> {
     let src = std::path::PathBuf::from(&source_path);
     if !src.exists() {
@@ -986,7 +974,7 @@ pub async fn import_custom_theme(
         .unwrap_or("custom-theme")
         .to_string();
     let slug = extract_theme_slug(&css, &stem);
-    let dir = custom_themes_dir()?;
+    let dir = custom_themes_dir(profile)?;
     let dest = dir.join(format!("{slug}.css"));
     std::fs::write(&dest, &css).map_err(|e| UnkaiError::Other(format!("copy theme file: {e}")))?;
 
@@ -1006,7 +994,7 @@ pub async fn import_custom_theme(
         // Replace any existing row with the same id (re-import).
         s.custom_themes.retain(|t| t.id != record.id);
         s.custom_themes.push(record.clone());
-        app_settings::save_settings(&crate::state::active_profile()?.app_settings_file(), &s)?;
+        app_settings::save_settings(&profile.app_settings_file(), &s)?;
     }
 
     // Tell every window so a second-window picker stays in sync.
@@ -1021,6 +1009,7 @@ pub async fn remove_custom_theme(
     ui: &dyn UiNotifier,
     id: String,
     settings: &SharedSettings,
+    profile: &ProfileInfo,
 ) -> Result<(), UnkaiError> {
     let path: Option<String> = {
         let mut s = settings.write().await;
@@ -1036,7 +1025,7 @@ pub async fn remove_custom_theme(
         if s.theme_name == id {
             s.theme_name = "cerberus".into();
         }
-        app_settings::save_settings(&crate::state::active_profile()?.app_settings_file(), &s)?;
+        app_settings::save_settings(&profile.app_settings_file(), &s)?;
         path
     };
     if let Some(p) = path
