@@ -242,6 +242,29 @@ impl McpServer {
         });
     }
 
+    /// Stop the listener unconditionally, regardless of the
+    /// `mcp_enabled` setting.  Used when a profile's runtime
+    /// context is torn down (#535) — the settings say "enabled"
+    /// but the profile is going away, so the listener must not
+    /// outlive its cache.  Idempotent; a later `reconcile` on a
+    /// fresh server instance starts it again.
+    pub async fn shutdown(&self) {
+        let mut running = self.inner.running.lock().await;
+        if let Some(current) = running.take() {
+            tracing::info!(
+                "Stopping MCP server on 127.0.0.1:{} (context shutdown)",
+                current.bound_port
+            );
+            current.cancel.cancel();
+            if tokio::time::timeout(std::time::Duration::from_secs(5), current.join)
+                .await
+                .is_err()
+            {
+                tracing::warn!("MCP server did not shut down within 5s; continuing");
+            }
+        }
+    }
+
     /// Status snapshot for the settings UI.
     pub async fn status(&self) -> McpServerStatus {
         let running = self.inner.running.lock().await;

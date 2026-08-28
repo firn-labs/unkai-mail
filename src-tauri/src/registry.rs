@@ -52,11 +52,12 @@ pub struct ProfileHandle {
     pub local_storage: SharedLocalStorage,
     /// Wake channel for this profile's settings-sync worker.
     pub sync_notify: SettingsSyncNotify,
-    /// Join handles for this profile's background loops.  Chunk 4
-    /// aborts these when the last window of a profile closes; until
-    /// then they live as long as the process (hence the lint allow —
-    /// nothing reads them back yet).
-    #[allow(dead_code)]
+    /// Join handles for this profile's background loops.  Closing
+    /// a profile's last window deliberately does NOT abort these —
+    /// background sync and notifications keep running so the tray
+    /// badge stays truthful (#535).  They are aborted only by
+    /// [`shutdown_profile_context`] (ahead of a `delete_profile`)
+    /// or implicitly at app exit.
     pub tasks: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
 }
 
@@ -76,6 +77,11 @@ pub struct ProfileRegistry {
     /// icon can badge the aggregate across all profiles while each
     /// profile's windows still see only their own count.
     unread: RwLock<HashMap<String, u32>>,
+    /// The most recently focused *primary* window (label, profile
+    /// id).  Every "raise the app" surface that has no profile of
+    /// its own — tray clicks, a second launch, mailto deep links —
+    /// lands on this window (#535).
+    focused: RwLock<Option<(String, String)>>,
 }
 
 impl ProfileRegistry {
@@ -86,6 +92,7 @@ impl ProfileRegistry {
             contexts: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
             unread: RwLock::new(HashMap::new()),
+            focused: RwLock::new(None),
         }
     }
 
@@ -105,6 +112,33 @@ impl ProfileRegistry {
             .insert(profile_id.to_string(), handle);
     }
 
+    /// Remove a profile's runtime context and its tray-badge
+    /// contribution.  Returns the handle so the caller can shut it
+    /// down properly ([`shutdown_profile_context`] is the only
+    /// intended caller).  `None` if the profile had no open
+    /// context.
+    pub fn remove_profile(&self, profile_id: &str) -> Option<Arc<ProfileHandle>> {
+        self.unread
+            .write()
+            .expect("unread totals lock poisoned")
+            .remove(profile_id);
+        self.contexts
+            .write()
+            .expect("profile contexts lock poisoned")
+            .remove(profile_id)
+    }
+
+    /// The profile's runtime context, if one is open.  Keyed by
+    /// profile id — window-label resolution goes through
+    /// [`Self::handle_for_label`] instead.
+    pub fn context_for(&self, profile_id: &str) -> Option<Arc<ProfileHandle>> {
+        self.contexts
+            .read()
+            .expect("profile contexts lock poisoned")
+            .get(profile_id)
+            .cloned()
+    }
+
     /// Point a window label at a profile.  Called when a window is
     /// created — and, come chunk 4, when a switch-in-place remaps
     /// an existing window to another profile.
@@ -115,12 +149,39 @@ impl ProfileRegistry {
             .insert(label.to_string(), profile_id.to_string());
     }
 
-    /// Forget a window label (window destroyed).
+    /// Forget a window label (window destroyed).  Also drops the
+    /// focus bookmark when it pointed at this window, so the
+    /// primary-window fallback never resolves to a dead label.
     pub fn unmap_window(&self, label: &str) {
         self.windows
             .write()
             .expect("profile windows lock poisoned")
             .remove(label);
+        let mut focused = self.focused.write().expect("focused window lock poisoned");
+        if focused.as_ref().is_some_and(|(l, _)| l == label) {
+            *focused = None;
+        }
+    }
+
+    /// Bookmark a primary window as the most recently focused one.
+    /// Returns `true` when the focused *profile* changed — the
+    /// caller uses that to persist `last_used` bookkeeping without
+    /// rewriting `profiles.json` on every intra-profile focus flip.
+    pub fn note_focused(&self, label: &str, profile_id: &str) -> bool {
+        let mut focused = self.focused.write().expect("focused window lock poisoned");
+        let changed = focused.as_ref().is_none_or(|(_, pid)| pid != profile_id);
+        *focused = Some((label.to_string(), profile_id.to_string()));
+        changed
+    }
+
+    /// The label of the most recently focused primary window, if
+    /// any is bookmarked.
+    pub fn last_focused_label(&self) -> Option<String> {
+        self.focused
+            .read()
+            .expect("focused window lock poisoned")
+            .as_ref()
+            .map(|(label, _)| label.clone())
     }
 
     /// The profile a window label belongs to.  Unknown labels fall
@@ -160,19 +221,23 @@ impl ProfileRegistry {
             .collect()
     }
 
-    /// The ids of every profile with an open runtime context.
-    /// `delete_profile` (#534) refuses these: an open context means
-    /// live pool handles on the profile's `cache.db`, and wiping a
-    /// database out from under an open pool fails on Windows and
-    /// corrupts silently elsewhere.  (Chunk 4, #535, adds real
-    /// context shutdown so a closed profile becomes deletable.)
-    pub fn open_profile_ids(&self) -> Vec<String> {
-        self.contexts
+    /// The ids of every profile that at least one live window —
+    /// primary or popout — is currently mapped to.  This is the
+    /// `delete_profile` refusal set since #535: a window-less
+    /// profile's context can be shut down cleanly
+    /// ([`shutdown_profile_context`]) so only actually-visible
+    /// profiles are undeletable.
+    pub fn profiles_with_windows(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .windows
             .read()
-            .expect("profile contexts lock poisoned")
-            .keys()
+            .expect("profile windows lock poisoned")
+            .values()
             .cloned()
-            .collect()
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
     }
 
     /// All window labels currently mapped to `profile_id`.
@@ -217,6 +282,35 @@ pub fn profile_ctx(
     reg: &State<'_, ProfileRegistry>,
 ) -> Result<Arc<ProfileHandle>, UnkaiError> {
     reg.handle_for_label(window.label())
+}
+
+/// Tear a profile's runtime context down completely (#535): abort
+/// its background loops (and wait for them to actually finish),
+/// stop its MCP listener, and drop the handle so the SQLCipher
+/// pool releases `cache.db` — on Windows the file stays locked
+/// until the last connection closes, and `delete_profile`'s wipe
+/// would fail outright against a live pool.
+///
+/// The caller is responsible for making sure no window is still
+/// mapped to the profile; commands arriving for it afterwards fail
+/// with "profile has no open context" until something rebuilds the
+/// handle (opening the profile's window again does).
+pub async fn shutdown_profile_context(reg: &ProfileRegistry, profile_id: &str) {
+    let Some(handle) = reg.remove_profile(profile_id) else {
+        return;
+    };
+    let tasks: Vec<tauri::async_runtime::JoinHandle<()>> = {
+        let mut guard = handle.tasks.lock().expect("profile tasks lock poisoned");
+        guard.drain(..).collect()
+    };
+    for task in tasks {
+        task.abort();
+        // Await so the aborted future is dropped (releasing its
+        // clones of the cache pool) before we return.
+        let _ = task.await;
+    }
+    handle.mcp.shutdown().await;
+    tracing::info!("profile '{profile_id}' runtime context shut down");
 }
 
 /// Construct one profile's complete runtime context: open its
