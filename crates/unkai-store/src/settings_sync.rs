@@ -12,12 +12,15 @@
 //!     still surfaces the retry on next launch.
 //!
 //! Both pieces live in one tiny JSON file alongside
-//! `app_settings.json`.  We deliberately don't put them inside
-//! `AppSettings` itself because the bundle ships `AppSettings` —
-//! and the sync target is a *local* choice that shouldn't ride
-//! along when the user restores their settings on a new device.
+//! `app_settings.json` in the active profile's directory
+//! (`ProfilePaths::settings_sync`, #531).  We deliberately don't
+//! put them inside `AppSettings` itself because the bundle ships
+//! `AppSettings` — and the sync target is a *local* choice that
+//! shouldn't ride along when the user restores their settings on a
+//! new device.  Like `app_settings`, load/save take the file path
+//! as an argument — pure functions, caller picks the profile.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -36,20 +39,13 @@ pub struct SettingsSyncState {
     pub pending: bool,
 }
 
-fn state_file_path() -> Result<PathBuf, UnkaiError> {
-    let data_dir = dirs::config_dir()
-        .ok_or_else(|| UnkaiError::Storage("cannot determine config directory".into()))?;
-    Ok(data_dir.join("unkai-mail").join("settings_sync.json"))
-}
-
 /// Load the saved sync state, or `Default::default()` if the file
 /// doesn't exist yet.  Missing file is the normal first-run path.
-pub fn load_state() -> Result<SettingsSyncState, UnkaiError> {
-    let path = state_file_path()?;
+pub fn load_state(path: &Path) -> Result<SettingsSyncState, UnkaiError> {
     if !path.exists() {
         return Ok(SettingsSyncState::default());
     }
-    let data = std::fs::read_to_string(&path)
+    let data = std::fs::read_to_string(path)
         .map_err(|e| UnkaiError::Storage(format!("read settings_sync.json: {e}")))?;
     serde_json::from_str(&data)
         .map_err(|e| UnkaiError::Storage(format!("parse settings_sync.json: {e}")))
@@ -58,15 +54,14 @@ pub fn load_state() -> Result<SettingsSyncState, UnkaiError> {
 /// Persist the sync state to disk, creating the parent dir if
 /// needed.  Called after every change to `target_nc_id` or
 /// `pending`.
-pub fn save_state(state: &SettingsSyncState) -> Result<(), UnkaiError> {
-    let path = state_file_path()?;
+pub fn save_state(path: &Path, state: &SettingsSyncState) -> Result<(), UnkaiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| UnkaiError::Storage(format!("create config dir: {e}")))?;
     }
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| UnkaiError::Storage(format!("serialise settings_sync.json: {e}")))?;
-    std::fs::write(&path, json)
+    std::fs::write(path, json)
         .map_err(|e| UnkaiError::Storage(format!("write settings_sync.json: {e}")))?;
     debug!(
         "Saved settings_sync state: target={:?} pending={}",

@@ -24,3 +24,6 @@ aes-gcm.workspace = true
 pbkdf2.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+# Profile ids (#531).  Already a workspace dependency — no new
+# package enters the tree, so SBOM.md / License.md are unaffected.
+uuid.workspace = true

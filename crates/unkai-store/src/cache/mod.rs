@@ -140,7 +140,7 @@ pub struct SyncState {
 ///
 /// The pool is `Option`-wrapped so the cache can exist in a
 /// **locked** state (#164 Phase 1B): if the keychain envelope has
-/// no plain master key, `Cache::open_default` returns a Cache
+/// no plain master key, `Cache::open_for_profile` returns a Cache
 /// whose pool is `None` and every data-touching method returns
 /// `CacheError::Locked` until `unlock_with_master_key` is called
 /// from the unlock-flow IPCs.
@@ -159,22 +159,28 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Open the app's default cache location:
-    /// `<config-dir>/unkai-mail/cache.db`, and run any pending migrations.
+    /// Open one profile's cache at its path (`ProfilePaths::cache_db`)
+    /// and run any pending migrations.  The parent directory is
+    /// created if missing — a fresh profile's directory only comes
+    /// into existence here.
     ///
-    /// The DB is encrypted via SQLCipher; the master key is fetched from
-    /// (or freshly generated in) the OS keychain. See `key.rs`.
-    pub fn open_default() -> Result<Self, UnkaiError> {
-        let path = default_cache_path()?;
+    /// The DB is encrypted via SQLCipher; the profile's master key is
+    /// fetched from (or freshly generated in) the OS keychain under
+    /// the `master-key:<profile-id>` account. See `key.rs`.
+    pub fn open_for_profile(path: &Path, profile_id: &str) -> Result<Self, UnkaiError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| UnkaiError::Storage(format!("create profile dir: {e}")))?;
+        }
         // Honour the keychain envelope: when the user has flipped
         // the cache into FIDO-only mode there's no plain key
         // available, and we return a *locked* Cache whose pool
         // stays `None` until `unlock_with_master_key` is called
         // from the unlock IPCs.
-        let envelope = key::load_envelope()?;
+        let envelope = key::load_envelope(profile_id)?;
         match envelope.plain_key.as_deref() {
             Some(hex) if hex.len() == 64 => {
-                Self::open_with_key(&path, hex.to_string()).map_err(Into::into)
+                Self::open_with_key(path, hex.to_string()).map_err(Into::into)
             }
             Some(hex) => Err(UnkaiError::Storage(format!(
                 "unexpected master key length: {} chars (expected 64)",
@@ -185,8 +191,8 @@ impl Cache {
                 // open normally.  `get_or_create_master_key`
                 // handles the empty-keychain case for us.
                 if envelope.wraps.is_empty() {
-                    let key_hex = key::get_or_create_master_key()?;
-                    Self::open_with_key(&path, key_hex).map_err(Into::into)
+                    let key_hex = key::get_or_create_master_key(profile_id)?;
+                    Self::open_with_key(path, key_hex).map_err(Into::into)
                 } else {
                     info!(
                         "Cache is in FIDO-only mode ({} registered methods); \
@@ -195,7 +201,7 @@ impl Cache {
                     );
                     Ok(Self {
                         pool: Arc::new(RwLock::new(None)),
-                        path,
+                        path: path.to_path_buf(),
                         master_key_hex: Arc::new(RwLock::new(None)),
                     })
                 }
@@ -205,8 +211,10 @@ impl Cache {
 
     /// Open a cache at an explicit path with a caller-supplied key.
     ///
-    /// Used by the default opener above and by future multi-profile
-    /// support. The key must be a 64-char lowercase hex string.
+    /// Used by the profile opener above; the profile dimension is
+    /// purely "which path and which key" — nothing below this line
+    /// knows profiles exist. The key must be a 64-char lowercase
+    /// hex string.
     ///
     /// Handles the pre-encryption → encryption upgrade: if a legacy
     /// unencrypted `cache.db` is found on disk, opening it with a key
@@ -339,7 +347,7 @@ impl Cache {
     /// keychain.
     /// Construct a cache handle that is permanently locked — the
     /// pool is `None` and never opens.  Mirrors the state
-    /// `open_default` produces in FIDO-only mode before the unlock
+    /// `open_for_profile` produces in FIDO-only mode before the unlock
     /// IPC runs.  Only for tests that need to exercise
     /// `CacheError::Locked` paths (e.g. unkai-mcp's "vault locked"
     /// rejection) without touching the keychain envelope.
@@ -2754,12 +2762,6 @@ fn uid_from_email_id(id: &str) -> u32 {
         tracing::warn!("could not parse uid from email id '{id}', defaulting to 0");
         0
     })
-}
-
-fn default_cache_path() -> Result<PathBuf, UnkaiError> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| UnkaiError::Storage("cannot determine config directory".into()))?;
-    Ok(dir.join("unkai-mail").join("cache.db"))
 }
 
 /// Does this pool-open error look like "wrong key / not a SQLCipher DB"?

@@ -571,7 +571,11 @@ pub async fn push_settings_to_nc(
     local_storage: std::collections::HashMap<String, String>,
     nc_id: &str,
 ) -> Result<(), UnkaiError> {
-    let bundle = settings_bundle::build_bundle(cache, local_storage)?;
+    let bundle = settings_bundle::build_bundle(
+        cache,
+        &crate::state::active_profile()?.app_settings_file(),
+        local_storage,
+    )?;
     let json = settings_bundle::serialise(&bundle)?;
 
     let account = nextcloud_store::load_accounts(cache)?
@@ -630,6 +634,18 @@ pub async fn settings_sync_worker(
 ) {
     use tokio::time::{Duration, MissedTickBehavior, interval, sleep};
 
+    // The worker reads/writes this profile's settings_sync.json
+    // for its whole lifetime (#531).  The bridge is set in main()
+    // before any worker spawns, so a miss here is a programming
+    // error — bail rather than sync the wrong state.
+    let sync_file = match crate::state::active_profile() {
+        Ok(profile) => profile.settings_sync_file(),
+        Err(e) => {
+            tracing::error!("settings sync worker cannot resolve the active profile: {e}");
+            return;
+        }
+    };
+
     let mut retry_tick = interval(Duration::from_secs(300));
     retry_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     // The first `tick()` returns immediately — burn it so the
@@ -648,7 +664,7 @@ pub async fn settings_sync_worker(
             _ = retry_tick.tick() => {
                 // Periodic retry — only meaningful if we have
                 // something to flush, so peek the disk state.
-                let state = settings_sync::load_state().unwrap_or_default();
+                let state = settings_sync::load_state(&sync_file).unwrap_or_default();
                 if !state.pending || state.target_nc_id.is_none() {
                     continue;
                 }
@@ -657,7 +673,7 @@ pub async fn settings_sync_worker(
 
         // Read the disk state fresh; the user may have flipped
         // the toggle off between the wake and now.
-        let state = match settings_sync::load_state() {
+        let state = match settings_sync::load_state(&sync_file) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("settings_sync load_state failed: {e}");
@@ -668,10 +684,13 @@ pub async fn settings_sync_worker(
             // Sync turned off — clear any stale pending flag so
             // a re-enable doesn't immediately fire a stale push.
             if state.pending {
-                let _ = settings_sync::save_state(&settings_sync::SettingsSyncState {
-                    target_nc_id: None,
-                    pending: false,
-                });
+                let _ = settings_sync::save_state(
+                    &sync_file,
+                    &settings_sync::SettingsSyncState {
+                        target_nc_id: None,
+                        pending: false,
+                    },
+                );
             }
             continue;
         };
@@ -681,10 +700,13 @@ pub async fn settings_sync_worker(
             Ok(()) => {
                 tracing::info!("Settings bundle synced to Nextcloud '{target}'");
                 if state.pending {
-                    let _ = settings_sync::save_state(&settings_sync::SettingsSyncState {
-                        target_nc_id: state.target_nc_id,
-                        pending: false,
-                    });
+                    let _ = settings_sync::save_state(
+                        &sync_file,
+                        &settings_sync::SettingsSyncState {
+                            target_nc_id: state.target_nc_id,
+                            pending: false,
+                        },
+                    );
                 }
             }
             Err(e) => {
@@ -693,10 +715,13 @@ pub async fn settings_sync_worker(
                 // updating" can see what went wrong.
                 tracing::warn!("Settings sync to '{target}' failed (will retry later): {e}");
                 if !state.pending {
-                    let _ = settings_sync::save_state(&settings_sync::SettingsSyncState {
-                        target_nc_id: state.target_nc_id,
-                        pending: true,
-                    });
+                    let _ = settings_sync::save_state(
+                        &sync_file,
+                        &settings_sync::SettingsSyncState {
+                            target_nc_id: state.target_nc_id,
+                            pending: true,
+                        },
+                    );
                 }
             }
         }

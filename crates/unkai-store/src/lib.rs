@@ -10,7 +10,10 @@ pub mod credentials;
 pub mod fido;
 pub mod link_check;
 pub mod nextcloud_store;
+pub mod paths;
+pub mod profiles;
 pub mod settings_bundle;
 pub mod settings_sync;
 
 pub use cache::{Cache, DueMessageReminder, OutboxEnqueue, OutboxRow, SentReceiptStatus};
+pub use paths::ProfilePaths;

@@ -457,7 +457,10 @@ pub struct FontCacheFile {
 }
 
 pub fn font_cache_path() -> Option<std::path::PathBuf> {
-    dirs::cache_dir().map(|d| d.join("unkai-mail").join("system_fonts.json"))
+    // Deliberately machine-global, not per-profile — the installed
+    // font set is a property of the OS.  Construction lives in the
+    // central paths module (#531).
+    unkai_store::paths::system_fonts_cache_json()
 }
 
 /// Standard system font directories per OS.  Used for the

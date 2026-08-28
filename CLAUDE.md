@@ -64,6 +64,7 @@ unkai-mail/
 - **Offline-first** — local caching and sync so the client works without constant connectivity
 - **Security-first** — TLS everywhere, credential storage via OS keychain, no plaintext secrets
 - **Modular design** — each protocol as its own crate for testability and reuse
+- **Profile-scoped storage (#530/#531)** — profiles are a *filesystem* dimension, never a schema dimension: each profile owns its own `cache.db` (existing schema, zero profile columns/migrations) plus settings files under `profiles/<id>/`, encrypted with its own SQLCipher key (keychain account `master-key:<profile-id>`). **All path construction goes through `unkai_store::paths::ProfilePaths`** — never build `dirs::config_dir()/unkai-mail/...` paths inline; loaders (`app_settings`, `settings_sync`) take the file path as an argument. Until chunk 2 (#533) lands per-window routing, command bodies resolve the profile via the `state::active_profile()` bridge (a deliberate sibling of `GLOBAL_CACHE`; both die together in #533).
 
 ## Frontend ↔ backend IPC: the `api/` layer (#473)
 
