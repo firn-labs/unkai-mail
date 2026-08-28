@@ -95,11 +95,11 @@
   // renders so each panel stays focused.
   export type SettingsCategory =
     | 'general'
+    | 'profiles'
     | 'design'
     | 'mail'
     | 'calendar'
     | 'nextcloud'
-    | 'profiles'
     | 'security'
     | 'ai'
     | 'backup'
@@ -155,14 +155,16 @@
   // theme/palette glyph yet.
   const CATEGORIES: CategoryEntry[] = [
     { id: 'general', label: 'General', icon: 'settings' },
+    // #534 — browser-style profiles: separate storage universes in
+    // one install.  `group` reads as "several people / identities"
+    // without adding a new SVG to the icon family.  Placed right
+    // under General: profiles frame everything below them (every
+    // other category's settings live *inside* a profile).
+    { id: 'profiles', label: m.settings_profiles_category(), icon: 'group' },
     { id: 'design', label: 'Design', icon: 'design-palette' },
     { id: 'mail', label: 'E-Mail', icon: 'email-envelope' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'nextcloud', label: 'Nextcloud', icon: 'cloud' },
-    // #534 — browser-style profiles: separate storage universes in
-    // one install.  `group` reads as "several people / identities"
-    // without adding a new SVG to the icon family.
-    { id: 'profiles', label: m.settings_profiles_category(), icon: 'group' },
     { id: 'security', label: 'Security', icon: 'lock' },
     // #439 — the local MCP interface for the user's own AI
     // agents (BYO model).  Localized from day one per the lazy
