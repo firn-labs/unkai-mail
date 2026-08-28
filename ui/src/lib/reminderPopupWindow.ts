@@ -19,6 +19,8 @@
  *     reminders (Outlook / Apple Calendar both do this).
  */
 
+import { openPopout, takePopoutPayload } from './standalonePopoutWindow'
+
 /** Same shape as the backend `EventReminderPayload`. */
 export interface EventReminderPayload {
   eventId: string
@@ -48,14 +50,6 @@ const EDGE_MARGIN = 12
 export async function openReminderInStandaloneWindow(
   payload: EventReminderPayload,
 ): Promise<void> {
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-  const key = crypto.randomUUID().replaceAll('-', '')
-
-  // Stash before opening so the new window can read it as soon as
-  // its JS mounts — same one-shot localStorage trick the compose
-  // popout uses.
-  localStorage.setItem(STORAGE_KEY_PREFIX + key, JSON.stringify(payload))
-
   // Bottom-right of the user's primary screen, above the taskbar.
   // `screen.availWidth` / `availHeight` is the work area on every
   // major OS (Windows excludes taskbar, macOS excludes the menu
@@ -63,22 +57,26 @@ export async function openReminderInStandaloneWindow(
   const x = Math.max(0, window.screen.availWidth - WINDOW_WIDTH - EDGE_MARGIN)
   const y = Math.max(0, window.screen.availHeight - WINDOW_HEIGHT - EDGE_MARGIN)
 
-  new WebviewWindow(`reminder-${key}`, {
-    url: `index.html?view=reminder&key=${key}`,
-    title: payload.summary || 'Unkai Reminder',
-    width: WINDOW_WIDTH,
-    height: WINDOW_HEIGHT,
-    minWidth: WINDOW_WIDTH,
-    minHeight: WINDOW_HEIGHT,
-    resizable: false,
-    decorations: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    focus: true,
-    // `x` and `y` are interpreted as logical pixels, so HiDPI
-    // displays place the window where we expect.
-    x,
-    y,
+  await openPopout({
+    view: 'reminder',
+    payloadPrefix: STORAGE_KEY_PREFIX,
+    payload,
+    window: {
+      title: payload.summary || 'Unkai Reminder',
+      width: WINDOW_WIDTH,
+      height: WINDOW_HEIGHT,
+      minWidth: WINDOW_WIDTH,
+      minHeight: WINDOW_HEIGHT,
+      resizable: false,
+      decorations: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focus: true,
+      // `x` and `y` are interpreted as logical pixels, so HiDPI
+      // displays place the window where we expect.
+      x,
+      y,
+    },
   })
 }
 
@@ -90,14 +88,5 @@ export async function openReminderInStandaloneWindow(
 export function takeReminderPopoutPayload(
   key: string,
 ): EventReminderPayload | null {
-  const fullKey = STORAGE_KEY_PREFIX + key
-  const raw = localStorage.getItem(fullKey)
-  if (!raw) return null
-  localStorage.removeItem(fullKey)
-  try {
-    return JSON.parse(raw) as EventReminderPayload
-  } catch (e) {
-    console.warn('takeReminderPopoutPayload: malformed JSON', e)
-    return null
-  }
+  return takePopoutPayload<EventReminderPayload>(STORAGE_KEY_PREFIX, key)
 }

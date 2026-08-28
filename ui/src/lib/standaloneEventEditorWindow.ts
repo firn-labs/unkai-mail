@@ -24,6 +24,8 @@
  * a window boundary.
  */
 
+import { openPopout, takePopoutPayload } from './standalonePopoutWindow'
+
 /** Snapshot of `CalendarSummary` — mirrors the in-App shape, kept
  *  local because the source defines it inside a Svelte `<script>`
  *  block and can't be imported across modules cleanly. */
@@ -78,23 +80,22 @@ const STORAGE_KEY_PREFIX = 'unkai-event-editor-popout-'
 export async function openEventEditorInStandaloneWindow(
   payload: EventEditorPopoutPayload,
 ): Promise<void> {
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-  const key = crypto.randomUUID().replaceAll('-', '')
-  // Stash before opening so the new window can read it as soon as
-  // its JS mounts — both windows share the same localStorage origin.
-  localStorage.setItem(STORAGE_KEY_PREFIX + key, JSON.stringify(payload))
   // `focus: true` brings the new window to the foreground.  The
   // trigger is a click in a popped-out mail window, so the user is
   // looking at that surface — they should see the editor right
   // away rather than have to hunt for it.
-  new WebviewWindow(`event-editor-${key}`, {
-    url: `index.html?view=event-editor&key=${key}`,
-    title: payload.draft.summary || 'New event — Unkai Mail',
-    width: 700,
-    height: 760,
-    minWidth: 500,
-    minHeight: 500,
-    focus: true,
+  await openPopout({
+    view: 'event-editor',
+    payloadPrefix: STORAGE_KEY_PREFIX,
+    payload,
+    window: {
+      title: payload.draft.summary || 'New event — Unkai Mail',
+      width: 700,
+      height: 760,
+      minWidth: 500,
+      minHeight: 500,
+      focus: true,
+    },
   })
 }
 
@@ -106,14 +107,5 @@ export async function openEventEditorInStandaloneWindow(
 export function takeEventEditorPopoutPayload(
   key: string,
 ): EventEditorPopoutPayload | null {
-  const fullKey = STORAGE_KEY_PREFIX + key
-  const raw = localStorage.getItem(fullKey)
-  if (!raw) return null
-  localStorage.removeItem(fullKey)
-  try {
-    return JSON.parse(raw) as EventEditorPopoutPayload
-  } catch (e) {
-    console.warn('takeEventEditorPopoutPayload: malformed JSON', e)
-    return null
-  }
+  return takePopoutPayload<EventEditorPopoutPayload>(STORAGE_KEY_PREFIX, key)
 }

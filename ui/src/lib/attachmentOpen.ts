@@ -36,6 +36,7 @@
 
 import * as api from './api'
 import { isNextcloudSource } from './ncSources'
+import { openExternalPopout } from './standalonePopoutWindow'
 
 const OFFICE_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -128,10 +129,7 @@ async function openViaNcViewer(
       ? await api.system.pdfOpenAttachment({ ncId, filename, data: bytes, contentType })
       : await api.system.officeOpenAttachment({ ncId, filename, data: bytes, contentType })
 
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-  const label = `att-${crypto.randomUUID().replaceAll('-', '')}`
-  const win = new WebviewWindow(label, {
-    url: result.url,
+  const win = openExternalPopout('att', result.url, {
     title: filename,
     width: 1200,
     height: 800,

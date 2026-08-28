@@ -142,10 +142,17 @@
     //      event so App.svelte's listener flips the view to
     //      calendar and threads the event id through to
     //      CalendarView.
-    void api.system.showMainWindowCmd().catch((err) =>
-      console.warn('show_main_window_cmd failed', err),
-    )
-    await api.emitAppEvent('reminder-show-event', { eventId: reminder.eventId })
+    // Raise the OWNING profile's window (#535) — the reminder
+    // popup resolves to its parent's profile via the registry, so
+    // this focuses (or re-creates) the right shell even when
+    // another profile's window was used more recently.
+    try {
+      const profileId = await api.profiles.getCurrentProfile()
+      await api.profiles.openProfileWindow({ id: profileId })
+    } catch (err) {
+      console.warn('raising the profile window failed', err)
+    }
+    await api.emitAppEventToParent('reminder-show-event', { eventId: reminder.eventId })
     void api.calendar.dismissEventReminder({ uid: reminder.uid }).catch(
       () => {},
     )

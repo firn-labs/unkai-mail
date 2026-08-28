@@ -65,7 +65,7 @@
       // the user's edit is already persisted backend-side, so a
       // missed event is only a UI staleness, not data loss.
       try {
-        await api.emitAppEvent(SIGNATURE_UPDATED_EVENT, {
+        await api.emitAppEventToParent(SIGNATURE_UPDATED_EVENT, {
           accountId: account.id,
           html: next,
         })
@@ -118,7 +118,7 @@
   async function announceClosing(): Promise<void> {
     if (!account) return
     try {
-      await api.emitAppEvent(SIGNATURE_POPOUT_CLOSED_EVENT, { accountId: account.id })
+      await api.emitAppEventToParent(SIGNATURE_POPOUT_CLOSED_EVENT, { accountId: account.id })
     } catch (e) {
       console.warn(`${SIGNATURE_POPOUT_CLOSED_EVENT} emit failed`, e)
     }

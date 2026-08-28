@@ -32,6 +32,16 @@ export function showMainWindowCmd(): Promise<void> {
   return call('show_main_window_cmd')
 }
 
+/**
+ * Map a soon-to-be-created popout window's label to the calling
+ * window's profile (#535).  The shared popout helper awaits this
+ * BEFORE `new WebviewWindow(...)` so the popout's very first
+ * command already resolves to the right profile.
+ */
+export function registerPopoutWindow(args: { label: string }): Promise<void> {
+  return call('register_popout_window', args)
+}
+
 export function quitApp(): Promise<void> {
   return call('quit_app')
 }

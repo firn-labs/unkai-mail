@@ -313,7 +313,7 @@
           includeAttachments = await promptIncludeAttachments(count)
         }
       }
-      await api.emitAppEvent('compose-from-mail', {
+      await api.emitAppEventToParent('compose-from-mail', {
         kind,
         mail: ready.mail,
         pgpPassphrase: ready.passphrase,
@@ -339,17 +339,17 @@
   // editor and remember that the trigger came from a popout —
   // the resulting Compose ends up as its own popped-out window.
   function onRespondWithMeeting(mail: EmailPayload) {
-    void api.emitAppEvent('respond-with-meeting-from-mail', { mail }).catch((e) => {
+    void api.emitAppEventToParent('respond-with-meeting-from-mail', { mail }).catch((e) => {
       console.warn('respond-with-meeting-from-mail emit failed', e)
     })
   }
   function onEditDraft(mail: EmailPayload) {
-    void api.emitAppEvent('edit-draft-from-mail', { mail }).catch((e) => {
+    void api.emitAppEventToParent('edit-draft-from-mail', { mail }).catch((e) => {
       console.warn('edit-draft-from-mail emit failed', e)
     })
   }
   function onMailto(init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }) {
-    void api.emitAppEvent('mailto-from-mail', { init }).catch((e) => {
+    void api.emitAppEventToParent('mailto-from-mail', { init }).catch((e) => {
       console.warn('mailto-from-mail emit failed', e)
     })
   }

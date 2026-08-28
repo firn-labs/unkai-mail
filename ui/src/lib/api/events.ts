@@ -12,7 +12,9 @@
  * `event.payload`) so existing handler bodies work unchanged.
  */
 
-import { listen, emit, type Event, type UnlistenFn } from '@tauri-apps/api/event'
+import { emit, emitTo, type Event, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { parentWindowLabel } from '../windowContext'
 
 /* Popout event names that predate this module keep their historical
  * string values — the Rust side and any already-open popout window
@@ -55,16 +57,52 @@ export interface AppEventPayloads {
 
 export type AppEventName = keyof AppEventPayloads
 
+/**
+ * Subscribe to an app event — scoped to THIS window (#535).
+ *
+ * The listener is registered against the current webview window,
+ * not globally: it receives broadcasts (`emitAppEvent`,
+ * `profiles-changed`) plus emits targeted at this window's label,
+ * and nothing else.  That scoping is what makes the backend's
+ * per-profile `emit_to` targeting effective — a global `listen()`
+ * would receive every profile's push events in every window.
+ */
 export function onAppEvent<K extends AppEventName>(
   name: K,
   handler: (event: Event<AppEventPayloads[K]>) => void,
 ): Promise<UnlistenFn> {
-  return listen(name, handler)
+  return getCurrentWebviewWindow().listen(name, handler)
 }
 
+/** Broadcast to every window — reach for the targeted variants
+ *  below first; with several profile windows open a broadcast
+ *  fires every shell's handler at once. */
 export function emitAppEvent<K extends AppEventName>(
   name: K,
   payload: AppEventPayloads[K],
 ): Promise<void> {
   return emit(name, payload)
+}
+
+/** Emit to one window by label. */
+export function emitAppEventTo<K extends AppEventName>(
+  label: string,
+  name: K,
+  payload: AppEventPayloads[K],
+): Promise<void> {
+  return emitTo(label, name, payload)
+}
+
+/**
+ * Emit a popout→main handoff to the window that spawned this
+ * popout (#535) — the `parent` URL param the shared popout helper
+ * stamps.  Falls back to a broadcast when the param is missing
+ * (a window spawned by an older code path), which is exactly the
+ * pre-#535 behaviour.
+ */
+export function emitAppEventToParent<K extends AppEventName>(
+  name: K,
+  payload: AppEventPayloads[K],
+): Promise<void> {
+  return parentWindowLabel ? emitTo(parentWindowLabel, name, payload) : emit(name, payload)
 }

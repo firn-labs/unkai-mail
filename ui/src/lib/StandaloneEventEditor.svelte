@@ -100,7 +100,7 @@
     // (even on undefined `saved`, which happens for the edit/delete
     // paths) so the main window can pick up state changes; but in
     // the #304 create-only flow `saved` is reliably present.
-    void api.emitAppEvent('event-editor-saved-from-popout', { saved, replyTo }).catch(
+    void api.emitAppEventToParent('event-editor-saved-from-popout', { saved, replyTo }).catch(
       (e) => {
         console.warn('event-editor-saved-from-popout emit failed', e)
       },
