@@ -98,10 +98,18 @@ fn free_profile_label(app: &AppHandle, profile_id: &str) -> String {
 /// static `"main"` window's shape from `tauri.conf.json`,
 /// including the created-hidden dance: the icon goes on first so
 /// the taskbar never paints a frame with the wrong logo style.
+///
+/// `focus` steals the foreground via [`raise`] — required for
+/// user-initiated raises (a plain `show()` on a created-hidden
+/// window never runs the platform foreground-lock workarounds, so
+/// the window would come up BEHIND the app the user was in on
+/// Windows/Linux).  The startup fan-out passes `false` so N boot
+/// windows don't fight over focus.
 pub fn create_profile_window(
     app: &AppHandle,
     profile_id: &str,
     show: bool,
+    focus: bool,
 ) -> Result<WebviewWindow, UnkaiError> {
     let reg = app.state::<ProfileRegistry>();
     let label = free_profile_label(app, profile_id);
@@ -142,10 +150,15 @@ pub fn create_profile_window(
     }
 
     if show {
-        let _ = win.show();
-        // #470 — the `visible: false` → `show()` transition is
-        // where the Linux titlebar loses its buttons.
-        crate::rebuild_decoration_input_region(&win);
+        if focus {
+            // show + unminimize + set_focus + the #470 repair.
+            raise(&win);
+        } else {
+            let _ = win.show();
+            // #470 — the `visible: false` → `show()` transition is
+            // where the Linux titlebar loses its buttons.
+            crate::rebuild_decoration_input_region(&win);
+        }
     }
     Ok(win)
 }
@@ -158,7 +171,7 @@ pub fn focus_or_create_profile_window(app: &AppHandle, profile_id: &str) -> Resu
         return Ok(());
     }
     ensure_profile_context(app, profile_id)?;
-    create_profile_window(app, profile_id, true).map(|_| ())
+    create_profile_window(app, profile_id, true, true).map(|_| ())
 }
 
 /// The primary window [`show_primary_window`] raised, and whether
@@ -207,7 +220,7 @@ pub fn show_primary_window(app: &AppHandle) -> Result<RaisedWindow, UnkaiError> 
         }
     }
     ensure_profile_context(app, &startup)?;
-    create_profile_window(app, &startup, true).map(|window| RaisedWindow {
+    create_profile_window(app, &startup, true, true).map(|window| RaisedWindow {
         window,
         created: true,
     })
@@ -215,18 +228,18 @@ pub fn show_primary_window(app: &AppHandle) -> Result<RaisedWindow, UnkaiError> 
 
 /// Persist the `last_used` bookkeeping for a profile off the event
 /// loop — a tiny JSON rewrite, but window-focus events fire on the
-/// UI thread and file IO does not belong there.
+/// UI thread and file IO does not belong there.  Runs through
+/// `update_registry`, which serialises against the profile CRUD
+/// commands — an unsynchronised save here could clobber a profile
+/// the user just created in Settings.
 pub fn persist_last_used(paths: ProfilePaths, profile_id: String) {
     tauri::async_runtime::spawn_blocking(move || {
-        match unkai_store::profiles::load_profiles(&paths.profiles_json()) {
-            Ok(mut file) => {
-                if let Err(e) =
-                    unkai_store::profiles::touch_last_used(&paths, &mut file, &profile_id)
-                {
-                    tracing::warn!("could not update profile last-used bookkeeping: {e}");
-                }
-            }
-            Err(e) => tracing::warn!("could not load profiles.json for last-used update: {e}"),
+        let result = unkai_store::profiles::update_registry(&paths, |registry| {
+            unkai_store::profiles::touch_last_used_entry(registry, &profile_id);
+            Ok(())
+        });
+        if let Err(e) = result {
+            tracing::warn!("could not update profile last-used bookkeeping: {e}");
         }
     });
 }

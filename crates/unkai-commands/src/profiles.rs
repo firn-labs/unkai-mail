@@ -56,10 +56,15 @@ pub fn create_profile(
     let name = validated_name(&name)?;
     validated_icon(&icon)?;
 
-    let mut registry = load_registry(paths)?;
     let meta = ProfileMeta::new(name, icon);
-    registry.profiles.push(meta.clone());
-    profiles::save_profiles(&paths.profiles_json(), &registry)?;
+    let entry = meta.clone();
+    // All registry read-modify-writes are serialised (#535) — a
+    // concurrent focus-driven `last_used` write must not clobber
+    // the freshly created row.
+    profiles::update_registry(paths, move |registry| {
+        registry.profiles.push(entry);
+        Ok(())
+    })?;
 
     // Mint the profile's master key and create its directory +
     // empty cache.db eagerly.  If this fails the profile stays
@@ -86,20 +91,20 @@ pub fn update_profile(
         validated_icon(icon)?;
     }
 
-    let mut registry = load_registry(paths)?;
-    let profile = registry
-        .profiles
-        .iter_mut()
-        .find(|p| p.id == id)
-        .ok_or_else(|| UnkaiError::Other(format!("no profile with id '{id}'")))?;
-    if let Some(name) = name {
-        profile.name = name;
-    }
-    if let Some(icon) = icon {
-        profile.icon = icon;
-    }
-    let updated = profile.clone();
-    profiles::save_profiles(&paths.profiles_json(), &registry)?;
+    let updated = profiles::update_registry(paths, move |registry| {
+        let profile = registry
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| UnkaiError::Other(format!("no profile with id '{id}'")))?;
+        if let Some(name) = name {
+            profile.name = name;
+        }
+        if let Some(icon) = icon {
+            profile.icon = icon;
+        }
+        Ok(profile.clone())
+    })?;
 
     ui.profiles_changed();
     Ok(updated)
@@ -140,7 +145,7 @@ pub fn delete_profile(
     open_profile_ids: &[String],
     paths: &ProfilePaths,
 ) -> Result<(), UnkaiError> {
-    let mut registry = load_registry(paths)?;
+    let registry = load_registry(paths)?;
     check_deletable(&registry, &id, active_profile_id, open_profile_ids)?;
 
     // Enumerate the profile's accounts while its cache still
@@ -187,8 +192,13 @@ pub fn delete_profile(
         })?;
     }
 
-    remove_from_registry(&mut registry, &id);
-    profiles::save_profiles(&paths.profiles_json(), &registry)?;
+    // Re-load under the registry write lock (#535): the wipe above
+    // took real time, and a concurrent `last_used` write must not
+    // be clobbered by our pre-wipe snapshot.
+    profiles::update_registry(paths, |registry| {
+        remove_from_registry(registry, &id);
+        Ok(())
+    })?;
 
     ui.profiles_changed();
     Ok(())
@@ -208,16 +218,17 @@ pub fn set_startup_mode(
     mode: StartupMode,
     paths: &ProfilePaths,
 ) -> Result<(), UnkaiError> {
-    let mut registry = load_registry(paths)?;
-    if let StartupMode::Fixed(id) = &mode
-        && !registry.profiles.iter().any(|p| p.id == *id)
-    {
-        return Err(UnkaiError::Other(format!(
-            "cannot fix startup on unknown profile '{id}'"
-        )));
-    }
-    registry.startup = mode;
-    profiles::save_profiles(&paths.profiles_json(), &registry)?;
+    profiles::update_registry(paths, move |registry| {
+        if let StartupMode::Fixed(id) = &mode
+            && !registry.profiles.iter().any(|p| p.id == *id)
+        {
+            return Err(UnkaiError::Other(format!(
+                "cannot fix startup on unknown profile '{id}'"
+            )));
+        }
+        registry.startup = mode;
+        Ok(())
+    })?;
 
     ui.profiles_changed();
     Ok(())

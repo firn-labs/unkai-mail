@@ -158,10 +158,10 @@
     profileStore.profiles.filter((p) => p.id !== profileStore.currentId),
   )
   let profileMenu = $state<{ x: number; y: number } | null>(null)
+  // Rough clamp estimates, same convention as every other
+  // clampToViewport call site — grows with the row count, capped.
   const PROFILE_MENU_WIDTH = 232
-  const profileMenuHeight = $derived(
-    16 + otherProfiles.length * 38 + 38 + (otherProfiles.length === 0 ? 30 : 0),
-  )
+  const profileMenuHeight = $derived(Math.min(80 + otherProfiles.length * 38, 320))
   $effect(() => {
     if (!profileMenu) return
     const onDocMouseDown = () => (profileMenu = null)

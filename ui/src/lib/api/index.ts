@@ -33,7 +33,6 @@ export * as platform from './platform'
 export {
   onAppEvent,
   emitAppEvent,
-  emitAppEventTo,
   emitAppEventToParent,
   SIGNATURE_UPDATED_EVENT,
   SIGNATURE_POPOUT_CLOSED_EVENT,

@@ -604,23 +604,22 @@ fn logo_protocol(
         .expect("build logo response")
 }
 
-/// Raise the app for callers with no profile of their own — kept
-/// under its historical name because the frontend wrapper
-/// (`api/system.ts`) invokes it as `show_main_window_cmd`; since
-/// #535 "the main window" means the most recently focused primary
-/// window.
-#[tauri::command]
-fn show_main_window_cmd(app: AppHandle) -> Result<(), UnkaiError> {
-    windows::show_primary_window(&app).map(|_| ())
-}
-
 // ── Profile windows (#535) ──────────────────────────────────────
 
 /// Focus the profile's primary window, creating one (plus its
 /// runtime context) when none exists — the rail switcher's "Open
-/// in new window".
+/// in new window".  The context build (SQLCipher key derivation,
+/// boot repairs) is real blocking IO, so it runs on the blocking
+/// pool before the window work happens on the runtime.
 #[tauri::command]
 async fn open_profile_window(id: String, app: AppHandle) -> Result<(), UnkaiError> {
+    let build_app = app.clone();
+    let build_id = id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        windows::ensure_profile_context(&build_app, &build_id)
+    })
+    .await
+    .map_err(|e| UnkaiError::Other(format!("profile open task failed: {e}")))??;
     windows::focus_or_create_profile_window(&app, &id)
 }
 
@@ -641,8 +640,31 @@ async fn switch_window_profile(
             "only a profile's main window can switch profiles".into(),
         ));
     }
-    windows::ensure_profile_context(&app, &id)?;
+    let outgoing = reg.profile_for_label(window.label());
+    let build_app = app.clone();
+    let build_id = id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        windows::ensure_profile_context(&build_app, &build_id)
+    })
+    .await
+    .map_err(|e| UnkaiError::Other(format!("profile switch task failed: {e}")))??;
     reg.map_window(window.label(), &id);
+    // Close the outgoing profile's popouts unless another primary
+    // window still shows it: their `parent=` label is THIS window,
+    // so a later handoff (Reply from a popped-out mail) would
+    // deliver the old profile's data — decrypted body, passphrase
+    // — into the new profile's shell.
+    if outgoing != id {
+        let labels = reg.labels_for_profile(&outgoing);
+        let still_shown = labels.iter().any(|l| windows::is_primary_label(l));
+        if !still_shown {
+            for label in labels {
+                if let Some(popout) = app.get_webview_window(&label) {
+                    let _ = popout.close();
+                }
+            }
+        }
+    }
     // The switched-to profile is now the one the user is looking
     // at — bookmark it and persist the last-used order.
     if reg.note_focused(window.label(), &id) {
@@ -1377,6 +1399,7 @@ async fn delete_outbox_entry(
 async fn delete_profile(
     id: String,
     window: tauri::Window,
+    app: AppHandle,
     reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
@@ -1384,20 +1407,40 @@ async fn delete_profile(
     // profiles are live: the caller's own, and every profile some
     // window is currently mapped to (#535).  Pre-flight the policy
     // so a refusal never costs the context teardown below.
-    let open = reg.profiles_with_windows();
-    cmds::profiles::ensure_deletable(&id, &h.ctx.profile.id, &open, reg.paths())?;
+    cmds::profiles::ensure_deletable(
+        &id,
+        &h.ctx.profile.id,
+        &reg.profiles_with_windows(),
+        reg.paths(),
+    )?;
     // A window-less profile may still hold an open runtime context
     // (background sync keeps running after its last window closes)
     // — shut it down so the cache pool releases its files before
     // the secure wipe.
     registry::shutdown_profile_context(&reg, &id).await;
-    let result = cmds::profiles::delete_profile(
-        h.ctx.ui.as_ref(),
-        id,
-        &h.ctx.profile.id,
-        &open,
-        reg.paths(),
-    );
+    // Snapshot the refusal set AFTER the await: a window opened
+    // for the target profile during the shutdown must trip the
+    // body's re-check, not slip past a stale vector.
+    let open = reg.profiles_with_windows();
+    let active = h.ctx.profile.id.clone();
+    let paths = reg.paths().clone();
+    let ui = h.ctx.ui.clone();
+    let delete_id = id.clone();
+    // The secure wipe random-overwrites the whole cache.db — real
+    // blocking IO that must not pin an async runtime worker.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        cmds::profiles::delete_profile(ui.as_ref(), delete_id, &active, &open, &paths)
+    })
+    .await
+    .map_err(|e| UnkaiError::Other(format!("profile delete task failed: {e}")))?;
+    if result.is_err() {
+        // The profile is still listed but its context is gone —
+        // best-effort rebuild so its background sync resumes
+        // instead of staying silently dead until a window opens.
+        if let Err(e) = windows::ensure_profile_context(&app, &id) {
+            tracing::warn!("could not reopen profile '{id}' after a failed delete: {e}");
+        }
+    }
     // Repaint the tray badge without the deleted profile's
     // contribution (`remove_profile` dropped its unread entry).
     refresh_unread_badge(&h.ctx.cache, h.ctx.ui.as_ref());
@@ -3847,14 +3890,19 @@ fn main() {
         //     are reusable, and switch-in-place remaps them).
         //     Closing a profile's LAST window deliberately keeps
         //     its runtime context and background loops running —
-        //     sync and notifications continue, and the tray keeps
-        //     the aggregate badge.  Only `delete_profile` and app
-        //     exit tear contexts down.
-        //   * CloseRequested on a primary window → minimize to
-        //     tray when the window's *current* profile says so.
-        //     Resolved through the registry at event time, never a
-        //     captured settings Arc — a switch-in-place must flip
-        //     the behaviour with the profile.
+        //     sync continues and the tray keeps the aggregate
+        //     badge.  (Native new-mail toasts do NOT continue: the
+        //     frontend raises them, so a window-less profile only
+        //     badges the tray until a window reopens — a known
+        //     #535 limitation, candidate for chunk 5.)  Only
+        //     `delete_profile` and app exit tear contexts down.
+        //   * CloseRequested on the static "main" window →
+        //     minimize to tray when the window's *current* profile
+        //     says so.  Resolved through the registry at event
+        //     time, never a captured settings Arc — a
+        //     switch-in-place must flip the behaviour with the
+        //     profile.  `profile-*` windows always destroy on
+        //     close (see the arm below for why).
         //   * Focused on a primary window → bookmark it as the
         //     window tray clicks / second launches / deep links
         //     raise, and keep the profile `last_used` order fresh.
@@ -3867,7 +3915,17 @@ fn main() {
                     reg.unmap_window(window.label());
                 }
                 WindowEvent::CloseRequested { api, .. } => {
-                    if windows::is_primary_label(window.label())
+                    // Minimize-to-tray applies to the static
+                    // "main" window ONLY.  A hidden `profile-*`
+                    // window would keep its label→profile mapping
+                    // forever (Destroyed never fires), which makes
+                    // its profile permanently undeletable — the
+                    // refusal says "close its window first" about
+                    // a window the user already closed.  Closing a
+                    // profile-* window destroys it; the profile's
+                    // context keeps syncing and the tray raises or
+                    // re-creates a window on demand.
+                    if window.label() == "main"
                         && let Ok(h) = reg.handle_for_label(window.label())
                     {
                         // `blocking_read` is safe here: window
@@ -4237,25 +4295,51 @@ fn main() {
             // `All` mode: one window per profile.  The resolved
             // startup profile already owns the static "main"
             // window above; every other profile gets its context
-            // built and a `profile-*` window created here, each
-            // honouring its own `start_minimized` preference.
-            // Failures are per-profile and non-fatal — one broken
-            // profile must not stop the rest of the app booting.
+            // built and a `profile-*` window created, each
+            // honouring its own `start_minimized` preference and
+            // none stealing focus from the startup window.
+            // Spawned so boot isn't gated on N SQLCipher key
+            // derivations, and the builds run on the blocking pool
+            // — they're real synchronous IO.  Failures are
+            // per-profile and non-fatal: one broken profile must
+            // not stop the rest of the app booting.
             if matches!(startup_mode, StartupMode::All) {
-                for id in &secondary_profile_ids {
-                    if let Err(e) = windows::ensure_profile_context(app.handle(), id) {
-                        tracing::warn!("startup fan-out: profile '{id}' failed to open: {e}");
-                        continue;
+                let fan_out_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    for id in secondary_profile_ids {
+                        let build_app = fan_out_app.clone();
+                        let build_id = id.clone();
+                        let built = tauri::async_runtime::spawn_blocking(move || {
+                            windows::ensure_profile_context(&build_app, &build_id)
+                        })
+                        .await;
+                        match built {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                tracing::warn!(
+                                    "startup fan-out: profile '{id}' failed to open: {e}"
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::warn!("startup fan-out: build task for '{id}' died: {e}");
+                                continue;
+                            }
+                        }
+                        let show = fan_out_app
+                            .state::<ProfileRegistry>()
+                            .context_for(&id)
+                            .and_then(|h| {
+                                h.ctx.settings.try_read().map(|s| !s.start_minimized).ok()
+                            })
+                            .unwrap_or(true);
+                        if let Err(e) =
+                            windows::create_profile_window(&fan_out_app, &id, show, false)
+                        {
+                            tracing::warn!("startup fan-out: profile '{id}' window failed: {e}");
+                        }
                     }
-                    let reg = app.state::<ProfileRegistry>();
-                    let show = reg
-                        .context_for(id)
-                        .and_then(|h| h.ctx.settings.try_read().map(|s| !s.start_minimized).ok())
-                        .unwrap_or(true);
-                    if let Err(e) = windows::create_profile_window(app.handle(), id, show) {
-                        tracing::warn!("startup fan-out: profile '{id}' window failed: {e}");
-                    }
-                }
+                });
             }
 
             // Paint the initial badge from whatever's already in the
@@ -4488,7 +4572,6 @@ fn main() {
             snooze_event_reminder,
             get_total_unread,
             get_unread_counts_by_account,
-            show_main_window_cmd,
             quit_app,
             restart_app,
             // #254 — file-association entry points

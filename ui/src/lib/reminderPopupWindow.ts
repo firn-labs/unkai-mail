@@ -15,8 +15,8 @@
  *     is hidden / minimised to the tray, which an in-app overlay
  *     can't do (it lives inside the main window).
  *   * Picks up `alwaysOnTop` so it sits above the user's current
- *     foreground app, which is the expected behaviour for calendar
- *     reminders (Outlook / Apple Calendar both do this).
+ *     foreground app — the standard behaviour for desktop
+ *     calendar-reminder popups.
  */
 
 import { openPopout, takePopoutPayload } from './standalonePopoutWindow'
