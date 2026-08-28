@@ -20,6 +20,11 @@ use crate::notify::UiNotifier;
 /// through 156 cache-only functions would be noise.  The loops and the
 /// handful of commands that both read state *and* talk back to the UI
 /// take this instead.
+///
+/// One `AppContext` exists per **profile** (#533): the cache, the
+/// settings, the reminder bookkeeping, and the notifier are all
+/// scoped to `profile`, so two profiles hosted by the same process
+/// never share any of it.
 #[derive(Clone)]
 pub struct AppContext {
     pub cache: Cache,
@@ -27,6 +32,8 @@ pub struct AppContext {
     /// Fire-once bookkeeping for due event reminders.
     pub reminders: Arc<EventReminderState>,
     pub ui: Arc<dyn UiNotifier>,
+    /// Which profile this context belongs to (id + storage layout).
+    pub profile: Arc<ProfileInfo>,
 }
 
 /// Shared, mutable app preferences. Held as Tauri managed state so the
@@ -46,22 +53,17 @@ pub fn global_cache() -> Result<&'static Cache, UnkaiError> {
         .ok_or_else(|| UnkaiError::Storage("cache not initialised yet".into()))
 }
 
-/// The profile this process is running as (#531).
-///
-/// Chunk 1 keeps the app single-profile, so "which profile does
-/// this command act on" has exactly one answer for the whole
-/// process — captured here once in `main()` right after the
-/// registry resolves.  This is a deliberate sibling of
-/// [`GLOBAL_CACHE`]: chunk 2 (#533) replaces both with the
-/// `ProfileRegistry`'s per-window routing, so nothing new should
-/// grow roots into this global beyond what per-window routing can
-/// later serve.
-pub struct ActiveProfile {
+/// A profile's identity plus its storage layout (#531/#533): the
+/// id that keys the keychain entries and the [`ProfilePaths`]
+/// resolver for its on-disk files.  Carried inside [`AppContext`]
+/// so every command and loop knows which profile it acts on
+/// without reaching for process globals.
+pub struct ProfileInfo {
     pub id: String,
     pub paths: unkai_store::ProfilePaths,
 }
 
-impl ActiveProfile {
+impl ProfileInfo {
     /// This profile's `app_settings.json`.
     pub fn app_settings_file(&self) -> std::path::PathBuf {
         self.paths.app_settings(&self.id)
@@ -78,9 +80,14 @@ impl ActiveProfile {
     }
 }
 
-pub static ACTIVE_PROFILE: std::sync::OnceLock<ActiveProfile> = std::sync::OnceLock::new();
+/// Chunk-1 bridge (#531): the whole process runs as one profile,
+/// captured here once in `main()`.  Being replaced by per-window
+/// routing over the course of #533 — call sites migrate to
+/// [`AppContext::profile`] / explicit `&ProfileInfo` parameters,
+/// and this global dies with the last one.
+pub static ACTIVE_PROFILE: std::sync::OnceLock<ProfileInfo> = std::sync::OnceLock::new();
 
-pub fn active_profile() -> Result<&'static ActiveProfile, UnkaiError> {
+pub fn active_profile() -> Result<&'static ProfileInfo, UnkaiError> {
     ACTIVE_PROFILE
         .get()
         .ok_or_else(|| UnkaiError::Storage("active profile not initialised yet".into()))
@@ -127,4 +134,5 @@ pub type SharedLocalStorage = Arc<RwLock<std::collections::HashMap<String, Strin
 /// `notify_one()` call coalesces with any already-pending wakeup,
 /// so a burst of settings changes still results in a single push
 /// once the debounce window expires.
+#[derive(Clone)]
 pub struct SettingsSyncNotify(pub Arc<tokio::sync::Notify>);
