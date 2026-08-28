@@ -1,11 +1,16 @@
 // Trusted-senders allow-list for the "Always show images from
 // [sender]" affordance.
 //
-// Stored in `localStorage` under `unkai-trusted-senders` as a
-// JSON array of lower-cased bare email addresses.  The key is
-// listed in `settingsBundle.ts#SYNCED_LOCAL_STORAGE_KEYS`, so it
-// rides along with every settings-bundle write (manual export +
-// Nextcloud auto-sync) and is restored on import.
+// Stored in `localStorage` as a JSON array of lower-cased bare
+// email addresses — under the PROFILE-SCOPED key
+// `unkai.<profile-id>.trusted-senders` since #535 (all windows
+// share one localStorage origin, and which senders you trust is
+// per-profile data; the pre-#535 machine-global key is adopted
+// into the window's profile once).  The list still rides along
+// with every settings-bundle write (manual export + Nextcloud
+// auto-sync) under the STABLE wire name `unkai-trusted-senders` —
+// profile ids differ across machines, so the bundle must not
+// carry them; `settingsBundle.ts` maps wire name ↔ scoped key.
 //
 // Every mutation calls `notifySettingsChanged()` so the
 // auto-sync worker picks up the change immediately — otherwise
@@ -13,9 +18,21 @@
 // settings mutation happens to push the bundle, and a Nextcloud
 // restore in between would wipe the entry (#295).
 
+import { adoptLegacyKey, profileScopedKey } from './profileLocalStorage'
 import { notifySettingsChanged } from './settingsBundle'
 
-const TRUSTED_SENDERS_KEY = 'unkai-trusted-senders'
+/** Stable settings-bundle wire name (also the pre-#535 local key). */
+export const TRUSTED_SENDERS_BUNDLE_KEY = 'unkai-trusted-senders'
+const SCOPED_SUFFIX = 'trusted-senders'
+
+adoptLegacyKey(TRUSTED_SENDERS_BUNDLE_KEY, SCOPED_SUFFIX)
+
+/** This window's profile-scoped storage key, or `null` while the
+ *  profile id is still resolving (callers fall back to "no one is
+ *  trusted", which is the fail-safe direction for image loading). */
+export function trustedSendersLocalKey(): string | null {
+  return profileScopedKey(SCOPED_SUFFIX)
+}
 
 /**
  * Strip the angle-bracketed address out of an RFC 5322 `From:`
@@ -29,8 +46,10 @@ export function getSenderAddress(from: string): string {
 }
 
 function readList(): string[] {
+  const key = trustedSendersLocalKey()
+  if (!key) return []
   try {
-    const raw = localStorage.getItem(TRUSTED_SENDERS_KEY)
+    const raw = localStorage.getItem(key)
     return raw ? (JSON.parse(raw) as string[]) : []
   } catch {
     return []
@@ -38,8 +57,10 @@ function readList(): string[] {
 }
 
 function writeList(list: string[]): boolean {
+  const key = trustedSendersLocalKey()
+  if (!key) return false
   try {
-    localStorage.setItem(TRUSTED_SENDERS_KEY, JSON.stringify(list))
+    localStorage.setItem(key, JSON.stringify(list))
     return true
   } catch {
     return false
