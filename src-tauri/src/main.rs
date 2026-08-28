@@ -1027,6 +1027,7 @@ async fn create_nextcloud_note(
     cmds::notes::create_nextcloud_note(nc_id, title, content, category, &h.ctx.cache).await
 }
 
+#[allow(clippy::too_many_arguments)] // Tauri command: invoke parameters plus the profile-routing pair
 #[tauri::command]
 async fn create_nextcloud_share(
     nc_id: String,
@@ -1107,6 +1108,7 @@ async fn create_nextcloud_task_from_mail(
     .await
 }
 
+#[allow(clippy::too_many_arguments)] // Tauri command: invoke parameters plus the profile-routing pair
 #[tauri::command]
 async fn create_talk_room(
     nc_id: String,
@@ -2550,6 +2552,7 @@ async fn probe_server_certificate(host: String, port: u16) -> Result<ProbedCert,
     cmds::accounts::probe_server_certificate(host, port).await
 }
 
+#[allow(clippy::too_many_arguments)] // Tauri command: invoke parameters plus the profile-routing pair
 #[tauri::command]
 fn put_attachment_preview(
     account_id: String,
