@@ -25,8 +25,7 @@ mod tray;
 
 use std::sync::{Arc, Mutex};
 
-use notifier::TauriNotifier;
-use registry::{ProfileHandle, ProfileRegistry, profile_ctx};
+use registry::{ProfileRegistry, profile_ctx};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -35,12 +34,7 @@ use tauri_plugin_dialog::DialogExt;
 use tokio::sync::RwLock;
 use tray::{TrayBaseIcon, decode_logo_png, logo_assets, logo_bytes_for};
 use unkai_commands as cmds;
-use unkai_commands::background::{
-    background_sync_loop, message_reminder_loop, prerender_inboxes_on_launch, settings_sync_worker,
-    urlhaus_refresh_worker,
-};
 use unkai_commands::mail::refresh_unread_badge;
-use unkai_commands::state::{ACTIVE_PROFILE, AppContext, GLOBAL_CACHE, ProfileInfo};
 use unkai_commands::system::{
     FontCacheFile, compute_font_fingerprint, enumerate_system_fonts, load_font_cache_file,
     save_font_cache_file,
@@ -50,10 +44,10 @@ use unkai_core::models::{
     Account, AppSettings, CalendarEvent, Contact, CustomTheme, Email, EmailEnvelope, Folder,
     NextcloudAccount, OutgoingEmail, Task, TaskList,
 };
-use unkai_mcp::{McpServer, McpServerStatus};
+use unkai_mcp::McpServerStatus;
 use unkai_nextcloud::{FileEntry, LoginFlowInit};
 use unkai_store::cache::{SearchFilters, SearchHit, SearchScope};
-use unkai_store::{Cache, account_store, app_settings, credentials, link_check, settings_sync};
+use unkai_store::{credentials, link_check};
 
 use unkai_commands::accounts::ProbedCert;
 use unkai_commands::calendar::{
@@ -75,9 +69,7 @@ use unkai_commands::nextcloud::{
 use unkai_commands::settings::{
     DatabaseStatusView, FidoStatusView, McpToolView, SettingsSyncStateView, WipePolicyView,
 };
-use unkai_commands::state::{
-    EventReminderState, SettingsSyncNotify, SharedLocalStorage, SharedSettings, SystemFontsCache,
-};
+use unkai_commands::state::{SharedSettings, SystemFontsCache};
 use unkai_commands::support::SyncStatus;
 use unkai_commands::system::{OfficeOpenResult, PdfOpenResult};
 
@@ -348,7 +340,20 @@ fn contact_photo_protocol(
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<std::borrow::Cow<'static, [u8]>> {
     let id = percent_decode(request.uri().path().trim_start_matches('/'));
-    let cache = ctx.app_handle().state::<Cache>();
+    // Resolve the requesting webview's profile (#533): avatars come
+    // out of that profile's cache, same as every command.
+    let reg = ctx.app_handle().state::<ProfileRegistry>();
+    let handle = match reg.handle_for_label(ctx.webview_label()) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!("contact-photo request from unresolvable webview: {e}");
+            return tauri::http::Response::builder()
+                .status(500)
+                .body(std::borrow::Cow::Owned(Vec::new()))
+                .expect("build 500");
+        }
+    };
+    let cache = &handle.ctx.cache;
     match cache.get_contact_photo(&id) {
         Ok(Some((mime, bytes))) => tauri::http::Response::builder()
             .status(200)
@@ -3576,108 +3581,17 @@ fn main() {
     {
         tracing::warn!("could not update profile last-used bookkeeping: {e}");
     }
-    // Chunk-1 bridge: the whole process runs as this one profile.
-    // Being dismantled over #533 — call sites migrate to the
-    // registry's per-window routing, and the global dies with the
-    // last one (together with GLOBAL_CACHE).
-    let _ = ACTIVE_PROFILE.set(ProfileInfo {
-        id: profile.id.clone(),
-        paths: profile_paths.clone(),
-    });
-
-    // Open the local mail cache once at startup, then hand it to
-    // Tauri as managed state so every command can borrow it.
-    // A failure here is fatal: without the cache the write-through path
-    // is broken, and the user would silently lose offline capability.
-    let cache = Cache::open_for_profile(&profile_paths.cache_db(&profile.id), &profile.id)
-        .expect("failed to open local mail cache");
-    // Stash a clone for the small set of helpers (e.g. `load_nextcloud_account`)
-    // that fan out across many call sites and would otherwise need `&Cache`
-    // threaded through 30+ functions.  `Cache` is a cheap `Arc`-clone, so this
-    // doesn't duplicate the pool — just gives non-IPC code paths a way to
-    // reach it without a State extractor.
-    let _ = GLOBAL_CACHE.set(cache.clone());
-
-    // Scrub orphan cache rows left behind by removed accounts.
-    // `cache.wipe_account(...)` runs on account removal, but if it ever
-    // missed (crash, disk error, older build before the wipe landed)
-    // the unified inbox would surface envelopes whose owning account
-    // no longer exists — every click on one throws "no account with
-    // id 'X'". Running the scrub on boot guarantees the shell never
-    // paints an orphan past the first frame, regardless of how the
-    // cache got into that state.
-    match account_store::load_accounts(&cache) {
-        Ok(accounts) => {
-            let active_ids: Vec<String> = accounts.iter().map(|a| a.id.clone()).collect();
-            if let Err(e) = cache.prune_orphan_accounts(&active_ids) {
-                tracing::warn!("startup orphan-account prune failed: {e}");
-            }
-        }
-        Err(e) => {
-            tracing::warn!("skipping startup orphan-account prune — load_accounts failed: {e}")
-        }
-    }
-
-    // One-time backfill for `addresses_json`.  The column was
-    // added via ALTER TABLE with default `'[]'`; CardDAV's
-    // delta-sync only re-pulls contacts that have changed in NC
-    // since the last sync token, so unchanged ones kept the empty
-    // default forever — even though their cached `vcard_raw` still
-    // had the original ADR property.  Re-parse the body once to
-    // recover the addresses.  Self-narrowing: a fixed row's
-    // SELECT condition no longer matches on subsequent boots.
-    match cache.backfill_addresses(|raw| {
-        let p = unkai_carddav::parse_vcard(raw).ok()?;
-        Some(
-            p.addresses
-                .into_iter()
-                .map(|a| unkai_core::models::ContactAddress {
-                    kind: a.kind,
-                    street: a.street,
-                    locality: a.locality,
-                    region: a.region,
-                    postal_code: a.postal_code,
-                    country: a.country,
-                })
-                .collect(),
-        )
-    }) {
-        Ok(0) => {}
-        Ok(n) => tracing::info!("contact backfill: rewrote addresses_json on {n} rows"),
-        Err(e) => tracing::warn!("contact backfill failed: {e}"),
-    }
-
-    // App-wide preferences (Issue #16). A missing file is fine on first
-    // run — `load_settings` returns defaults. We wrap in Arc<RwLock<..>>
-    // so the background sync loop can re-snapshot per tick while the
-    // `update_app_settings` command swaps in a fresh value under the
-    // write lock.
-    let settings =
-        app_settings::load_settings(&profile_paths.app_settings(&profile.id)).unwrap_or_default();
-    let shared_settings: SharedSettings = Arc::new(RwLock::new(settings));
-
-    // MCP server controller (#438).  Created up front (not in
-    // `.setup()`) so it can borrow clones of `cache` and
-    // `shared_settings` before the builder consumes them.  The
-    // token load is best-effort: a broken keychain shouldn't stop
-    // the app from booting, it just leaves the server answering
-    // 401 until the user re-generates a token.
-    //
-    // Tokens are keyed per profile (#533).  A pre-profile install
-    // left its token under the singleton entry — migrate it, but
-    // only while the registry holds exactly one profile, so the
-    // target is unambiguous (chunks 3+ are what make a second
-    // profile creatable, and by then every token is per-profile).
+    // MCP tokens are keyed per profile (#533).  A pre-profile
+    // install left its token under the singleton keychain entry —
+    // migrate it, but only while the registry holds exactly one
+    // profile, so the target is unambiguous (chunks 3+ are what
+    // make a second profile creatable, and by then every token is
+    // per-profile).
     if registry.profiles.len() == 1
         && let Err(e) = credentials::migrate_legacy_mcp_token(&profile.id)
     {
         tracing::warn!("MCP token migration failed (token stays on the legacy entry): {e}");
     }
-    let mcp_token = credentials::get_mcp_token(&profile.id).unwrap_or_else(|e| {
-        tracing::warn!("could not read MCP token from keychain: {e}");
-        None
-    });
-    let mcp_server = McpServer::new(cache.clone(), shared_settings.clone(), mcp_token);
 
     tauri::Builder::default()
         // single-instance MUST come before any plugin that cares
@@ -3717,26 +3631,31 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .manage(cache)
-        .manage(shared_settings)
-        .manage(mcp_server)
-        // The multi-profile runtime (#533).  Starts empty; the
-        // startup profile's context is built and inserted in
-        // `.setup()` once the notifier's `AppHandle` exists.
+        // The multi-profile runtime (#533).  Per-profile state
+        // (cache, settings, MCP server, sync plumbing) lives in
+        // ProfileHandles inside this registry — the only managed
+        // state left outside it is genuinely machine-global.
+        // Starts empty; the startup profile's context is built and
+        // inserted in `.setup()` once the notifier's `AppHandle`
+        // exists.
         .manage(ProfileRegistry::new(
             profile_paths.clone(),
             profile.id.clone(),
         ))
         .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
-        // Settings backup & sync (#168).  Frontend pushes its
-        // localStorage snapshot on every settings change; the
-        // worker reads from this slot when it assembles a bundle
-        // for an NC push.  Starts empty — the first
-        // `notify_settings_changed` IPC fills it in.
-        .manage::<SharedLocalStorage>(Arc::new(RwLock::new(std::collections::HashMap::new())))
-        .manage(SettingsSyncNotify(Arc::new(tokio::sync::Notify::new())))
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
         .register_uri_scheme_protocol("unkai-logo", logo_protocol)
+        // Keep the window→profile map in step with window
+        // lifecycle: a destroyed window's label must not keep
+        // resolving to a profile (labels are reusable, and chunk 4
+        // remaps them on switch-in-place).
+        .on_window_event(|window, event| {
+            if let WindowEvent::Destroyed = event
+                && let Some(reg) = window.app_handle().try_state::<ProfileRegistry>()
+            {
+                reg.unmap_window(window.label());
+            }
+        })
         .setup(|app| {
             // Windows toast attribution.  Without an explicit
             // AppUserModelID the OS falls back to the launching
@@ -3839,49 +3758,33 @@ fn main() {
                 .unwrap_or_default();
             app.manage(NotificationIconPath(icon_path));
 
-            // ── Application context (#476) ──────────────────────
+            // ── Startup profile context (#476/#533) ─────────────
             //
-            // The bundle every extracted command / background loop
-            // reaches shared state through.  Built here (not before
-            // the builder) because the `TauriNotifier` inside needs
-            // an `AppHandle`.  The Talk-join reminder state (empty
-            // fired/dismissed sets, populated as the background scan
-            // discovers upcoming events with VALARM triggers) lives
-            // in the context too, so the dismiss/snooze commands and
-            // the scan loop share one instance.
-            let ctx = {
+            // Open the startup profile: cache, settings, MCP
+            // server, notifier, and its set of background loops —
+            // all bundled into a ProfileHandle by the registry's
+            // builder.  Done here (not before the builder) because
+            // the `TauriNotifier` inside needs an `AppHandle`.
+            //
+            // The "main" window maps to the startup profile BEFORE
+            // the handle is built, so anything the freshly-spawned
+            // loops emit already resolves to a window; chunk 4
+            // generalises window creation to `profile-<id>` labels
+            // registered the same way.
+            //
+            // A cache-open failure is fatal: without the cache the
+            // write-through path is broken, and the user would
+            // silently lose offline capability.
+            let profile_handle = {
                 let reg = app.state::<ProfileRegistry>();
-                AppContext {
-                    cache: app.state::<Cache>().inner().clone(),
-                    settings: app.state::<SharedSettings>().inner().clone(),
-                    reminders: Arc::new(EventReminderState::default()),
-                    ui: Arc::new(TauriNotifier::new(app.handle().clone())),
-                    profile: Arc::new(ProfileInfo {
-                        id: reg.startup_profile_id().to_string(),
-                        paths: reg.paths().clone(),
-                    }),
-                }
+                let startup_id = reg.startup_profile_id().to_string();
+                reg.map_window("main", &startup_id);
+                let handle = registry::build_profile_handle(app.handle(), &startup_id, reg.paths())
+                    .map_err(|e| format!("failed to open the startup profile: {e}"))?;
+                reg.insert_profile(&startup_id, handle.clone());
+                handle
             };
-            app.manage(ctx.clone());
-
-            // Register the startup profile's runtime context (#533).
-            // The single "main" window maps to the startup profile;
-            // chunk 4 generalises window creation to `profile-<id>`
-            // labels registered the same way.
-            {
-                let reg = app.state::<ProfileRegistry>();
-                reg.map_window("main", &ctx.profile.id);
-                reg.insert_profile(
-                    &ctx.profile.id,
-                    Arc::new(ProfileHandle {
-                        ctx: ctx.clone(),
-                        mcp: app.state::<McpServer>().inner().clone(),
-                        local_storage: app.state::<SharedLocalStorage>().inner().clone(),
-                        sync_notify: app.state::<SettingsSyncNotify>().inner().clone(),
-                        tasks: Mutex::new(Vec::new()),
-                    }),
-                );
-            }
+            let ctx = profile_handle.ctx.clone();
 
             // Warm the system-fonts cache off the main thread so
             // the first compose-toolbar font-dropdown open is
@@ -3941,15 +3844,12 @@ fn main() {
                 ],
             )?;
 
-            // Honour the user's saved logo style at boot.  Falls
-            // back to "storm" if decoding fails for any reason —
-            // keeps the tray from coming up blank on a malformed
-            // settings file.  Reads through the managed-state copy
-            // so we don't have to capture `shared_settings` into
-            // this closure (it was already moved into `.manage`).
+            // Honour the startup profile's saved logo style at
+            // boot.  Falls back to "storm" if decoding fails for
+            // any reason — keeps the tray from coming up blank on
+            // a malformed settings file.
             let chosen_style = {
-                let st = app.state::<SharedSettings>();
-                let s = futures::executor::block_on(st.read());
+                let s = futures::executor::block_on(ctx.settings.read());
                 s.logo_style.clone()
             };
             let style_bytes = logo_bytes_for(&chosen_style);
@@ -4001,12 +3901,16 @@ fn main() {
                         }
                     }
                     "check" => {
-                        let ctx = app.state::<AppContext>().inner().clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = cmds::mail::check_mail_now_inner(&ctx).await {
-                                tracing::warn!("tray check_mail_now failed: {e}");
-                            }
-                        });
+                        // The tray is shared chrome — "Check Mail
+                        // Now" fans out across every open profile.
+                        for h in app.state::<ProfileRegistry>().handles() {
+                            let ctx = h.ctx.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = cmds::mail::check_mail_now_inner(&ctx).await {
+                                    tracing::warn!("tray check_mail_now failed: {e}");
+                                }
+                            });
+                        }
                     }
                     "compose" => {
                         if let Err(e) = show_main_window(app) {
@@ -4041,8 +3945,7 @@ fn main() {
             // close attempt. `blocking_read` is safe here: the window
             // event thread is already off the async runtime.
             if let Some(main_window) = app.get_webview_window("main") {
-                let settings_for_close: SharedSettings =
-                    app.state::<SharedSettings>().inner().clone();
+                let settings_for_close: SharedSettings = ctx.settings.clone();
                 let close_window = main_window.clone();
                 main_window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
@@ -4063,11 +3966,7 @@ fn main() {
                 //     boots straight into the tray.
                 //   - otherwise → show the window with the correct
                 //     icon already painted in the titlebar / taskbar.
-                let should_hide_on_start = app
-                    .state::<SharedSettings>()
-                    .inner()
-                    .blocking_read()
-                    .start_minimized;
+                let should_hide_on_start = ctx.settings.blocking_read().start_minimized;
                 if !should_hide_on_start {
                     let _ = main_window.show();
                     // #470 — this `visible: false` → `show()` transition
@@ -4085,98 +3984,10 @@ fn main() {
             // first sync tick).
             refresh_unread_badge(&ctx.cache, ctx.ui.as_ref());
 
-            // ── Background sync ─────────────────────────────────
-            //
-            // `tauri::async_runtime::spawn` uses Tauri's managed
-            // runtime, which is guaranteed to exist regardless of
-            // how the app was started.
-            let bg_ctx = ctx.clone();
-            tauri::async_runtime::spawn(async move {
-                background_sync_loop(bg_ctx).await;
-            });
-
-            // ── Message reminders (#415) ─────────────────────────
-            //
-            // Own fixed-cadence loop, deliberately NOT gated on the
-            // background-sync setting: a reminder the user set must
-            // fire on time even with mail polling turned off.
-            let reminder_ctx = ctx.clone();
-            tauri::async_runtime::spawn(async move {
-                message_reminder_loop(reminder_ctx).await;
-            });
-
-            // ── Launch-time prerender (#178) ─────────────────────
-            //
-            // Warm the message cache for the newest INBOX envelopes
-            // whose body we haven't fetched yet.  When the user
-            // opens one of those mails the reading pane paints from
-            // cache instantly instead of waiting on an IMAP
-            // round-trip — the difference between a perceptibly
-            // snappy first-mail click and the previous "open …
-            // briefly blank … now it appears" UX.
-            //
-            // Spawned as a low-priority background task so it never
-            // gates the UI: each account is processed sequentially
-            // (one IMAP connection at a time per account, since the
-            // IMAP client is single-shot here), but accounts run in
-            // parallel.  Failures are logged and skipped — a
-            // half-warmed cache is strictly better than no warm-up.
-            let prerender_ctx = ctx.clone();
-            tauri::async_runtime::spawn(async move {
-                prerender_inboxes_on_launch(&prerender_ctx).await;
-            });
-
-            // Settings auto-sync worker (#168).  Listens for
-            // notifications from the frontend via the
-            // `SettingsSyncNotify` state, debounces 2s, then
-            // pushes the bundle to whichever NC the user picked
-            // as their backup target.  Also retries a pending
-            // push every 5 minutes so a "user went offline,
-            // never changed another setting, came back online"
-            // flow eventually catches up without manual action.
-            //
-            // Pumps an immediate notification on startup so a
-            // pending=true flag from a previous session (set
-            // when a quit-while-offline left a push hanging)
-            // gets a fresh attempt as soon as we're up.
-            let sync_ctx = ctx.clone();
-            let sync_storage = app.state::<SharedLocalStorage>().inner().clone();
-            let sync_notify = app.state::<SettingsSyncNotify>().inner().0.clone();
-            let initial_kick = sync_notify.clone();
-            tauri::async_runtime::spawn(async move {
-                settings_sync_worker(sync_ctx, sync_storage, sync_notify).await;
-            });
-            // Kick the worker once so a pending recovery push
-            // from a previous session retries on launch.  The
-            // worker no-ops cleanly if there's nothing to do.
-            if settings_sync::load_state(&ctx.profile.settings_sync_file())
-                .map(|s| s.pending && s.target_nc_id.is_some())
-                .unwrap_or(false)
-            {
-                initial_kick.notify_one();
-            }
-
-            // URLhaus link-safety refresh worker (#165).  Pulls
-            // the abuse.ch CSV every hour, decides on launch
-            // whether the local copy is stale enough to refresh
-            // immediately, and respects the link_check_enabled
-            // master toggle in AppSettings.
-            let urlhaus_cache = app.state::<Cache>().inner().clone();
-            let urlhaus_settings = app.state::<SharedSettings>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                urlhaus_refresh_worker(urlhaus_cache, urlhaus_settings).await;
-            });
-
-            // MCP server (#438).  One reconcile at boot brings the
-            // listener up if `mcp_enabled` was saved on; afterwards
-            // the `update_app_settings` / `import_settings_bundle`
-            // commands re-reconcile on every settings change, so no
-            // polling loop is needed.  Same clone-into-spawn shape
-            // as the workers above.
-            let mcp = app.state::<McpServer>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                mcp.reconcile().await;
-            });
+            // The startup profile's background loops (sync, reminders,
+            // prerender, settings sync, URLhaus refresh) and its MCP
+            // boot reconcile were spawned by `build_profile_handle`
+            // above — one set per profile context (#533).
 
             Ok(())
         })
