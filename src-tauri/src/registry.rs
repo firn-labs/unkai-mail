@@ -376,3 +376,119 @@ pub fn build_profile_handle(
         tasks: Mutex::new(tasks),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use unkai_commands::notify::UiNotifier;
+    use unkai_core::models::Folder;
+
+    /// Trait stub — the registry test exercises routing, not
+    /// notification plumbing.
+    struct NullNotifier;
+    impl UiNotifier for NullNotifier {
+        fn new_mail(&self, _: &unkai_commands::notify::NewMailPayload) {}
+        fn mail_flags_updated(&self, _: &unkai_commands::notify::MailFlagsUpdatedPayload) {}
+        fn outbox_updated(&self, _: &unkai_commands::notify::OutboxUpdatedPayload) {}
+        fn calendars_updated(&self, _: &unkai_commands::notify::CalendarsUpdatedPayload) {}
+        fn event_reminder(&self, _: &unkai_commands::notify::EventReminderPayload) {}
+        fn message_reminder(
+            &self,
+            _: &unkai_commands::notify::MessageReminderPayload,
+        ) -> Result<(), unkai_core::UnkaiError> {
+            Ok(())
+        }
+        fn unread_total_changed(&self, _: u32) {}
+        fn unread_by_account_changed(&self, _: &HashMap<String, u32>) {}
+        fn custom_themes_changed(&self) {}
+        fn apply_logo_style(&self, _: &str) -> Result<(), unkai_core::UnkaiError> {
+            Ok(())
+        }
+    }
+
+    /// A minimal in-memory ProfileHandle — everything a command
+    /// body reaches through the resolution helper, without a Tauri
+    /// runtime or the OS keychain.
+    fn test_handle(profile_id: &str) -> Arc<ProfileHandle> {
+        let cache = Cache::open_in_memory().expect("in-memory cache");
+        let settings: SharedSettings = Arc::new(tokio::sync::RwLock::new(Default::default()));
+        let ctx = AppContext {
+            cache: cache.clone(),
+            settings: settings.clone(),
+            reminders: Arc::new(EventReminderState::default()),
+            ui: Arc::new(NullNotifier),
+            profile: Arc::new(ProfileInfo {
+                id: profile_id.to_string(),
+                paths: ProfilePaths::at_root(PathBuf::from("/tmp/unkai-registry-test")),
+            }),
+        };
+        Arc::new(ProfileHandle {
+            ctx,
+            mcp: McpServer::new(cache, settings, None),
+            local_storage: Arc::new(tokio::sync::RwLock::new(Default::default())),
+            sync_notify: SettingsSyncNotify(Arc::new(tokio::sync::Notify::new())),
+            tasks: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// The chunk-2 definition of done: two profile contexts open
+    /// side by side in one process, a command body runs against
+    /// each via the resolution path, and neither sees the other's
+    /// data.
+    #[test]
+    fn two_profiles_resolve_without_cross_talk() {
+        let reg = ProfileRegistry::new(
+            ProfilePaths::at_root(PathBuf::from("/tmp/unkai-registry-test")),
+            "profile-a".into(),
+        );
+        reg.insert_profile("profile-a", test_handle("profile-a"));
+        reg.insert_profile("profile-b", test_handle("profile-b"));
+        reg.map_window("main", "profile-a");
+        reg.map_window("profile-b-window", "profile-b");
+
+        // Write a folder into profile A's cache only — through the
+        // same resolution the command shims use.
+        let a = reg.handle_for_label("main").expect("profile A resolves");
+        a.ctx
+            .cache
+            .upsert_folders(
+                "acct-1",
+                &[Folder {
+                    name: "INBOX".into(),
+                    delimiter: Some("/".into()),
+                    attributes: vec![],
+                    unread_count: Some(3),
+                }],
+            )
+            .expect("seed profile A");
+
+        // The same command body against each window's context: A
+        // sees its folder, B sees nothing.
+        let a = reg.handle_for_label("main").unwrap();
+        let folders_a = unkai_commands::mail::get_cached_folders("acct-1".into(), &a.ctx.cache)
+            .expect("A's folders");
+        assert_eq!(folders_a.len(), 1, "profile A must see its own folder");
+
+        let b = reg
+            .handle_for_label("profile-b-window")
+            .expect("profile B resolves");
+        let folders_b = unkai_commands::mail::get_cached_folders("acct-1".into(), &b.ctx.cache)
+            .expect("B's folders");
+        assert!(
+            folders_b.is_empty(),
+            "profile B must not see profile A's data"
+        );
+
+        // Unknown labels (a popout created before chunk 4 registers
+        // them) fall back to the startup profile.
+        let fallback = reg.handle_for_label("compose-123").unwrap();
+        assert_eq!(fallback.ctx.profile.id, "profile-a");
+
+        // The shared tray badges the aggregate; each profile's own
+        // total stays separate.
+        assert_eq!(reg.record_unread("profile-a", 3), 3);
+        assert_eq!(reg.record_unread("profile-b", 2), 5);
+        assert_eq!(reg.unread_sum(), 5);
+    }
+}
