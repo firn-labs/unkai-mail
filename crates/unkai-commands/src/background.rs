@@ -568,14 +568,11 @@ pub async fn drain_outbox_sweep(ctx: &AppContext) {
 /// an error from our perspective.
 pub async fn push_settings_to_nc(
     cache: &Cache,
+    app_settings_file: &std::path::Path,
     local_storage: std::collections::HashMap<String, String>,
     nc_id: &str,
 ) -> Result<(), UnkaiError> {
-    let bundle = settings_bundle::build_bundle(
-        cache,
-        &crate::state::active_profile()?.app_settings_file(),
-        local_storage,
-    )?;
+    let bundle = settings_bundle::build_bundle(cache, app_settings_file, local_storage)?;
     let json = settings_bundle::serialise(&bundle)?;
 
     let account = nextcloud_store::load_accounts(cache)?
@@ -628,23 +625,17 @@ pub async fn push_settings_to_nc(
 /// account if one is set.  Failures keep `pending=true` so the
 /// next opportunity tries again.
 pub async fn settings_sync_worker(
-    cache: Cache,
+    ctx: AppContext,
     local_storage: SharedLocalStorage,
     notify: Arc<tokio::sync::Notify>,
 ) {
     use tokio::time::{Duration, MissedTickBehavior, interval, sleep};
 
-    // The worker reads/writes this profile's settings_sync.json
-    // for its whole lifetime (#531).  The bridge is set in main()
-    // before any worker spawns, so a miss here is a programming
-    // error — bail rather than sync the wrong state.
-    let sync_file = match crate::state::active_profile() {
-        Ok(profile) => profile.settings_sync_file(),
-        Err(e) => {
-            tracing::error!("settings sync worker cannot resolve the active profile: {e}");
-            return;
-        }
-    };
+    // The worker reads/writes its profile's settings_sync.json for
+    // its whole lifetime (#531/#533) — the profile rides in on the
+    // context, like every other loop.
+    let cache = ctx.cache.clone();
+    let sync_file = ctx.profile.settings_sync_file();
 
     let mut retry_tick = interval(Duration::from_secs(300));
     retry_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -696,7 +687,8 @@ pub async fn settings_sync_worker(
         };
 
         let snapshot = local_storage.read().await.clone();
-        match push_settings_to_nc(&cache, snapshot, &target).await {
+        match push_settings_to_nc(&cache, &ctx.profile.app_settings_file(), snapshot, &target).await
+        {
             Ok(()) => {
                 tracing::info!("Settings bundle synced to Nextcloud '{target}'");
                 if state.pending {
