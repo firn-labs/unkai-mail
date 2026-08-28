@@ -19,6 +19,7 @@
    */
 
   import * as api from './api'
+  import type { Account } from './api'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import RichTextEditor from './RichTextEditor.svelte'
   import {
@@ -31,18 +32,11 @@
 
   let { popoutKey }: { popoutKey: string } = $props()
 
-  // Only the fields we actually need to write through `update_account`.
-  // The popout never touches host / port / passwords; we round-trip
-  // whatever the backend hands back so the Rust side's
+  // The full account row (typed for real in `api/types.ts` since
+  // #534).  The popout never touches host / port / passwords; it
+  // round-trips whatever the backend hands back so the Rust side's
   // `Account` record stays whole.
-  type AccountRecord = Record<string, unknown> & {
-    id: string
-    display_name?: string | null
-    email?: string | null
-    signature?: string | null
-  }
-
-  let account = $state<AccountRecord | null>(null)
+  let account = $state<Account | null>(null)
   let html = $state('')
   let saveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let loadError = $state('')

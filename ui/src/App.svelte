@@ -34,6 +34,8 @@
   import ShrunkenComposesBar from './lib/ShrunkenComposesBar.svelte'
   import ContactsView from './lib/ContactsView.svelte'
   import { contactsStore } from './lib/contactsStore.svelte'
+  import { accountsStore } from './lib/accountsStore.svelte'
+  import { profileStore } from './lib/profileStore.svelte'
   import CalendarView from './lib/CalendarView.svelte'
   import { openReminderInStandaloneWindow } from './lib/reminderPopupWindow'
   import { openMailFileInStandaloneWindow } from './lib/standaloneMailFileWindow'
@@ -100,29 +102,14 @@
 
   // ── Inbox state ─────────────────────────────────────────────
   // All configured mail accounts and which one the user is currently
-  // looking at. Kept at the App level so Sidebar / MailList / MailView
-  // stay in sync when the user switches accounts. `activeAccountEmail`
-  // is derived from the list so it stays consistent if an account's
-  // email is edited in settings.
-  interface Account {
-    id: string
-    display_name: string
-    email: string
-    /** User-defined folder icon rules. The Sidebar reads this off
-        the active account to apply per-account theming. Optional
-        because older `accounts.json` files predate the field. */
-    folder_icons?: { keyword: string; icon: string }[]
-    /** Per-folder icon overrides (full path → emoji). Set via the
-        Sidebar's right-click → Change icon picker; wins over
-        special-use / keyword rules in `folderIcon`. Optional for
-        the same back-compat reason as `folder_icons`. */
-    folder_icon_overrides?: Record<string, string>
-    /** Display order in the IconRail; lower = top.  Lets us pick
-     *  the visually-first account on launch instead of the one
-     *  that happens to be first in the DB's insertion order. */
-    sort_order?: number
-  }
-  let accounts = $state<Account[]>([])
+  // looking at. The list itself lives in the shared `accountsStore`
+  // (#534) so Settings and this shell stop keeping duplicate copies;
+  // the derived alias keeps every existing read site untouched.
+  // Which account is *active* stays App-level state — that's
+  // selection, not data. `activeAccountEmail` is derived from the
+  // list so it stays consistent if an account's email is edited in
+  // settings.
+  const accounts = $derived(accountsStore.list)
   let activeAccountId = $state<string | null>(null)
 
   // ── Nextcloud capability snapshot (#189) ────────────────────
@@ -573,6 +560,14 @@
     if (dbStatus && !dbStatus.locked) {
       void checkAccounts()
     }
+  })
+
+  // Profile registry snapshot + `profiles-changed` subscription
+  // (#534).  Machine-global state read straight off `profiles.json`
+  // — no cache involved — so unlike `checkAccounts` this doesn't
+  // wait for the FIDO unlock.  `init` self-guards against re-runs.
+  $effect(() => {
+    void profileStore.init()
   })
 
   // ── Issue #16: background-sync events + desktop notifications ──
@@ -1373,9 +1368,9 @@
     }
   })
 
-  /** Re-read the account list from Rust and reconcile the shell
-   *  state that hangs off it (`accounts`, `activeAccountId`,
-   *  message selection).
+  /** Re-read the account list (through the shared `accountsStore`,
+   *  #534) and reconcile the shell state that hangs off it
+   *  (`activeAccountId`, message selection).
    *
    *  `keepView` (#421): the Settings panel calls this the moment an
    *  account is deleted so the always-mounted IconRail drops the
@@ -1386,8 +1381,7 @@
    *  there is nothing left for Settings to manage. */
   async function checkAccounts(opts: { keepView?: boolean } = {}) {
     try {
-      const list = await api.accounts.getAccounts()
-      accounts = list
+      const list = await accountsStore.load()
       if (list.length > 0) {
         // Warm the shared contact cache (#305) so MailList rows
         // can render sender avatars on first paint instead of
@@ -1431,7 +1425,7 @@
     } catch {
       // If we can't load accounts (e.g. first launch, file doesn't exist),
       // show the setup wizard
-      accounts = []
+      accountsStore.list = []
       activeAccountId = null
       currentView = 'setup'
     }
