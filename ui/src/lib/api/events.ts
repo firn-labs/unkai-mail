@@ -31,6 +31,11 @@ export interface AppEventPayloads {
   'message-reminder': any
   'calendars-updated': any
   'custom-themes-changed': any
+  /* #534 — the machine-global profile registry changed (create /
+   * rename / re-icon / delete / startup-mode). Broadcast to every
+   * window, not just the emitting profile's; payload is empty —
+   * listeners re-read via api.profiles. */
+  'profiles-changed': null
   'notification-clicked': any
   'open-compose': any
   /* ── popout window → main window handoffs ───────────────────── */

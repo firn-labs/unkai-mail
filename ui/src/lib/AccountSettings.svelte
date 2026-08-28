@@ -8,8 +8,11 @@
    */
 
   import * as api from './api'
+  import type { Account, FolderIconRule, TrustedCert } from './api'
+  import { accountsStore } from './accountsStore.svelte'
   import { isNextcloudSource } from './ncSources'
   import NextcloudSettings from './NextcloudSettings.svelte'
+  import ProfilesSettings from './ProfilesSettings.svelte'
   import SecuritySettings from './SecuritySettings.svelte'
   import AiSettings from './AiSettings.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
@@ -81,54 +84,9 @@
   const initialLocale = getLocale()
 
   // ── Types ───────────────────────────────────────────────────
-  // Mirrors the Rust `Account` struct from unkai-core
-  interface FolderIconRule {
-    keyword: string
-    icon: string
-  }
-  interface Account {
-    id: string
-    display_name: string
-    email: string
-    imap_host: string
-    imap_port: number
-    smtp_host: string
-    smtp_port: number
-    use_jmap: boolean
-    jmap_url?: string | null
-    signature?: string | null
-    folder_icons?: FolderIconRule[]
-    /** Per-account TLS trust list. Each entry is a leaf cert the
-     *  user has explicitly trusted via the AccountSetup wizard or
-     *  the Re-trust button below. Round-tripped through
-     *  `update_account` whenever the trust list changes (e.g.
-     *  after a server cert renewal). */
-    trusted_certs?: TrustedCert[]
-    folder_icon_overrides?: Record<string, string>
-    /** Optional emoji avatar for the IconRail (#115). */
-    emoji?: string | null
-    /** Display order in the IconRail; lower = top. */
-    sort_order?: number
-    /** Human's full name for outbound From: header (#115). */
-    person_name?: string | null
-    /** Uppercase hex fingerprint of the account's imported OpenPGP
-     *  private key (#57).  Display-only — the armored key itself
-     *  lives in the OS keychain.  `null` / undefined means no key
-     *  imported; the AccountSettings encryption section then
-     *  surfaces the "Import private key" affordance. */
-    pgp_key_fingerprint?: string | null
-  }
-
-  interface TrustedCert {
-    /** DER bytes as a JSON byte-array — matches the Rust
-     *  `Vec<u8>` serialisation. */
-    der: number[]
-    /** SHA-256 fingerprint, lowercase hex with `:` separators. */
-    sha256: string
-    host: string
-    /** Unix epoch seconds when the cert was trusted. */
-    added_at: number
-  }
+  // The `Account` / `TrustedCert` / `FolderIconRule` mirrors of the
+  // Rust structs moved to `api/types.ts` (#534) — the shared
+  // accountsStore means every consumer needs the same shape.
 
   // ── Category navigation (#131) ──────────────────────────────
   // Settings used to be one long scroll; #131 split it into the
@@ -141,6 +99,7 @@
     | 'mail'
     | 'calendar'
     | 'nextcloud'
+    | 'profiles'
     | 'security'
     | 'ai'
     | 'backup'
@@ -200,6 +159,10 @@
     { id: 'mail', label: 'E-Mail', icon: 'email-envelope' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'nextcloud', label: 'Nextcloud', icon: 'cloud' },
+    // #534 — browser-style profiles: separate storage universes in
+    // one install.  `group` reads as "several people / identities"
+    // without adding a new SVG to the icon family.
+    { id: 'profiles', label: m.settings_profiles_category(), icon: 'group' },
     { id: 'security', label: 'Security', icon: 'lock' },
     // #439 — the local MCP interface for the user's own AI
     // agents (BYO model).  Localized from day one per the lazy
@@ -214,9 +177,16 @@
   ]
 
   // ── State ───────────────────────────────────────────────────
-  let accounts = $state<Account[]>([])
-  let loading = $state(true)
-  let error = $state('')
+  // The account list lives in the shared `accountsStore` (#534) —
+  // this panel and App.svelte read the same reactive array, so an
+  // in-place edit here (signature, emoji, sort order) reaches the
+  // IconRail without a callback round-trip.  `error` folds the
+  // store's load failure together with this panel's own mutation
+  // failures so the template's single error slot shows both.
+  const accounts = $derived(accountsStore.list)
+  const loading = $derived(accountsStore.loading)
+  let mutationError = $state('')
+  const error = $derived(mutationError || accountsStore.error)
 
   // ── App-wide preferences (Issue #16) ────────────────────────
   // Mirrors the Rust `AppSettings` struct. A missing/failing load
@@ -807,15 +777,9 @@
   }
 
   async function loadAccounts() {
-    loading = true
-    error = ''
-    try {
-      accounts = await api.accounts.getAccounts()
-    } catch (e: any) {
-      error = typeof e === 'string' ? e : e?.message ?? 'Failed to load accounts'
-    } finally {
-      loading = false
-    }
+    mutationError = ''
+    // A load failure surfaces through `accountsStore.error`.
+    await accountsStore.load().catch(() => {})
   }
 
   async function removeAccount(id: string, email: string) {
@@ -832,7 +796,7 @@
       // user leaves Settings.
       onaccountschanged?.()
     } catch (e: any) {
-      error = typeof e === 'string' ? e : e?.message ?? 'Failed to remove account'
+      mutationError = typeof e === 'string' ? e : e?.message ?? 'Failed to remove account'
     }
   }
 
@@ -1193,7 +1157,7 @@
         }
       }
     }
-    accounts = [...sorted]
+    accountsStore.list = [...sorted]
   }
 
   async function persistIcons(account: Account, rules: FolderIconRule[]) {
@@ -2394,6 +2358,10 @@
 
     {#if activeCategory === 'nextcloud'}
     <NextcloudSettings {onnextcloudchanged} />
+    {/if}
+
+    {#if activeCategory === 'profiles'}
+    <ProfilesSettings />
     {/if}
 
     {#if activeCategory === 'security'}
