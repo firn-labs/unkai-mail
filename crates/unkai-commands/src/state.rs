@@ -1,14 +1,15 @@
-//! Process-wide application state, free of any Tauri `State<T>`
-//! wrapper (#476).
+//! Application state, free of any Tauri `State<T>` wrapper (#476).
 //!
-//! The desktop shell hands each of these to `Builder::manage` so the
-//! `#[tauri::command]` shims can extract them; nothing here knows that.
+//! Since #533 the per-profile pieces ([`AppContext`] and the types it
+//! bundles) live inside the desktop shell's `ProfileRegistry`, one
+//! set per profile, resolved per window — only genuinely
+//! machine-global state (the system-font cache) is still handed to
+//! `Builder::manage` directly.  Nothing here knows either way.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::RwLock;
-use unkai_core::UnkaiError;
 use unkai_core::models::AppSettings;
 use unkai_store::Cache;
 
@@ -41,18 +42,6 @@ pub struct AppContext {
 /// `update_app_settings` swaps in a new value under the write lock.
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
 
-/// Process-wide handle to the encrypted cache.  Populated once in
-/// `main()` after `Cache::open_for_profile`, so non-IPC helpers can
-/// reach the pool without every call site having to extract
-/// `&Cache` and thread `&Cache` through itself.
-pub static GLOBAL_CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
-
-pub fn global_cache() -> Result<&'static Cache, UnkaiError> {
-    GLOBAL_CACHE
-        .get()
-        .ok_or_else(|| UnkaiError::Storage("cache not initialised yet".into()))
-}
-
 /// A profile's identity plus its storage layout (#531/#533): the
 /// id that keys the keychain entries and the [`ProfilePaths`]
 /// resolver for its on-disk files.  Carried inside [`AppContext`]
@@ -78,19 +67,6 @@ impl ProfileInfo {
     pub fn themes_dir(&self) -> std::path::PathBuf {
         self.paths.themes_dir(&self.id)
     }
-}
-
-/// Chunk-1 bridge (#531): the whole process runs as one profile,
-/// captured here once in `main()`.  Being replaced by per-window
-/// routing over the course of #533 — call sites migrate to
-/// [`AppContext::profile`] / explicit `&ProfileInfo` parameters,
-/// and this global dies with the last one.
-pub static ACTIVE_PROFILE: std::sync::OnceLock<ProfileInfo> = std::sync::OnceLock::new();
-
-pub fn active_profile() -> Result<&'static ProfileInfo, UnkaiError> {
-    ACTIVE_PROFILE
-        .get()
-        .ok_or_else(|| UnkaiError::Storage("active profile not initialised yet".into()))
 }
 
 /// In-memory state for the event-reminder pipeline.

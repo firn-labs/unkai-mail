@@ -20,11 +20,20 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use tauri::State;
-use unkai_commands::state::{AppContext, SettingsSyncNotify, SharedLocalStorage};
+use tauri::{AppHandle, State};
+use unkai_commands::background::{
+    background_sync_loop, message_reminder_loop, prerender_inboxes_on_launch, settings_sync_worker,
+    urlhaus_refresh_worker,
+};
+use unkai_commands::state::{
+    AppContext, EventReminderState, ProfileInfo, SettingsSyncNotify, SharedLocalStorage,
+    SharedSettings,
+};
 use unkai_core::UnkaiError;
 use unkai_mcp::McpServer;
-use unkai_store::ProfilePaths;
+use unkai_store::{Cache, ProfilePaths, account_store, app_settings, credentials, settings_sync};
+
+use crate::notifier::TauriNotifier;
 
 /// Everything that exists once per hosted profile.
 ///
@@ -45,7 +54,9 @@ pub struct ProfileHandle {
     pub sync_notify: SettingsSyncNotify,
     /// Join handles for this profile's background loops.  Chunk 4
     /// aborts these when the last window of a profile closes; until
-    /// then they live as long as the process.
+    /// then they live as long as the process (hence the lint allow —
+    /// nothing reads them back yet).
+    #[allow(dead_code)]
     pub tasks: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
 }
 
@@ -138,17 +149,6 @@ impl ProfileRegistry {
             })
     }
 
-    /// Resolve a profile id directly (non-window callers: tray,
-    /// URI-scheme protocols resolving by label go through
-    /// [`Self::handle_for_label`] instead).
-    pub fn handle_for_profile(&self, profile_id: &str) -> Option<Arc<ProfileHandle>> {
-        self.contexts
-            .read()
-            .expect("profile contexts lock poisoned")
-            .get(profile_id)
-            .cloned()
-    }
-
     /// Every open profile context.  Used by whole-process fan-outs:
     /// the tray's "Check Mail Now", the aggregate unread badge.
     pub fn handles(&self) -> Vec<Arc<ProfileHandle>> {
@@ -202,4 +202,177 @@ pub fn profile_ctx(
     reg: &State<'_, ProfileRegistry>,
 ) -> Result<Arc<ProfileHandle>, UnkaiError> {
     reg.handle_for_label(window.label())
+}
+
+/// Construct one profile's complete runtime context: open its
+/// cache, run the per-profile boot repairs, load its settings and
+/// MCP token, and spawn its background loops.  Everything a
+/// profile needs to live inside the process — chunk 4 calls this
+/// again for each additional profile the user opens; today
+/// `.setup()` calls it once for the startup profile.
+///
+/// Does NOT insert into the registry or map any window — the
+/// caller decides when the handle becomes routable.
+pub fn build_profile_handle(
+    app: &AppHandle,
+    profile_id: &str,
+    paths: &ProfilePaths,
+) -> Result<Arc<ProfileHandle>, UnkaiError> {
+    // Open the profile's encrypted cache.  For the startup profile
+    // a failure here is fatal (bubbled to `.setup()`): without the
+    // cache the write-through path is broken and the user would
+    // silently lose offline capability.
+    let cache = Cache::open_for_profile(&paths.cache_db(profile_id), profile_id)?;
+
+    // Scrub orphan cache rows left behind by removed accounts.
+    // `cache.wipe_account(...)` runs on account removal, but if it
+    // ever missed (crash, disk error, older build) the unified
+    // inbox would surface envelopes whose owning account no longer
+    // exists.  Running the scrub on every profile open guarantees
+    // the shell never paints an orphan past the first frame.
+    match account_store::load_accounts(&cache) {
+        Ok(accounts) => {
+            let active_ids: Vec<String> = accounts.iter().map(|a| a.id.clone()).collect();
+            if let Err(e) = cache.prune_orphan_accounts(&active_ids) {
+                tracing::warn!("startup orphan-account prune failed: {e}");
+            }
+        }
+        Err(e) => {
+            tracing::warn!("skipping startup orphan-account prune — load_accounts failed: {e}")
+        }
+    }
+
+    // One-time backfill for `addresses_json`.  The column was
+    // added via ALTER TABLE with default `'[]'`; CardDAV's
+    // delta-sync only re-pulls contacts that have changed in NC
+    // since the last sync token, so unchanged ones kept the empty
+    // default forever.  Self-narrowing: a fixed row's SELECT
+    // condition no longer matches on subsequent opens.
+    match cache.backfill_addresses(|raw| {
+        let p = unkai_carddav::parse_vcard(raw).ok()?;
+        Some(
+            p.addresses
+                .into_iter()
+                .map(|a| unkai_core::models::ContactAddress {
+                    kind: a.kind,
+                    street: a.street,
+                    locality: a.locality,
+                    region: a.region,
+                    postal_code: a.postal_code,
+                    country: a.country,
+                })
+                .collect(),
+        )
+    }) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("contact backfill: rewrote addresses_json on {n} rows"),
+        Err(e) => tracing::warn!("contact backfill failed: {e}"),
+    }
+
+    // This profile's preferences.  A missing file is fine on first
+    // run — `load_settings` returns defaults.
+    let settings = app_settings::load_settings(&paths.app_settings(profile_id)).unwrap_or_default();
+    let shared_settings: SharedSettings = Arc::new(tokio::sync::RwLock::new(settings));
+
+    // This profile's MCP bearer token (#438/#533).  Best-effort: a
+    // broken keychain shouldn't stop the profile from opening, it
+    // just leaves the server answering 401 until the user
+    // re-generates a token.
+    let mcp_token = credentials::get_mcp_token(profile_id).unwrap_or_else(|e| {
+        tracing::warn!("could not read MCP token from keychain: {e}");
+        None
+    });
+
+    let ctx = AppContext {
+        cache: cache.clone(),
+        settings: shared_settings.clone(),
+        reminders: Arc::new(EventReminderState::default()),
+        ui: Arc::new(TauriNotifier::new(app.clone(), profile_id.to_string())),
+        profile: Arc::new(ProfileInfo {
+            id: profile_id.to_string(),
+            paths: paths.clone(),
+        }),
+    };
+
+    let mcp = McpServer::new(cache, shared_settings, mcp_token);
+    let local_storage: SharedLocalStorage =
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let sync_notify = SettingsSyncNotify(Arc::new(tokio::sync::Notify::new()));
+
+    // ── This profile's background loops ─────────────────────────
+    //
+    // One set per profile context (#533), handles kept so chunk 4
+    // can shut a profile's loops down when its last window closes.
+    // `tauri::async_runtime::spawn` uses Tauri's managed runtime,
+    // which is guaranteed to exist regardless of how the app was
+    // started.
+    let mut tasks = Vec::new();
+
+    let bg_ctx = ctx.clone();
+    tasks.push(tauri::async_runtime::spawn(async move {
+        background_sync_loop(bg_ctx).await;
+    }));
+
+    // Own fixed-cadence loop, deliberately NOT gated on the
+    // background-sync setting: a reminder the user set must fire
+    // on time even with mail polling turned off (#415).
+    let reminder_ctx = ctx.clone();
+    tasks.push(tauri::async_runtime::spawn(async move {
+        message_reminder_loop(reminder_ctx).await;
+    }));
+
+    // Launch-time prerender (#178): warm the message cache for the
+    // newest INBOX envelopes whose body we haven't fetched yet, so
+    // the first mail click paints from cache instead of waiting on
+    // an IMAP round-trip.
+    let prerender_ctx = ctx.clone();
+    tasks.push(tauri::async_runtime::spawn(async move {
+        prerender_inboxes_on_launch(&prerender_ctx).await;
+    }));
+
+    // Settings auto-sync worker (#168): wakes on notify_settings_
+    // changed pings, debounces, and pushes the bundle to the
+    // profile's chosen NC backup target.
+    let sync_ctx = ctx.clone();
+    let sync_storage = local_storage.clone();
+    let worker_notify = sync_notify.0.clone();
+    tasks.push(tauri::async_runtime::spawn(async move {
+        settings_sync_worker(sync_ctx, sync_storage, worker_notify).await;
+    }));
+    // Kick the worker once so a pending recovery push from a
+    // previous session (quit-while-offline) retries as soon as the
+    // profile is up.  The worker no-ops cleanly if there's nothing
+    // to do.
+    if settings_sync::load_state(&ctx.profile.settings_sync_file())
+        .map(|s| s.pending && s.target_nc_id.is_some())
+        .unwrap_or(false)
+    {
+        sync_notify.0.notify_one();
+    }
+
+    // URLhaus link-safety refresh worker (#165).  One per profile
+    // means N profiles download the hourly abuse.ch snapshot N
+    // times — accepted for now; the optional shared-cache chunk
+    // (#532) is where that dedupes into one machine-level worker.
+    let urlhaus_cache = ctx.cache.clone();
+    let urlhaus_settings = ctx.settings.clone();
+    tasks.push(tauri::async_runtime::spawn(async move {
+        urlhaus_refresh_worker(urlhaus_cache, urlhaus_settings).await;
+    }));
+
+    // MCP server (#438): one reconcile at boot brings the listener
+    // up if `mcp_enabled` was saved on; afterwards the settings
+    // commands re-reconcile on every change, so no polling loop.
+    let mcp_boot = mcp.clone();
+    tauri::async_runtime::spawn(async move {
+        mcp_boot.reconcile().await;
+    });
+
+    Ok(Arc::new(ProfileHandle {
+        ctx,
+        mcp,
+        local_storage,
+        sync_notify,
+        tasks: Mutex::new(tasks),
+    }))
 }
