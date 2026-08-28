@@ -74,6 +74,14 @@ pub trait UiNotifier: Send + Sync + 'static {
     /// The custom-theme catalogue on disk changed.
     fn custom_themes_changed(&self);
 
+    /// The profile registry changed (#534): a profile was created,
+    /// renamed, re-iconed, or deleted, or the startup mode moved.
+    /// The registry is machine-global, so unlike the other push
+    /// channels this one is expected to reach EVERY window, not
+    /// just the emitting profile's — a second profile's settings
+    /// panel must repaint its profile list too (chunk 4, #535).
+    fn profiles_changed(&self);
+
     /// Swap the running app's icon set (tray base bitmap, window /
     /// taskbar icon) to `style`.
     ///

@@ -171,6 +171,15 @@ impl UiNotifier for TauriNotifier {
         self.push("custom-themes-changed", ());
     }
 
+    /// Deliberately a broadcast (`emit`, not `emit_to`): the
+    /// profile registry is machine-global state, so every window of
+    /// every profile repaints its profile list — see the trait doc.
+    fn profiles_changed(&self) {
+        if let Err(e) = self.app.emit("profiles-changed", ()) {
+            tracing::warn!("failed to emit profiles-changed event: {e}");
+        }
+    }
+
     /// Swap the running app's icon (tray base bitmap + this
     /// profile's window / taskbar icons) to `style`.
     ///
