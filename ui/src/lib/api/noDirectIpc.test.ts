@@ -60,4 +60,28 @@ describe('api-layer boundary', () => {
       'direct @tauri-apps usage found — route it through ui/src/lib/api/ instead (see #473)',
     ).toEqual([])
   })
+
+  /* The window-module import allowance above is line-level, so it
+   * alone can't stop a component from constructing a popout by
+   * hand.  Post-#535 that matters: a hand-rolled `new
+   * WebviewWindow(...)` skips the `register_popout_window`
+   * handshake and the `parent=` threading, silently binding the
+   * popout to the STARTUP profile — a cross-profile data hazard.
+   * All popout creation goes through `openPopout()` /
+   * `openExternalPopout()` in standalonePopoutWindow.ts. */
+  test('no hand-rolled WebviewWindow construction outside the popout helper', () => {
+    const offenders: string[] = []
+    for (const [file, src] of Object.entries(sources)) {
+      if (/\/standalonePopoutWindow\.ts$/.test(file)) continue
+      for (const line of src.split('\n')) {
+        if (line.includes('new WebviewWindow(')) {
+          offenders.push(`${file.replace('../../', 'src/')}: ${line.trim()}`)
+        }
+      }
+    }
+    expect(
+      offenders,
+      'popout windows must be created via openPopout() in standalonePopoutWindow.ts (see #535)',
+    ).toEqual([])
+  })
 })

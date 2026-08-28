@@ -180,6 +180,34 @@ pub fn load_profiles(path: &Path) -> Result<ProfilesFile, UnkaiError> {
         .map_err(|e| UnkaiError::Storage(format!("parse profiles.json: {e}")))
 }
 
+/// Serialises every read-modify-write of `profiles.json` (#535).
+///
+/// The registry is machine-global and now has concurrent writers:
+/// the profile CRUD commands, and the window-focus handler's
+/// `last_used` bookkeeping.  Two overlapping load→mutate→save
+/// cycles would silently lose whichever wrote first — e.g. an
+/// alt-tab-driven focus write clobbering a profile the user just
+/// created.  Process-wide lock, because there is exactly one
+/// process (single-instance plugin).
+static REGISTRY_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run one atomic load→mutate→save cycle against the registry.
+/// All writers that first read the current file MUST go through
+/// this (a blind `save_profiles` of independently-held state is
+/// exactly the lost-update hazard the lock exists for).
+pub fn update_registry<R>(
+    paths: &ProfilePaths,
+    f: impl FnOnce(&mut ProfilesFile) -> Result<R, UnkaiError>,
+) -> Result<R, UnkaiError> {
+    let _guard = REGISTRY_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_profiles(&paths.profiles_json())?;
+    let result = f(&mut file)?;
+    save_profiles(&paths.profiles_json(), &file)?;
+    Ok(result)
+}
+
 /// Persist the registry to `path`, creating the parent dir if
 /// needed.
 pub fn save_profiles(path: &Path, file: &ProfilesFile) -> Result<(), UnkaiError> {
@@ -254,15 +282,11 @@ fn ensure_registry_files(paths: &ProfilePaths) -> Result<ProfilesFile, UnkaiErro
     Ok(registry)
 }
 
-/// Record that `profile_id` is being used right now: bumps its
-/// `last_used_at` and moves it to the front of the `last_used`
-/// order, then persists.  Ids of since-deleted profiles are pruned
-/// from the order while we're here.
-pub fn touch_last_used(
-    paths: &ProfilePaths,
-    registry: &mut ProfilesFile,
-    profile_id: &str,
-) -> Result<(), UnkaiError> {
+/// The in-memory half of [`touch_last_used`]: bump `last_used_at`
+/// and move the id to the front of the order, pruning ids of
+/// since-deleted profiles.  Callers running against the live file
+/// use this inside [`update_registry`].
+pub fn touch_last_used_entry(registry: &mut ProfilesFile, profile_id: &str) {
     if let Some(p) = registry.profiles.iter_mut().find(|p| p.id == profile_id) {
         p.last_used_at = Utc::now();
     }
@@ -271,6 +295,18 @@ pub fn touch_last_used(
         .last_used
         .retain(|id| id != profile_id && known.contains(id));
     registry.last_used.insert(0, profile_id.to_string());
+}
+
+/// Record that `profile_id` is being used right now, persisting
+/// the caller's already-loaded registry.  Only for boot, where the
+/// registry was just loaded single-threadedly; runtime callers go
+/// through [`update_registry`] + [`touch_last_used_entry`].
+pub fn touch_last_used(
+    paths: &ProfilePaths,
+    registry: &mut ProfilesFile,
+    profile_id: &str,
+) -> Result<(), UnkaiError> {
+    touch_last_used_entry(registry, profile_id);
     save_profiles(&paths.profiles_json(), registry)
 }
 

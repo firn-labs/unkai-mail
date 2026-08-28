@@ -13,7 +13,7 @@
  */
 
 import { emit, emitTo, type Event, type UnlistenFn } from '@tauri-apps/api/event'
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { parentWindowLabel } from '../windowContext'
 
 /* Popout event names that predate this module keep their historical
@@ -84,25 +84,22 @@ export function emitAppEvent<K extends AppEventName>(
   return emit(name, payload)
 }
 
-/** Emit to one window by label. */
-export function emitAppEventTo<K extends AppEventName>(
-  label: string,
-  name: K,
-  payload: AppEventPayloads[K],
-): Promise<void> {
-  return emitTo(label, name, payload)
-}
-
 /**
  * Emit a popout→main handoff to the window that spawned this
  * popout (#535) — the `parent` URL param the shared popout helper
- * stamps.  Falls back to a broadcast when the param is missing
- * (a window spawned by an older code path), which is exactly the
- * pre-#535 behaviour.
+ * stamps.  Falls back to a broadcast when the param is missing OR
+ * the parent window has since been destroyed: an `emitTo` against
+ * a dead label resolves successfully and the handoff would be
+ * silently lost (a Reply click doing nothing), while the
+ * broadcast reaches whichever shells are alive — the pre-#535
+ * behaviour, cross-profile-noisy but never silent.
  */
-export function emitAppEventToParent<K extends AppEventName>(
+export async function emitAppEventToParent<K extends AppEventName>(
   name: K,
   payload: AppEventPayloads[K],
 ): Promise<void> {
-  return parentWindowLabel ? emitTo(parentWindowLabel, name, payload) : emit(name, payload)
+  if (parentWindowLabel && (await WebviewWindow.getByLabel(parentWindowLabel))) {
+    return emitTo(parentWindowLabel, name, payload)
+  }
+  return emit(name, payload)
 }

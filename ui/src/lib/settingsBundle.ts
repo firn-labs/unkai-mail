@@ -22,6 +22,7 @@
 // each account.
 
 import * as api from './api'
+import { windowProfileReady } from './profileLocalStorage'
 import { TRUSTED_SENDERS_BUNDLE_KEY, trustedSendersLocalKey } from './trustedSenders'
 
 /**
@@ -96,14 +97,17 @@ export function applyLocalStorage(map: Record<string, string>) {
       }
     }
     // Trusted senders: stable wire name → this profile's scoped
-    // key.  Skipped while the window's profile id is still
-    // resolving — the next bundle write re-syncs.
+    // key.  Deliberately asymmetric with the plain keys above: a
+    // bundle MISSING this entry is far more likely to have been
+    // collected while some window's profile id hadn't resolved
+    // than to mean "the user cleared their whole allow-list", and
+    // deleting on restore is unrecoverable while keeping a stale
+    // local list is a visible, user-fixable state.  So absent ⇒
+    // leave the local value alone.
     const tsKey = trustedSendersLocalKey()
     if (tsKey) {
       const v = map[TRUSTED_SENDERS_BUNDLE_KEY]
-      if (v === undefined) {
-        localStorage.removeItem(tsKey)
-      } else {
+      if (v !== undefined) {
         localStorage.setItem(tsKey, v)
       }
     }
@@ -122,6 +126,10 @@ export function applyLocalStorage(map: Record<string, string>) {
  */
 export async function notifySettingsChanged(): Promise<void> {
   try {
+    // Wait for the window's profile id so the snapshot includes
+    // the profile-scoped keys — a snapshot missing them would
+    // push a bundle without the trusted-senders list (#535).
+    await windowProfileReady
     await api.settings.notifySettingsChanged({ localStorage: collectLocalStorage() })
   } catch (e) {
     // Failing to update the worker's snapshot is not user-
@@ -138,6 +146,7 @@ export async function notifySettingsChanged(): Promise<void> {
  * cancelled the save dialog.
  */
 export async function downloadBundle(): Promise<string | null> {
+  await windowProfileReady
   return api.settings.exportSettingsBundle({ localStorage: collectLocalStorage() })
 }
 
@@ -151,6 +160,7 @@ export async function downloadBundle(): Promise<string | null> {
 export async function uploadBundle(): Promise<string | null> {
   const imported = await api.settings.importSettingsBundle()
   if (!imported) return null
+  await windowProfileReady
   applyLocalStorage(imported.localStorage)
   return imported.path
 }
@@ -196,6 +206,7 @@ export async function ncProbeBundle(ncId: string): Promise<string | null> {
  */
 export async function ncRestoreBundle(ncId: string): Promise<Record<string, string>> {
   const localStorageMap = await api.settings.ncRestoreSettingsBundle({ ncId })
+  await windowProfileReady
   applyLocalStorage(localStorageMap)
   return localStorageMap
 }

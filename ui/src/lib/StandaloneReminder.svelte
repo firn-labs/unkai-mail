@@ -130,22 +130,16 @@
   async function showEvent() {
     if (!reminder) return await closeSelf()
     // Two steps:
-    //   1. Bring the main window forward via the existing
-    //      `show_main_window_cmd` Rust IPC.  Calling from
-    //      Rust avoids the Win32 SetForegroundWindow lock
-    //      that bites JS-side `setFocus()` from a non-
-    //      foreground window — important for the "main
-    //      window is hidden in the system tray" case where
-    //      a JS focus call from the popup would silently
-    //      no-op.
-    //   2. Emit the cross-window `reminder-show-event`
-    //      event so App.svelte's listener flips the view to
-    //      calendar and threads the event id through to
-    //      CalendarView.
-    // Raise the OWNING profile's window (#535) — the reminder
-    // popup resolves to its parent's profile via the registry, so
-    // this focuses (or re-creates) the right shell even when
-    // another profile's window was used more recently.
+    //   1. Raise the OWNING profile's window (#535) — the popup
+    //      resolves to its parent's profile via the registry, so
+    //      `open_profile_window` focuses (or re-creates) the right
+    //      shell even when another profile's window was used more
+    //      recently.  Raising happens on the Rust side because
+    //      JS-side `setFocus()` from a non-foreground window is
+    //      unreliable on Windows (`SetForegroundWindow` lock).
+    //   2. Emit the cross-window `reminder-show-event` so the
+    //      shell's listener flips to the calendar view and threads
+    //      the event id through to CalendarView.
     try {
       const profileId = await api.profiles.getCurrentProfile()
       await api.profiles.openProfileWindow({ id: profileId })

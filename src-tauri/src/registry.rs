@@ -54,8 +54,9 @@ pub struct ProfileHandle {
     pub sync_notify: SettingsSyncNotify,
     /// Join handles for this profile's background loops.  Closing
     /// a profile's last window deliberately does NOT abort these —
-    /// background sync and notifications keep running so the tray
-    /// badge stays truthful (#535).  They are aborted only by
+    /// background sync keeps running so the aggregate tray badge
+    /// stays truthful (#535; native toasts are frontend-raised and
+    /// pause until a window reopens).  They are aborted only by
     /// [`shutdown_profile_context`] (ahead of a `delete_profile`)
     /// or implicitly at app exit.
     pub tasks: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,

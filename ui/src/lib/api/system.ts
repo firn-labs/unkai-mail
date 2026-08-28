@@ -28,10 +28,6 @@ export function getNotificationIconPath(): Promise<string> {
   return call('get_notification_icon_path')
 }
 
-export function showMainWindowCmd(): Promise<void> {
-  return call('show_main_window_cmd')
-}
-
 /**
  * Map a soon-to-be-created popout window's label to the calling
  * window's profile (#535).  The shared popout helper awaits this

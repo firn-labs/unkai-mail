@@ -82,7 +82,7 @@
   import { locales } from './paraglide/runtime'
   import { m } from './paraglide/messages'
   import { formatError } from './lib/errors'
-  import { refreshWindowProfile } from './lib/profileLocalStorage'
+  import { setWindowProfile } from './lib/profileLocalStorage'
 
   // ── Window profile (#535) ───────────────────────────────────
   // `profile-*` windows carry their profile id in the URL; the
@@ -1147,13 +1147,13 @@
       // The reminder popup window emits this when the user
       // clicks "Show event".  We flip to the calendar view and
       // thread the event id into CalendarView so it opens the
-      // editor.  The popup also calls `show_main_window_cmd`
-      // (Rust IPC) to actually bring this window to the
+      // editor.  The popup also calls `open_profile_window`
+      // (Rust IPC) to actually bring its profile's window to the
       // foreground — JS-side `setFocus()` from a non-foreground
       // window is unreliable on Windows because of the
-      // `SetForegroundWindow` lock, especially when the main
-      // window is hidden in the system tray.  Doing it from
-      // Rust avoids that.
+      // `SetForegroundWindow` lock, especially when the window
+      // is hidden in the system tray.  Doing it from Rust avoids
+      // that.
       unlistenReminderShowEvent = await api.onAppEvent(
         'reminder-show-event',
         (e) => {
@@ -1353,17 +1353,13 @@
         'unkai://mailto',
         (e) => {
           // The Rust side buffers every URL AND emits it to the
-          // focused window (#535) — drain the buffer alongside
-          // the event, deduped, so the buffered copy can't be
-          // replayed as a spurious compose by the next profile
-          // window's mount.
-          void (async () => {
-            const urls = new Set<string>(
-              await api.system.takePendingMailtoUrls().catch(() => [] as string[]),
-            )
-            if (typeof e.payload === 'string') urls.add(e.payload)
-            for (const url of urls) void openComposeFromMailtoUrl(url)
-          })()
+          // focused window (#535) — the shared drain consumes the
+          // buffer alongside the event payload, deduped, so the
+          // buffered copy can't be replayed as a spurious compose
+          // by the next profile window's mount.
+          void processPendingMailtoUrls(
+            typeof e.payload === 'string' ? e.payload : undefined,
+          )
         },
       )
 
@@ -1561,6 +1557,12 @@
   // out first to keep it).  The plain loading state is deliberate
   // for now; the polished transition screen is chunk 5 (#536).
   let profileSwitching = $state(false)
+  /** Bumped on every completed remap — keys the IconRail remount
+   *  so its per-profile subscriptions re-seed.  A counter instead
+   *  of `profileStore.currentId` so the boot-time null→id
+   *  resolution doesn't remount the rail (double unread IPC +
+   *  Talk polls) when no switch happened. */
+  let profileSwitchEpoch = $state(0)
   async function switchProfile(id: string) {
     if (profileSwitching || id === profileStore.currentId) return
     profileSwitching = true
@@ -1590,13 +1592,21 @@
       calendarFocusEventId = null
       selectedOutboxRow = null
       outboxCountByAccount = {}
+      mailListEnvelopes = []
+      mailListThreadMembers = new Map()
+      appContextMenu = null
+      pendingDecryptPrompt = null
+      pendingForwardPrompt = null
+      meetingDraft = null
       settingsCategory = 'general'
       mailListResetToken++
       refreshToken++
       outboxRefreshToken++
+      profileSwitchEpoch++
       // Profile-scoped localStorage keys re-key to the new
-      // profile; the stores re-read through the new mapping.
-      await refreshWindowProfile()
+      // profile synchronously (the id is already in hand); the
+      // stores re-read through the new registry mapping.
+      setWindowProfile(id)
       await profileStore.load()
       void loadAppPrefs()
       // Re-run the boot gate: `dbStatus` goes back to null (the
@@ -3354,23 +3364,43 @@
     console.warn('pending file has unsupported extension:', path)
   }
 
+  /** URLs a drain already opened a compose for, with their open
+   *  time.  The backend both buffers a mailto AND emits it to the
+   *  focused window (#535), and the buffer is drained from two
+   *  places (the live listener and the mount-time call below) —
+   *  when those overlap, the same URL can surface once from each
+   *  path.  A short TTL collapses those double-deliveries while
+   *  still allowing the user to genuinely trigger the same mailto
+   *  again a moment later. */
+  const recentMailtoUrls = new Map<string, number>()
+  const MAILTO_DEDUPE_MS = 3000
+
   /** Drain the backend's cold-start `mailto:` buffer and hand
-   *  each URL to the same Compose entry point a live event would
-   *  hit.  Called once after the deep-link event listener is
-   *  wired — anything that landed before the listener attached
-   *  is in the buffer, anything after goes through the event.
-   *  Best-effort: a malformed URL or a missing account just logs
-   *  a warning so the user isn't held hostage by a half-broken
-   *  handoff. */
-  async function processPendingMailtoUrls() {
-    let urls: string[] = []
+   *  each URL — plus the optional live-event payload — to the
+   *  same Compose entry point, deduped across concurrent drains.
+   *  Called at mount (after the deep-link listener is wired) and
+   *  from the `unkai://mailto` listener; draining in BOTH places
+   *  is what stops a buffered copy from being replayed by a later
+   *  profile window's mount (#535).  Best-effort: a malformed URL
+   *  or a missing account just logs a warning so the user isn't
+   *  held hostage by a half-broken handoff. */
+  async function processPendingMailtoUrls(extraUrl?: string) {
+    const urls = new Set<string>()
     try {
-      urls = await api.system.takePendingMailtoUrls()
+      for (const url of await api.system.takePendingMailtoUrls()) {
+        urls.add(url)
+      }
     } catch (e) {
       console.warn('take_pending_mailto_urls failed', e)
-      return
+    }
+    if (extraUrl) urls.add(extraUrl)
+    const now = Date.now()
+    for (const [url, at] of recentMailtoUrls) {
+      if (now - at > MAILTO_DEDUPE_MS) recentMailtoUrls.delete(url)
     }
     for (const url of urls) {
+      if (recentMailtoUrls.has(url)) continue
+      recentMailtoUrls.set(url, now)
       await openComposeFromMailtoUrl(url)
     }
   }
@@ -3713,11 +3743,12 @@
        stacks on top of whichever view the user came from without
        the view needing to know about it. -->
   <div class="h-full flex">
-    <!-- Keyed on the window's profile (#535): a switch-in-place
+    <!-- Keyed on the switch epoch (#535): a switch-in-place
          remounts the rail so its per-profile subscriptions
          (unread-by-account, Talk poll) re-seed against the new
-         profile instead of painting stale counts. -->
-    {#key profileStore.currentId}
+         profile instead of painting stale counts — while the
+         boot-time profile-id resolution doesn't remount it. -->
+    {#key profileSwitchEpoch}
       <IconRail
         accounts={accounts}
         accountId={activeAccountId}
