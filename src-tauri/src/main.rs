@@ -20,11 +20,13 @@
 
 mod badge;
 mod notifier;
+mod registry;
 mod tray;
 
 use std::sync::{Arc, Mutex};
 
 use notifier::TauriNotifier;
+use registry::{ProfileHandle, ProfileRegistry, profile_ctx};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -38,7 +40,7 @@ use unkai_commands::background::{
     urlhaus_refresh_worker,
 };
 use unkai_commands::mail::refresh_unread_badge;
-use unkai_commands::state::{ACTIVE_PROFILE, ActiveProfile, AppContext, GLOBAL_CACHE};
+use unkai_commands::state::{ACTIVE_PROFILE, AppContext, GLOBAL_CACHE, ProfileInfo};
 use unkai_commands::system::{
     FontCacheFile, compute_font_fingerprint, enumerate_system_fonts, load_font_cache_file,
     save_font_cache_file,
@@ -1192,9 +1194,11 @@ async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result
 #[tauri::command]
 fn dismiss_event_reminder(
     uid: String,
-    state: State<'_, EventReminderState>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::dismiss_event_reminder(uid, &state)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::dismiss_event_reminder(uid, &h.ctx.reminders)
 }
 
 #[tauri::command]
@@ -2593,9 +2597,11 @@ fn smime_remove_public_cert(
 fn snooze_event_reminder(
     uid: String,
     snooze_until_iso: String,
-    state: State<'_, EventReminderState>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
 ) -> Result<(), UnkaiError> {
-    cmds::calendar::snooze_event_reminder(uid, snooze_until_iso, &state)
+    let h = profile_ctx(&window, &reg)?;
+    cmds::calendar::snooze_event_reminder(uid, snooze_until_iso, &h.ctx.reminders)
 }
 
 #[tauri::command]
@@ -2908,9 +2914,10 @@ fn main() {
         tracing::warn!("could not update profile last-used bookkeeping: {e}");
     }
     // Chunk-1 bridge: the whole process runs as this one profile.
-    // Chunk 2 (#533) replaces this global (together with
-    // GLOBAL_CACHE) with per-window profile routing.
-    let _ = ACTIVE_PROFILE.set(ActiveProfile {
+    // Being dismantled over #533 — call sites migrate to the
+    // registry's per-window routing, and the global dies with the
+    // last one (together with GLOBAL_CACHE).
+    let _ = ACTIVE_PROFILE.set(ProfileInfo {
         id: profile.id.clone(),
         paths: profile_paths.clone(),
     });
@@ -3039,6 +3046,13 @@ fn main() {
         .manage(cache)
         .manage(shared_settings)
         .manage(mcp_server)
+        // The multi-profile runtime (#533).  Starts empty; the
+        // startup profile's context is built and inserted in
+        // `.setup()` once the notifier's `AppHandle` exists.
+        .manage(ProfileRegistry::new(
+            profile_paths.clone(),
+            profile.id.clone(),
+        ))
         .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
         // Settings backup & sync (#168).  Frontend pushes its
         // localStorage snapshot on every settings change; the
@@ -3161,13 +3175,39 @@ fn main() {
             // discovers upcoming events with VALARM triggers) lives
             // in the context too, so the dismiss/snooze commands and
             // the scan loop share one instance.
-            let ctx = AppContext {
-                cache: app.state::<Cache>().inner().clone(),
-                settings: app.state::<SharedSettings>().inner().clone(),
-                reminders: Arc::new(EventReminderState::default()),
-                ui: Arc::new(TauriNotifier::new(app.handle().clone())),
+            let ctx = {
+                let reg = app.state::<ProfileRegistry>();
+                AppContext {
+                    cache: app.state::<Cache>().inner().clone(),
+                    settings: app.state::<SharedSettings>().inner().clone(),
+                    reminders: Arc::new(EventReminderState::default()),
+                    ui: Arc::new(TauriNotifier::new(app.handle().clone())),
+                    profile: Arc::new(ProfileInfo {
+                        id: reg.startup_profile_id().to_string(),
+                        paths: reg.paths().clone(),
+                    }),
+                }
             };
             app.manage(ctx.clone());
+
+            // Register the startup profile's runtime context (#533).
+            // The single "main" window maps to the startup profile;
+            // chunk 4 generalises window creation to `profile-<id>`
+            // labels registered the same way.
+            {
+                let reg = app.state::<ProfileRegistry>();
+                reg.map_window("main", &ctx.profile.id);
+                reg.insert_profile(
+                    &ctx.profile.id,
+                    Arc::new(ProfileHandle {
+                        ctx: ctx.clone(),
+                        mcp: app.state::<McpServer>().inner().clone(),
+                        local_storage: app.state::<SharedLocalStorage>().inner().clone(),
+                        sync_notify: app.state::<SettingsSyncNotify>().inner().clone(),
+                        tasks: Mutex::new(Vec::new()),
+                    }),
+                );
+            }
 
             // Warm the system-fonts cache off the main thread so
             // the first compose-toolbar font-dropdown open is
