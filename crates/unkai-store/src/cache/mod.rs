@@ -2789,7 +2789,10 @@ fn is_wrong_key_error(err: &CacheError) -> bool {
 /// leaving the old ciphertext recoverable until the controller
 /// reclaims that block — there's no way to force a true secure
 /// erase from userspace, so this is best-effort.
-fn wipe_cache_files(path: &Path) -> Result<(), CacheError> {
+/// Public since #534: profile deletion wipes a *closed* profile's
+/// database by path.  Callers must guarantee no pool holds the
+/// files open — on Windows the unlink fails outright otherwise.
+pub fn wipe_cache_files(path: &Path) -> Result<(), CacheError> {
     for suffix in ["", "-wal", "-shm"] {
         let p = if suffix.is_empty() {
             path.to_path_buf()

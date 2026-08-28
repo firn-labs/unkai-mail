@@ -160,6 +160,21 @@ impl ProfileRegistry {
             .collect()
     }
 
+    /// The ids of every profile with an open runtime context.
+    /// `delete_profile` (#534) refuses these: an open context means
+    /// live pool handles on the profile's `cache.db`, and wiping a
+    /// database out from under an open pool fails on Windows and
+    /// corrupts silently elsewhere.  (Chunk 4, #535, adds real
+    /// context shutdown so a closed profile becomes deletable.)
+    pub fn open_profile_ids(&self) -> Vec<String> {
+        self.contexts
+            .read()
+            .expect("profile contexts lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// All window labels currently mapped to `profile_id`.
     pub fn labels_for_profile(&self, profile_id: &str) -> Vec<String> {
         self.windows
@@ -402,6 +417,7 @@ mod tests {
         fn unread_total_changed(&self, _: u32) {}
         fn unread_by_account_changed(&self, _: &HashMap<String, u32>) {}
         fn custom_themes_changed(&self) {}
+        fn profiles_changed(&self) {}
         fn apply_logo_style(&self, _: &str) -> Result<(), unkai_core::UnkaiError> {
             Ok(())
         }

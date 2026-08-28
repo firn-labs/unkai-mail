@@ -191,6 +191,29 @@ pub fn remove_wrap(profile_id: &str, credential_id_b64: &str) -> Result<bool, Un
     Ok(removed)
 }
 
+/// Remove a profile's master-key envelope from the keychain; no-op
+/// if the entry doesn't exist.  Only the profile-deletion path
+/// (#534) calls this, strictly AFTER the profile's `cache.db` has
+/// been wiped from disk — deleting the key first would leave an
+/// encrypted database nobody can ever open, while a leftover key
+/// for a wiped database is merely an orphan entry the next call
+/// cleans up.
+pub fn delete_master_key(profile_id: &str) -> Result<(), UnkaiError> {
+    match entry(profile_id)?.delete_credential() {
+        Ok(()) => {
+            info!("Deleted DB master key for profile '{profile_id}'");
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            debug!("No DB master key to delete for profile '{profile_id}' (ok)");
+            Ok(())
+        }
+        Err(e) => Err(UnkaiError::Storage(format!(
+            "failed to delete master key: {e}"
+        ))),
+    }
+}
+
 fn generate_hex_key() -> Result<String, UnkaiError> {
     let mut buf = [0u8; KEY_LEN];
     fill(&mut buf).map_err(|e| UnkaiError::Storage(format!("RNG failed: {e}")))?;

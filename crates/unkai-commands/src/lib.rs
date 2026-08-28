@@ -30,6 +30,7 @@
 //! | [`mail`] | `api/mail.ts` |
 //! | [`nextcloud`] | `api/nextcloud.ts` |
 //! | [`notes`] | `api/notes.ts` |
+//! | [`profiles`] | `api/profiles.ts` |
 //! | [`settings`] | `api/settings.ts` |
 //! | [`system`] | `api/system.ts` |
 //! | [`talk`] | `api/talk.ts` |
@@ -59,6 +60,7 @@ pub mod crypto;
 pub mod mail;
 pub mod nextcloud;
 pub mod notes;
+pub mod profiles;
 pub mod settings;
 pub mod system;
 pub mod talk;

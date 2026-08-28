@@ -47,6 +47,7 @@ use unkai_core::models::{
 use unkai_mcp::McpServerStatus;
 use unkai_nextcloud::{FileEntry, LoginFlowInit};
 use unkai_store::cache::{SearchFilters, SearchHit, SearchScope};
+use unkai_store::profiles::{ProfileIcon, ProfileMeta, StartupMode};
 use unkai_store::{credentials, link_check};
 
 use unkai_commands::accounts::ProbedCert;
@@ -1110,6 +1111,17 @@ async fn create_nextcloud_task_from_mail(
 
 #[allow(clippy::too_many_arguments)] // Tauri command: invoke parameters plus the profile-routing pair
 #[tauri::command]
+fn create_profile(
+    name: String,
+    icon: ProfileIcon,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<ProfileMeta, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::profiles::create_profile(h.ctx.ui.as_ref(), name, icon, reg.paths())
+}
+
+#[tauri::command]
 async fn create_talk_room(
     nc_id: String,
     room_name: String,
@@ -1280,6 +1292,25 @@ async fn delete_outbox_entry(
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
     cmds::compose::delete_outbox_entry(id, &h.ctx.cache, h.ctx.ui.as_ref()).await
+}
+
+#[tauri::command]
+fn delete_profile(
+    id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    // The body owns the refusal policy; the shell only knows which
+    // profiles are live: the caller's own, and every profile with
+    // an open runtime context in the registry.
+    cmds::profiles::delete_profile(
+        h.ctx.ui.as_ref(),
+        id,
+        &h.ctx.profile.id,
+        &reg.open_profile_ids(),
+        reg.paths(),
+    )
 }
 
 #[tauri::command]
@@ -1804,6 +1835,15 @@ fn get_contacts_sync_status(
 }
 
 #[tauri::command]
+fn get_current_profile(
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<String, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    Ok(cmds::profiles::get_current_profile(&h.ctx.profile))
+}
+
+#[tauri::command]
 fn get_envelopes_by_thread(
     account_id: String,
     folder: String,
@@ -1893,6 +1933,11 @@ fn get_settings_sync_state(
 ) -> Result<SettingsSyncStateView, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
     cmds::settings::get_settings_sync_state(&h.ctx.profile)
+}
+
+#[tauri::command]
+fn get_startup_mode(reg: State<'_, ProfileRegistry>) -> Result<StartupMode, UnkaiError> {
+    cmds::profiles::get_startup_mode(reg.paths())
 }
 
 #[tauri::command]
@@ -2190,6 +2235,11 @@ async fn list_outbox(
 ) -> Result<Vec<OutboxRowDto>, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
     cmds::compose::list_outbox(account_id, &h.ctx.cache).await
+}
+
+#[tauri::command]
+fn list_profiles(reg: State<'_, ProfileRegistry>) -> Result<Vec<ProfileMeta>, UnkaiError> {
+    cmds::profiles::list_profiles(reg.paths())
 }
 
 #[tauri::command]
@@ -3075,6 +3125,16 @@ async fn set_settings_sync_target(
 }
 
 #[tauri::command]
+fn set_startup_mode(
+    mode: StartupMode,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::profiles::set_startup_mode(h.ctx.ui.as_ref(), mode, reg.paths())
+}
+
+#[tauri::command]
 async fn set_talk_room_public(
     nc_id: String,
     room_token: String,
@@ -3528,6 +3588,18 @@ async fn update_nextcloud_task(
         &h.ctx.cache,
     )
     .await
+}
+
+#[tauri::command]
+fn update_profile(
+    id: String,
+    name: Option<String>,
+    icon: Option<ProfileIcon>,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<ProfileMeta, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::profiles::update_profile(h.ctx.ui.as_ref(), id, name, icon, reg.paths())
 }
 
 #[tauri::command]
@@ -4248,6 +4320,14 @@ fn main() {
             // #57 — on-demand decrypt for inbound PGP/MIME messages
             decrypt_message,
             try_auto_decrypt_message,
+            // #534 — profile management
+            list_profiles,
+            get_current_profile,
+            create_profile,
+            update_profile,
+            delete_profile,
+            get_startup_mode,
+            set_startup_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Unkai");

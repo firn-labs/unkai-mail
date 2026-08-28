@@ -94,14 +94,21 @@ impl Default for ProfileMeta {
 }
 
 impl ProfileMeta {
+    /// Mint a fresh profile with a new UUID.  The management
+    /// commands (#534) call this for user-created profiles.
+    pub fn new(name: String, icon: ProfileIcon) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            icon,
+            ..Default::default()
+        }
+    }
+
     /// Mint the profile every install starts with — both fresh
     /// installs and migrated legacy ones.
     pub fn new_default() -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "Default".into(),
-            ..Default::default()
-        }
+        Self::new("Default".into(), ProfileIcon::default())
     }
 }
 
