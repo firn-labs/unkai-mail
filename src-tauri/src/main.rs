@@ -38,7 +38,7 @@ use unkai_commands::background::{
     urlhaus_refresh_worker,
 };
 use unkai_commands::mail::refresh_unread_badge;
-use unkai_commands::state::{AppContext, GLOBAL_CACHE};
+use unkai_commands::state::{ACTIVE_PROFILE, ActiveProfile, AppContext, GLOBAL_CACHE};
 use unkai_commands::system::{
     FontCacheFile, compute_font_fingerprint, enumerate_system_fonts, load_font_cache_file,
     save_font_cache_file,
@@ -2887,11 +2887,40 @@ fn main() {
     // registration.
     capture_launch_mailto_arg();
 
-    // Open (and migrate) the local mail cache once at startup, then
-    // hand it to Tauri as managed state so every command can borrow it.
+    // Resolve the profile storage layout (#531).  `ensure_registry`
+    // creates the registry on first run and migrates a pre-profile
+    // flat install into `profiles/<id>/` — including the keychain
+    // master key — strictly BEFORE the DB is opened (SQLCipher files
+    // must never move while a pool holds them).  Failures here are
+    // fatal: booting past a half-migrated layout could open (and
+    // wipe-recreate) the wrong database.
+    let profile_paths =
+        unkai_store::ProfilePaths::from_config_dir().expect("cannot resolve config directory");
+    let mut registry = unkai_store::profiles::ensure_registry(&profile_paths)
+        .expect("failed to initialise profile registry");
+    let profile = registry
+        .startup_profile()
+        .expect("profile registry is empty")
+        .clone();
+    if let Err(e) =
+        unkai_store::profiles::touch_last_used(&profile_paths, &mut registry, &profile.id)
+    {
+        tracing::warn!("could not update profile last-used bookkeeping: {e}");
+    }
+    // Chunk-1 bridge: the whole process runs as this one profile.
+    // Chunk 2 (#533) replaces this global (together with
+    // GLOBAL_CACHE) with per-window profile routing.
+    let _ = ACTIVE_PROFILE.set(ActiveProfile {
+        id: profile.id.clone(),
+        paths: profile_paths.clone(),
+    });
+
+    // Open the local mail cache once at startup, then hand it to
+    // Tauri as managed state so every command can borrow it.
     // A failure here is fatal: without the cache the write-through path
     // is broken, and the user would silently lose offline capability.
-    let cache = Cache::open_default().expect("failed to open local mail cache");
+    let cache = Cache::open_for_profile(&profile_paths.cache_db(&profile.id), &profile.id)
+        .expect("failed to open local mail cache");
     // Stash a clone for the small set of helpers (e.g. `load_nextcloud_account`)
     // that fan out across many call sites and would otherwise need `&Cache`
     // threaded through 30+ functions.  `Cache` is a cheap `Arc`-clone, so this
@@ -2953,7 +2982,8 @@ fn main() {
     // so the background sync loop can re-snapshot per tick while the
     // `update_app_settings` command swaps in a fresh value under the
     // write lock.
-    let settings = app_settings::load_settings().unwrap_or_default();
+    let settings =
+        app_settings::load_settings(&profile_paths.app_settings(&profile.id)).unwrap_or_default();
     let shared_settings: SharedSettings = Arc::new(RwLock::new(settings));
 
     // MCP server controller (#438).  Created up front (not in
@@ -3405,7 +3435,9 @@ fn main() {
             // Kick the worker once so a pending recovery push
             // from a previous session retries on launch.  The
             // worker no-ops cleanly if there's nothing to do.
-            if settings_sync::load_state()
+            if cmds::state::active_profile()
+                .ok()
+                .and_then(|p| settings_sync::load_state(&p.settings_sync_file()).ok())
                 .map(|s| s.pending && s.target_nc_id.is_some())
                 .unwrap_or(false)
             {

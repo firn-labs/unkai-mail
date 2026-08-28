@@ -87,13 +87,15 @@ impl Default for SettingsBundle {
 
 /// Build a bundle from the live in-process state.  The frontend
 /// passes its `local_storage` snapshot; everything else is read
-/// from the on-disk app-settings file plus the (already unlocked)
+/// from the on-disk app-settings file (the active profile's,
+/// resolved by the caller — #531) plus the (already unlocked)
 /// cache so the bundle reflects what's actually persisted.
 pub fn build_bundle(
     cache: &Cache,
+    app_settings_path: &std::path::Path,
     local_storage: HashMap<String, String>,
 ) -> Result<SettingsBundle, UnkaiError> {
-    let app_settings = crate::app_settings::load_settings()?;
+    let app_settings = crate::app_settings::load_settings(app_settings_path)?;
     let accounts = crate::account_store::load_accounts(cache)?
         .into_iter()
         .map(|account| BundleAccount { account })
@@ -137,7 +139,11 @@ pub fn parse(json: &str) -> Result<SettingsBundle, UnkaiError> {
 /// imported from a fresh machine will need re-authentication on
 /// first connect — surfaced as the standard "rejected app
 /// password" path.
-pub fn apply(cache: &Cache, bundle: SettingsBundle) -> Result<HashMap<String, String>, UnkaiError> {
+pub fn apply(
+    cache: &Cache,
+    app_settings_path: &std::path::Path,
+    bundle: SettingsBundle,
+) -> Result<HashMap<String, String>, UnkaiError> {
     info!(
         "Applying settings bundle exported at {} (v{}) — {} account(s)",
         bundle.exported_at,
@@ -145,7 +151,7 @@ pub fn apply(cache: &Cache, bundle: SettingsBundle) -> Result<HashMap<String, St
         bundle.accounts.len()
     );
 
-    crate::app_settings::save_settings(&bundle.app_settings)?;
+    crate::app_settings::save_settings(app_settings_path, &bundle.app_settings)?;
 
     let existing_ids: std::collections::HashSet<String> =
         crate::account_store::load_accounts(cache)?

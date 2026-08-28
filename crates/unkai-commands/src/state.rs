@@ -35,7 +35,7 @@ pub struct AppContext {
 pub type SharedSettings = Arc<RwLock<AppSettings>>;
 
 /// Process-wide handle to the encrypted cache.  Populated once in
-/// `main()` after `Cache::open_default`, so non-IPC helpers can
+/// `main()` after `Cache::open_for_profile`, so non-IPC helpers can
 /// reach the pool without every call site having to extract
 /// `&Cache` and thread `&Cache` through itself.
 pub static GLOBAL_CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
@@ -44,6 +44,46 @@ pub fn global_cache() -> Result<&'static Cache, UnkaiError> {
     GLOBAL_CACHE
         .get()
         .ok_or_else(|| UnkaiError::Storage("cache not initialised yet".into()))
+}
+
+/// The profile this process is running as (#531).
+///
+/// Chunk 1 keeps the app single-profile, so "which profile does
+/// this command act on" has exactly one answer for the whole
+/// process — captured here once in `main()` right after the
+/// registry resolves.  This is a deliberate sibling of
+/// [`GLOBAL_CACHE`]: chunk 2 (#533) replaces both with the
+/// `ProfileRegistry`'s per-window routing, so nothing new should
+/// grow roots into this global beyond what per-window routing can
+/// later serve.
+pub struct ActiveProfile {
+    pub id: String,
+    pub paths: unkai_store::ProfilePaths,
+}
+
+impl ActiveProfile {
+    /// This profile's `app_settings.json`.
+    pub fn app_settings_file(&self) -> std::path::PathBuf {
+        self.paths.app_settings(&self.id)
+    }
+
+    /// This profile's `settings_sync.json`.
+    pub fn settings_sync_file(&self) -> std::path::PathBuf {
+        self.paths.settings_sync(&self.id)
+    }
+
+    /// This profile's user-imported themes directory.
+    pub fn themes_dir(&self) -> std::path::PathBuf {
+        self.paths.themes_dir(&self.id)
+    }
+}
+
+pub static ACTIVE_PROFILE: std::sync::OnceLock<ActiveProfile> = std::sync::OnceLock::new();
+
+pub fn active_profile() -> Result<&'static ActiveProfile, UnkaiError> {
+    ACTIVE_PROFILE
+        .get()
+        .ok_or_else(|| UnkaiError::Storage("active profile not initialised yet".into()))
 }
 
 /// In-memory state for the event-reminder pipeline.
