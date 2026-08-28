@@ -11,6 +11,7 @@
    * since this is a desktop app, not a website.
    */
 
+  import { untrack } from 'svelte'
   import * as api from './lib/api'
   import { clampToViewport, cursorAnchor } from './lib/coords'
   import { isNextcloudSource } from './lib/ncSources'
@@ -556,9 +557,15 @@
   // the FIDO unlock screen is up, and that error path used to
   // route the user into the setup wizard even when accounts
   // existed.  Re-runs after `onUnlocked` flips `dbStatus.locked`.
+  // `untrack` pins this effect's dependency set to `dbStatus` alone.
+  // Without it, any reactive read in `checkAccounts`'s synchronous
+  // prefix (before its first await) becomes a hidden dependency —
+  // that's how the accountsStore extraction briefly made every list
+  // write re-run this effect and bounce the user from Settings back
+  // to the inbox (the #539 effect-tracking pitfall again).
   $effect(() => {
     if (dbStatus && !dbStatus.locked) {
-      void checkAccounts()
+      untrack(() => void checkAccounts())
     }
   })
 
