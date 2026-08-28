@@ -29,11 +29,20 @@ class AccountsStore {
   /** Human-readable failure of the last load, '' when it worked. */
   error = $state('')
 
+  /** Deliberately NOT `$state`: `load()` runs synchronously inside
+   *  callers' `$effect`s, and reading reactive state there (the old
+   *  `this.list.length === 0` check) silently subscribed those
+   *  effects to the whole list — App's unlock effect then re-ran on
+   *  every list write and yanked the user back to the inbox. A
+   *  plain field carries the "first load?" bit without becoming a
+   *  dependency. */
+  #everLoaded = false
+
   /** Re-read the account list from the backend. Returns the fresh
    *  list so callers that need it synchronously (App's selection
    *  logic) don't have to re-read `this.list` after awaiting. */
   async load(): Promise<Account[]> {
-    this.loading = this.list.length === 0
+    this.loading = !this.#everLoaded
     this.error = ''
     try {
       this.list = await api.accounts.getAccounts()
@@ -42,6 +51,7 @@ class AccountsStore {
       throw e
     } finally {
       this.loading = false
+      this.#everLoaded = true
     }
     return this.list
   }
