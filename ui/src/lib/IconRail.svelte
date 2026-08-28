@@ -31,8 +31,12 @@
   import { isNextcloudSource } from './ncSources'
   import type { UnlistenFn } from '@tauri-apps/api/event'
   import * as api from './api'
+  import type { Profile, ProfileIcon } from './api'
   import { onDestroy } from 'svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import { anchorRect, clampToViewport, cursorAnchor } from './coords'
+  import { profileStore } from './profileStore.svelte'
+  import { m } from '../paraglide/messages'
 
   interface Account {
     id: string
@@ -102,6 +106,11 @@
       notes: boolean
       tasks: boolean
     }
+    /** Switch THIS window to the given profile in place (#535).
+     *  App owns the sequence (backend remap + state reset). */
+    onswitchprofile: (id: string) => void
+    /** Deep-link into the Profiles settings category (#535). */
+    onmanageprofiles: () => void
   }
   let {
     accounts,
@@ -110,6 +119,8 @@
     currentView,
     onselectaccount,
     onselectview,
+    onswitchprofile,
+    onmanageprofiles,
     mailRefreshing = false,
     ncCaps = {
       hasAny: true,
@@ -131,6 +142,64 @@
     const parts = src.split(/\s+/).filter(Boolean)
     if (parts.length === 1) return parts[0][0].toUpperCase()
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+  }
+
+  // ── Profile switcher (#535) ─────────────────────────────────
+  // The rail's new top tier: the current profile's bubble opens a
+  // popover listing the other profiles (switch here / open in new
+  // window) plus a "Manage profiles…" entry.  Menu conventions
+  // per CLAUDE.md: glass-float, coords.ts anchoring, outside-click
+  // + Escape dismissal, right-click parity on the trigger.
+  const currentProfile = $derived(
+    profileStore.currentId ? profileStore.byId.get(profileStore.currentId) : undefined,
+  )
+  /** Every profile except the window's own, in registry order. */
+  const otherProfiles = $derived(
+    profileStore.profiles.filter((p) => p.id !== profileStore.currentId),
+  )
+  let profileMenu = $state<{ x: number; y: number } | null>(null)
+  const PROFILE_MENU_WIDTH = 232
+  const profileMenuHeight = $derived(
+    16 + otherProfiles.length * 38 + 38 + (otherProfiles.length === 0 ? 30 : 0),
+  )
+  $effect(() => {
+    if (!profileMenu) return
+    const onDocMouseDown = () => (profileMenu = null)
+    const onDocKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') profileMenu = null
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    document.addEventListener('keydown', onDocKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown)
+      document.removeEventListener('keydown', onDocKey)
+    }
+  })
+  function toggleProfileMenu(e: MouseEvent) {
+    if (profileMenu) {
+      profileMenu = null
+      return
+    }
+    const r = anchorRect(e.currentTarget as HTMLElement)
+    profileMenu = clampToViewport(
+      { x: r.right + 6, y: r.top },
+      PROFILE_MENU_WIDTH,
+      profileMenuHeight,
+    )
+  }
+  function openProfileMenuAtCursor(e: MouseEvent) {
+    e.preventDefault()
+    profileMenu = clampToViewport(cursorAnchor(e), PROFILE_MENU_WIDTH, profileMenuHeight)
+  }
+  function switchHere(p: Profile) {
+    profileMenu = null
+    onswitchprofile(p.id)
+  }
+  function openInNewWindow(p: Profile) {
+    profileMenu = null
+    void api.profiles.openProfileWindow({ id: p.id }).catch((e) => {
+      console.warn('open_profile_window failed', e)
+    })
   }
 
   /** Accounts sorted by `sort_order` (#115) so the rail honours
@@ -292,6 +361,33 @@
 <aside
   class="w-14 shrink-0 border-r glass-panel flex flex-col items-center py-2 gap-3 overflow-y-auto"
 >
+  <!-- Profile switcher (#535) — the rail's top tier.  The bubble
+       shows the CURRENT profile's identity (emoji or named icon,
+       same 36×36 rounded-full shape as the account bubbles but
+       with the tonal primary fill ProfilesSettings uses, so
+       profiles read as a different kind of thing than accounts).
+       Click or right-click opens the switcher popover. -->
+  <button
+    class="relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center
+           transition-colors bg-primary-500/15 text-primary-600 dark:text-primary-300
+           hover:bg-primary-500/25"
+    title={currentProfile
+      ? m.profiles_switcher_bubble_title({ name: currentProfile.name })
+      : m.profiles_switcher_label()}
+    aria-label={m.profiles_switcher_label()}
+    data-tour="rail-profile"
+    onmousedown={(e) => e.stopPropagation()}
+    onclick={toggleProfileMenu}
+    oncontextmenu={openProfileMenuAtCursor}
+  >
+    {#if currentProfile}
+      {@render profileGlyph(currentProfile.icon, 18)}
+    {:else}
+      <Icon name="contacts" size={18} />
+    {/if}
+  </button>
+  <div class="w-6 h-px my-1 shrink-0 bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
+
   <!-- Account avatars. The "All" bubble only appears when the user
        has more than one account — for a single-account setup it's
        chrome with no distinct behaviour. -->
@@ -452,3 +548,66 @@
     </button>
   </div>
 </aside>
+
+{#snippet profileGlyph(icon: ProfileIcon, size: number)}
+  {#if icon.kind === 'emoji'}
+    <span class="leading-none" style="font-size: {size}px">{icon.value}</span>
+  {:else}
+    <Icon name={icon.value as IconName} {size} />
+  {/if}
+{/snippet}
+
+<!-- Profile switcher popover (#535).  Same glass-float menu shell
+     as ProfilesSettings' context menu; `mousedown` is stopped so
+     the document-level dismiss listener doesn't unmount the menu
+     before its item handlers run. -->
+{#if profileMenu}
+  <div
+    class="fixed z-60 min-w-52 rounded-xl glass-float py-1 text-sm"
+    style="left: {profileMenu.x}px; top: {profileMenu.y}px;"
+    role="menu"
+    tabindex="-1"
+    onmousedown={(e) => e.stopPropagation()}
+  >
+    {#if otherProfiles.length === 0}
+      <p class="px-3 py-1.5 text-xs text-on-glass-muted">
+        {m.profiles_switcher_only_profile()}
+      </p>
+    {/if}
+    {#each otherProfiles as p (p.id)}
+      <div class="flex items-center">
+        <button
+          class="flex flex-1 min-w-0 items-center gap-2 text-left px-3 py-1.5 hover:bg-primary-500/10 transition-colors duration-150 ease-out"
+          title={m.profiles_switcher_switch_here({ name: p.name })}
+          onclick={() => switchHere(p)}
+        >
+          <span
+            class="w-6 h-6 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 flex items-center justify-center shrink-0"
+          >
+            {@render profileGlyph(p.icon, 14)}
+          </span>
+          <span class="truncate">{p.name}</span>
+        </button>
+        <button
+          class="shrink-0 p-1.5 mr-2 rounded-lg hover:bg-primary-500/10 transition-colors duration-150 ease-out"
+          title={m.profiles_switcher_open_window({ name: p.name })}
+          aria-label={m.profiles_switcher_open_window({ name: p.name })}
+          onclick={() => openInNewWindow(p)}
+        >
+          <Icon name="open-link" size={14} />
+        </button>
+      </div>
+    {/each}
+    <div class="mx-3 my-1 h-px bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
+    <button
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-primary-500/10 transition-colors duration-150 ease-out"
+      onclick={() => {
+        profileMenu = null
+        onmanageprofiles()
+      }}
+    >
+      <Icon name="group" size={16} />
+      <span>{m.profiles_switcher_manage()}</span>
+    </button>
+  </div>
+{/if}

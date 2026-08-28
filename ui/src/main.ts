@@ -18,6 +18,12 @@ import StandaloneSignatureEditor from './lib/StandaloneSignatureEditor.svelte'
 //   ?view=signature-editor&key=…         → standalone signature editor (#314)
 //   anything else                        → the full 3-pane app
 //
+// Two cross-cutting params ride alongside every route (#535, both
+// parsed in `lib/windowContext.ts`): `profile=<id>` on `profile-*`
+// windows (the static main window has none — App asks the backend
+// for its resolved startup profile), and `parent=<label>` on
+// popouts (where their handoff events are targeted).
+//
 // Reusing one bundle keeps the build simple and gives every route
 // access to the full component library (MailView, Compose) without
 // duplication.
@@ -60,7 +66,10 @@ if (view === 'mail') {
     props: { popoutKey: params.get('key') ?? '' },
   })
 } else {
-  app = mount(App, { target })
+  app = mount(App, {
+    target,
+    props: { initialProfileId: params.get('profile') },
+  })
 }
 
 export default app

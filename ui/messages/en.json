@@ -920,5 +920,11 @@
   "profiles_startup_all": "Open all profiles",
   "profiles_startup_fixed": "Always open a specific profile",
   "profiles_startup_fixed_label": "Profile",
-  "profiles_note_switching": "Switching between profiles and per-profile windows arrive in an upcoming update — profiles you create here are ready and waiting."
+  "profiles_note_switching": "Switch profiles — or open one in its own window — from the profile bubble at the top of the left rail.",
+  "profiles_switcher_label": "Profiles",
+  "profiles_switcher_bubble_title": "Profile: {name}",
+  "profiles_switcher_switch_here": "Switch to {name} here",
+  "profiles_switcher_open_window": "Open {name} in a new window",
+  "profiles_switcher_manage": "Manage profiles…",
+  "profiles_switcher_only_profile": "No other profiles yet."
 }

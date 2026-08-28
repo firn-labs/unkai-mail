@@ -5,9 +5,9 @@
    * A profile is a fully separate storage universe (own accounts,
    * own encrypted cache, own settings) inside one install.  This
    * panel is the management surface: create, rename, re-icon,
-   * delete, and pick the startup behaviour.  Opening a profile in
-   * its own window is chunk 4 (#535) — until then the list is
-   * fully functional but every window stays on its own profile.
+   * delete, and pick the startup behaviour.  Switching a window's
+   * profile and opening one in its own window live in the rail's
+   * profile bubble (IconRail's switcher popover, #535).
    *
    * All data flows through `profileStore`; every mutation makes the
    * backend broadcast `profiles-changed`, which reloads the store —
