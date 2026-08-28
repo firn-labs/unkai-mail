@@ -1526,7 +1526,7 @@ pub async fn delete_message(
             let nc_id_owned = nc_id.clone();
             let share_id_owned = share_id.clone();
             if let Err(e) = (async {
-                let nc_account = load_nextcloud_account(&nc_id_owned)?;
+                let nc_account = load_nextcloud_account(cache, &nc_id_owned)?;
                 let app_password = credentials::get_nextcloud_password(&nc_id_owned)?;
                 unkai_nextcloud::delete_share(
                     &nc_account.server_url,

@@ -819,8 +819,9 @@ pub async fn notify_settings_changed(
 /// shows on a fresh NC connect.
 pub async fn nc_probe_settings_bundle(
     nc_id: String,
+    cache: &Cache,
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     match unkai_nextcloud::download_file(
         &account.server_url,
@@ -854,7 +855,7 @@ pub async fn nc_restore_settings_bundle(
     cache: &Cache,
     settings: &SharedSettings,
 ) -> Result<std::collections::HashMap<String, String>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let bytes = unkai_nextcloud::download_file(
         &account.server_url,

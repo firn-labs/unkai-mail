@@ -20,7 +20,6 @@ use unkai_store::cache::CalendarRow;
 use unkai_store::credentials;
 use unkai_store::nextcloud_store;
 
-use crate::state::global_cache;
 use crate::support::{LOCAL_ADDRESSBOOK_NAME, load_nextcloud_account};
 
 // ── Nextcloud ───────────────────────────────────────────────────
@@ -64,6 +63,7 @@ pub async fn poll_nextcloud_login(
     poll_endpoint: String,
     poll_token: String,
     trusted_certs: Option<Vec<unkai_core::models::TrustedCert>>,
+    cache: &Cache,
 ) -> Result<Option<NextcloudAccount>, UnkaiError> {
     // Use the wizard-supplied trust list (#253) for both the polling
     // call and the post-login capabilities probe.  Saved into the
@@ -114,13 +114,13 @@ pub async fn poll_nextcloud_login(
         carddav_home: None,
         caldav_home: None,
     };
-    nextcloud_store::upsert_account(global_cache()?, account.clone())?;
+    nextcloud_store::upsert_account(cache, account.clone())?;
     Ok(Some(account))
 }
 
 /// List all saved Nextcloud connections.
-pub fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, UnkaiError> {
-    nextcloud_store::load_accounts(global_cache()?)
+pub fn get_nextcloud_accounts(cache: &Cache) -> Result<Vec<NextcloudAccount>, UnkaiError> {
+    nextcloud_store::load_accounts(cache)
 }
 
 /// Re-probe `/ocs/v2.php/cloud/capabilities` for one account and
@@ -131,8 +131,11 @@ pub fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, UnkaiError> {
 /// Soft-fails: a flaky network or revoked password returns the
 /// account's previously-cached capabilities unchanged rather than
 /// erroring out the whole settings panel.
-pub async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccount, UnkaiError> {
-    let mut account = load_nextcloud_account(&nc_id)?;
+pub async fn refresh_nextcloud_capabilities(
+    nc_id: String,
+    cache: &Cache,
+) -> Result<NextcloudAccount, UnkaiError> {
+    let mut account = load_nextcloud_account(cache, &nc_id)?;
     // DAV/local sources have no OCS capabilities endpoint (#413) —
     // their synthetic snapshot was fixed at add time.
     if !account.is_nextcloud() {
@@ -149,7 +152,7 @@ pub async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAc
     {
         Ok(caps) => {
             account.capabilities = Some(caps);
-            nextcloud_store::upsert_account(global_cache()?, account.clone())?;
+            nextcloud_store::upsert_account(cache, account.clone())?;
         }
         Err(e) => {
             tracing::warn!("refresh_nextcloud_capabilities for {nc_id}: {e}");
@@ -168,8 +171,11 @@ pub async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAc
 /// Returns `None` when the user hasn't set an email in Personal info
 /// or when the OCS lookup fails — caller should fall back to a
 /// reasonable default (e.g. the first mail account).
-pub async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn get_nextcloud_user_email(
+    nc_id: String,
+    cache: &Cache,
+) -> Result<Option<String>, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     // No OCS profile on DAV/local sources (#413) — callers fall
     // back to the first mail account's address.
     if !account.is_nextcloud() {
@@ -208,7 +214,7 @@ pub fn update_nextcloud_account_trusted_certs(
     trusted_certs: Vec<unkai_core::models::TrustedCert>,
     cache: &Cache,
 ) -> Result<NextcloudAccount, UnkaiError> {
-    let mut account = load_nextcloud_account(&nc_id)?;
+    let mut account = load_nextcloud_account(cache, &nc_id)?;
     account.trusted_certs = trusted_certs;
     nextcloud_store::upsert_account(cache, account.clone())?;
     Ok(account)
@@ -427,8 +433,9 @@ pub fn add_local_dav_account(
 pub async fn list_nextcloud_files(
     nc_id: String,
     path: String,
+    cache: &Cache,
 ) -> Result<Vec<FileEntry>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::list_directory(
         &account.server_url,
@@ -446,8 +453,12 @@ pub async fn list_nextcloud_files(
 /// (or save wherever the caller needs). Large files are held in memory
 /// for now — matches how locally-picked attachments work. A streaming
 /// path is a separate future issue once compose itself streams.
-pub async fn download_nextcloud_file(nc_id: String, path: String) -> Result<Vec<u8>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn download_nextcloud_file(
+    nc_id: String,
+    path: String,
+    cache: &Cache,
+) -> Result<Vec<u8>, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::download_file(
         &account.server_url,
@@ -469,8 +480,9 @@ pub async fn nextcloud_file_preview(
     nc_id: String,
     path: String,
     size: Option<u32>,
+    cache: &Cache,
 ) -> Result<Option<Vec<u8>>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let s = size.unwrap_or(96);
     match unkai_nextcloud::fetch_preview(
@@ -528,8 +540,9 @@ pub async fn create_nextcloud_share(
     label: Option<String>,
     permissions: Option<u8>,
     expire_date: Option<String>,
+    cache: &Cache,
 ) -> Result<NextcloudShareResult, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let share = unkai_nextcloud::create_public_share(
         &account.server_url,
@@ -558,8 +571,9 @@ pub async fn update_nextcloud_share_label(
     nc_id: String,
     share_id: String,
     label: String,
+    cache: &Cache,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::update_share_label(
         &account.server_url,
@@ -595,8 +609,11 @@ pub struct NextcloudShareRow {
 
 /// List every public share link the given Nextcloud account owns
 /// (#117).  Powers the dedicated share-management view in the rail.
-pub async fn list_nextcloud_shares(nc_id: String) -> Result<Vec<NextcloudShareRow>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn list_nextcloud_shares(
+    nc_id: String,
+    cache: &Cache,
+) -> Result<Vec<NextcloudShareRow>, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let shares = unkai_nextcloud::list_public_shares(
         &account.server_url,
@@ -635,8 +652,9 @@ pub async fn update_nextcloud_share(
     password: Option<String>,
     permissions: Option<u8>,
     expire_date: Option<String>,
+    cache: &Cache,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::update_public_share(
         &account.server_url,
@@ -658,8 +676,12 @@ pub async fn update_nextcloud_share(
 /// cleanup, the shares dangle in the user's "Shared with others"
 /// list with no associated mail.  Save-draft / send paths leave
 /// shares intact (the recipient still needs them).
-pub async fn delete_nextcloud_share(nc_id: String, share_id: String) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn delete_nextcloud_share(
+    nc_id: String,
+    share_id: String,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::delete_share(
         &account.server_url,
@@ -682,8 +704,9 @@ pub async fn upload_to_nextcloud(
     path: String,
     data: Vec<u8>,
     content_type: Option<String>,
+    cache: &Cache,
 ) -> Result<String, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::upload_file(
         &account.server_url,
@@ -704,8 +727,12 @@ pub async fn upload_to_nextcloud(
 /// exist. The file picker calls this when the user clicks "New folder"
 /// inside the currently-open directory; on success the picker re-lists
 /// the parent so the new entry shows up.
-pub async fn create_nextcloud_directory(nc_id: String, path: String) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn create_nextcloud_directory(
+    nc_id: String,
+    path: String,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     unkai_nextcloud::create_directory(
         &account.server_url,
@@ -735,8 +762,9 @@ pub struct NextcloudUserLookup {
 pub async fn find_nextcloud_user_by_email(
     nc_id: String,
     email: String,
+    cache: &Cache,
 ) -> Result<Option<NextcloudUserLookup>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let m = unkai_nextcloud::find_user_by_email(
         &account.server_url,

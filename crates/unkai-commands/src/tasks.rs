@@ -56,7 +56,7 @@ pub async fn sync_nextcloud_task_lists(
     nc_id: String,
     cache: &Cache,
 ) -> Result<Vec<TaskList>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     // Task lists are a Nextcloud-app feature (#413) — DAV/local
     // sources never advertise the capability, so return empty
     // rather than probing a layout that doesn't exist.
@@ -100,7 +100,7 @@ pub async fn sync_nextcloud_tasks(
     list_id: String,
     cache: &Cache,
 ) -> Result<Vec<Task>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     // See sync_nextcloud_task_lists — no Tasks app outside Nextcloud.
     if !account.is_nextcloud() {
         return cache.list_tasks_for_account(&nc_id).map_err(Into::into);
@@ -146,7 +146,7 @@ pub async fn create_nextcloud_task(
     url: Option<String>,
     cache: &Cache,
 ) -> Result<Task, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let cached_list = cache
         .get_task_list(&list_id)?
@@ -215,7 +215,7 @@ pub async fn update_nextcloud_task(
     categories: Option<Vec<String>>,
     cache: &Cache,
 ) -> Result<Task, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let mut task = cache
         .get_task(&list_id, &uid)?
@@ -283,7 +283,7 @@ pub async fn delete_nextcloud_task(
     uid: String,
     cache: &Cache,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let task = cache
         .get_task(&list_id, &uid)?
@@ -343,7 +343,7 @@ pub async fn create_nextcloud_task_from_mail(
         Some(format!("From: {from}"))
     };
 
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let cached_list = cache
         .get_task_list(&list_id)?

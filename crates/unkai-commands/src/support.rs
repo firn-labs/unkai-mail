@@ -21,8 +21,6 @@ use unkai_store::account_store;
 use unkai_store::credentials;
 use unkai_store::nextcloud_store;
 
-use crate::state::global_cache;
-
 /// Collection name for the single addressbook a local source gets.
 pub const LOCAL_ADDRESSBOOK_NAME: &str = "local";
 
@@ -43,8 +41,8 @@ pub struct SyncStatus {
     pub count: u32,
 }
 
-pub fn load_nextcloud_account(nc_id: &str) -> Result<NextcloudAccount, UnkaiError> {
-    nextcloud_store::load_accounts(global_cache()?)?
+pub fn load_nextcloud_account(cache: &Cache, nc_id: &str) -> Result<NextcloudAccount, UnkaiError> {
+    nextcloud_store::load_accounts(cache)?
         .into_iter()
         .find(|a| a.id == nc_id)
         .ok_or_else(|| UnkaiError::Other(format!("no Nextcloud account with id '{nc_id}'")))

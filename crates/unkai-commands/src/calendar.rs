@@ -32,7 +32,7 @@ use unkai_store::credentials;
 
 use crate::notify::CalendarsUpdatedPayload;
 use crate::notify::UiNotifier;
-use crate::state::{EventReminderState, SharedSettings, global_cache};
+use crate::state::{EventReminderState, SharedSettings};
 use crate::support::{
     SyncStatus, caldav_home_of, connect_imap, dav_create_event_for, dav_update_event_for,
     load_account, load_nextcloud_account, url_origin, uses_jmap,
@@ -140,26 +140,27 @@ pub struct SyncCalendarsReport {
 /// Lighter than `sync_nextcloud_calendars` — no per-calendar sync,
 /// no cache write. Used in settings UIs where the user just wants
 /// to see what calendars exist server-side before toggling sync on.
-pub async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn list_nextcloud_calendars(
+    nc_id: String,
+    cache: &Cache,
+) -> Result<Vec<CalendarSummary>, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     // Local sources: the cache list *is* the calendar list (#413).
     if account.is_local() {
-        return global_cache().and_then(|cache| {
-            Ok(cache
-                .list_calendars(&nc_id)?
-                .into_iter()
-                .map(|c| CalendarSummary {
-                    id: c.id,
-                    nextcloud_account_id: c.nextcloud_account_id,
-                    display_name: c.display_name,
-                    color: c.color,
-                    last_synced_at: c.last_synced_at,
-                    hidden: c.hidden,
-                    muted: c.muted,
-                    read_only: c.read_only,
-                })
-                .collect())
-        });
+        return Ok(cache
+            .list_calendars(&nc_id)?
+            .into_iter()
+            .map(|c| CalendarSummary {
+                id: c.id,
+                nextcloud_account_id: c.nextcloud_account_id,
+                display_name: c.display_name,
+                color: c.color,
+                last_synced_at: c.last_synced_at,
+                hidden: c.hidden,
+                muted: c.muted,
+                read_only: c.read_only,
+            })
+            .collect());
     }
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let calendars: Vec<CaldavCalendar> = caldav_list_calendars_at(
@@ -211,7 +212,7 @@ pub async fn sync_nextcloud_calendars(
     nc_id: String,
     cache: &Cache,
 ) -> Result<SyncCalendarsReport, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     // A local-only source has nothing to sync with (#413) — the
     // cache *is* the source of truth. Empty report, no error.
@@ -461,7 +462,7 @@ pub async fn create_nextcloud_calendar(
     color: Option<String>,
     cache: &Cache,
 ) -> Result<CalendarSummary, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     let slug = uuid::Uuid::new_v4().to_string();
     let url = if account.is_local() {
@@ -527,7 +528,7 @@ pub async fn update_nextcloud_calendar(
     let (nc_id, path) = cache
         .get_calendar_server_path(&calendar_id)?
         .ok_or_else(|| UnkaiError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     // Local calendars have no server to PROPPATCH (#413) — the
     // cache metadata update below is the whole operation.
@@ -559,7 +560,7 @@ pub async fn delete_nextcloud_calendar(
     let (nc_id, path) = cache
         .get_calendar_server_path(&calendar_id)?
         .ok_or_else(|| UnkaiError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     // Local calendars only exist in the cache (#413).
     if !account.is_local() {
@@ -919,7 +920,7 @@ pub async fn create_calendar_event(
                     "calendar '{calendar_id}' is not in the local cache — refresh and try again"
                 ))
             })?;
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let event = input_to_calendar_event(&uid, &input);
@@ -964,7 +965,7 @@ pub async fn update_calendar_event(
     ui: &dyn UiNotifier,
 ) -> Result<CalendarEvent, UnkaiError> {
     let handle = load_event_handle(cache, &event_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
 
     let mut event = input_to_calendar_event(&handle.uid, &input);
     // Preserve recurrence info the editor doesn't surface — losing it
@@ -1091,7 +1092,7 @@ pub async fn get_attendee_availability(
     range_end: chrono::DateTime<chrono::Utc>,
     cache: &Cache,
 ) -> Result<Vec<AttendeeAvailability>, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     // Sharees lookup + free-busy are Nextcloud OCS/scheduling
     // features. Non-Nextcloud sources (#413) skip every network
     // step below (the sharees gate keeps `nc_match` at None) and
@@ -1351,8 +1352,11 @@ pub struct NextcloudMapsCapability {
     pub available: bool,
 }
 
-pub async fn detect_nc_maps(nc_id: String) -> Result<NextcloudMapsCapability, UnkaiError> {
-    let account = load_nextcloud_account(&nc_id)?;
+pub async fn detect_nc_maps(
+    nc_id: String,
+    cache: &Cache,
+) -> Result<NextcloudMapsCapability, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
     // The capabilities OCS endpoint returns an enabled-apps map
@@ -1446,7 +1450,7 @@ pub async fn dismiss_cancelled_event(uid: String, cache: &Cache) -> Result<(), U
         return Ok(());
     };
     let handle = load_event_handle(cache, &event_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
     // A cancelled invite living on a local calendar only exists in
     // the cache — the delete below is the whole dismissal (#413).
     if !account.is_local() {
@@ -1648,7 +1652,7 @@ pub async fn respond_to_invite(
                     "calendar '{calendar_id}' is not in the local cache — refresh and try again"
                 ))
             })?;
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
     // Local calendars record the RSVP in the cache but there is no
     // server-side iTIP broker, so no REPLY email reaches the
     // organiser (#413). The empty password is never sent anywhere —
@@ -1983,7 +1987,7 @@ pub async fn get_event_partstat_for_user(
     };
 
     // Build the candidate list — same shape as respond_to_invite.
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
     let mut candidates: Vec<String> = Vec::new();
     if let Some(h) = attendee_hint.as_deref() {
         let h = h.trim();
@@ -2051,7 +2055,7 @@ pub async fn update_event_with_etag_retry(
     ics: &str,
 ) -> Result<(unkai_caldav::WriteOutcome, CalendarEventServerHandle), UnkaiError> {
     let handle = load_event_handle(cache, event_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
     // Local events can't race another client — no etag dance, just
     // mint the next revision (#413).
     if account.is_local() {
@@ -2120,7 +2124,7 @@ pub async fn delete_event_with_etag_retry(
     event_id: &str,
     handle: &CalendarEventServerHandle,
 ) -> Result<(), UnkaiError> {
-    let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let nc_account = load_nextcloud_account(cache, &handle.nextcloud_account_id)?;
     // Local events only exist in the cache — the caller's
     // `delete_event_by_id` is the whole delete (#413).
     if nc_account.is_local() {
@@ -2185,7 +2189,7 @@ pub async fn refresh_calendar_cache(
     nc_id: &str,
     calendar_path: &str,
 ) -> Result<(), UnkaiError> {
-    let account = load_nextcloud_account(nc_id)?;
+    let account = load_nextcloud_account(cache, nc_id)?;
     // Nothing to refresh for a local-only source (#413) — the cache
     // is already the freshest state there is.
     if account.is_local() {
@@ -2436,7 +2440,7 @@ pub async fn import_calendar_file(
                     "calendar '{calendar_id}' is not in the local cache — refresh and try again"
                 ))
             })?;
-    let account = load_nextcloud_account(&nc_id)?;
+    let account = load_nextcloud_account(cache, &nc_id)?;
 
     let body = std::fs::read_to_string(&path)
         .map_err(|e| UnkaiError::Other(format!("read {path}: {e}")))?;
