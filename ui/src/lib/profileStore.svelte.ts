@@ -33,6 +33,16 @@ class ProfileStore {
 
   #initialized = false
 
+  /** Seed `currentId` from the window's `?profile=` URL param
+   *  (#535) so profile-scoped UI paints correctly before the first
+   *  backend round-trip answers.  The backend's window→profile
+   *  registry stays authoritative — `load()` overwrites the seed. */
+  seed(profileId: string | null): void {
+    if (profileId && this.currentId === null) {
+      this.currentId = profileId
+    }
+  }
+
   /** Re-read everything from the registry. Failures stay silent
    *  beyond a console warning — an unreadable registry leaves the
    *  previous snapshot standing rather than blanking the UI. */

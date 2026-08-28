@@ -82,6 +82,21 @@
   import { locales } from './paraglide/runtime'
   import { m } from './paraglide/messages'
   import { formatError } from './lib/errors'
+  import { refreshWindowProfile } from './lib/profileLocalStorage'
+
+  // ── Window profile (#535) ───────────────────────────────────
+  // `profile-*` windows carry their profile id in the URL; the
+  // static main window doesn't (the backend resolves its startup
+  // profile).  The seed only pre-paints profile-scoped UI — the
+  // backend registry stays authoritative via profileStore.load().
+  interface Props {
+    initialProfileId?: string | null
+  }
+  let { initialProfileId = null }: Props = $props()
+  // One-shot on purpose: the URL param never changes for a living
+  // window, and load() takes over from the seed immediately.
+  // svelte-ignore state_referenced_locally
+  profileStore.seed(initialProfileId)
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -199,17 +214,23 @@
   }
   let dbStatus = $state<DatabaseStatus | null>(null)
   let dbStatusError = $state('')
+  /** (Re-)query the lock state.  Named so `switchProfile` (#535)
+   *  can re-run it against the new profile's database — the lock
+   *  screen is per-profile now. */
+  async function refreshDatabaseStatus(): Promise<void> {
+    try {
+      dbStatus = await api.settings.databaseStatus()
+    } catch (e) {
+      console.warn('database_status failed', e)
+      dbStatusError = String(e)
+      // Fail-open: assume unlocked so the user isn't trapped on
+      // a blank screen if the IPC went wrong.  Real lock-state
+      // bugs surface as "every other IPC errors with locked".
+      dbStatus = { locked: false, needsSetup: false, methods: [], attemptsRemaining: null }
+    }
+  }
   $effect(() => {
-    void api.settings.databaseStatus()
-      .then((s) => (dbStatus = s))
-      .catch((e) => {
-        console.warn('database_status failed', e)
-        dbStatusError = String(e)
-        // Fail-open: assume unlocked so the user isn't trapped on
-        // a blank screen if the IPC went wrong.  Real lock-state
-        // bugs surface as "every other IPC errors with locked".
-        dbStatus = { locked: false, needsSetup: false, methods: [], attemptsRemaining: null }
-      })
+    void refreshDatabaseStatus()
   })
   function onUnlocked() {
     if (dbStatus) dbStatus = { ...dbStatus, locked: false }
@@ -1331,9 +1352,18 @@
       unlistenMailtoDeepLink = await api.onAppEvent(
         'unkai://mailto',
         (e) => {
-          if (typeof e.payload === 'string') {
-            void openComposeFromMailtoUrl(e.payload)
-          }
+          // The Rust side buffers every URL AND emits it to the
+          // focused window (#535) — drain the buffer alongside
+          // the event, deduped, so the buffered copy can't be
+          // replayed as a spurious compose by the next profile
+          // window's mount.
+          void (async () => {
+            const urls = new Set<string>(
+              await api.system.takePendingMailtoUrls().catch(() => [] as string[]),
+            )
+            if (typeof e.payload === 'string') urls.add(e.payload)
+            for (const url of urls) void openComposeFromMailtoUrl(url)
+          })()
         },
       )
 
@@ -1520,6 +1550,72 @@
 
   function goToSetup() {
     currentView = 'setup'
+  }
+
+  // ── Switch-in-place (#535) ──────────────────────────────────
+  // The rail switcher's "Switch here": the backend remaps this
+  // window's registry entry to the target profile, then every
+  // piece of per-profile view state is reset and the stores
+  // reload against the new profile's cache.  Open composes are
+  // discarded — they belonged to the old profile (pop a compose
+  // out first to keep it).  The plain loading state is deliberate
+  // for now; the polished transition screen is chunk 5 (#536).
+  let profileSwitching = $state(false)
+  async function switchProfile(id: string) {
+    if (profileSwitching || id === profileStore.currentId) return
+    profileSwitching = true
+    try {
+      await api.profiles.switchWindowProfile({ id })
+    } catch (e) {
+      console.warn('switch_window_profile failed', e)
+      profileSwitching = false
+      return
+    }
+    try {
+      // From here on every IPC from this window resolves to the
+      // new profile.  Clear selection/view state BEFORE anything
+      // re-fetches so nothing paints old-profile data.
+      currentView = 'loading'
+      composes = []
+      activeComposeId = null
+      unifiedMode = false
+      activeAccountId = null
+      selectedFolder = 'INBOX'
+      selectedUid = null
+      selectedMessageAccountId = null
+      selectedMessageFolder = null
+      searchQuery = ''
+      searchScope = {}
+      searchFilters = {}
+      calendarFocusEventId = null
+      selectedOutboxRow = null
+      outboxCountByAccount = {}
+      settingsCategory = 'general'
+      mailListResetToken++
+      refreshToken++
+      outboxRefreshToken++
+      // Profile-scoped localStorage keys re-key to the new
+      // profile; the stores re-read through the new mapping.
+      await refreshWindowProfile()
+      await profileStore.load()
+      void loadAppPrefs()
+      // Re-run the boot gate: `dbStatus` goes back to null (the
+      // loading screen), the re-query answers for the NEW
+      // profile's database — a locked profile shows LockScreen —
+      // and the `dbStatus` effect re-runs `checkAccounts` once
+      // unlocked, landing in the inbox or the setup wizard.
+      dbStatus = null
+      await refreshDatabaseStatus()
+    } finally {
+      profileSwitching = false
+    }
+  }
+
+  /** Rail switcher "Manage profiles…" — deep-link into the
+   *  Profiles settings category (#535). */
+  function openProfileSettings() {
+    settingsCategory = 'profiles'
+    currentView = 'settings'
   }
 
   /** `mail://acc/folder/uid` deep-link handler invoked from the
@@ -3617,16 +3713,24 @@
        stacks on top of whichever view the user came from without
        the view needing to know about it. -->
   <div class="h-full flex">
-    <IconRail
-      accounts={accounts}
-      accountId={activeAccountId}
-      unified={unifiedMode}
-      currentView={currentView}
-      mailRefreshing={mailRefreshing}
-      ncCaps={ncCaps}
-      onselectaccount={selectAccount}
-      onselectview={onSelectView}
-    />
+    <!-- Keyed on the window's profile (#535): a switch-in-place
+         remounts the rail so its per-profile subscriptions
+         (unread-by-account, Talk poll) re-seed against the new
+         profile instead of painting stale counts. -->
+    {#key profileStore.currentId}
+      <IconRail
+        accounts={accounts}
+        accountId={activeAccountId}
+        unified={unifiedMode}
+        currentView={currentView}
+        mailRefreshing={mailRefreshing}
+        ncCaps={ncCaps}
+        onselectaccount={selectAccount}
+        onselectview={onSelectView}
+        onswitchprofile={(id) => void switchProfile(id)}
+        onmanageprofiles={openProfileSettings}
+      />
+    {/key}
 
     {#if !activeAccountId}
       <div class="flex-1 flex items-center justify-center bg-surface-50 dark:bg-surface-900">
