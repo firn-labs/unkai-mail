@@ -601,6 +601,13 @@ fn logo_protocol(
         .status(200)
         .header("Content-Type", "image/png")
         .header("Cache-Control", "private, max-age=300")
+        // The scheme is its own origin as far as the webview is
+        // concerned, and the window-icon compositor (#536) draws
+        // this image onto a canvas it must read back — without
+        // CORS approval (paired with `crossOrigin="anonymous"` on
+        // the loading <img>), the canvas is tainted and
+        // `toBlob()` throws.  Logo art is not sensitive.
+        .header("Access-Control-Allow-Origin", "*")
         .body(std::borrow::Cow::Borrowed(bytes))
         .expect("build logo response")
 }

@@ -1062,10 +1062,21 @@
       // the right value.  The Settings page's language picker
       // owns the in-process restart prompt — see the comment
       // there.
+      //
+      // #536 regression fix: the pin is MACHINE-global (one
+      // localStorage origin, one paraglide boot key) while
+      // `ui_locale` now lives in per-profile settings.  An
+      // "automatic" profile must therefore leave any existing pin
+      // alone — every fresh profile defaults to automatic, and
+      // the old `removeItem` branch let merely opening a second
+      // profile's window silently wipe the language the user had
+      // pinned, flipping the whole app to the OS locale on the
+      // next start.  Clearing the pin is reserved for the
+      // Settings language picker, where flipping to automatic is
+      // an explicit user gesture (it removes the key itself).
       try {
-        if (appPrefs.ui_locale_auto !== false) {
-          window.localStorage.removeItem('PARAGLIDE_LOCALE')
-        } else if (
+        if (
+          appPrefs.ui_locale_auto === false &&
           appPrefs.ui_locale &&
           (locales as readonly string[]).includes(appPrefs.ui_locale)
         ) {

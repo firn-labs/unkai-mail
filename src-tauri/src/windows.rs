@@ -275,6 +275,12 @@ pub fn set_window_identity(
             Ok(img) => {
                 if let Err(e) = win.set_icon(img) {
                     tracing::warn!("failed to apply profile window icon: {e}");
+                } else {
+                    tracing::debug!(
+                        "applied profile window icon on '{}' ({} bytes)",
+                        win.label(),
+                        bytes.len()
+                    );
                 }
             }
             Err(e) => tracing::warn!("profile window icon PNG did not decode: {e}"),

@@ -195,6 +195,14 @@ async function loadNamedIconImage(
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image()
+    // The base logo comes from the `unkai-logo://` scheme — a
+    // different origin than the app — and this image is drawn
+    // onto a canvas we read back with `toBlob()`.  Without an
+    // anonymous-CORS load (paired with the ACAO header the logo
+    // protocol sends) the canvas is tainted and the readback
+    // throws, which is exactly a silent "title works, icon
+    // doesn't" failure.  Harmless for the data: URI glyphs.
+    img.crossOrigin = 'anonymous'
     img.onload = () => resolve(img)
     img.onerror = () => reject(new Error(`image failed to load: ${src}`))
     img.src = src
