@@ -927,5 +927,8 @@
   "profiles_switcher_switch_here": "Hier zu {name} wechseln",
   "profiles_switcher_open_window": "{name} in neuem Fenster öffnen",
   "profiles_switcher_manage": "Profile verwalten…",
-  "profiles_switcher_only_profile": "Noch keine weiteren Profile."
+  "profiles_switcher_only_profile": "Noch keine weiteren Profile.",
+  "profiles_transition_switching": "Wechsel zu {name}…",
+  "shell_starting": "Wird gestartet…",
+  "shell_loading": "Wird geladen…"
 }
