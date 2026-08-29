@@ -67,6 +67,13 @@ fn apply_pragmas(conn: &mut Connection, key_hex: &str) -> rusqlite::Result<()> {
     // — and we'd rather the error happen here, inside open_pool.
     let _: i64 = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
 
+    apply_scaling_pragmas(conn)
+}
+
+/// The key-independent half of the recipe above — shared with the
+/// plaintext pool opener for `shared.db` (#532), which skips the
+/// SQLCipher unlock entirely.
+fn apply_scaling_pragmas(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -93,6 +100,50 @@ pub fn open_pool(path: &Path, key_hex: String) -> Result<SqlitePool, CacheError>
         .max_size(8)
         .build(manager)
         .map_err(|e| CacheError::Open(format!("build pool: {e}")))
+}
+
+/// Open (or create) a **plaintext** SQLite pool — no SQLCipher key.
+///
+/// Only for the machine-level `shared.db` (#532), which holds nothing
+/// but the public URLhaus feed snapshot: encrypting a verbatim copy of
+/// a public dataset would spend keychain complexity (whose machine key?
+/// which profile unlocks it?) to protect data anyone can download.
+/// Every profile-scoped database keeps going through [`open_pool`].
+pub(crate) fn open_plain_pool(path: &Path) -> Result<SqlitePool, CacheError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CacheError::Open(format!("create shared-cache dir: {e}")))?;
+    }
+
+    let manager = SqliteConnectionManager::file(path).with_init(apply_scaling_pragmas);
+
+    // Smaller than the mail-cache pool: the shared DB serves point
+    // lookups plus one hourly bulk rewrite — two connections cover
+    // "the refresh writes while a lookup reads" under WAL.
+    Pool::builder()
+        .max_size(2)
+        .build(manager)
+        .map_err(|e| CacheError::Open(format!("build shared pool: {e}")))
+}
+
+/// Plaintext twin of [`open_memory_pool`] for `SharedCache` tests —
+/// same unique-URI isolation trick, no key pragma.
+pub(crate) fn open_plain_memory_pool() -> Result<SqlitePool, CacheError> {
+    use rusqlite::OpenFlags;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let uri = format!("file:unkai_test_shared_mem_{id}?mode=memory&cache=shared");
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_CREATE
+        | OpenFlags::SQLITE_OPEN_URI;
+    let manager = SqliteConnectionManager::file(uri)
+        .with_flags(flags)
+        .with_init(apply_scaling_pragmas);
+    Pool::builder()
+        .max_size(2)
+        .build(manager)
+        .map_err(|e| CacheError::Open(format!("build shared memory pool: {e}")))
 }
 
 /// Convenience: open an in-memory pool with a unique, process-local name.

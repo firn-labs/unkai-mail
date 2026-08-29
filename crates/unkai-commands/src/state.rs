@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::RwLock;
 use unkai_core::models::AppSettings;
-use unkai_store::Cache;
+use unkai_store::{Cache, SharedCache};
 
 use crate::notify::UiNotifier;
 
@@ -29,6 +29,13 @@ use crate::notify::UiNotifier;
 #[derive(Clone)]
 pub struct AppContext {
     pub cache: Cache,
+    /// The machine-level shared cache (#532).  The one deliberately
+    /// profile-crossing member: every profile context carries a
+    /// clone of the same process-wide handle, because the data
+    /// behind it (the URLhaus snapshot) is machine-scoped by
+    /// definition.  Threaded explicitly like everything else — no
+    /// globals.
+    pub shared: SharedCache,
     pub settings: SharedSettings,
     /// Fire-once bookkeeping for due event reminders.
     pub reminders: Arc<EventReminderState>,

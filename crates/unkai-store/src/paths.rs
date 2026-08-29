@@ -66,6 +66,15 @@ impl ProfilePaths {
         self.root.join("profiles.json")
     }
 
+    /// The machine-level shared cache (#532) — plaintext SQLite
+    /// holding machine-scoped data every profile reads (today: the
+    /// URLhaus feed snapshot).  Deliberately at the root, next to
+    /// `profiles.json`, not under any `profiles/<id>/`: no profile
+    /// owns it, and deleting a profile must never touch it.
+    pub fn shared_db(&self) -> PathBuf {
+        self.root.join("shared.db")
+    }
+
     /// Parent directory holding one subdirectory per profile.
     pub fn profiles_dir(&self) -> PathBuf {
         self.root.join("profiles")

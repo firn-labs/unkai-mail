@@ -14,6 +14,8 @@ pub mod paths;
 pub mod profiles;
 pub mod settings_bundle;
 pub mod settings_sync;
+pub mod shared_cache;
 
 pub use cache::{Cache, DueMessageReminder, OutboxEnqueue, OutboxRow, SentReceiptStatus};
 pub use paths::ProfilePaths;
+pub use shared_cache::SharedCache;
