@@ -19,12 +19,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod badge;
+mod external_open;
 mod notifier;
 mod registry;
 mod tray;
 mod windows;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use registry::{ProfileRegistry, profile_ctx};
 use serde::Serialize;
@@ -713,121 +714,45 @@ fn restart_app(app: AppHandle) {
     app.restart();
 }
 
-// ── File-association handlers (#254) ────────────────────────────
+// ── External-open handlers (#254 / #294 / #536) ─────────────────
 //
-// `bundle.fileAssociations` in `tauri.conf.json` registers Unkai
-// with the OS as an "Open with…" candidate for `.ics` and `.eml`.
-// When the user double-clicks (or `start file.eml`s) one of those
-// the OS launches us with the path as `argv[1]`.  We capture the
-// argument once at startup and stash it in `PENDING_FILE_OPEN`;
-// the frontend polls `take_pending_file_to_open` after mount and
-// routes the path to the right view.
-
-/// One-shot slot for the file the OS handed us at launch time.
-/// Frontend takes ownership on its first read so a refresh of the
-/// main window doesn't loop into the same import flow.
-static PENDING_FILE_OPEN: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
-
-fn pending_file_slot() -> &'static Mutex<Option<String>> {
-    PENDING_FILE_OPEN.get_or_init(|| Mutex::new(None))
-}
-
-/// Cold-start buffer for `mailto:` URLs that arrived before the
-/// frontend was ready to receive events (#294).  Populated by:
-///   - `capture_launch_mailto_arg()` at process start, for cold
-///     launches where the OS handed us a mailto as argv[1];
-///   - the deep-link plugin's `on_open_url` callback for the
-///     very first URL that fires before the webview mounts;
-///   - the single-instance plugin when a second launch beats the
-///     deep-link path on slower OSes.
-///
-/// Always a `Vec`, never a single slot, because on a cold start
-/// it's plausible (though unusual) for multiple paths to deliver
-/// the same URL — the frontend dedups by draining the whole list
-/// and parsing each one fresh.
-static PENDING_MAILTO_URLS: std::sync::OnceLock<Mutex<Vec<String>>> = std::sync::OnceLock::new();
-
-fn pending_mailto_slot() -> &'static Mutex<Vec<String>> {
-    PENDING_MAILTO_URLS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-/// Stash a `mailto:` URL in the cold-start buffer.  No-op if the
-/// mutex is poisoned — losing one URL to a worker-thread panic is
-/// strictly better than panicking the main thread on lock recovery.
-fn buffer_mailto_url(url: &str) {
-    if let Ok(mut slot) = pending_mailto_slot().lock() {
-        slot.push(url.to_string());
-    }
-}
-
-/// Capture argv[1] at startup if it points at an `.ics` or `.eml`
-/// file we know how to open.  Anything else is ignored — Tauri
-/// passes any `--flag` style argv too and we don't want to
-/// accidentally treat those as paths.
-fn capture_launch_file_arg() {
-    // argv is read only to discover a file to *open*, never for an
-    // access-control decision — and the candidate is re-validated as
-    // an existing `.ics`/`.eml` file below before we act on it.
-    // nosemgrep: rust.lang.security.args.args
-    let Some(arg) = std::env::args().nth(1) else {
-        return;
-    };
-    if arg.starts_with('-') {
-        return;
-    }
-    let lower = arg.to_lowercase();
-    if !(lower.ends_with(".ics") || lower.ends_with(".eml")) {
-        return;
-    }
-    if !std::path::Path::new(&arg).is_file() {
-        return;
-    }
-    if let Ok(mut slot) = pending_file_slot().lock() {
-        *slot = Some(arg);
-    }
-}
-
-/// Capture argv at startup if any argument is a `mailto:` URL.
-/// On Windows the OS hands the protocol URL as `argv[1]` when we
-/// are the registered handler; on macOS the URL is delivered via
-/// the deep-link plugin (which sets up an Apple Event handler);
-/// on Linux behaviour depends on the desktop file's `Exec=` line
-/// (typically `%u` or `%U` substitution → argv).  Scanning all of
-/// argv (not just argv[1]) handles the edge case where a wrapper
-/// or shell prepends flags.
-fn capture_launch_mailto_arg() {
-    // Same rationale as `capture_launch_file_arg`: argv is scanned
-    // only to find a `mailto:` URL to act on, not for any security
-    // decision.  The value is parsed as a URL, never trusted as auth.
-    // nosemgrep: rust.lang.security.args.args
-    for arg in std::env::args().skip(1) {
-        if arg.to_lowercase().starts_with("mailto:") {
-            buffer_mailto_url(&arg);
-        }
-    }
-}
-
-/// Frontend hook: returns the launch-time file path (if any) and
-/// clears the slot so a window refresh doesn't re-open it.
-#[tauri::command]
-fn take_pending_file_to_open() -> Option<String> {
-    pending_file_slot()
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-}
+// `bundle.fileAssociations` registers Unkai as an "Open with…"
+// candidate for `.ics` / `.eml`, and the deep-link plugin makes us
+// the OS `mailto:` handler.  Capture, buffering, and the "which
+// profile window gets this?" routing all live in
+// `external_open.rs` — these shims are just the frontend's
+// cold-start drains plus the profile-identity stamp.
 
 /// Frontend hook: drains the cold-start `mailto:` URL buffer
-/// (#294).  Returns the URLs collected so far and clears the
-/// buffer — a refresh of the main window won't re-open them.
-/// Live URLs arriving after this point are delivered via the
-/// `unkai://mailto` Tauri event instead.
+/// (#294) — a refresh of the window won't re-open them.  Live URLs
+/// arriving after this point ride the `unkai://mailto` event.
 #[tauri::command]
 fn take_pending_mailto_urls() -> Vec<String> {
-    pending_mailto_slot()
-        .lock()
-        .map(|mut slot| std::mem::take(&mut *slot))
-        .unwrap_or_default()
+    external_open::take_pending_mailto_urls()
+}
+
+/// Frontend hook: drains the cold-start `.eml` / `.ics` file-open
+/// buffer (#254).  Live paths (a second launch while we're
+/// running) ride the `unkai://open-file` event instead (#536).
+#[tauri::command]
+fn take_pending_files_to_open() -> Vec<String> {
+    external_open::take_pending_files_to_open()
+}
+
+/// Stamp the calling primary window with its profile's visual
+/// identity (#536): the composited window/taskbar icon (PNG bytes
+/// rendered by the frontend — the webview rasterizes emoji, Rust
+/// doesn't) and the "Unkai Mail — Work" title.  On Windows this
+/// also assigns the window's AppUserModelID so profiles can form
+/// their own taskbar groups — see `windows::set_window_identity`.
+#[tauri::command]
+fn set_window_identity(
+    window: tauri::WebviewWindow,
+    reg: State<'_, ProfileRegistry>,
+    title: String,
+    icon_png: Option<Vec<u8>>,
+) -> Result<(), UnkaiError> {
+    windows::set_window_identity(&window, &reg, &title, icon_png.as_deref())
 }
 
 /// Cross-platform "open the OS Default Apps panel" — used by the
@@ -3754,21 +3679,14 @@ async fn upload_to_nextcloud(
 fn main() {
     tracing_subscriber::fmt::init();
 
-    // Pick up the path the OS handed us if Unkai was invoked as
-    // an `.ics` / `.eml` file handler (#254).  Capturing here —
-    // before the Tauri builder runs — means the slot is populated
-    // by the time the frontend's `take_pending_file_to_open`
-    // ping arrives on first paint.
-    capture_launch_file_arg();
-
-    // Same idea for `mailto:` URLs (#294).  On Windows the OS
-    // hands the URL through argv, and registering as the default
-    // mailto handler at the OS level only takes effect after the
-    // deep-link plugin's first run — we still want a cold-start
-    // launch with a mailto in argv to land in Compose, so the
-    // argv-scan path stays independent of the plugin's runtime
-    // registration.
-    capture_launch_mailto_arg();
+    // Pick up anything the OS handed us in argv — an `.ics` /
+    // `.eml` path (#254) or a `mailto:` URL (#294).  Capturing
+    // here, before the Tauri builder runs, means the cold-start
+    // buffers are populated by the time the frontend's
+    // `take_pending_*` drains arrive on first paint; the argv scan
+    // also stays independent of the deep-link plugin's runtime
+    // registration (which only takes effect after its first run).
+    external_open::capture_launch_args();
 
     // Resolve the profile storage layout (#531).  `ensure_registry`
     // creates the registry on first run and migrates a pre-profile
@@ -3820,40 +3738,14 @@ fn main() {
         // `deep-link` feature on, the plugin's callback routes the
         // forwarded argv through deep-link's own dispatcher, so
         // any `mailto:` URL hits the same `on_open_url` listener
-        // whether it came from the fresh-launch or
-        // second-launch path.  We still surface the window in the
-        // callback so a mailto click from another app raises
-        // Unkai to the foreground even before the URL hops
-        // through deep-link.
+        // whether it came from the fresh-launch or second-launch
+        // path.  The callback itself routes every payload —
+        // including `.eml` / `.ics` paths, which deep-link never
+        // sees — through `external_open`'s single decision point,
+        // and raises the app even for a bare second launch.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             tracing::debug!("single-instance argv received: {argv:?}");
-            // Raise first so the mailto (if any) lands in a window
-            // the user is looking at.  #535: "the" window is the
-            // most recently focused profile window, and the mailto
-            // event targets exactly that window — a broadcast
-            // would open a compose in every profile's shell.
-            // (Full profile-aware external-open routing is chunk
-            // 5; here a second launch simply must not regress.)
-            let raised = windows::show_primary_window(app);
-            for arg in &argv {
-                if arg.to_lowercase().starts_with("mailto:") {
-                    // Buffer + targeted emit, same shape as the
-                    // deep-link path below: the buffer covers a
-                    // window whose listeners aren't up yet, the
-                    // frontend listener drains the buffer alongside
-                    // the event so nothing is delivered twice.
-                    buffer_mailto_url(arg);
-                    if let Ok(r) = &raised
-                        && !r.created
-                        && let Err(e) = app.emit_to(r.window.label(), "unkai://mailto", arg.clone())
-                    {
-                        tracing::warn!("emit single-instance mailto failed: {e}");
-                    }
-                }
-            }
-            if let Err(e) = raised {
-                tracing::warn!("single-instance window raise failed: {e}");
-            }
+            external_open::handle_second_launch(app, &argv);
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
@@ -3894,7 +3786,7 @@ fn main() {
         //     badge.  (Native new-mail toasts do NOT continue: the
         //     frontend raises them, so a window-less profile only
         //     badges the tray until a window reopens — a known
-        //     #535 limitation, candidate for chunk 5.)  Only
+        //     #535 limitation.)  Only
         //     `delete_profile` and app exit tear contexts down.
         //   * CloseRequested on the static "main" window →
         //     minimize to tray when the window's *current* profile
@@ -3964,94 +3856,18 @@ fn main() {
             #[cfg(windows)]
             set_app_user_model_id();
 
-            // ── `mailto:` deep-link wiring (#294) ──────────────
+            // ── `mailto:` deep-link wiring (#294 / #536) ───────
             //
-            // Three things happen here:
-            //
-            //   1. Register `mailto` as a handled URI scheme at
-            //      runtime.  The bundle config registers it at
-            //      install time, but `register()` is what writes
-            //      the per-user registry keys on Windows (and the
-            //      per-user `.desktop` association on Linux) for
-            //      dev / portable launches that never run an
-            //      installer.  Idempotent — safe to call every
-            //      boot.
-            //   2. Drain `get_current()` into our cold-start
-            //      buffer.  Tauri exposes the URL the OS used to
-            //      spawn us here; without this, a fresh launch
-            //      from a mailto link delivers the URL *before*
-            //      the frontend has registered an event listener
-            //      and we'd silently drop it.
-            //   3. Subscribe to `on_open_url` for any live URL
-            //      that arrives after the webview is up.  We emit
-            //      a `unkai://mailto` Tauri event with the raw
-            //      URL; the frontend parses it with the same
-            //      `parseMailtoUrl` helper the in-app body
-            //      handler uses and opens Compose pre-filled.
+            // Scheme registration, the cold-start `get_current()`
+            // drain, and the live `on_open_url` → profile-routing
+            // subscription all live in `external_open.rs` — one
+            // module owns every road an OS-handed payload travels.
             //
             // The deep-link plugin is `cfg(desktop)`-gated on
-            // mobile by Tauri itself, so wrapping our calls in
+            // mobile by Tauri itself, so wrapping the calls in
             // `cfg!(desktop)` would be redundant — on iOS /
             // Android the plugin trait isn't even present.
-            use tauri_plugin_deep_link::DeepLinkExt;
-            let dl = app.deep_link();
-            if let Err(e) = dl.register("mailto") {
-                tracing::warn!(
-                    "deep-link mailto registration failed (OS will not route mailto links here \
-                     until next launch / installer run): {e}"
-                );
-            }
-            match dl.get_current() {
-                Ok(Some(urls)) => {
-                    for u in urls {
-                        let s = u.to_string();
-                        if s.to_lowercase().starts_with("mailto:") {
-                            buffer_mailto_url(&s);
-                        }
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => tracing::warn!("deep-link get_current failed: {e}"),
-            }
-            let handle_for_links = app.handle().clone();
-            dl.on_open_url(move |event| {
-                for url in event.urls() {
-                    let s = url.to_string();
-                    if !s.to_lowercase().starts_with("mailto:") {
-                        continue;
-                    }
-                    // Buffer + emit covers the race where the OS
-                    // delivers the URL after `setup` returns but
-                    // before App.svelte's mount has wired up the
-                    // listener: the buffer catches it and the
-                    // frontend's `take_pending_mailto_urls` poll
-                    // drains it on mount.  #535: the emit targets
-                    // the most recently focused profile window
-                    // (a broadcast would open a compose in every
-                    // profile's shell), and the frontend listener
-                    // drains the buffer alongside the event so the
-                    // duplicate entry can't be replayed by a later
-                    // profile window's mount.
-                    buffer_mailto_url(&s);
-                    match windows::show_primary_window(&handle_for_links) {
-                        Ok(raised) if !raised.created => {
-                            if let Err(e) = handle_for_links.emit_to(
-                                raised.window.label(),
-                                "unkai://mailto",
-                                s.clone(),
-                            ) {
-                                tracing::warn!("emit deep-link mailto failed: {e}");
-                            }
-                        }
-                        // A freshly created window drains the
-                        // buffer on mount — no emit needed.
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!("deep-link window raise failed: {e}");
-                        }
-                    }
-                }
-            });
+            external_open::setup_deep_links(app.handle());
 
             // Drop the app icon onto disk once and stash its path
             // in managed state so the JS layer can pass it to
@@ -4575,13 +4391,15 @@ fn main() {
             quit_app,
             restart_app,
             // #254 — file-association entry points
-            take_pending_file_to_open,
+            take_pending_files_to_open,
             parse_eml_file,
             parse_eml_file_inline_images,
             parse_ics_file,
             open_default_apps_settings,
             // #294 — OS-level mailto handler cold-start drain
             take_pending_mailto_urls,
+            // #536 — per-window profile identity (title + icon)
+            set_window_identity,
             // #57 — end-to-end mail encryption: key management
             pgp_import_private_key,
             pgp_remove_private_key,

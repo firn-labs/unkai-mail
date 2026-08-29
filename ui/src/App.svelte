@@ -13,6 +13,7 @@
 
   import { untrack } from 'svelte'
   import * as api from './lib/api'
+  import type { Profile } from './lib/api'
   import { clampToViewport, cursorAnchor } from './lib/coords'
   import { isNextcloudSource } from './lib/ncSources'
   import type { UnlistenFn } from '@tauri-apps/api/event'
@@ -27,6 +28,8 @@
   import AccountSettings, { type SettingsCategory } from './lib/AccountSettings.svelte'
   import WelcomeTour from './lib/WelcomeTour.svelte'
   import LockScreen from './lib/LockScreen.svelte'
+  import FullscreenState from './lib/FullscreenState.svelte'
+  import { profileWindowTitle, renderWindowIcon } from './lib/profileIcon'
   import Compose, {
     type Attachment as ComposeAttachment,
     type ComposeInitial,
@@ -598,6 +601,43 @@
     void profileStore.init()
   })
 
+  // ── Window identity (#536) ──────────────────────────────────
+  // Stamp this window's title + window/taskbar icon with its
+  // profile: "🦊 Unkai Mail — Work" and the logo composited with
+  // the profile's badge (rendered by `profileIcon.ts` — the
+  // webview rasterizes emoji, Rust doesn't).  Re-runs on profile
+  // switch, profile rename / re-icon, and logo-style changes.
+  // Single-profile installs keep the plain name + logo.
+  const currentProfile = $derived(
+    profileStore.currentId ? profileStore.byId.get(profileStore.currentId) : undefined,
+  )
+  /** Monotonic guard: icon compositing is async, and a stale
+   *  render must never overwrite a newer profile's identity. */
+  let windowIdentitySeq = 0
+  $effect(() => {
+    const p = currentProfile
+    const multi = profileStore.profiles.length > 1
+    const style = appPrefs?.logo_style ?? 'storm'
+    if (!p) return
+    const title = profileWindowTitle(p, multi)
+    const badge = multi ? p.icon : null
+    const seq = ++windowIdentitySeq
+    void (async () => {
+      let iconPng: number[] | null = null
+      try {
+        iconPng = await renderWindowIcon(api.platform.assetUrl(style, 'unkai-logo'), badge)
+      } catch (e) {
+        console.warn('window icon compositing failed', e)
+      }
+      if (seq !== windowIdentitySeq) return
+      try {
+        await api.system.setWindowIdentity({ title, iconPng })
+      } catch (e) {
+        console.warn('set_window_identity failed', e)
+      }
+    })()
+  })
+
   // ── Issue #16: background-sync events + desktop notifications ──
   //
   // Rust emits a `new-mail` event per newly-fetched envelope and an
@@ -720,6 +760,9 @@
      *  When false (default) the link opens a standalone reader
      *  window so the user keeps their place in the Notes view. */
     notes_mail_open_in_view?: boolean
+    /** Logo style id (Settings → About).  Drives the boot screen
+     *  artwork and the base of the composited window icon (#536). */
+    logo_style?: string
   }
   type CustomTheme = {
     id: string
@@ -1071,6 +1114,7 @@
     let unlistenRespondWithMeetingFromMail: UnlistenFn | null = null
     let unlistenEventEditorSavedFromPopout: UnlistenFn | null = null
     let unlistenMailtoDeepLink: UnlistenFn | null = null
+    let unlistenFileOpen: UnlistenFn | null = null
     let unlistenMailFlagsUpdated: UnlistenFn | null = null
     let unlistenOutboxUpdated: UnlistenFn | null = null
     let unlistenMessageReminder: UnlistenFn | null = null
@@ -1363,15 +1407,29 @@
         },
       )
 
+      // #536 — OS-level `.eml` / `.ics` handler, the file twin of
+      // the mailto channel above: a second launch with a file in
+      // argv reaches the running instance through the single-
+      // instance forward, and `external_open.rs` targets this
+      // window when it was the most recently focused one.
+      unlistenFileOpen = await api.onAppEvent(
+        'unkai://open-file',
+        (e) => {
+          void processPendingFileOpens(
+            typeof e.payload === 'string' ? e.payload : undefined,
+          )
+        },
+      )
+
       // #254 — when Unkai is launched as the OS handler for an
       // .ics or .eml file (Windows registry / macOS UTI / Linux
-      // .desktop), the backend stashes the path in a one-shot
-      // slot during process startup.  Pull it now, after the
-      // event listeners are wired so an iCal "Show event" path
-      // can still race past us if it ever overlaps.  Best-effort:
-      // any failure is logged and dropped so a malformed handoff
-      // doesn't keep the user staring at an empty app shell.
-      void processPendingLaunchFile()
+      // .desktop), the backend buffers the paths during process
+      // startup.  Pull them now, after the event listeners are
+      // wired so an iCal "Show event" path can still race past us
+      // if it ever overlaps.  Best-effort: any failure is logged
+      // and dropped so a malformed handoff doesn't keep the user
+      // staring at an empty app shell.
+      void processPendingFileOpens()
       // #294 — same idea for cold-start `mailto:` URLs.  The
       // backend buffers every URL that arrived before this
       // listener was wired (argv scan + the deep-link plugin's
@@ -1393,6 +1451,7 @@
       unlistenRespondWithMeetingFromMail?.()
       unlistenEventEditorSavedFromPopout?.()
       unlistenMailtoDeepLink?.()
+      unlistenFileOpen?.()
       unlistenMailFlagsUpdated?.()
       unlistenOutboxUpdated?.()
       unlistenMessageReminder?.()
@@ -1554,9 +1613,35 @@
   // piece of per-profile view state is reset and the stores
   // reload against the new profile's cache.  Open composes are
   // discarded — they belonged to the old profile (pop a compose
-  // out first to keep it).  The plain loading state is deliberate
-  // for now; the polished transition screen is chunk 5 (#536).
+  // out first to keep it).  The whole sequence hides behind the
+  // FullscreenState transition overlay (#536).
   let profileSwitching = $state(false)
+  /** The transition screen's cast (#536): set at the start of a
+   *  switch-in-place, cleared by the dismissal effect below once
+   *  the new profile's shell has painted. */
+  let profileTransition = $state<{ from: Profile | null; to: Profile } | null>(null)
+  // Dismiss the transition overlay the moment loading finishes —
+  // never on an animation timer (#536): the switch itself is done
+  // (`profileSwitching` false), the new profile's boot gate has
+  // answered (`dbStatus`), and the shell left the loading branch —
+  // or the profile is locked / needs setup, where the LockScreen /
+  // wizard must become interactive immediately.  The double-rAF
+  // lets that first real frame hit the screen before the fade.
+  $effect(() => {
+    if (!profileTransition || profileSwitching) return
+    if (dbStatus === null) return
+    if (!dbStatus.locked && currentView === 'loading') return
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        profileTransition = null
+      })
+    })
+    return () => {
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
+    }
+  })
   /** Bumped on every completed remap — keys the IconRail remount
    *  so its per-profile subscriptions re-seed.  A counter instead
    *  of `profileStore.currentId` so the boot-time null→id
@@ -1565,12 +1650,24 @@
   let profileSwitchEpoch = $state(0)
   async function switchProfile(id: string) {
     if (profileSwitching || id === profileStore.currentId) return
+    const to = profileStore.byId.get(id)
+    if (!to) return
     profileSwitching = true
+    // Raise the transition screen (#536) before the remap so the
+    // old profile's UI never paints mid-teardown.  The dismissal
+    // effect above drops it once the new shell has its first frame.
+    profileTransition = {
+      from: profileStore.currentId
+        ? (profileStore.byId.get(profileStore.currentId) ?? null)
+        : null,
+      to,
+    }
     try {
       await api.profiles.switchWindowProfile({ id })
     } catch (e) {
       console.warn('switch_window_profile failed', e)
       profileSwitching = false
+      profileTransition = null
       return
     }
     try {
@@ -3335,33 +3432,50 @@
     return { required, optional, chair }
   }
 
-  /** Drain the one-shot launch-file slot in the Rust backend
-   *  and dispatch the path by extension.  Called once during
-   *  the main app's startup `$effect`. */
-  async function processPendingLaunchFile() {
-    let path: string | null = null
-    try {
-      path = await api.system.takePendingFileToOpen()
-    } catch (e) {
-      console.warn('take_pending_file_to_open failed', e)
-      return
-    }
-    if (!path) return
+  /** Paths a drain already opened, with their open time — the
+   *  file-open twin of `recentMailtoUrls` below (#536): the
+   *  backend buffers AND emits every path, so the same one can
+   *  surface from both roads. */
+  const recentFileOpens = new Map<string, number>()
 
-    const lower = path.toLowerCase()
-    if (lower.endsWith('.eml')) {
-      try {
-        await openMailFileInStandaloneWindow(path)
-      } catch (e) {
-        console.warn('openMailFileInStandaloneWindow failed', e)
+  /** Drain the backend's cold-start file-open buffer and dispatch
+   *  each `.eml` / `.ics` path — plus the optional live-event
+   *  payload — by extension (#254 / #536).  Called at mount
+   *  (after the listeners are wired) and from the
+   *  `unkai://open-file` listener; draining in both places with
+   *  the TTL dedupe means a path is never lost and never opened
+   *  twice.  Best-effort per path: one broken file logs a warning
+   *  without eating its siblings. */
+  async function processPendingFileOpens(extraPath?: string) {
+    const paths = new Set<string>()
+    try {
+      for (const p of await api.system.takePendingFilesToOpen()) {
+        paths.add(p)
       }
-      return
+    } catch (e) {
+      console.warn('take_pending_files_to_open failed', e)
     }
-    if (lower.endsWith('.ics')) {
-      await openIcsFileInEditor(path)
-      return
+    if (extraPath) paths.add(extraPath)
+    const now = Date.now()
+    for (const [p, at] of recentFileOpens) {
+      if (now - at > EXTERNAL_OPEN_DEDUPE_MS) recentFileOpens.delete(p)
     }
-    console.warn('pending file has unsupported extension:', path)
+    for (const path of paths) {
+      if (recentFileOpens.has(path)) continue
+      recentFileOpens.set(path, now)
+      const lower = path.toLowerCase()
+      if (lower.endsWith('.eml')) {
+        try {
+          await openMailFileInStandaloneWindow(path)
+        } catch (e) {
+          console.warn('openMailFileInStandaloneWindow failed', e)
+        }
+      } else if (lower.endsWith('.ics')) {
+        await openIcsFileInEditor(path)
+      } else {
+        console.warn('pending file has unsupported extension:', path)
+      }
+    }
   }
 
   /** URLs a drain already opened a compose for, with their open
@@ -3373,7 +3487,8 @@
    *  still allowing the user to genuinely trigger the same mailto
    *  again a moment later. */
   const recentMailtoUrls = new Map<string, number>()
-  const MAILTO_DEDUPE_MS = 3000
+  /** Shared by the mailto and file-open drains (#536). */
+  const EXTERNAL_OPEN_DEDUPE_MS = 3000
 
   /** Drain the backend's cold-start `mailto:` buffer and hand
    *  each URL — plus the optional live-event payload — to the
@@ -3396,7 +3511,7 @@
     if (extraUrl) urls.add(extraUrl)
     const now = Date.now()
     for (const [url, at] of recentMailtoUrls) {
-      if (now - at > MAILTO_DEDUPE_MS) recentMailtoUrls.delete(url)
+      if (now - at > EXTERNAL_OPEN_DEDUPE_MS) recentMailtoUrls.delete(url)
     }
     for (const url of urls) {
       if (recentMailtoUrls.has(url)) continue
@@ -3711,15 +3826,11 @@
   <!-- Brief flash while we wait for `database_status` to land —
        prevents the loading view from poking the cache before we
        know whether it's locked. -->
-  <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
-    <p class="text-surface-500">Starting up…</p>
-  </div>
+  <FullscreenState label={m.shell_starting()} logoStyle={appPrefs?.logo_style ?? 'storm'} />
 {:else if currentView === 'loading'}
   <!-- Loading / Setup both run before the user has an account, so
        the IconRail (which is keyed by accounts) isn't mounted. -->
-  <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
-    <p class="text-surface-500">Loading...</p>
-  </div>
+  <FullscreenState label={m.shell_loading()} logoStyle={appPrefs?.logo_style ?? 'storm'} />
 {:else if currentView === 'setup'}
   <!-- The wizard is closeable when the user already has at least
        one account configured (i.e. they reached setup via "Add
@@ -4199,4 +4310,18 @@
       <span>Refresh</span>
     </button>
   </div>
+{/if}
+
+<!-- Profile-switch transition screen (#536).  Rendered last so it
+     paints over every sibling at the top of the z-ladder; the
+     dismissal effect near `switchProfile` removes it once the new
+     profile's shell has its first frame (the underlying loading /
+     lock / inbox branches keep rendering beneath it meanwhile). -->
+{#if profileTransition}
+  <FullscreenState
+    label={m.profiles_transition_switching({ name: profileTransition.to.name })}
+    fromIcon={profileTransition.from?.icon ?? null}
+    toIcon={profileTransition.to.icon}
+    logoStyle={appPrefs?.logo_style ?? 'storm'}
+  />
 {/if}

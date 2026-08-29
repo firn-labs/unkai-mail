@@ -226,6 +226,145 @@ pub fn show_primary_window(app: &AppHandle) -> Result<RaisedWindow, UnkaiError> 
     })
 }
 
+/// Stamp a primary window with its profile's visual identity
+/// (#536): window title ("Unkai Mail — Work"), the composited
+/// window/taskbar icon, and — on Windows — the AppUserModelID
+/// that decides which taskbar group the window belongs to.
+///
+/// The icon PNG is rendered by the *frontend* (base logo + the
+/// profile's emoji / named-icon badge on a canvas): the webview
+/// rasterizes colour emoji natively, Rust doesn't — that split is
+/// deliberate.  `None` keeps whatever icon the window already has
+/// (the plain per-style logo `create_profile_window` applies).
+///
+/// Platform behaviour differs — documented in README's platform
+/// notes:
+///   * **Windows**: the taskbar groups buttons by AppUserModelID.
+///     Windows of non-startup profiles get a per-profile AUMID
+///     (`com.unkai.mail.profile.<id>`) so they form their own
+///     group with their own composited icon; the startup profile
+///     keeps the base `com.unkai.mail` AUMID so its window stays
+///     grouped with (and highlighted by) the installer's pinned /
+///     Start-Menu shortcut.  With taskbar grouping in
+///     "ungrouped/labels" mode, the per-window icon shows on every
+///     button regardless.
+///   * **macOS**: one Dock icon per process — the per-window icon
+///     still helps in Mission Control and window switchers, and
+///     the title carries the profile everywhere.
+///   * **Linux**: depends on the shell; the window icon + title
+///     are honoured by the common Alt-Tab and dock
+///     implementations.
+pub fn set_window_identity(
+    win: &WebviewWindow,
+    reg: &ProfileRegistry,
+    title: &str,
+    icon_png: Option<&[u8]>,
+) -> Result<(), UnkaiError> {
+    // Popouts own their titles (compose subject, mail subject…)
+    // and never form a profile's taskbar identity — refuse quietly
+    // rather than let a stray call restyle them.
+    if !is_primary_label(win.label()) {
+        return Ok(());
+    }
+    win.set_title(title)
+        .map_err(|e| UnkaiError::Other(format!("set window title: {e}")))?;
+    if let Some(bytes) = icon_png {
+        match tauri::image::Image::from_bytes(bytes) {
+            // Best-effort: a bad PNG or a platform refusal costs
+            // the badge, not the title.
+            Ok(img) => {
+                if let Err(e) = win.set_icon(img) {
+                    tracing::warn!("failed to apply profile window icon: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("profile window icon PNG did not decode: {e}"),
+        }
+    }
+    #[cfg(windows)]
+    {
+        let profile_id = reg.profile_for_label(win.label());
+        let aumid = if profile_id == reg.startup_profile_id() {
+            "com.unkai.mail".to_string()
+        } else {
+            format!("com.unkai.mail.profile.{profile_id}")
+        };
+        set_window_app_user_model_id(win, &aumid);
+    }
+    #[cfg(not(windows))]
+    let _ = reg;
+    Ok(())
+}
+
+/// Assign a per-window AppUserModelID (#536).  Tauri doesn't
+/// expose this; the property-store route is the documented way to
+/// give one window of a process its own taskbar identity.  A
+/// switch-in-place re-stamps the same window with the new
+/// profile's AUMID — the taskbar regroups live.
+#[cfg(windows)]
+fn set_window_app_user_model_id(win: &WebviewWindow, aumid: &str) {
+    use ::windows::Win32::Foundation::{HWND, PROPERTYKEY};
+    use ::windows::Win32::System::Com::StructuredStorage::{
+        PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
+    };
+    use ::windows::Win32::System::Variant::VT_LPWSTR;
+    use ::windows::Win32::UI::Shell::PropertiesSystem::{
+        IPropertyStore, SHGetPropertyStoreForWindow,
+    };
+    use ::windows::core::{GUID, PWSTR};
+
+    // PKEY_AppUserModel_ID — {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5.
+    // Spelled out because windows-rs doesn't export the PKEY_*
+    // constants for the AppUserModel property set.
+    const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3),
+        pid: 5,
+    };
+
+    let hwnd = match win.hwnd() {
+        Ok(h) => HWND(h.0),
+        Err(e) => {
+            tracing::warn!("window AUMID: no HWND: {e}");
+            return;
+        }
+    };
+    // Hand-assembled VT_LPWSTR PROPVARIANT — this windows-rs
+    // version ships raw bindings only (no `From<&str>`), and the
+    // `InitPropVariantFromString*` helpers all build *vectors*,
+    // which the AppUserModel property rejects.  The store copies
+    // the string during SetValue, so the buffer only has to
+    // outlive the call, and the raw-binding PROPVARIANT has no
+    // Drop — nothing ever tries to free our Vec's pointer.
+    let mut wide: Vec<u16> = aumid.encode_utf16().chain(std::iter::once(0)).collect();
+    let value = PROPVARIANT {
+        Anonymous: PROPVARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                vt: VT_LPWSTR,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: PROPVARIANT_0_0_0 {
+                    pwszVal: PWSTR(wide.as_mut_ptr()),
+                },
+            }),
+        },
+    };
+    // SAFETY: `hwnd` is a live window handle owned by this
+    // process; the property store is used and released inside this
+    // scope, and `wide` (which the PROPVARIANT points into)
+    // outlives the SetValue call.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let result: ::windows::core::Result<()> = (|| unsafe {
+        let store: IPropertyStore = SHGetPropertyStoreForWindow(hwnd)?;
+        store.SetValue(&PKEY_APP_USER_MODEL_ID, &value)?;
+        store.Commit()
+    })();
+    if let Err(e) = result {
+        // Best-effort by design (#536): grouping falls back to the
+        // process AUMID; icon + title still carry the profile.
+        tracing::warn!("window AUMID assignment failed: {e}");
+    }
+}
+
 /// Persist the `last_used` bookkeeping for a profile off the event
 /// loop — a tiny JSON rewrite, but window-focus events fire on the
 /// UI thread and file IO does not belong there.  Runs through

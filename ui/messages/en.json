@@ -926,5 +926,8 @@
   "profiles_switcher_switch_here": "Switch to {name} here",
   "profiles_switcher_open_window": "Open {name} in a new window",
   "profiles_switcher_manage": "Manage profiles…",
-  "profiles_switcher_only_profile": "No other profiles yet."
+  "profiles_switcher_only_profile": "No other profiles yet.",
+  "profiles_transition_switching": "Switching to {name}…",
+  "shell_starting": "Starting up…",
+  "shell_loading": "Loading…"
 }

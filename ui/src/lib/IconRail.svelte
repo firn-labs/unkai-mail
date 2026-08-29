@@ -31,9 +31,10 @@
   import { isNextcloudSource } from './ncSources'
   import type { UnlistenFn } from '@tauri-apps/api/event'
   import * as api from './api'
-  import type { Profile, ProfileIcon } from './api'
+  import type { Profile } from './api'
   import { onDestroy } from 'svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import ProfileGlyph from './ProfileGlyph.svelte'
   import { anchorRect, clampToViewport, cursorAnchor } from './coords'
   import { profileStore } from './profileStore.svelte'
   import { m } from '../paraglide/messages'
@@ -381,7 +382,7 @@
     oncontextmenu={openProfileMenuAtCursor}
   >
     {#if currentProfile}
-      {@render profileGlyph(currentProfile.icon, 18)}
+      <ProfileGlyph icon={currentProfile.icon} size={18} />
     {:else}
       <Icon name="contacts" size={18} />
     {/if}
@@ -549,14 +550,6 @@
   </div>
 </aside>
 
-{#snippet profileGlyph(icon: ProfileIcon, size: number)}
-  {#if icon.kind === 'emoji'}
-    <span class="leading-none" style="font-size: {size}px">{icon.value}</span>
-  {:else}
-    <Icon name={icon.value as IconName} {size} />
-  {/if}
-{/snippet}
-
 <!-- Profile switcher popover (#535).  Same glass-float menu shell
      as ProfilesSettings' context menu; `mousedown` is stopped so
      the document-level dismiss listener doesn't unmount the menu
@@ -584,7 +577,7 @@
           <span
             class="w-6 h-6 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 flex items-center justify-center shrink-0"
           >
-            {@render profileGlyph(p.icon, 14)}
+            <ProfileGlyph icon={p.icon} size={14} />
           </span>
           <span class="truncate">{p.name}</span>
         </button>

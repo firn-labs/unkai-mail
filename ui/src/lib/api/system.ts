@@ -58,8 +58,22 @@ export function takePendingMailtoUrls(): Promise<string[]> {
   return call('take_pending_mailto_urls')
 }
 
-export function takePendingFileToOpen(): Promise<string | null> {
-  return call('take_pending_file_to_open')
+export function takePendingFilesToOpen(): Promise<string[]> {
+  return call('take_pending_files_to_open')
+}
+
+/**
+ * #536 — stamp this window with its profile's identity: the title
+ * ("Unkai Mail — Work") and the composited window/taskbar icon
+ * (PNG bytes rendered by `profileIcon.ts`; `iconPng` omitted keeps
+ * the window's current icon).  Primary windows only — the backend
+ * ignores calls from popouts.
+ */
+export function setWindowIdentity(args: {
+  title: string
+  iconPng?: number[] | null
+}): Promise<void> {
+  return call('set_window_identity', args)
 }
 
 export function listSystemFonts(): Promise<string[]> {

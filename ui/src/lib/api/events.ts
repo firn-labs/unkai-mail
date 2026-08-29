@@ -50,6 +50,12 @@ export interface AppEventPayloads {
    * `mailto:` URL the OS hands us through this channel. Historical
    * name, matched literally by the backend emit. */
   'unkai://mailto': string
+  /* OS-level file-open handoff (#536) — an `.eml` / `.ics` path a
+   * second launch handed the running instance, targeted at the
+   * most recently focused profile window by `external_open.rs`.
+   * Cold-start paths ride the `take_pending_files_to_open` drain
+   * instead. */
+  'unkai://open-file': string
   'reminder-show-event': { eventId: string }
   'signature-updated-from-popout': { accountId: string; html: string }
   'signature-popout-closed': { accountId: string }

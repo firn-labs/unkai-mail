@@ -99,9 +99,19 @@ gtk = "0.18"
 # Windows-only: needed to register an explicit AppUserModelID so toast
 # notifications attribute to "Unkai Mail" instead of falling back to
 # the launching process (PowerShell / cmd / Git Bash) — see
-# `set_app_user_model_id` in `main.rs`.
+# `set_app_user_model_id` in `main.rs`.  The property-system /
+# structured-storage features serve the per-window AUMID assignment
+# behind the profile taskbar identity (#536) — see
+# `windows::set_window_app_user_model_id`.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_UI_Shell"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
 # Direct WinRT toast access on Windows (#415).  Same crate the
 # notification plugin uses via notify-rust, but used directly so we
 # can attach an `on_activated` click callback — the plugin exposes
