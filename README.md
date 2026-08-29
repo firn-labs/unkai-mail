@@ -71,6 +71,29 @@ re-prompting for encryption passphrases).
   <em>Rich-text compose with a styled meeting-invite card in the body</em>
 </p>
 
+### 👥 Profiles
+
+Fully separate mail universes — Work, Private, a shared mailbox — each
+with its own accounts, encrypted cache, settings, and window. Switch in
+place from the rail switcher (with an animated transition), or open a
+profile in its own window and run them side by side. Each profile
+window carries the profile's emoji/icon in its title and window icon so
+you can tell them apart at a glance.
+
+**Platform notes on the per-profile window icon:**
+
+- **Windows** groups taskbar buttons by AppUserModelID. Unkai assigns
+  windows of non-startup profiles their own per-profile ID, so they
+  form their own taskbar group with the profile's badged icon; the
+  startup profile keeps the app's ID and stays attached to the pinned /
+  Start-Menu shortcut. In "never combine" taskbar mode every button
+  shows its own profile icon regardless, and Alt-Tab always does.
+- **macOS** has one Dock icon per app — the per-window icon shows in
+  Mission Control and window switchers, and the window title always
+  carries the profile.
+- **Linux** behaviour depends on the desktop shell; the window icon and
+  title are honoured by the common Alt-Tab and dock implementations.
+
 ### ☁️ Nextcloud, all the way down
 
 - **Talk** — create a meeting room from a thread, attach the join link
