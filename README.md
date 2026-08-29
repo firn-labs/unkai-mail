@@ -82,12 +82,15 @@ you can tell them apart at a glance.
 
 **Platform notes on the per-profile window icon:**
 
-- **Windows** groups taskbar buttons by AppUserModelID. Unkai assigns
-  windows of non-startup profiles their own per-profile ID, so they
-  form their own taskbar group with the profile's badged icon; the
-  startup profile keeps the app's ID and stays attached to the pinned /
-  Start-Menu shortcut. In "never combine" taskbar mode every button
-  shows its own profile icon regardless, and Alt-Tab always does.
+- **Windows** groups taskbar buttons by AppUserModelID, and a grouped
+  button's icon comes from that ID's registered shortcut or icon cache
+  rather than the live window. So once you have more than one profile,
+  every profile window — the startup profile's included — gets its own
+  per-profile ID and forms its own taskbar group with the profile's
+  badged icon. A pinned Unkai icon then acts as a launcher (clicking it
+  raises the running app) instead of merging with a window's button;
+  with a single profile, Unkai keeps the app's ID and classic pin
+  behaviour. Alt-Tab always shows each window's badged icon.
 - **macOS** has one Dock icon per app — the per-window icon shows in
   Mission Control and window switchers, and the window title always
   carries the profile.

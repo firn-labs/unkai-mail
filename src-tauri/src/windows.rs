@@ -239,15 +239,22 @@ pub fn show_primary_window(app: &AppHandle) -> Result<RaisedWindow, UnkaiError> 
 ///
 /// Platform behaviour differs — documented in README's platform
 /// notes:
-///   * **Windows**: the taskbar groups buttons by AppUserModelID.
-///     Windows of non-startup profiles get a per-profile AUMID
-///     (`com.unkai.mail.profile.<id>`) so they form their own
-///     group with their own composited icon; the startup profile
-///     keeps the base `com.unkai.mail` AUMID so its window stays
-///     grouped with (and highlighted by) the installer's pinned /
-///     Start-Menu shortcut.  With taskbar grouping in
-///     "ungrouped/labels" mode, the per-window icon shows on every
-///     button regardless.
+///   * **Windows**: the taskbar groups buttons by AppUserModelID,
+///     and a grouped button's icon comes from the AUMID's
+///     registered shortcut (or the shell's per-AUMID icon cache),
+///     NOT from the live window icon.  So once the registry holds
+///     more than one profile, EVERY primary window — the startup
+///     profile's included — gets a per-profile AUMID
+///     (`com.unkai.mail.profile.<id>`): each profile forms its own
+///     taskbar group showing its own badged icon.  (Keeping the
+///     startup window on the base AUMID was tried first; its
+///     button then showed the shortcut/cached plain logo while
+///     other profiles showed badges — exactly the inconsistency
+///     users notice.)  The cost: with profiles in play, a pinned
+///     Unkai icon is a launcher, not a merged button — clicking it
+///     still raises the app via the single-instance forward.
+///     Single-profile installs keep the base `com.unkai.mail`
+///     AUMID and classic pin behaviour.
 ///   * **macOS**: one Dock icon per process — the per-window icon
 ///     still helps in Mission Control and window switchers, and
 ///     the title carries the profile everywhere.
@@ -288,11 +295,26 @@ pub fn set_window_identity(
     }
     #[cfg(windows)]
     {
-        let profile_id = reg.profile_for_label(win.label());
-        let aumid = if profile_id == reg.startup_profile_id() {
-            "com.unkai.mail".to_string()
+        // Multi-profile ⇒ per-profile AUMIDs on every primary
+        // window (see the doc comment for why the startup profile
+        // is not exempt).  Registry-file read, not a cached count:
+        // identity re-stamps are rare (profile switch / rename /
+        // re-icon), and the answer must reflect a profile created
+        // or deleted moments ago — the same `profiles-changed`
+        // broadcast that re-runs the frontend effect calling us.
+        let multi = unkai_store::profiles::load_profiles(&reg.paths().profiles_json())
+            .map(|r| r.profiles.len() > 1)
+            .unwrap_or_else(|e| {
+                tracing::warn!("window AUMID: profile registry unreadable, keeping base: {e}");
+                false
+            });
+        let aumid = if multi {
+            format!(
+                "com.unkai.mail.profile.{}",
+                reg.profile_for_label(win.label())
+            )
         } else {
-            format!("com.unkai.mail.profile.{profile_id}")
+            "com.unkai.mail".to_string()
         };
         // Marshal to the UI thread: Tauri commands run on async
         // worker threads with no COM apartment, and the shell's
