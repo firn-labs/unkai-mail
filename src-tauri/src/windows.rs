@@ -288,7 +288,13 @@ pub fn set_window_identity(
         } else {
             format!("com.unkai.mail.profile.{profile_id}")
         };
-        set_window_app_user_model_id(win, &aumid);
+        // Marshal to the UI thread: Tauri commands run on async
+        // worker threads with no COM apartment, and the shell's
+        // window property store must not be touched from one.
+        let w = win.clone();
+        if let Err(e) = win.run_on_main_thread(move || set_window_app_user_model_id(&w, &aumid)) {
+            tracing::warn!("window AUMID main-thread dispatch failed: {e}");
+        }
     }
     #[cfg(not(windows))]
     let _ = reg;
@@ -300,17 +306,23 @@ pub fn set_window_identity(
 /// give one window of a process its own taskbar identity.  A
 /// switch-in-place re-stamps the same window with the new
 /// profile's AUMID — the taskbar regroups live.
+///
+/// MUST run on the UI thread (the `set_window_identity` caller
+/// marshals via `run_on_main_thread`) — the shell's window
+/// property store is apartment-bound and Tauri's async command
+/// threads carry no COM apartment.
 #[cfg(windows)]
 fn set_window_app_user_model_id(win: &WebviewWindow, aumid: &str) {
     use ::windows::Win32::Foundation::{HWND, PROPERTYKEY};
     use ::windows::Win32::System::Com::StructuredStorage::{
-        PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
+        PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0, PropVariantClear,
     };
     use ::windows::Win32::System::Variant::VT_LPWSTR;
     use ::windows::Win32::UI::Shell::PropertiesSystem::{
         IPropertyStore, SHGetPropertyStoreForWindow,
     };
-    use ::windows::core::{GUID, PWSTR};
+    use ::windows::Win32::UI::Shell::SHStrDupW;
+    use ::windows::core::{GUID, PCWSTR};
 
     // PKEY_AppUserModel_ID — {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5.
     // Spelled out because windows-rs doesn't export the PKEY_*
@@ -327,36 +339,45 @@ fn set_window_app_user_model_id(win: &WebviewWindow, aumid: &str) {
             return;
         }
     };
+    let wide: Vec<u16> = aumid.encode_utf16().chain(std::iter::once(0)).collect();
     // Hand-assembled VT_LPWSTR PROPVARIANT — this windows-rs
     // version ships raw bindings only (no `From<&str>`), and the
     // `InitPropVariantFromString*` helpers all build *vectors*,
-    // which the AppUserModel property rejects.  The store copies
-    // the string during SetValue, so the buffer only has to
-    // outlive the call, and the raw-binding PROPVARIANT has no
-    // Drop — nothing ever tries to free our Vec's pointer.
-    let mut wide: Vec<u16> = aumid.encode_utf16().chain(std::iter::once(0)).collect();
-    let value = PROPVARIANT {
-        Anonymous: PROPVARIANT_0 {
-            Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
-                vt: VT_LPWSTR,
-                wReserved1: 0,
-                wReserved2: 0,
-                wReserved3: 0,
-                Anonymous: PROPVARIANT_0_0_0 {
-                    pwszVal: PWSTR(wide.as_mut_ptr()),
-                },
-            }),
-        },
-    };
+    // which the AppUserModel property rejects.
+    //
+    // The string is duplicated into COM-allocator memory via
+    // `SHStrDupW` and released with `PropVariantClear`, exactly as
+    // if `InitPropVariantFromString` had built it.  Do NOT point
+    // the PROPVARIANT at Rust-owned memory instead: the shell
+    // frees the value with `CoTaskMemFree`, and handing it a
+    // `Vec`'s pointer corrupts the process heap (0xc0000374 at
+    // startup — found the hard way).
+    //
     // SAFETY: `hwnd` is a live window handle owned by this
     // process; the property store is used and released inside this
-    // scope, and `wide` (which the PROPVARIANT points into)
-    // outlives the SetValue call.
+    // scope; `wide` outlives the `SHStrDupW` call that copies it;
+    // and the CoTaskMem string is owned by the PROPVARIANT until
+    // the unconditional `PropVariantClear`.
     // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let result: ::windows::core::Result<()> = (|| unsafe {
         let store: IPropertyStore = SHGetPropertyStoreForWindow(hwnd)?;
-        store.SetValue(&PKEY_APP_USER_MODEL_ID, &value)?;
-        store.Commit()
+        let dup = SHStrDupW(PCWSTR(wide.as_ptr()))?;
+        let mut value = PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_LPWSTR,
+                    wReserved1: 0,
+                    wReserved2: 0,
+                    wReserved3: 0,
+                    Anonymous: PROPVARIANT_0_0_0 { pwszVal: dup },
+                }),
+            },
+        };
+        let set = store
+            .SetValue(&PKEY_APP_USER_MODEL_ID, &value)
+            .and_then(|()| store.Commit());
+        let _ = PropVariantClear(&mut value);
+        set
     })();
     if let Err(e) = result {
         // Best-effort by design (#536): grouping falls back to the
