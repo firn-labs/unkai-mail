@@ -10,6 +10,7 @@ use std::time::Duration;
 use unkai_core::UnkaiError;
 use unkai_core::models::CalendarEvent;
 use unkai_store::Cache;
+use unkai_store::SharedCache;
 use unkai_store::account_store;
 use unkai_store::credentials;
 use unkai_store::link_check;
@@ -720,24 +721,50 @@ pub async fn settings_sync_worker(
     }
 }
 
-/// Background refresh worker.  Driven by an hourly tick plus a
-/// startup-time decision: if the local snapshot is empty or
-/// older than 24 h, refresh immediately; otherwise wait.  The
-/// worker respects the `link_check_enabled` master toggle —
-/// when off, it sleeps for the full tick window and re-checks
-/// before doing any network work.
-pub async fn urlhaus_refresh_worker(cache: Cache, settings: SharedSettings) {
+/// Snapshot provider for [`urlhaus_refresh_worker`]'s toggle gate:
+/// returns the settings handle of every currently-open profile
+/// context.  A closure rather than a concrete registry type because
+/// the registry lives in the desktop shell — this crate stays
+/// Tauri-free (#476).  Called on every decision point so profiles
+/// opened or deleted mid-run are picked up naturally.
+pub type ProfileSettingsSnapshot = Arc<dyn Fn() -> Vec<SharedSettings> + Send + Sync>;
+
+/// Background refresh worker — **one per process** since #532, not
+/// one per profile: the snapshot lives in the machine-level
+/// `shared.db`, so a second profile no longer means a second hourly
+/// download.  Driven by an hourly tick plus a startup-time decision:
+/// if the shared snapshot is empty or older than 24 h, refresh
+/// immediately; otherwise wait.
+///
+/// The `link_check_enabled` master toggle is a per-profile setting,
+/// so the machine-level gate is its natural lift: refresh while
+/// **any** open profile has the checker on, sleep only when every
+/// profile has it off.  (Each profile's lookup path still honours
+/// its own toggle — `check_urls` returns "off" verdicts without
+/// touching the shared DB.)
+pub async fn urlhaus_refresh_worker(shared: SharedCache, profiles: ProfileSettingsSnapshot) {
     use tokio::time::{Duration, MissedTickBehavior, interval};
 
+    // "Any open profile wants the checker" — the per-tick gate.
+    // Snapshots the handle list first (sync, cheap) and awaits the
+    // settings locks outside the provider call.
+    async fn any_profile_enabled(profiles: &ProfileSettingsSnapshot) -> bool {
+        for settings in profiles() {
+            if settings.read().await.link_check_enabled {
+                return true;
+            }
+        }
+        false
+    }
+
     // Initial decision based on the on-disk snapshot.  We
-    // intentionally do *not* gate this on `link_check_enabled`:
-    // a user who turned the feature off probably wants the
+    // intentionally do *not* gate the staleness *check* on the
+    // toggle: a user who turned the feature off probably wants the
     // pre-existing list scrubbed too, but we also don't want
     // to re-download on every restart for a feature they
     // disabled.  Compromise: only the "stale" path triggers an
-    // initial refresh, and we still respect the toggle inside
-    // the refresh function below.
-    let stale = match link_check::status(&cache) {
+    // initial refresh, and that path still respects the toggle.
+    let stale = match link_check::status(&shared) {
         Ok(s) => match s.last_refreshed_at {
             None => true, // never refreshed
             Some(ts) => {
@@ -747,11 +774,11 @@ pub async fn urlhaus_refresh_worker(cache: Cache, settings: SharedSettings) {
         },
         Err(_) => true,
     };
-    if stale {
-        let enabled = settings.read().await.link_check_enabled;
-        if enabled && let Err(e) = refresh_urlhaus_inner(&cache).await {
-            tracing::warn!("URLhaus initial refresh failed: {e}");
-        }
+    if stale
+        && any_profile_enabled(&profiles).await
+        && let Err(e) = refresh_urlhaus_inner(&shared).await
+    {
+        tracing::warn!("URLhaus initial refresh failed: {e}");
     }
 
     let mut tick = interval(Duration::from_secs(60 * 60));
@@ -762,11 +789,10 @@ pub async fn urlhaus_refresh_worker(cache: Cache, settings: SharedSettings) {
 
     loop {
         tick.tick().await;
-        let enabled = settings.read().await.link_check_enabled;
-        if !enabled {
+        if !any_profile_enabled(&profiles).await {
             continue;
         }
-        if let Err(e) = refresh_urlhaus_inner(&cache).await {
+        if let Err(e) = refresh_urlhaus_inner(&shared).await {
             tracing::warn!("URLhaus refresh failed (will retry next tick): {e}");
         }
     }

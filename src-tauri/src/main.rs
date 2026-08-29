@@ -929,7 +929,7 @@ fn check_urls(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<Vec<LinkVerdict>, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::mail::check_urls(urls, &h.ctx.cache, &h.ctx.settings)
+    cmds::mail::check_urls(urls, &h.ctx.shared, &h.ctx.settings)
 }
 
 #[tauri::command]
@@ -1194,7 +1194,7 @@ fn debug_link_check(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<serde_json::Value, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::mail::debug_link_check(url, &h.ctx.cache)
+    cmds::mail::debug_link_check(url, &h.ctx.shared)
 }
 
 #[tauri::command]
@@ -1938,7 +1938,7 @@ fn get_link_check_status(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<link_check::UrlhausStatus, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::mail::get_link_check_status(&h.ctx.cache)
+    cmds::mail::get_link_check_status(&h.ctx.shared)
 }
 
 #[tauri::command]
@@ -2710,7 +2710,7 @@ async fn refresh_urlhaus_now(
     reg: State<'_, ProfileRegistry>,
 ) -> Result<u32, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
-    cmds::mail::refresh_urlhaus_now(&h.ctx.cache).await
+    cmds::mail::refresh_urlhaus_now(&h.ctx.shared).await
 }
 
 #[tauri::command]
@@ -3727,6 +3727,15 @@ fn main() {
         tracing::warn!("MCP token migration failed (token stays on the legacy entry): {e}");
     }
 
+    // The machine-level shared cache (#532): plaintext SQLite next
+    // to `profiles.json`, holding machine-scoped data every profile
+    // reads (the URLhaus snapshot).  Opened once here and handed to
+    // the registry, which clones it into every profile context.
+    // Fatal on failure for the same reason the registry init is —
+    // every context construction would fail anyway.
+    let shared_cache = unkai_store::SharedCache::open(&profile_paths.shared_db())
+        .expect("failed to open the machine-level shared cache");
+
     // Captured for `.setup()`'s startup fan-out (#535): in `All`
     // mode every profile gets a window at boot, with the resolved
     // startup profile as the primary one in the static "main"
@@ -3776,6 +3785,7 @@ fn main() {
         // exists.
         .manage(ProfileRegistry::new(
             profile_paths.clone(),
+            shared_cache,
             profile.id.clone(),
         ))
         .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
@@ -3915,8 +3925,13 @@ fn main() {
                 // straight into the tray and no focus event ever
                 // fires (#535).
                 reg.note_focused("main", &startup_id);
-                let handle = registry::build_profile_handle(app.handle(), &startup_id, reg.paths())
-                    .map_err(|e| format!("failed to open the startup profile: {e}"))?;
+                let handle = registry::build_profile_handle(
+                    app.handle(),
+                    &startup_id,
+                    reg.paths(),
+                    reg.shared(),
+                )
+                .map_err(|e| format!("failed to open the startup profile: {e}"))?;
                 reg.insert_profile(&startup_id, handle.clone());
                 handle
             };
@@ -4172,9 +4187,29 @@ fn main() {
             refresh_unread_badge(&ctx.cache, ctx.ui.as_ref());
 
             // The startup profile's background loops (sync, reminders,
-            // prerender, settings sync, URLhaus refresh) and its MCP
-            // boot reconcile were spawned by `build_profile_handle`
-            // above — one set per profile context (#533).
+            // prerender, settings sync) and its MCP boot reconcile
+            // were spawned by `build_profile_handle` above — one set
+            // per profile context (#533).
+
+            // The URLhaus refresh worker is the exception since
+            // #532: ONE per process, running against the machine-
+            // level shared cache, so N profiles no longer download
+            // the hourly abuse.ch snapshot N times.  It polls the
+            // registry for every open profile's link-check toggle —
+            // enabled anywhere keeps the snapshot warm; the closure
+            // re-reads the registry each time so profiles opened or
+            // deleted later are picked up.  Deliberately not in any
+            // ProfileHandle's task list: no profile owns it, and
+            // `shutdown_profile_context` must never abort it.
+            let urlhaus_app = app.handle().clone();
+            let urlhaus_shared = app.state::<ProfileRegistry>().shared().clone();
+            tauri::async_runtime::spawn(async move {
+                cmds::background::urlhaus_refresh_worker(
+                    urlhaus_shared,
+                    Arc::new(move || urlhaus_app.state::<ProfileRegistry>().profile_settings()),
+                )
+                .await;
+            });
 
             Ok(())
         })

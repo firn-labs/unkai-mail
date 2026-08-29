@@ -1545,6 +1545,30 @@ const MIGRATIONS: &[&str] = &[
     UPDATE calendars              SET sync_token = NULL, ctag = NULL;
     UPDATE task_lists             SET sync_token = NULL, ctag = NULL;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v45 → v46: the URLhaus tables move to the machine-level
+    // `shared.db` (#532) — the first (and only) schema change in
+    // the whole profiles series (#530).
+    //
+    // The snapshot is a verbatim copy of abuse.ch's public feed:
+    // identical in every profile, refreshed hourly, zero user
+    // data.  With per-profile databases (#531) each profile was
+    // downloading and storing its own copy; #532 moves the pair
+    // into `SharedCache` (see `shared_cache.rs`, migration v1)
+    // and this entry drops the per-profile copies.
+    //
+    // No data carry-over: cross-database copy from an encrypted
+    // source isn't worth building for a feed the machine-level
+    // refresh worker re-downloads within the hour anyway — its
+    // startup staleness check sees the empty shared DB and
+    // refreshes immediately.  `IF EXISTS` keeps the entry
+    // idempotent for caches that somehow never ran v23 (the
+    // index disappears with its table automatically).
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    DROP TABLE IF EXISTS urlhaus_urls;
+    DROP TABLE IF EXISTS urlhaus_meta;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

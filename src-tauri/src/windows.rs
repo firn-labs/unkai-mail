@@ -68,7 +68,7 @@ pub fn ensure_profile_context(app: &AppHandle, profile_id: &str) -> Result<(), U
             "no profile with id '{profile_id}'"
         )));
     }
-    let handle = registry::build_profile_handle(app, profile_id, reg.paths())?;
+    let handle = registry::build_profile_handle(app, profile_id, reg.paths(), reg.shared())?;
     reg.insert_profile(profile_id, handle);
     Ok(())
 }

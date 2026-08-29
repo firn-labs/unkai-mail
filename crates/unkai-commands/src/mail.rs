@@ -12,6 +12,7 @@ use unkai_core::models::Folder;
 use unkai_imap::ImapClient;
 use unkai_smtp::SmtpClient;
 use unkai_store::Cache;
+use unkai_store::SharedCache;
 use unkai_store::account_store;
 use unkai_store::cache::SearchFilters;
 use unkai_store::cache::SearchHit;
@@ -2805,10 +2806,13 @@ pub struct LinkVerdict {
     pub exact: bool,
 }
 
-pub fn debug_link_check(url: String, cache: &Cache) -> Result<serde_json::Value, UnkaiError> {
-    let status = link_check::status(cache).map_err(UnkaiError::from)?;
-    let lookup = link_check::lookup(cache, &url).map_err(UnkaiError::from)?;
-    let host_count = link_check::host_count_for_url(cache, &url).map_err(UnkaiError::from)?;
+pub fn debug_link_check(
+    url: String,
+    shared: &SharedCache,
+) -> Result<serde_json::Value, UnkaiError> {
+    let status = link_check::status(shared).map_err(UnkaiError::from)?;
+    let lookup = link_check::lookup(shared, &url).map_err(UnkaiError::from)?;
+    let host_count = link_check::host_count_for_url(shared, &url).map_err(UnkaiError::from)?;
     let host = url
         .split_once("://")
         .map(|(_, rest)| rest)
@@ -2829,7 +2833,7 @@ pub fn debug_link_check(url: String, cache: &Cache) -> Result<serde_json::Value,
 
 pub fn check_urls(
     urls: Vec<String>,
-    cache: &Cache,
+    shared: &SharedCache,
     settings: &SharedSettings,
 ) -> Result<Vec<LinkVerdict>, UnkaiError> {
     // Master toggle short-circuit: when the user has the link
@@ -2854,7 +2858,7 @@ pub fn check_urls(
 
     let mut out = Vec::with_capacity(urls.len());
     for url in urls {
-        match link_check::lookup(cache, &url) {
+        match link_check::lookup(shared, &url) {
             Ok(Some(m)) => out.push(LinkVerdict {
                 url,
                 verdict: "unsafe".into(),
@@ -2888,18 +2892,20 @@ pub fn check_urls(
     Ok(out)
 }
 
-pub fn get_link_check_status(cache: &Cache) -> Result<link_check::UrlhausStatus, UnkaiError> {
-    link_check::status(cache).map_err(UnkaiError::from)
+pub fn get_link_check_status(
+    shared: &SharedCache,
+) -> Result<link_check::UrlhausStatus, UnkaiError> {
+    link_check::status(shared).map_err(UnkaiError::from)
 }
 
 /// Manually trigger a URLhaus refresh.  Used by the "Refresh
 /// now" button on the Settings page; also called by the
 /// background worker on its hourly tick.
-pub async fn refresh_urlhaus_now(cache: &Cache) -> Result<u32, UnkaiError> {
-    refresh_urlhaus_inner(cache).await
+pub async fn refresh_urlhaus_now(shared: &SharedCache) -> Result<u32, UnkaiError> {
+    refresh_urlhaus_inner(shared).await
 }
 
-pub async fn refresh_urlhaus_inner(cache: &Cache) -> Result<u32, UnkaiError> {
+pub async fn refresh_urlhaus_inner(shared: &SharedCache) -> Result<u32, UnkaiError> {
     let http = reqwest::Client::builder()
         .user_agent(concat!("unkai-mail/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(60))
@@ -2921,8 +2927,8 @@ pub async fn refresh_urlhaus_inner(cache: &Cache) -> Result<u32, UnkaiError> {
         .await
         .map_err(|e| UnkaiError::Network(format!("urlhaus body read: {e}")))?;
     let rows = parse_urlhaus_csv(&body);
-    let cache_clone = cache.clone();
-    let count = tokio::task::spawn_blocking(move || link_check::replace_all(&cache_clone, &rows))
+    let shared_clone = shared.clone();
+    let count = tokio::task::spawn_blocking(move || link_check::replace_all(&shared_clone, &rows))
         .await
         .map_err(|e| UnkaiError::Other(format!("urlhaus replace_all join: {e}")))?
         .map_err(UnkaiError::from)?;

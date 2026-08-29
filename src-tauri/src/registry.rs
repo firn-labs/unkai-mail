@@ -23,7 +23,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, State};
 use unkai_commands::background::{
     background_sync_loop, message_reminder_loop, prerender_inboxes_on_launch, settings_sync_worker,
-    urlhaus_refresh_worker,
 };
 use unkai_commands::state::{
     AppContext, EventReminderState, ProfileInfo, SettingsSyncNotify, SharedLocalStorage,
@@ -31,7 +30,9 @@ use unkai_commands::state::{
 };
 use unkai_core::UnkaiError;
 use unkai_mcp::McpServer;
-use unkai_store::{Cache, ProfilePaths, account_store, app_settings, credentials, settings_sync};
+use unkai_store::{
+    Cache, ProfilePaths, SharedCache, account_store, app_settings, credentials, settings_sync,
+};
 
 use crate::notifier::TauriNotifier;
 
@@ -66,6 +67,12 @@ pub struct ProfileHandle {
 /// runtime contexts.  See the module docs for the two maps' roles.
 pub struct ProfileRegistry {
     paths: ProfilePaths,
+    /// The machine-level shared cache (#532) — one plaintext
+    /// `shared.db` for the whole process, cloned into every
+    /// profile context this registry builds.  Lives here rather
+    /// than as separate managed state so profile plumbing keeps a
+    /// single home.
+    shared: SharedCache,
     /// The profile a plain launch opened (#531's startup
     /// resolution).  Doubles as the fallback for window labels
     /// that were never registered — standalone popouts created
@@ -86,9 +93,10 @@ pub struct ProfileRegistry {
 }
 
 impl ProfileRegistry {
-    pub fn new(paths: ProfilePaths, startup_profile: String) -> Self {
+    pub fn new(paths: ProfilePaths, shared: SharedCache, startup_profile: String) -> Self {
         Self {
             paths,
+            shared,
             startup_profile,
             contexts: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
@@ -99,6 +107,21 @@ impl ProfileRegistry {
 
     pub fn paths(&self) -> &ProfilePaths {
         &self.paths
+    }
+
+    /// The process-wide shared cache (#532).
+    pub fn shared(&self) -> &SharedCache {
+        &self.shared
+    }
+
+    /// Settings handles of every open profile context — the
+    /// snapshot the machine-level URLhaus worker polls for its
+    /// "any profile has link checking on" gate (#532).
+    pub fn profile_settings(&self) -> Vec<SharedSettings> {
+        self.handles()
+            .iter()
+            .map(|h| h.ctx.settings.clone())
+            .collect()
     }
 
     pub fn startup_profile_id(&self) -> &str {
@@ -327,6 +350,7 @@ pub fn build_profile_handle(
     app: &AppHandle,
     profile_id: &str,
     paths: &ProfilePaths,
+    shared: &SharedCache,
 ) -> Result<Arc<ProfileHandle>, UnkaiError> {
     // Open the profile's encrypted cache.  For the startup profile
     // a failure here is fatal (bubbled to `.setup()`): without the
@@ -395,6 +419,7 @@ pub fn build_profile_handle(
 
     let ctx = AppContext {
         cache: cache.clone(),
+        shared: shared.clone(),
         settings: shared_settings.clone(),
         reminders: Arc::new(EventReminderState::default()),
         ui: Arc::new(TauriNotifier::new(app.clone(), profile_id.to_string())),
@@ -460,15 +485,9 @@ pub fn build_profile_handle(
         sync_notify.0.notify_one();
     }
 
-    // URLhaus link-safety refresh worker (#165).  One per profile
-    // means N profiles download the hourly abuse.ch snapshot N
-    // times — accepted for now; the optional shared-cache chunk
-    // (#532) is where that dedupes into one machine-level worker.
-    let urlhaus_cache = ctx.cache.clone();
-    let urlhaus_settings = ctx.settings.clone();
-    tasks.push(tauri::async_runtime::spawn(async move {
-        urlhaus_refresh_worker(urlhaus_cache, urlhaus_settings).await;
-    }));
+    // The URLhaus refresh worker is NOT spawned here: since #532 it
+    // is machine-level — one worker for the whole process, spawned
+    // once in `.setup()` against the shared cache.
 
     // MCP server (#438): one reconcile at boot brings the listener
     // up if `mcp_enabled` was saved on; afterwards the settings
@@ -526,6 +545,7 @@ mod tests {
         let settings: SharedSettings = Arc::new(tokio::sync::RwLock::new(Default::default()));
         let ctx = AppContext {
             cache: cache.clone(),
+            shared: SharedCache::open_in_memory().expect("in-memory shared cache"),
             settings: settings.clone(),
             reminders: Arc::new(EventReminderState::default()),
             ui: Arc::new(NullNotifier),
@@ -551,6 +571,7 @@ mod tests {
     fn two_profiles_resolve_without_cross_talk() {
         let reg = ProfileRegistry::new(
             ProfilePaths::at_root(PathBuf::from("/tmp/unkai-registry-test")),
+            SharedCache::open_in_memory().expect("in-memory shared cache"),
             "profile-a".into(),
         );
         reg.insert_profile("profile-a", test_handle("profile-a"));

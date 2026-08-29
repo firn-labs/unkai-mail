@@ -138,6 +138,20 @@ pub struct SyncState {
 /// Handle to the local mail cache. Cheap to clone — under the hood it's
 /// an `Arc` around a connection pool.
 ///
+/// # Scope ownership (#532)
+///
+/// `Cache` holds **profile-scoped data only** — one instance per
+/// profile, each file under `profiles/<id>/` with its own SQLCipher
+/// key.  That covers everything account-keyed *and* the account-less
+/// tables that still describe this profile's own correspondence and
+/// choices (`rsvp_responses`, `cancelled_invites`,
+/// `mailing_list_settings`, `pgp_public_keys`, `smime_certs`, and —
+/// deliberately, see `shared_cache.rs` — `geocode_cache`).
+/// **Machine-scoped data** (public datasets identical for every
+/// profile; today the URLhaus snapshot) lives in
+/// [`crate::SharedCache`] instead.  Classify any new account-less
+/// table against that rule before adding it here.
+///
 /// The pool is `Option`-wrapped so the cache can exist in a
 /// **locked** state (#164 Phase 1B): if the keychain envelope has
 /// no plain master key, `Cache::open_for_profile` returns a Cache

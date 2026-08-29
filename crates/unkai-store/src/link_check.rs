@@ -1,8 +1,10 @@
 //! URLhaus-backed link-safety check (#165).
 //!
 //! Stores a periodically-refreshed snapshot of abuse.ch's URLhaus
-//! "online malicious URLs" feed inside the encrypted SQLCipher
-//! cache and exposes a small lookup API.  Two questions matter:
+//! "online malicious URLs" feed inside the machine-level
+//! [`SharedCache`] (`shared.db`, #532 — one snapshot and one hourly
+//! download per machine, regardless of how many profiles exist) and
+//! exposes a small lookup API.  Two questions matter:
 //!
 //!   - **Is this exact URL on URLhaus?** — strongest signal; the
 //!     URL has been observed serving malware or phishing.
@@ -27,7 +29,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::Cache;
+use crate::SharedCache;
 use crate::cache::CacheError;
 
 /// One URLhaus row matched against a candidate URL.  Returned
@@ -71,7 +73,7 @@ pub struct UrlhausStatus {
 /// Both are O(1) / O(log n) and the index is small enough
 /// (typically a few thousand URLs) that the full-table size
 /// stays well within SQLite's page cache.
-pub fn lookup(cache: &Cache, url: &str) -> Result<Option<UrlhausMatch>, CacheError> {
+pub fn lookup(shared: &SharedCache, url: &str) -> Result<Option<UrlhausMatch>, CacheError> {
     let trimmed = trim_url(url);
     let host = match extract_host(&trimmed) {
         Some(h) => h,
@@ -83,7 +85,7 @@ pub fn lookup(cache: &Cache, url: &str) -> Result<Option<UrlhausMatch>, CacheErr
         None => return Ok(None),
     };
 
-    let conn = cache.conn()?;
+    let conn = shared.conn()?;
 
     // Exact URL match first — it's the stronger signal and
     // costs nothing to check.
@@ -132,9 +134,9 @@ pub fn lookup(cache: &Cache, url: &str) -> Result<Option<UrlhausMatch>, CacheErr
 /// `entries` is the parsed CSV; rows with an unparseable URL or
 /// missing host are silently skipped (the upstream CSV
 /// occasionally carries malformed lines).
-pub fn replace_all(cache: &Cache, entries: &[UrlhausCsvRow]) -> Result<u32, CacheError> {
+pub fn replace_all(shared: &SharedCache, entries: &[UrlhausCsvRow]) -> Result<u32, CacheError> {
     let now = Utc::now().timestamp();
-    let mut conn = cache.conn()?;
+    let mut conn = shared.conn()?;
     let tx = conn.transaction()?;
 
     tx.execute("DELETE FROM urlhaus_urls", [])?;
@@ -181,11 +183,11 @@ pub fn replace_all(cache: &Cache, entries: &[UrlhausCsvRow]) -> Result<u32, Cach
 /// tell "URL not in URLhaus" apart from "host known but exact +
 /// fallback both missed".  Returns 0 when the URL has no
 /// extractable host.
-pub fn host_count_for_url(cache: &Cache, url: &str) -> Result<u32, CacheError> {
+pub fn host_count_for_url(shared: &SharedCache, url: &str) -> Result<u32, CacheError> {
     let Some(host) = extract_host(&trim_url(url)) else {
         return Ok(0);
     };
-    let conn = cache.conn()?;
+    let conn = shared.conn()?;
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM urlhaus_urls WHERE host = ?1",
         params![&host],
@@ -196,8 +198,8 @@ pub fn host_count_for_url(cache: &Cache, url: &str) -> Result<u32, CacheError> {
 
 /// Read the snapshot status — used by the Settings UI to render
 /// "{n} URLs, last refreshed N hours ago".
-pub fn status(cache: &Cache) -> Result<UrlhausStatus, CacheError> {
-    let conn = cache.conn()?;
+pub fn status(shared: &SharedCache) -> Result<UrlhausStatus, CacheError> {
+    let conn = shared.conn()?;
     let total: u32 = conn.query_row("SELECT COUNT(*) FROM urlhaus_urls", [], |r| {
         r.get::<_, i64>(0).map(|n| n as u32)
     })?;
@@ -305,8 +307,8 @@ mod tests {
         assert_eq!(trim_url("/"), "/");
     }
 
-    fn open_test_cache() -> Cache {
-        Cache::open_in_memory().expect("in-memory cache")
+    fn open_test_cache() -> SharedCache {
+        SharedCache::open_in_memory().expect("in-memory shared cache")
     }
 
     #[test]
