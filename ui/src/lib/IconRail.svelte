@@ -12,7 +12,8 @@
    *    any view.
    *
    * 2. View nav below a divider: Mail, Contacts, Calendar, Files,
-   *    Talk — and Settings pinned at the bottom via a `mt-auto`
+   *    Talk — with the profile switcher bubble (#535/#536) and
+   *    Settings pinned together at the bottom via a `mt-auto`
    *    spacer. Active state highlights the current `currentView`;
    *    clicks drop back to the parent via `onselectview`.
    *
@@ -146,9 +147,10 @@
   }
 
   // ── Profile switcher (#535) ─────────────────────────────────
-  // The rail's new top tier: the current profile's bubble opens a
-  // popover listing the other profiles (switch here / open in new
-  // window) plus a "Manage profiles…" entry.  Menu conventions
+  // The current profile's bubble — pinned in the rail's bottom
+  // cluster above Settings — opens a popover listing the other
+  // profiles (switch here / open in new window) plus a "Manage
+  // profiles…" entry.  Menu conventions
   // per CLAUDE.md: glass-float, coords.ts anchoring, outside-click
   // + Escape dismissal, right-click parity on the trigger.
   const currentProfile = $derived(
@@ -362,33 +364,6 @@
 <aside
   class="w-14 shrink-0 border-r glass-panel flex flex-col items-center py-2 gap-3 overflow-y-auto"
 >
-  <!-- Profile switcher (#535) — the rail's top tier.  The bubble
-       shows the CURRENT profile's identity (emoji or named icon,
-       same 36×36 rounded-full shape as the account bubbles but
-       with the tonal primary fill ProfilesSettings uses, so
-       profiles read as a different kind of thing than accounts).
-       Click or right-click opens the switcher popover. -->
-  <button
-    class="relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center
-           transition-colors bg-primary-500/15 text-primary-600 dark:text-primary-300
-           hover:bg-primary-500/25"
-    title={currentProfile
-      ? m.profiles_switcher_bubble_title({ name: currentProfile.name })
-      : m.profiles_switcher_label()}
-    aria-label={m.profiles_switcher_label()}
-    data-tour="rail-profile"
-    onmousedown={(e) => e.stopPropagation()}
-    onclick={toggleProfileMenu}
-    oncontextmenu={openProfileMenuAtCursor}
-  >
-    {#if currentProfile}
-      <ProfileGlyph icon={currentProfile.icon} size={18} />
-    {:else}
-      <Icon name="contacts" size={18} />
-    {/if}
-  </button>
-  <div class="w-6 h-px my-1 shrink-0 bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
-
   <!-- Account avatars. The "All" bubble only appears when the user
        has more than one account — for a single-account setup it's
        chrome with no distinct behaviour. -->
@@ -531,10 +506,37 @@
     </button>
   {/each}
 
-  <!-- Settings pinned to the bottom. `mt-auto` on the wrapper
-       pushes the remaining flex space between the main nav and
-       this slot. -->
-  <div class="mt-auto shrink-0">
+  <!-- Bottom cluster, pinned by `mt-auto`: the profile switcher
+       directly above Settings.  Both are shell-level affordances
+       — "who am I / where do I configure it" — so they live
+       together at the foot of the rail rather than crowding the
+       account stack (#536 follow-up; the switcher started life at
+       the top of the rail).  The bubble shows the CURRENT
+       profile's identity (emoji or named icon, same 36×36
+       rounded-full shape as the account bubbles but with the
+       tonal primary fill ProfilesSettings uses, so profiles read
+       as a different kind of thing than accounts).  Click or
+       right-click opens the switcher popover. -->
+  <div class="mt-auto shrink-0 flex flex-col items-center gap-3">
+    <button
+      class="relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center
+             transition-colors bg-primary-500/15 text-primary-600 dark:text-primary-300
+             hover:bg-primary-500/25"
+      title={currentProfile
+        ? m.profiles_switcher_bubble_title({ name: currentProfile.name })
+        : m.profiles_switcher_label()}
+      aria-label={m.profiles_switcher_label()}
+      data-tour="rail-profile"
+      onmousedown={(e) => e.stopPropagation()}
+      onclick={toggleProfileMenu}
+      oncontextmenu={openProfileMenuAtCursor}
+    >
+      {#if currentProfile}
+        <ProfileGlyph icon={currentProfile.icon} size={18} />
+      {:else}
+        <Icon name="contacts" size={18} />
+      {/if}
+    </button>
     <button
       class="w-9 h-9 rounded-lg flex items-center justify-center text-lg transition-colors duration-150 ease-out
              {currentView === 'settings'

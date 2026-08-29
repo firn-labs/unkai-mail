@@ -920,7 +920,7 @@
   "profiles_startup_all": "Open all profiles",
   "profiles_startup_fixed": "Always open a specific profile",
   "profiles_startup_fixed_label": "Profile",
-  "profiles_note_switching": "Switch profiles — or open one in its own window — from the profile bubble at the top of the left rail.",
+  "profiles_note_switching": "Switch profiles — or open one in its own window — from the profile bubble at the bottom of the left rail, just above Settings.",
   "profiles_switcher_label": "Profiles",
   "profiles_switcher_bubble_title": "Profile: {name}",
   "profiles_switcher_switch_here": "Switch to {name} here",

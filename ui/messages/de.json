@@ -921,7 +921,7 @@
   "profiles_startup_all": "Alle Profile öffnen",
   "profiles_startup_fixed": "Immer ein bestimmtes Profil öffnen",
   "profiles_startup_fixed_label": "Profil",
-  "profiles_note_switching": "Profile wechselst du — oder öffnest sie in einem eigenen Fenster — über die Profil-Kugel oben in der linken Leiste.",
+  "profiles_note_switching": "Profile wechselst du — oder öffnest sie in einem eigenen Fenster — über die Profil-Kugel unten in der linken Leiste, direkt über den Einstellungen.",
   "profiles_switcher_label": "Profile",
   "profiles_switcher_bubble_title": "Profil: {name}",
   "profiles_switcher_switch_here": "Hier zu {name} wechseln",
