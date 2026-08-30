@@ -3736,17 +3736,28 @@ fn main() {
     let shared_cache = unkai_store::SharedCache::open(&profile_paths.shared_db())
         .expect("failed to open the machine-level shared cache");
 
-    // Captured for `.setup()`'s startup fan-out (#535): in `All`
-    // mode every profile gets a window at boot, with the resolved
-    // startup profile as the primary one in the static "main"
-    // window.  `Fixed` / `LastUsed` open only that primary.
-    let startup_mode = registry.startup.clone();
-    let secondary_profile_ids: Vec<String> = registry
-        .profiles
-        .iter()
-        .map(|p| p.id.clone())
-        .filter(|id| *id != profile.id)
-        .collect();
+    // Captured for `.setup()`'s startup fan-out (#535/#552): every
+    // profile beyond the primary that gets its own window at boot.
+    // The resolved startup profile owns the static "main" window;
+    // `All` fans out to every other profile, a multi-id `Fixed`
+    // (#552) to the rest of its pinned list (ids whose profile has
+    // vanished are dropped — deletion bookkeeping normally prunes
+    // them, but a hand-edited registry must not break boot).
+    // `LastUsed` and a single-id `Fixed` open only the primary.
+    let fan_out_profile_ids: Vec<String> = match &registry.startup {
+        StartupMode::All => registry
+            .profiles
+            .iter()
+            .map(|p| p.id.clone())
+            .filter(|id| *id != profile.id)
+            .collect(),
+        StartupMode::Fixed(ids) => ids
+            .iter()
+            .filter(|id| **id != profile.id && registry.profiles.iter().any(|p| p.id == **id))
+            .cloned()
+            .collect(),
+        StartupMode::LastUsed => Vec::new(),
+    };
 
     tauri::Builder::default()
         // single-instance MUST come before any plugin that cares
@@ -4128,12 +4139,13 @@ fn main() {
                 tracing::warn!("main window not found at setup time");
             }
 
-            // ── Startup fan-out (#535) ──────────────────────────
+            // ── Startup fan-out (#535/#552) ─────────────────────
             //
-            // `All` mode: one window per profile.  The resolved
-            // startup profile already owns the static "main"
-            // window above; every other profile gets its context
-            // built and a `profile-*` window created, each
+            // One window per fanned-out profile (`All` mode, or the
+            // extra ids of a multi-profile `Fixed` pin).  The
+            // resolved startup profile already owns the static
+            // "main" window above; every listed profile gets its
+            // context built and a `profile-*` window created, each
             // honouring its own `start_minimized` preference and
             // none stealing focus from the startup window.
             // Spawned so boot isn't gated on N SQLCipher key
@@ -4141,10 +4153,10 @@ fn main() {
             // — they're real synchronous IO.  Failures are
             // per-profile and non-fatal: one broken profile must
             // not stop the rest of the app booting.
-            if matches!(startup_mode, StartupMode::All) {
+            if !fan_out_profile_ids.is_empty() {
                 let fan_out_app = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    for id in secondary_profile_ids {
+                    for id in fan_out_profile_ids {
                         let build_app = fan_out_app.clone();
                         let build_id = id.clone();
                         let built = tauri::async_runtime::spawn_blocking(move || {
