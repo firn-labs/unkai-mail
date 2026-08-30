@@ -28,6 +28,7 @@ export * as tasks from './tasks'
 export * as crypto from './crypto'
 export * as settings from './settings'
 export * as system from './system'
+export * as updates from './updates'
 export * as platform from './platform'
 
 export {

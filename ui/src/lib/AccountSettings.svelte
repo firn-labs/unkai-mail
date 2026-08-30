@@ -15,6 +15,7 @@
   import ProfilesSettings from './ProfilesSettings.svelte'
   import SecuritySettings from './SecuritySettings.svelte'
   import AiSettings from './AiSettings.svelte'
+  import UpdatesSettings from './UpdatesSettings.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import RichTextEditor from './RichTextEditor.svelte'
@@ -103,6 +104,7 @@
     | 'security'
     | 'ai'
     | 'backup'
+    | 'updates'
 
   // ── Props ───────────────────────────────────────────────────
   interface Props {
@@ -176,6 +178,11 @@
     // back and forth between machines" better than a generic
     // archive icon.
     { id: 'backup', label: 'Backup & Sync', icon: 'sync' },
+    // #229 — the in-app updater.  `download` (arrow into a tray)
+    // reads as "something arrives here"; the rail's update badge
+    // deep-links straight to this page.  Last in the nav: like
+    // Backup it's about the install, not the mail.
+    { id: 'updates', label: m.settings_updates_category(), icon: 'download' },
   ]
 
   // ── State ───────────────────────────────────────────────────
@@ -2376,6 +2383,19 @@
          later debounced save from this panel can't roll the MCP
          fields back to what they were at mount. -->
     <AiSettings
+      onsettingschanged={(fresh) => {
+        appSettings = fresh as unknown as AppSettings
+        onappprefschanged?.({ ...appSettings })
+      }}
+    />
+    {/if}
+
+    {#if activeCategory === 'updates'}
+    <!-- #229 — like AiSettings, the page saves the whole
+         AppSettings struct itself; the callback keeps our copy
+         (and App's) fresh so this panel's own debounced save
+         can't roll the updater fields back. -->
+    <UpdatesSettings
       onsettingschanged={(fresh) => {
         appSettings = fresh as unknown as AppSettings
         onappprefschanged?.({ ...appSettings })

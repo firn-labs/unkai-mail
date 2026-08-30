@@ -40,6 +40,10 @@ export interface AppEventPayloads {
   'profiles-changed': null
   'notification-clicked': any
   'open-compose': any
+  /* #229 — update-bundle download progress, targeted at the window
+   * that invoked `download_app_update`.  `total` is null when the
+   * server sent no Content-Length. */
+  'update-download-progress': { downloaded: number; total: number | null }
   /* ── popout window → main window handoffs ───────────────────── */
   'compose-from-mail': any
   'respond-with-meeting-from-mail': any

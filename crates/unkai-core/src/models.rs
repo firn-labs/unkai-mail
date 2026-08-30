@@ -267,6 +267,42 @@ pub struct AppSettings {
     /// enforced by the mail tools (#440).
     #[serde(default)]
     pub mcp_expose_decrypted_content: bool,
+    /// Whether the app polls the release feed for a newer version
+    /// (#229).  On by default — the check is a single anonymous
+    /// HTTPS GET of a static JSON manifest on the project's release
+    /// page (no identifiers beyond what any HTTP request carries),
+    /// and knowing about security fixes promptly matters more for
+    /// a mail client than the marginal traffic.  Off = the app
+    /// never phones home; the Updates settings page still offers a
+    /// manual "Check for updates" button.
+    #[serde(default = "default_true")]
+    pub update_auto_check: bool,
+    /// When an update is found, download it in the background
+    /// without asking (#229).  Installing still always requires an
+    /// explicit user action — the install step restarts the app,
+    /// and silently restarting a mail client with a half-written
+    /// draft open is never acceptable.  Default **off**: multi-MB
+    /// background downloads on metered connections should be an
+    /// opt-in.
+    #[serde(default)]
+    pub update_auto_download: bool,
+    /// Release channel the update check follows (#229).  `"stable"`
+    /// (default) tracks published releases; `"beta"` will track
+    /// pre-release builds once we start publishing a beta manifest —
+    /// until then it falls back to the stable feed (the endpoint
+    /// mapping lives in the desktop shell).  Stored as a string
+    /// rather than an enum so adding a channel later is purely a
+    /// release-infrastructure change, no settings migration.
+    #[serde(default = "default_update_channel")]
+    pub update_channel: String,
+    /// Version string the user chose to skip (#229) — the "don't
+    /// nag me about this one" affordance.  While the latest
+    /// available version equals this value, the update badge stays
+    /// hidden; a newer release clears the suppression naturally
+    /// because the strings no longer match.  Empty = nothing
+    /// skipped.  A manual "Check for updates" click ignores it.
+    #[serde(default)]
+    pub update_skipped_version: String,
 }
 
 fn default_logo_style() -> String {
@@ -283,6 +319,11 @@ fn default_mcp_port() -> u16 {
 /// Default UI-scale multiplier (#191).  1.0 means "as designed".
 fn default_ui_scale() -> f32 {
     1.0
+}
+
+/// Default release channel for the in-app updater (#229).
+fn default_update_channel() -> String {
+    "stable".to_string()
 }
 
 /// Serde helper for fields whose post-deserialise default is `true`
@@ -408,6 +449,13 @@ impl Default for AppSettings {
             // Encrypted mail stays redacted from AI tool
             // responses until the user explicitly opts in (#439).
             mcp_expose_decrypted_content: false,
+            // In-app updater (#229): check quietly by default so
+            // security fixes reach users, but never download or
+            // install anything without an explicit opt-in / click.
+            update_auto_check: true,
+            update_auto_download: false,
+            update_channel: default_update_channel(),
+            update_skipped_version: String::new(),
         }
     }
 }

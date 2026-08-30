@@ -145,11 +145,28 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # In-app updater (#229): every update bundle is signed
+          # with the project's minisign private key; the app only
+          # installs bundles that verify against the public key in
+          # tauri.conf.json.  Both secrets were created with
+          # `cargo tauri signer generate` — losing them means
+          # shipped apps refuse all future updates, so the key +
+          # password live in the team password store too.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Unkai Mail ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
+          # #229 — merge the per-platform download URLs +
+          # signatures into a `latest.json` manifest and attach it
+          # to the Release.  The app's update check fetches it via
+          # the rolling `releases/latest/download/latest.json` URL,
+          # which only ever points at a *published, non-prerelease*
+          # release — drafts are invisible to the updater until the
+          # "Publish release" click.
+          includeUpdaterJson: true
           # `generateReleaseNotes: true` tells the underlying
           # `softprops/action-gh-release` (which tauri-action wraps)
           # to call GitHub's auto-notes generator, which honours
