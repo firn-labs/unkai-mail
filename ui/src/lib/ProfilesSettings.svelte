@@ -231,8 +231,8 @@
     }
   }
 
-  /** Check / uncheck one profile in the fixed set.  The last
-   *  checked profile can't be removed — "open nothing at startup"
+  /** Pin / unpin one profile in the fixed set.  The last pinned
+   *  profile can't be removed — "open nothing at startup"
    *  isn't a mode, and the backend rejects an empty list too. */
   function toggleFixedProfile(id: string) {
     const next = fixedProfileIds.includes(id)
@@ -338,26 +338,45 @@
         <option value="all">{m.profiles_startup_all()}</option>
       </select>
       {#if startupKind === 'fixed'}
-        <!-- Multi-select (#552): one checkbox row per profile, the
-             first checked one becomes the primary window.  The last
-             remaining check is disabled rather than removable. -->
-        <div class="max-w-80">
+        <!-- Multi-select (#552) via the house left-swatch toggle
+             (filled = opens at startup, outlined = stays closed;
+             see the CalendarView mute swatch).  The first pinned
+             profile becomes the primary window; the last remaining
+             swatch is disabled rather than removable. -->
+        <div class="max-w-80" role="list">
           <span class="text-xs text-surface-500 block mb-1">{m.profiles_startup_fixed_label()}</span>
           {#each profiles as p (p.id)}
-            {@const checked = fixedProfileIds.includes(p.id)}
-            <label
-              class="flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer transition-colors duration-150 ease-out hover:bg-primary-500/10"
+            {@const pinned = fixedProfileIds.includes(p.id)}
+            {@const lastPinned = pinned && fixedProfileIds.length === 1}
+            <div
+              class="flex items-center gap-2 px-2 py-1 rounded-lg transition-colors duration-150 ease-out hover:bg-primary-500/10"
+              role="listitem"
             >
-              <input
-                type="checkbox"
-                class="checkbox"
-                {checked}
-                disabled={checked && fixedProfileIds.length === 1}
-                onchange={() => toggleFixedProfile(p.id)}
-              />
-              {@render iconBubble(p.icon)}
-              <span class="text-sm truncate">{p.name}</span>
-            </label>
+              <button
+                class="w-3 h-3 rounded-sm shrink-0 border border-primary-500 transition-colors duration-150 ease-out
+                       {pinned ? 'bg-primary-500' : 'bg-transparent'}
+                       {lastPinned ? 'cursor-default' : 'cursor-pointer'}"
+                disabled={lastPinned}
+                title={lastPinned
+                  ? m.profiles_startup_fixed_last_hint()
+                  : pinned
+                    ? m.profiles_startup_fixed_remove()
+                    : m.profiles_startup_fixed_add()}
+                aria-label={lastPinned
+                  ? m.profiles_startup_fixed_last_hint()
+                  : pinned
+                    ? m.profiles_startup_fixed_remove()
+                    : m.profiles_startup_fixed_add()}
+                aria-pressed={pinned}
+                onclick={() => toggleFixedProfile(p.id)}
+              ></button>
+              <span class={pinned ? '' : 'opacity-50'}>
+                {@render iconBubble(p.icon)}
+              </span>
+              <span class="text-sm truncate {pinned ? '' : 'text-surface-400 dark:text-surface-500'}">
+                {p.name}
+              </span>
+            </div>
           {/each}
         </div>
       {/if}
