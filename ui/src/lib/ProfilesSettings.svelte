@@ -121,6 +121,9 @@
     'contacts', 'group', 'team', 'address-book',
     'email-envelope', 'global-inbox', 'star', 'sun',
     'cloud', 'lock', 'notes', 'ai',
+    // #552 — everyday-life profile identities
+    'briefcase', 'suitcase', 'plane', 'home',
+    'heart', 'graduation-cap', 'gamepad', 'music-note',
   ]
 
   /** Profile whose icon is being changed; null = modal closed. */
