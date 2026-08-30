@@ -87,12 +87,17 @@ export async function renderWindowIcon(
 
   if (badge) {
     if (badge.kind === 'emoji' && badge.value.trim()) {
-      drawBadgeCircle(ctx, badgeSurfaceColor())
+      // No backing disc for emoji (#552): colour emoji bring their
+      // own filled silhouette, so they composite straight onto the
+      // logo — drawn a bit larger than the disc'd named glyphs
+      // since there's no ring to fit inside.  The disc stays for
+      // named icons below, whose thin white strokes need it.
+      //
       // Emoji fonts put extra ascent above the visible glyph, so a
       // middle-baseline draw sits low — the small upward nudge is
       // the canvas twin of the rail bubble's 2px translate.
       ctx.font =
-        `${Math.round(BADGE_RADIUS * 1.4)}px ` +
+        `${Math.round(BADGE_RADIUS * 1.7)}px ` +
         '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
@@ -120,8 +125,9 @@ export async function renderWindowIcon(
   return Array.from(new Uint8Array(await blob.arrayBuffer()))
 }
 
-/** White-ringed disc the badge content sits on — keeps both emoji
- *  and glyph legible over whatever logo style is underneath. */
+/** White-ringed disc a named-icon badge sits on — keeps the glyph
+ *  legible over whatever logo style is underneath.  Emoji badges
+ *  skip it and draw directly on the logo. */
 function drawBadgeCircle(ctx: CanvasRenderingContext2D, fill: string) {
   ctx.beginPath()
   ctx.arc(BADGE_CENTER, BADGE_CENTER, BADGE_RADIUS, 0, Math.PI * 2)
@@ -130,13 +136,6 @@ function drawBadgeCircle(ctx: CanvasRenderingContext2D, fill: string) {
   ctx.lineWidth = 6
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
   ctx.stroke()
-}
-
-/** Near-white disc for emoji badges.  A fixed colour, not a theme
- *  token: the taskbar icon lives outside the app's theme and must
- *  read the same in light and dark shells. */
-function badgeSurfaceColor(): string {
-  return '#f4f5f7'
 }
 
 /**
