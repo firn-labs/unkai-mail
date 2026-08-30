@@ -29,6 +29,21 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Firn Labs",
+    "copyright": "© 2026 Firn Labs",
+    "homepage": "https://github.com/firn-labs/unkai-mail",
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "installerHooks": "installer/hooks.nsh"
+      },
+      "wix": {
+        "bannerPath": "installer/wix-banner.bmp",
+        "dialogImagePath": "installer/wix-dialog.bmp"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
