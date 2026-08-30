@@ -126,7 +126,7 @@ jobs:
         if: matrix.target == 'windows'
         run: choco install strawberryperl -y
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
