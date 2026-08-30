@@ -171,10 +171,12 @@ export type SmimeCertStatus = any
  * Backend `unkai_store::profiles::StartupMode` (#534) — which
  * profile(s) the app opens at launch. Serde tags the Rust enum as
  * `{ mode, id? }` with snake_case variant names; only `fixed`
- * carries content.
+ * carries content: the pinned profile-id list (#552; the backend
+ * still parses pre-#552 files where `id` was a single string, but
+ * always serves the list shape).
  */
 export type StartupMode =
-  | { mode: 'fixed'; id: string }
+  | { mode: 'fixed'; id: string[] }
   | { mode: 'last_used' }
   | { mode: 'all' }
 export type SyncCalendarsReport = any

@@ -209,22 +209,33 @@ pub fn get_startup_mode(paths: &ProfilePaths) -> Result<StartupMode, UnkaiError>
     Ok(load_registry(paths)?.startup)
 }
 
-/// Persist a new startup mode.  A `Fixed` id must name an existing
-/// profile — the resolution in `ProfilesFile::startup_profile` would
-/// fall back gracefully anyway, but silently accepting a dangling id
-/// would leave the settings UI showing a choice that never applies.
+/// Persist a new startup mode.  Every `Fixed` id must name an
+/// existing profile — the resolution in
+/// `ProfilesFile::startup_profile` would fall back gracefully
+/// anyway, but silently accepting a dangling id would leave the
+/// settings UI showing a choice that never applies.  An empty
+/// `Fixed` list is rejected too: "open nothing at startup" is not a
+/// thing, and the UI never offers it (#552).
 pub fn set_startup_mode(
     ui: &dyn UiNotifier,
     mode: StartupMode,
     paths: &ProfilePaths,
 ) -> Result<(), UnkaiError> {
     profiles::update_registry(paths, move |registry| {
-        if let StartupMode::Fixed(id) = &mode
-            && !registry.profiles.iter().any(|p| p.id == *id)
-        {
-            return Err(UnkaiError::Other(format!(
-                "cannot fix startup on unknown profile '{id}'"
-            )));
+        if let StartupMode::Fixed(ids) = &mode {
+            if ids.is_empty() {
+                return Err(UnkaiError::Other(
+                    "the startup profile list cannot be empty".into(),
+                ));
+            }
+            if let Some(unknown) = ids
+                .iter()
+                .find(|id| !registry.profiles.iter().any(|p| p.id == **id))
+            {
+                return Err(UnkaiError::Other(format!(
+                    "cannot fix startup on unknown profile '{unknown}'"
+                )));
+            }
         }
         registry.startup = mode;
         Ok(())
@@ -294,13 +305,17 @@ fn check_deletable(
 }
 
 /// Drop a profile's registry row and every reference to it: the
-/// `last_used` order, and a `Fixed` startup pin (which falls back
-/// to `LastUsed` rather than pointing at a ghost).
+/// `last_used` order, and its entry in a `Fixed` startup pin (the
+/// mode falls back to `LastUsed` when the last pinned profile goes,
+/// rather than pointing at a ghost).
 fn remove_from_registry(registry: &mut ProfilesFile, id: &str) {
     registry.profiles.retain(|p| p.id != id);
     registry.last_used.retain(|used| used != id);
-    if matches!(&registry.startup, StartupMode::Fixed(fixed) if fixed == id) {
-        registry.startup = StartupMode::LastUsed;
+    if let StartupMode::Fixed(fixed) = &mut registry.startup {
+        fixed.retain(|pinned| pinned != id);
+        if fixed.is_empty() {
+            registry.startup = StartupMode::LastUsed;
+        }
     }
 }
 
@@ -507,13 +522,25 @@ mod tests {
             get_startup_mode(&paths).expect("default"),
             StartupMode::LastUsed
         );
-        set_startup_mode(&NullNotifier, StartupMode::Fixed(id.clone()), &paths).expect("set fixed");
+        let other = seeded.profiles[0].id.clone();
+        set_startup_mode(
+            &NullNotifier,
+            StartupMode::Fixed(vec![id.clone(), other.clone()]),
+            &paths,
+        )
+        .expect("set fixed");
         assert_eq!(
             get_startup_mode(&paths).expect("get"),
-            StartupMode::Fixed(id)
+            StartupMode::Fixed(vec![id.clone(), other])
         );
-        set_startup_mode(&NullNotifier, StartupMode::Fixed("ghost".into()), &paths)
-            .expect_err("dangling fixed id must be rejected");
+        set_startup_mode(
+            &NullNotifier,
+            StartupMode::Fixed(vec![id, "ghost".into()]),
+            &paths,
+        )
+        .expect_err("dangling fixed id must be rejected");
+        set_startup_mode(&NullNotifier, StartupMode::Fixed(Vec::new()), &paths)
+            .expect_err("empty fixed list must be rejected");
         set_startup_mode(&NullNotifier, StartupMode::All, &paths).expect("set all");
         assert_eq!(get_startup_mode(&paths).expect("get"), StartupMode::All);
     }
@@ -555,16 +582,23 @@ mod tests {
         let work = registry.profiles[0].id.clone();
         let private = registry.profiles[1].id.clone();
         registry.last_used = vec![private.clone(), work.clone()];
-        registry.startup = StartupMode::Fixed(private.clone());
+        registry.startup = StartupMode::Fixed(vec![private.clone(), work.clone()]);
 
         remove_from_registry(&mut registry, &private);
         assert_eq!(registry.profiles.len(), 1);
         assert_eq!(registry.profiles[0].id, work);
-        assert_eq!(registry.last_used, vec![work]);
+        assert_eq!(registry.last_used, vec![work.clone()]);
+        assert_eq!(
+            registry.startup,
+            StartupMode::Fixed(vec![work.clone()]),
+            "the deleted profile leaves the Fixed pin, the rest stay"
+        );
+
+        remove_from_registry(&mut registry, &work);
         assert_eq!(
             registry.startup,
             StartupMode::LastUsed,
-            "a Fixed pin on the deleted profile falls back instead of dangling"
+            "an emptied Fixed pin falls back instead of dangling"
         );
     }
 }

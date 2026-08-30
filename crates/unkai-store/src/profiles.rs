@@ -118,13 +118,38 @@ impl ProfileMeta {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "mode", content = "id", rename_all = "snake_case")]
 pub enum StartupMode {
-    /// Always open this one profile.
-    Fixed(String),
+    /// Always open this set of profiles (#552).  The first id that
+    /// still exists becomes the primary window; the rest fan out to
+    /// their own windows at boot.  Never persisted empty —
+    /// `set_startup_mode` rejects an empty list, and deletion
+    /// bookkeeping falls the mode back to `LastUsed` when the last
+    /// pinned profile goes away.
+    Fixed(#[serde(deserialize_with = "one_or_many_ids")] Vec<String>),
     /// Open whatever was focused most recently.
     #[default]
     LastUsed,
     /// Open a window for every profile.
     All,
+}
+
+/// Pre-#552 registries persisted `Fixed` with a single id string
+/// (`"id": "..."`); the multi-select startup UI made it a list.
+/// Accept both shapes so existing `profiles.json` files keep
+/// parsing — a load failure here would look like a lost registry.
+fn one_or_many_ids<'de, D>(de: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(de)? {
+        OneOrMany::One(id) => vec![id],
+        OneOrMany::Many(ids) => ids,
+    })
 }
 
 /// The `profiles.json` registry.  `#[serde(default)]` keeps old
@@ -162,7 +187,10 @@ impl ProfilesFile {
     pub fn startup_profile(&self) -> Option<&ProfileMeta> {
         let by_id = |id: &str| self.profiles.iter().find(|p| p.id == id);
         match &self.startup {
-            StartupMode::Fixed(id) => by_id(id).or_else(|| self.profiles.first()),
+            StartupMode::Fixed(ids) => ids
+                .iter()
+                .find_map(|id| by_id(id))
+                .or_else(|| self.profiles.first()),
             StartupMode::LastUsed | StartupMode::All => self
                 .last_used
                 .iter()
@@ -578,11 +606,16 @@ mod tests {
         };
         assert_eq!(reg.startup_profile().unwrap().id, "b");
 
-        reg.startup = StartupMode::Fixed("a".into());
+        reg.startup = StartupMode::Fixed(vec!["a".into()]);
         assert_eq!(reg.startup_profile().unwrap().id, "a");
 
-        // A dangling fixed id falls back to the first profile.
-        reg.startup = StartupMode::Fixed("gone".into());
+        // Multi-id Fixed (#552): the first still-existing id is the
+        // primary — dangling entries are skipped.
+        reg.startup = StartupMode::Fixed(vec!["gone".into(), "b".into(), "a".into()]);
+        assert_eq!(reg.startup_profile().unwrap().id, "b");
+
+        // Only dangling fixed ids falls back to the first profile.
+        reg.startup = StartupMode::Fixed(vec!["gone".into()]);
         assert_eq!(reg.startup_profile().unwrap().id, "a");
 
         // Dangling last-used entries are skipped.
@@ -600,13 +633,26 @@ mod tests {
 
         let full = ProfilesFile {
             profiles: vec![ProfileMeta::new_default()],
-            startup: StartupMode::Fixed("x".into()),
+            startup: StartupMode::Fixed(vec!["x".into(), "y".into()]),
             last_used: vec!["x".into()],
             ..Default::default()
         };
         let json = serde_json::to_string(&full).expect("serialise");
         let back: ProfilesFile = serde_json::from_str(&json).expect("reparse");
-        assert_eq!(back.startup, StartupMode::Fixed("x".into()));
+        assert_eq!(
+            back.startup,
+            StartupMode::Fixed(vec!["x".into(), "y".into()])
+        );
         assert_eq!(back.profiles.len(), 1);
+    }
+
+    #[test]
+    fn startup_mode_parses_legacy_single_id_fixed() {
+        // Pre-#552 files persisted `Fixed` as one id string.
+        let parsed: ProfilesFile = serde_json::from_str(
+            r#"{ "version": 1, "profiles": [], "startup": { "mode": "fixed", "id": "x" } }"#,
+        )
+        .expect("parse legacy fixed");
+        assert_eq!(parsed.startup, StartupMode::Fixed(vec!["x".into()]));
     }
 }

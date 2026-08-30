@@ -198,13 +198,17 @@
 
   // ── Startup mode ─────────────────────────────────────────────
   const startupKind = $derived(startupMode.mode)
-  /** Which profile the "fixed" secondary select shows: the pinned
-   *  one, else a sensible default for the moment the user switches
-   *  the primary select over to "fixed". */
-  const fixedProfileId = $derived(
+  /** Which profiles the "fixed" checklist shows as pinned (#552):
+   *  the saved set, else a sensible one-profile default for the
+   *  moment the user switches the primary select over to "fixed". */
+  const fixedProfileIds = $derived(
     startupMode.mode === 'fixed'
       ? startupMode.id
-      : (currentId ?? profiles[0]?.id ?? ''),
+      : currentId != null
+        ? [currentId]
+        : profiles[0]
+          ? [profiles[0].id]
+          : [],
   )
 
   async function applyStartupMode(mode: StartupMode) {
@@ -218,12 +222,24 @@
 
   function onStartupKindChange(kind: string) {
     if (kind === 'fixed') {
-      if (fixedProfileId) void applyStartupMode({ mode: 'fixed', id: fixedProfileId })
+      if (fixedProfileIds.length > 0)
+        void applyStartupMode({ mode: 'fixed', id: [...fixedProfileIds] })
     } else if (kind === 'all') {
       void applyStartupMode({ mode: 'all' })
     } else {
       void applyStartupMode({ mode: 'last_used' })
     }
+  }
+
+  /** Check / uncheck one profile in the fixed set.  The last
+   *  checked profile can't be removed — "open nothing at startup"
+   *  isn't a mode, and the backend rejects an empty list too. */
+  function toggleFixedProfile(id: string) {
+    const next = fixedProfileIds.includes(id)
+      ? fixedProfileIds.filter((x) => x !== id)
+      : [...fixedProfileIds, id]
+    if (next.length === 0) return
+    void applyStartupMode({ mode: 'fixed', id: next })
   }
 </script>
 
@@ -322,22 +338,28 @@
         <option value="all">{m.profiles_startup_all()}</option>
       </select>
       {#if startupKind === 'fixed'}
-        <label class="flex items-center gap-2">
-          <span class="text-xs text-surface-500 shrink-0">{m.profiles_startup_fixed_label()}</span>
-          <select
-            class="select px-2 py-1 text-sm rounded-lg max-w-65"
-            value={fixedProfileId}
-            onchange={(e) =>
-              void applyStartupMode({
-                mode: 'fixed',
-                id: (e.currentTarget as HTMLSelectElement).value,
-              })}
-          >
-            {#each profiles as p (p.id)}
-              <option value={p.id}>{p.name}</option>
-            {/each}
-          </select>
-        </label>
+        <!-- Multi-select (#552): one checkbox row per profile, the
+             first checked one becomes the primary window.  The last
+             remaining check is disabled rather than removable. -->
+        <div class="max-w-80">
+          <span class="text-xs text-surface-500 block mb-1">{m.profiles_startup_fixed_label()}</span>
+          {#each profiles as p (p.id)}
+            {@const checked = fixedProfileIds.includes(p.id)}
+            <label
+              class="flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer transition-colors duration-150 ease-out hover:bg-primary-500/10"
+            >
+              <input
+                type="checkbox"
+                class="checkbox"
+                {checked}
+                disabled={checked && fixedProfileIds.length === 1}
+                onchange={() => toggleFixedProfile(p.id)}
+              />
+              {@render iconBubble(p.icon)}
+              <span class="text-sm truncate">{p.name}</span>
+            </label>
+          {/each}
+        </div>
       {/if}
     </div>
   </div>
