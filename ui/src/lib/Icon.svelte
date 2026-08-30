@@ -72,6 +72,10 @@
     // for the profile icon picker.
     | 'briefcase' | 'suitcase' | 'plane' | 'home'
     | 'heart' | 'graduation-cap' | 'gamepad' | 'music-note'
+    // v13 — bare checkmark primitive (#552): the tick without the
+    // circle of `success`, for tiny "selected" marks like the
+    // startup-profile swatch.
+    | 'check'
 </script>
 
 <script lang="ts">
@@ -211,6 +215,8 @@
   import GraduationCap from './icons/GraduationCap.svelte'
   import Gamepad from './icons/Gamepad.svelte'
   import MusicNote from './icons/MusicNote.svelte'
+  // v13
+  import Check from './icons/Check.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -351,6 +357,7 @@
     'graduation-cap': GraduationCap,
     'gamepad': Gamepad,
     'music-note': MusicNote,
+    'check': Check,
   }
   const Cmp = $derived(map[name])
 </script>

@@ -353,8 +353,8 @@
               role="listitem"
             >
               <button
-                class="w-3 h-3 rounded-sm shrink-0 border border-primary-500 transition-colors duration-150 ease-out
-                       {pinned ? 'bg-primary-500' : 'bg-transparent'}
+                class="w-3 h-3 rounded-sm shrink-0 border border-primary-500 flex items-center justify-center transition-colors duration-150 ease-out
+                       {pinned ? 'bg-primary-500 text-white' : 'bg-transparent'}
                        {lastPinned ? 'cursor-default' : 'cursor-pointer'}"
                 disabled={lastPinned}
                 title={lastPinned
@@ -369,7 +369,11 @@
                     : m.profiles_startup_fixed_add()}
                 aria-pressed={pinned}
                 onclick={() => toggleFixedProfile(p.id)}
-              ></button>
+              >
+                {#if pinned}
+                  <Icon name="check" size={10} />
+                {/if}
+              </button>
               <span class={pinned ? '' : 'opacity-50'}>
                 {@render iconBubble(p.icon)}
               </span>
