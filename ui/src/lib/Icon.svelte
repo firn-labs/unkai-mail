@@ -67,6 +67,11 @@
     // v11 — bring a file into the app (#518): Download mirrored
     // vertically, arrow rising off the same baseline tray.
     | 'upload'
+    // v12 — profile identity presets (#552): everyday-life
+    // metaphors (work, travel, home, family, school, hobbies)
+    // for the profile icon picker.
+    | 'briefcase' | 'suitcase' | 'plane' | 'home'
+    | 'heart' | 'graduation-cap' | 'gamepad' | 'music-note'
 </script>
 
 <script lang="ts">
@@ -197,6 +202,15 @@
   import EyeOff from './icons/EyeOff.svelte'
   // v11
   import Upload from './icons/Upload.svelte'
+  // v12
+  import Briefcase from './icons/Briefcase.svelte'
+  import Suitcase from './icons/Suitcase.svelte'
+  import Plane from './icons/Plane.svelte'
+  import Home from './icons/Home.svelte'
+  import Heart from './icons/Heart.svelte'
+  import GraduationCap from './icons/GraduationCap.svelte'
+  import Gamepad from './icons/Gamepad.svelte'
+  import MusicNote from './icons/MusicNote.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -329,6 +343,14 @@
     'eye': Eye,
     'eye-off': EyeOff,
     'upload': Upload,
+    'briefcase': Briefcase,
+    'suitcase': Suitcase,
+    'plane': Plane,
+    'home': Home,
+    'heart': Heart,
+    'graduation-cap': GraduationCap,
+    'gamepad': Gamepad,
+    'music-note': MusicNote,
   }
   const Cmp = $derived(map[name])
 </script>
