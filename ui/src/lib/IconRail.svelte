@@ -38,6 +38,7 @@
   import ProfileGlyph from './ProfileGlyph.svelte'
   import { anchorRect, clampToViewport, cursorAnchor } from './coords'
   import { profileStore } from './profileStore.svelte'
+  import { updater, updateBadgeVisible } from './updaterStore.svelte'
   import { m } from '../paraglide/messages'
 
   interface Account {
@@ -113,6 +114,9 @@
     onswitchprofile: (id: string) => void
     /** Deep-link into the Profiles settings category (#535). */
     onmanageprofiles: () => void
+    /** Deep-link into the Updates settings category (#229) — the
+     *  version label / update badge under the gear routes here. */
+    onopenupdates: () => void
   }
   let {
     accounts,
@@ -123,6 +127,7 @@
     onselectview,
     onswitchprofile,
     onmanageprofiles,
+    onopenupdates,
     mailRefreshing = false,
     ncCaps = {
       hasAny: true,
@@ -549,6 +554,38 @@
     >
       <Icon name="settings" size={20} />
     </button>
+    <!-- Version label under the gear (#229).  Normally a whisper-
+         quiet vX.Y.Z; when an update is waiting it gains a filled
+         download dot and the primary tint.  Either way it deep-
+         links straight to Settings → Updates.  Hidden until the
+         version query resolves so the rail never shows a bare
+         "v". -->
+    {#if updater.currentVersion}
+      <button
+        class="flex flex-col items-center gap-1 px-1 py-1 rounded-lg transition-colors duration-150 ease-out hover:bg-primary-500/10
+               {updateBadgeVisible()
+                 ? 'text-primary-500'
+                 : 'text-surface-400 dark:text-surface-500'}"
+        title={updateBadgeVisible() && updater.available?.version
+          ? m.rail_update_available_tooltip({ version: updater.available.version })
+          : m.rail_version_tooltip({ version: updater.currentVersion })}
+        aria-label={updateBadgeVisible() && updater.available?.version
+          ? m.rail_update_available_tooltip({ version: updater.available.version })
+          : m.rail_version_tooltip({ version: updater.currentVersion })}
+        onclick={onopenupdates}
+      >
+        {#if updateBadgeVisible()}
+          <span
+            class="flex items-center justify-center w-4 h-4 rounded-full bg-primary-500 text-white ring-2 ring-surface-100 dark:ring-surface-800"
+          >
+            <Icon name="download" size={10} />
+          </span>
+        {/if}
+        <span class="text-[9px] leading-none tabular-nums font-medium">
+          v{updater.currentVersion}
+        </span>
+      </button>
+    {/if}
   </div>
 </aside>
 

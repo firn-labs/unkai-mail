@@ -23,6 +23,7 @@ mod external_open;
 mod notifier;
 mod registry;
 mod tray;
+mod updater;
 mod windows;
 
 use std::sync::Arc;
@@ -719,6 +720,47 @@ fn quit_app(app: AppHandle) {
 #[tauri::command]
 fn restart_app(app: AppHandle) {
     app.restart();
+}
+
+// ── In-app updater (#229) ───────────────────────────────────────
+//
+// Bodies live in `updater.rs`; these shims only resolve the
+// machine-global `PendingUpdate` state.  Deliberately NOT
+// profile-scoped — an update applies to the install, so there's no
+// `profile_ctx` here.
+
+/// The running app's version (from `tauri.conf.json`, kept in sync
+/// with the workspace version).  The Settings page and the rail's
+/// version label read this instead of baking the version into the
+/// frontend bundle a second time.
+#[tauri::command]
+fn get_app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+async fn check_app_update(
+    channel: String,
+    app: AppHandle,
+    pending: State<'_, updater::PendingUpdate>,
+) -> Result<updater::UpdateCheckResult, UnkaiError> {
+    updater::check_for_update(&app, &channel, &pending).await
+}
+
+#[tauri::command]
+async fn download_app_update(
+    window: tauri::Window,
+    pending: State<'_, updater::PendingUpdate>,
+) -> Result<(), UnkaiError> {
+    updater::download_update(&window, &pending).await
+}
+
+#[tauri::command]
+async fn install_app_update(
+    app: AppHandle,
+    pending: State<'_, updater::PendingUpdate>,
+) -> Result<(), UnkaiError> {
+    updater::install_update(&app, &pending).await
 }
 
 // ── External-open handlers (#254 / #294 / #536) ─────────────────
@@ -3787,6 +3829,15 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // In-app updater (#229).  The plugin verifies every bundle
+        // against the minisign public key in tauri.conf.json; the
+        // whole check/download/install flow is driven Rust-side
+        // from `updater.rs` (runtime channel endpoints), so no
+        // capability permission is exposed to the webview.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Parking spot for the update found between check /
+        // download / install — machine-global, not per-profile.
+        .manage(updater::PendingUpdate::default())
         // The multi-profile runtime (#533).  Per-profile state
         // (cache, settings, MCP server, sync plumbing) lives in
         // ProfileHandles inside this registry — the only managed
@@ -4444,6 +4495,11 @@ fn main() {
             get_unread_counts_by_account,
             quit_app,
             restart_app,
+            // #229 — in-app updater
+            get_app_version,
+            check_app_update,
+            download_app_update,
+            install_app_update,
             // #254 — file-association entry points
             take_pending_files_to_open,
             parse_eml_file,

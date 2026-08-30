@@ -73,6 +73,14 @@ tauri-plugin-deep-link = "2"
 # `on_open_url` event, so the rest of the handling code stays
 # single-pathed.
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+# In-app updater (#229).  Fetches the signed `latest.json` manifest
+# the release workflow attaches to each GitHub Release, verifies the
+# bundle's minisign signature against the public key baked into
+# `tauri.conf.json`, and installs the platform package.  Driven
+# entirely from the Rust side (src/updater.rs) rather than the
+# plugin's JS API so the release channel can pick its endpoint at
+# runtime — the JS `check()` can't override endpoints.
+tauri-plugin-updater = "2"
 # Used by `custom_themes_dir()` to locate the user's config root
 # the same way the rest of the app's per-platform persistence
 # does.  Workspace dep so we share the same major version.

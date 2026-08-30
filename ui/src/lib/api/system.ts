@@ -46,6 +46,11 @@ export function restartApp(): Promise<void> {
   return call('restart_app')
 }
 
+/** The running app's version, from `tauri.conf.json` (#229). */
+export function getAppVersion(): Promise<string> {
+  return call('get_app_version')
+}
+
 export function openUrl(args: { url: string }): Promise<void> {
   return call('open_url', args)
 }

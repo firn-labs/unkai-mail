@@ -354,8 +354,11 @@ We run a **two-tier CI model** so daily dev stays fast and the heavy security su
      - Windows: `Unkai-Mail_X.Y.Z_x64-setup.exe` (NSIS) + `Unkai-Mail_X.Y.Z_x64_en-US.msi` (WiX)
      - macOS (Apple Silicon only — `macos-latest` runners are arm64): `Unkai-Mail_X.Y.Z_aarch64.dmg` + `Unkai-Mail_aarch64.app.tar.gz`. There is **no Intel (x64) `.dmg`** unless we add an x64 macOS matrix entry.
      - Linux: `Unkai-Mail_X.Y.Z_amd64.deb` (Debian/Ubuntu) + `Unkai-Mail-X.Y.Z-1.x86_64.rpm` (Fedora/RHEL) + `Unkai-Mail_X.Y.Z_amd64.AppImage` (any distro).
+     - In-app updater artifacts (#229): `latest.json` (the update manifest) plus a `.sig` next to each updater bundle (`…-setup.exe.sig`, `.msi.sig`, `.AppImage.sig`, `.app.tar.gz.sig`). If they're missing, the CI secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` weren't available to the build — installed apps will never see this version as an update.
      - Note: tauri-action does **not** emit a `SHA256SUMS` file by default — don't promise one in the notes unless we add a hashing step.
-   - Click **Publish release**.
+   - Click **Publish release**. For the in-app updater this click is the actual "ship it" moment: installed apps poll `releases/latest/download/latest.json`, and GitHub's `/latest` redirect only ever points at a **published, non-prerelease** release — a draft (or a release marked pre-release) is invisible to every installed app.
+
+**In-app updater key custody (#229).** Update bundles are signed with a minisign key pair generated via `cargo tauri signer generate`. The public key is baked into `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); the private key + password live in the repo secrets above and in the team password store. **If the private key or its password is lost, every shipped binary refuses all future updates** (they only trust the baked-in public key) and users would have to reinstall manually — treat the key like a production credential. Rotating it requires shipping one final release signed with the old key that carries the new public key.
 
 **If the tag pipeline fails** (gate red, build matrix red, etc.):
 

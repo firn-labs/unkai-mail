@@ -47,7 +47,7 @@ The following packages are distributed under the MIT License:
 `axum`, `tauri`,
 `tauri-build`, `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
-`tauri-plugin-single-instance`, `notify-rust`,
+`tauri-plugin-single-instance`, `tauri-plugin-updater`, `notify-rust`,
 `tauri-winrt-notification`, `windows`.
 
 **npm packages**: `@tauri-apps/api`, `@tauri-apps/plugin-autostart`,
@@ -112,7 +112,7 @@ with downstream consumers who require it):
 `tauri-build`,
 `tauri-plugin-notification`, `tauri-plugin-dialog`,
 `tauri-plugin-autostart`, `tauri-plugin-deep-link`,
-`tauri-plugin-single-instance`, `notify-rust`,
+`tauri-plugin-single-instance`, `tauri-plugin-updater`, `notify-rust`,
 `tauri-winrt-notification`, `windows`.
 
 **Vendored libraries**: OpenSSL (statically linked through

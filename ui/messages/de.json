@@ -1,8 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-
   "_comment": "German translations.  Mirror the key set of `en.json` exactly — paraglide warns at compile time about missing keys, but a key with no German translation falls back to English at runtime.  Keep the formality at 'Sie' (formal you) for now; switch to 'du' if the team decides on a more casual register later.",
-
   "settings_general_language_label": "Anzeigesprache",
   "settings_general_language_hint": "Sprache der Unkai-Mail-Oberfläche ändern. Die neue Sprache wird beim nächsten Start übernommen.",
   "settings_general_language_auto_label": "Systemsprache verwenden",
@@ -11,14 +9,12 @@
   "settings_general_language_restart_body": "Die neue Sprache wird beim nächsten Start von Unkai Mail übernommen.",
   "settings_general_language_restart_now": "Jetzt neu starten",
   "settings_general_language_restart_later": "Später neu starten",
-
   "settings_general_file_assoc_label": ".ics- und .eml-Dateien in Unkai öffnen",
   "settings_general_file_assoc_hint": "Unkai ist beim Betriebssystem als möglicher Handler registriert. Setzen Sie Unkai in den OS-Einstellungen als Standardprogramm, damit doppelt angeklickte Kalender­einladungen und E-Mail-Dateien hier geöffnet werden.",
   "settings_general_file_assoc_button": "OS-Einstellungen öffnen",
   "settings_general_replay_tour_label": "Willkommens-Tour",
   "settings_general_replay_tour_hint": "Die kurze Funktionstour vom ersten Start erneut abspielen.",
   "settings_general_replay_tour_button": "Tour erneut starten",
-
   "tour_step_of": "Schritt {n} von {total}",
   "tour_skip": "Tour überspringen",
   "tour_back": "Zurück",
@@ -40,10 +36,8 @@
   "tour_settings_body": "Konten, Design, Verschlüsselung und Nextcloud-Verbindungen finden Sie in den Einstellungen. Diese Tour können Sie dort jederzeit im Bereich „Allgemein“ erneut starten.",
   "tour_done_title": "Alles bereit",
   "tour_done_body": "Viel Freude mit Unkai Mail. Ihre E-Mails werden im Hintergrund synchronisiert und erscheinen in Kürze.",
-
   "settings_mail_conversation_view_label": "Nachrichten nach Konversation gruppieren",
   "settings_mail_conversation_view_hint": "Antworten desselben Threads werden in einer Zeile mit Aufklapp-Pfeil zusammengefasst. Ausschalten zeigt jede Nachricht als eigene Zeile in zeitlicher Reihenfolge.",
-
   "account_setup_welcome_title": "Willkommen bei Unkai Mail",
   "account_setup_welcome_subtitle": "Lassen Sie uns Ihr E-Mail-Konto einrichten",
   "account_setup_close_label": "Einrichtungsassistenten schließen",
@@ -131,7 +125,6 @@
   "account_setup_jmap_hint": "Modernes Push-basiertes Mail-Protokoll. Nur aktivieren, wenn Ihr Anbieter es unterstützt.",
   "account_setup_signature_label": "Signatur (optional)",
   "account_setup_signature_hint": "Wird neuen Nachrichten dieses Kontos angefügt. Kann später in den Einstellungen geändert werden.",
-
   "signature_popout_button_title": "Signatur in einem separaten Fenster bearbeiten",
   "signature_popout_button_aria": "Signatur-Editor in einem separaten Fenster öffnen",
   "signature_popout_locked_banner": "Bearbeitung im Pop-out-Fenster — schließen Sie dieses Fenster, um hier wieder zu bearbeiten.",
@@ -145,7 +138,6 @@
   "signature_status_saving": "Wird gespeichert…",
   "signature_status_saved": "Gespeichert",
   "signature_status_error": "Speichern fehlgeschlagen",
-
   "account_setup_button_back": "Zurück",
   "account_setup_button_next": "Weiter",
   "account_setup_button_add_account": "Konto hinzufügen",
@@ -178,21 +170,17 @@
   "account_setup_cert_trusting_one": "1 selbst signiertes Zertifikat wird für dieses Konto akzeptiert.",
   "account_setup_cert_trusting_many": "{n} selbst signierte Zertifikate werden für dieses Konto akzeptiert.",
   "account_setup_save_failed": "Konto konnte nicht gespeichert werden",
-
   "compose_attachment_warning_title": "Sie haben einen Anhang erwähnt, aber keine Datei angehängt.",
   "compose_attachment_warning_body": "Fügen Sie vor dem Senden eine Datei hinzu oder schließen Sie diese Warnung, falls es ein Fehlalarm ist.",
   "compose_attachment_warning_dismiss": "Schließen",
-
   "compose_forward_attachments_title": "Originalanhänge übernehmen?",
   "compose_forward_attachments_body_one": "Die weitergeleitete Nachricht enthält 1 Anhang. Soll er in die Weiterleitung übernommen werden?",
   "compose_forward_attachments_body_many": "Die weitergeleitete Nachricht enthält {n} Anhänge. Sollen sie in die Weiterleitung übernommen werden?",
   "compose_forward_attachments_include": "Anhänge übernehmen",
   "compose_forward_attachments_skip": "Ohne Anhänge weiterleiten",
   "compose_forward_attachments_download_failed": "Einige Anhänge konnten nicht geladen werden: {reason}",
-
   "compose_pgp_recipient_no_key_title": "Kein PGP-Schlüssel für einige Empfänger",
   "compose_pgp_recipient_no_key_body": "Für folgende Adressen liegt kein öffentlicher Schlüssel vor: {addresses}. Der verschlüsselte Versand schlägt fehl, bis ein Schlüssel importiert oder die Adresse entfernt wird.",
-
   "compose_crypto_stack_label": "Protokoll",
   "compose_crypto_stack_pgp": "PGP",
   "compose_crypto_stack_smime": "S/MIME",
@@ -209,17 +197,14 @@
   "compose_crypto_passphrase_placeholder": "Entsperrt deinen Kontoschlüssel",
   "compose_crypto_send_needs_passphrase": "Öffne den Verschlüsselungs-Tab und gib deine Passphrase ein, um zu senden",
   "compose_send_tooltip": "Nachricht senden",
-
   "compose_read_receipt": "Lesebestätigung",
   "compose_read_receipt_active": "Bestätigung angefordert",
   "compose_read_receipt_title": "Lesebestätigung von den Empfängern anfordern — deren Mailprogramm kann die Anfrage ablehnen oder ignorieren",
   "compose_read_receipt_title_active": "Eine Lesebestätigung wird angefordert — klicken zum Ausschalten",
-
   "compose_delivery_receipt": "Zustellbestätigung",
   "compose_delivery_receipt_active": "Bestätigung angefordert",
   "compose_delivery_receipt_title": "Den Mailserver bitten, die Zustellung ins Postfach jedes Empfängers zu bestätigen — funktioniert nur, wenn der Server Zustellstatus-Benachrichtigungen unterstützt",
   "compose_delivery_receipt_title_active": "Eine Zustellbestätigung wird angefordert — klicken zum Ausschalten",
-
   "mail_view_mdn_banner": "{sender} bittet um eine Lesebestätigung für diese Nachricht.",
   "mail_view_mdn_send": "Bestätigung senden",
   "mail_view_mdn_sending": "Wird gesendet…",
@@ -228,13 +213,11 @@
   "mail_view_receipt_requested": "Bestätigung angefordert",
   "mail_view_receipt_requested_title": "Du hast eine Lesebestätigung angefordert — bisher keine Antwort. Empfänger können die Anfrage ablehnen, daher kommt womöglich nie eine.",
   "mail_view_receipt_received": "Bestätigung erhalten",
-
   "settings_mail_mdn_label": "Lesebestätigungen",
   "settings_mail_mdn_ask": "Jedes Mal fragen",
   "settings_mail_mdn_always": "Immer senden",
   "settings_mail_mdn_never": "Nie senden",
   "settings_mail_mdn_hint": "Wie reagiert werden soll, wenn ein Absender wissen möchte, dass du seine Nachricht angezeigt hast. Bestätigungen verraten, wann du Mails liest — ohne deine Zustimmung wird nichts gesendet, außer du wählst „Immer senden“.",
-
   "mail_decrypt_for_reply_title": "Zum Antworten entschlüsseln",
   "mail_decrypt_for_reply_body": "Geben Sie Ihre PGP-Passphrase ein, um die Nachricht von {sender} zu entschlüsseln, damit Ihre Antwort den Originaltext zitieren kann.",
   "mail_decrypt_for_forward_title": "Zum Weiterleiten entschlüsseln",
@@ -243,11 +226,9 @@
   "mail_decrypt_cancel_button": "Abbrechen",
   "mail_decrypt_submit_button": "Entschlüsseln",
   "mail_decrypt_busy_button": "Entschlüsseln …",
-
   "nc_share_set_expiration_label": "Ablaufdatum festlegen",
   "nc_share_expiration_aria": "Ablaufdatum für den Freigabelink auswählen",
   "nc_share_expiration_hint": "Empfänger können den Link nach diesem Datum nicht mehr öffnen.",
-
   "compose_button_minimize_aria_label": "Minimieren",
   "compose_button_minimize_title": "Entwurf in die Leiste minimieren",
   "compose_minimized_bar_aria_label": "Minimierte Entwürfe",
@@ -255,7 +236,6 @@
   "compose_minimized_item_title": "Entwurf wiederherstellen: {subject}",
   "compose_minimized_item_close_aria_label": "Entwurf verwerfen",
   "compose_minimized_item_close_title": "Diesen Entwurf verwerfen",
-
   "contact_form_avatar_title": "Zum Hochladen eines Fotos klicken",
   "contact_form_avatar_aria": "Kontaktfoto ändern",
   "contact_form_avatar_overlay": "Hochladen",
@@ -263,13 +243,11 @@
   "contact_form_new_heading": "Neuer Kontakt",
   "contact_form_no_name": "(kein Name)",
   "contact_form_from_account": "Aus {account}",
-
   "contact_form_section_personal": "Persönlich",
   "contact_form_section_communication": "Kommunikation",
   "contact_form_section_work": "Arbeit",
   "contact_form_section_address_web": "Adresse & Web",
   "contact_form_section_other": "Sonstiges",
-
   "contact_form_label_prefix": "Präfix",
   "contact_form_label_suffix": "Suffix",
   "contact_form_label_given_name": "Vorname",
@@ -283,7 +261,6 @@
   "contact_form_label_anniversary": "Jahrestag",
   "contact_form_label_gender": "Geschlecht",
   "contact_form_placeholder_gender": "Frei wählbar (M / W / divers / …)",
-
   "contact_form_label_emails": "E-Mail-Adressen",
   "contact_form_button_add_email": "+ E-Mail hinzufügen",
   "contact_form_label_phones": "Telefonnummern",
@@ -303,14 +280,12 @@
   "contact_form_kind_skype": "Skype",
   "contact_form_kind_whatsapp": "WhatsApp",
   "contact_form_button_remove": "Entfernen",
-
   "contact_form_label_organization": "Organisation",
   "contact_form_label_job_title": "Berufsbezeichnung",
   "contact_form_label_role": "Rolle",
   "contact_form_hint_role": "Funktion in der Organisation",
   "contact_form_label_categories": "Kategorien",
   "contact_form_placeholder_chip": "Tippen und Eingabetaste drücken…",
-
   "contact_form_label_addresses": "Adressen",
   "contact_form_button_add_address": "+ Adresse hinzufügen",
   "contact_form_placeholder_street": "Straße",
@@ -326,11 +301,9 @@
   "contact_form_placeholder_timezone": "Europe/Berlin oder +02:00",
   "contact_form_label_notes": "Notizen",
   "contact_form_placeholder_notes": "Was Sie sich über diesen Kontakt merken möchten",
-
   "contact_view_button_edit": "Bearbeiten",
   "contact_view_button_delete": "Löschen",
   "contact_view_empty_state": "Noch keine Details für diesen Kontakt.",
-
   "contacts_view_title": "Kontakte",
   "contacts_view_search_placeholder": "Kontakte durchsuchen",
   "contacts_view_sync": "Synchronisieren",
@@ -348,7 +321,6 @@
   "contact_form_button_save": "Speichern",
   "contact_form_button_saving": "Speichere…",
   "contact_form_button_cancel": "Abbrechen",
-
   "contact_import_button": "Kontakte importieren",
   "contact_import_title": "Kontakte importieren",
   "contact_import_intro": "Kontakte aus einer vCard- (.vcf) oder CSV-Exportdatei importieren.",
@@ -363,7 +335,6 @@
   "contact_import_close": "Schließen",
   "contact_import_summary": "{imported} von {total} Kontakten importiert, {skipped} Duplikate übersprungen.",
   "contact_import_errors_label": "Einige Einträge konnten nicht importiert werden:",
-
   "outbox_banner_empty": "Der Postausgang ist leer. Hier erscheinen kurz Ihre versendeten Nachrichten, während sie unterwegs sind.",
   "outbox_banner_failed": "{count} Nachrichten konnten noch nicht versendet werden — Unkai versucht es bei jeder Synchronisierung erneut. Sie können jede Nachricht jetzt wiederholen, bearbeiten oder verwerfen.",
   "outbox_banner_failed_singular": "1 Nachricht konnte noch nicht versendet werden — Unkai versucht es bei jeder Synchronisierung erneut. Sie können sie jetzt wiederholen, bearbeiten oder verwerfen.",
@@ -434,11 +405,8 @@
   "settings_nominatim_base_url_hint": "Leer lassen, um den öffentlichen OpenStreetMap-Nominatim-Dienst zu verwenden. Um Anfragen stattdessen über eine selbst gehostete Nominatim-Instanz zu leiten, deren Basis-URL eintragen (z. B. https://nominatim.example.com).",
   "settings_notes_mail_open_in_view_label": "Mails in der Mail-Ansicht öffnen",
   "settings_notes_mail_open_in_view_hint": "Wenn aktiviert, wechselt ein Klick auf einen Mail-Link in einer Notiz zur Mail-Ansicht und öffnet die Nachricht dort. Wenn deaktiviert (Standard), wird die Nachricht in einem eigenständigen Lesefenster geöffnet, sodass die Notizen-Ansicht erhalten bleibt.",
-
   "chrome_sidebar_resize_handle_label": "Seitenleiste anpassen",
-
   "mail_view_message_gone": "Diese Nachricht existiert nicht mehr auf dem Server.",
-
   "sidebar_unified_inbox_label": "Alle Posteingänge",
   "sidebar_unified_outbox_label": "Alle ausgehenden Nachrichten",
   "sidebar_unified_sent_label": "Alle gesendeten Nachrichten",
@@ -446,7 +414,6 @@
   "sidebar_unified_archive_label": "Alle Archive",
   "sidebar_unified_junk_label": "Alle Spam-Ordner",
   "sidebar_unified_trash_label": "Alle Papierkörbe",
-
   "sidebar_menu_mark_all_read": "Alle als gelesen markieren",
   "sidebar_menu_clear_spam": "Spam-Ordner leeren",
   "sidebar_clear_spam_title": "Spam-Ordner leeren?",
@@ -456,7 +423,6 @@
   "sidebar_clear_spam_cancel": "Abbrechen",
   "sidebar_clear_spam_failed": "Spam-Ordner konnte nicht geleert werden",
   "sidebar_mark_all_read_failed": "Ordner konnte nicht als gelesen markiert werden",
-
   "maillist_empty_in_folder": "Keine Nachrichten in {folder}.",
   "maillist_action_mark_read": "Als gelesen markieren",
   "maillist_action_mark_unread": "Als ungelesen markieren",
@@ -468,7 +434,6 @@
   "maillist_action_restore_group": "{count} Nachrichten in den Posteingang wiederherstellen",
   "maillist_action_delete": "Löschen",
   "maillist_action_delete_group": "{count} Nachrichten löschen",
-
   "mail_action_flag": "Kennzeichnen",
   "mail_action_unflag": "Kennzeichnung entfernen",
   "mail_action_pin": "Anheften",
@@ -481,7 +446,6 @@
   "mail_priority_low": "Niedrig",
   "mail_priority_high_badge": "Hohe Priorität",
   "mail_priority_low_badge": "Niedrige Priorität",
-
   "mail_reminder_label": "Erinnere mich",
   "mail_reminder_remove": "Entfernen",
   "mail_reminder_set_for": "Erinnerung für {time} gesetzt",
@@ -491,14 +455,12 @@
   "mail_reminder_custom_label": "Eigene Erinnerungszeit",
   "mail_reminder_set_custom": "Erinnerung setzen",
   "mail_reminder_toast_title": "Erinnerung: {subject}",
-
   "folder_name_inbox": "Posteingang",
   "folder_name_sent": "Gesendet",
   "folder_name_drafts": "Entwürfe",
   "folder_name_junk": "Spam",
   "folder_name_archive": "Archiv",
   "folder_name_trash": "Papierkorb",
-
   "encryption_section_title": "Ende-zu-Ende-Verschlüsselung",
   "encryption_status_loading": "Wird geladen…",
   "encryption_active_key_label": "Aktiver OpenPGP-Schlüssel-Fingerabdruck",
@@ -512,7 +474,6 @@
   "encryption_passphrase_hint": "Die Passphrase wird einmal zur Validierung verwendet und dann verworfen. Compose fragt sie bei jeder verschlüsselten Sendung erneut ab.",
   "encryption_import_submit": "Importieren",
   "encryption_import_cancel": "Abbrechen",
-
   "mail_view_attachment_decrypt_required": "Bitte geben Sie Ihre Passphrase erneut über die Schaltfläche Entschlüsseln unten ein, um diesen Anhang zu öffnen.",
   "mail_view_cannot_decrypt_banner": "Diese Nachricht ist verschlüsselt. Der Server liefert die Rohbytes nicht aus, daher kann sie hier nicht entschlüsselt werden – öffne sie über IMAP oder einen Desktop-PGP-Client.",
   "mail_view_chip_decrypted": "Entschlüsselt",
@@ -531,13 +492,11 @@
   "mail_view_link_pill_unsafe": "Unsicher",
   "mail_view_link_unsafe_tooltip_exact": "URLhaus hat diese URL gemeldet — Bedrohung: {threat}",
   "mail_view_link_unsafe_tooltip_domain": "URLhaus hat andere URLs dieser Domain gemeldet — Bedrohung: {threat}",
-
   "contact_form_section_encryption": "Verschlüsselung",
   "contact_form_label_pgp_keys": "Öffentliche Schlüssel & Zertifikate",
   "contact_form_placeholder_pgp_key": "-----BEGIN PGP PUBLIC KEY BLOCK----- oder -----BEGIN CERTIFICATE-----",
   "contact_form_button_add_pgp_key": "Schlüssel oder Zertifikat hinzufügen",
   "contact_form_hint_pgp_keys": "Füge einen ASCII-armierten öffentlichen OpenPGP-Schlüssel oder ein X.509-Zertifikat (S/MIME) im PEM-Format ein. Wird über die vCard des Kontakts synchronisiert und lokal zwischengespeichert, damit Compose verschlüsselt an diese Adresse senden kann.",
-
   "encryption_unlock_auto_label": "Automatisch entsperren",
   "encryption_unlock_auto_hint_off": "Aus — Compose fragt die PGP-Passphrase bei jeder verschlüsselten Sendung neu ab, und verschlüsselte Nachrichten zeigen eine Entschlüsseln-Schaltfläche, die du klicken musst.",
   "encryption_unlock_auto_saved": "Passphrase gespeichert",
@@ -548,7 +507,6 @@
   "encryption_unlock_auto_storage_hint": "Wird im OS-Schlüsselbund neben dem Mail-Passwort dieses Kontos abgelegt. Entfernen des PGP-Schlüssels hier löscht ihn; Abschalten dieser Option ebenfalls.",
   "compose_pgp_auto_unlock_active": "Automatisch entsperren ist aktiv — deine gespeicherte Passphrase wird verwendet.",
   "compose_smime_auto_unlock_active": "Automatisch entsperren ist aktiv — deine gespeicherte Passphrase wird verwendet.",
-
   "smime_section_title": "S/MIME-Zertifikat",
   "smime_status_loading": "Wird geladen…",
   "smime_active_cert_label": "Aktiver S/MIME-Zertifikat-Fingerabdruck",
@@ -571,7 +529,6 @@
   "smime_unlock_auto_save": "Passphrase speichern",
   "smime_unlock_auto_cancel": "Abbrechen",
   "smime_unlock_auto_storage_hint": "Wird im OS-Schlüsselbund neben dem Mail-Passwort dieses Kontos abgelegt. Entfernen des S/MIME-Zertifikats hier löscht sie; Abschalten dieser Option ebenfalls.",
-
   "search_input_clear": "Suche leeren",
   "search_placeholder": "E-Mails durchsuchen  (Strg+F)",
   "search_adv_toggle": "Erweiterte Suche",
@@ -601,7 +558,6 @@
   "search_help_button": "Hilfe zur Suchsyntax",
   "search_help_intro": "Klicke auf einen Operator, um ihn in das Suchfeld einzufügen. Operatoren lassen sich mit Freitext und untereinander kombinieren.",
   "search_help_close": "Schließen",
-
   "talk_view_search_placeholder": "Räume durchsuchen",
   "talk_view_no_matches": "Keine Talk-Räume passen zu dieser Suche.",
   "files_view_search_placeholder": "Dateien in diesem Ordner durchsuchen",
@@ -621,13 +577,11 @@
   "files_view_create_folder_confirm": "Ordner erstellen",
   "files_view_create_folder_confirming": "Erstelle Ordner…",
   "files_view_create_folder_cancel": "Abbrechen",
-
   "calendar_view_new_event": "Neuer Termin",
   "calendar_view_new_event_title": "Einen neuen Kalendertermin erstellen",
   "calendar_view_sync": "Synchronisieren",
   "calendar_view_syncing": "Synchronisiere…",
   "calendar_view_sync_title": "Kalender jetzt mit dem Server synchronisieren",
-
   "calendar_import_button": "Termine importieren",
   "calendar_import_title": "Termine aus einer .ics-Datei importieren",
   "calendar_import_intro": "Termine aus einer iCalendar-Exportdatei (.ics) importieren. Termine werden als einfache Kopien importiert — es werden keine Einladungen an Teilnehmer verschickt.",
@@ -641,7 +595,6 @@
   "calendar_import_close": "Schließen",
   "calendar_import_summary": "{imported} von {total} Terminen importiert, {skipped} Duplikate übersprungen.",
   "calendar_import_errors_label": "Einige Einträge konnten nicht importiert werden:",
-
   "talk_view_new_room": "Neuer Raum",
   "talk_view_new_room_title": "Einen neuen Talk-Raum starten",
   "talk_view_refresh": "Aktualisieren",
@@ -654,7 +607,6 @@
   "talk_view_delete": "Löschen",
   "talk_view_deleting": "Lösche…",
   "talk_view_delete_title": "Diesen Talk-Raum für alle löschen",
-
   "shares_view_title": "Freigabe-Links",
   "shares_view_search_placeholder": "Freigaben durchsuchen",
   "shares_view_no_matches": "Keine Freigabe-Links passen zu dieser Suche.",
@@ -699,7 +651,6 @@
   "shares_view_copy_error": "URL konnte nicht kopiert werden",
   "shares_view_delete_error": "Freigabe konnte nicht gelöscht werden",
   "shares_view_update_error": "Freigabe konnte nicht aktualisiert werden",
-
   "shares_edit_title": "Freigabe bearbeiten",
   "shares_edit_perm_label": "Berechtigungen",
   "shares_edit_password_legend": "Passwort",
@@ -715,7 +666,6 @@
   "shares_edit_cancel": "Abbrechen",
   "shares_edit_save": "Änderungen speichern",
   "shares_edit_saving": "Speichere…",
-
   "settings_ai_category": "KI",
   "settings_ai_title": "KI-Agenten",
   "settings_ai_intro": "Verbinde deinen eigenen KI-Agenten über MCP (Model Context Protocol) mit Unkai. Unkai liefert selbst kein KI-Modell mit und ruft keines auf — die lokale Schnittstelle unten erlaubt lediglich einem Agenten, den du bereits nutzt (samt seinem Modell), deine Mails, Kontakte, Kalender und Talk-Räume zu lesen oder darauf zu agieren. Nichts verlässt dieses Gerät, bis du einen Agenten verbindest.",
@@ -762,7 +712,6 @@
   "settings_ai_encrypted_hint_on": "An — Agenten können den entschlüsselten Inhalt Ende-zu-Ende-verschlüsselter Nachrichten lesen. Das schwächt den Schutz, mit dem diese Nachrichten gesendet wurden.",
   "settings_ai_error_load": "KI-Einstellungen konnten nicht geladen werden",
   "settings_ai_error_save": "KI-Einstellungen konnten nicht gespeichert werden",
-
   "notes_view_title": "Notizen",
   "notes_view_new_note": "Neue Notiz",
   "notes_view_sync": "Synchronisieren",
@@ -823,7 +772,6 @@
   "notes_view_err_move": "Notiz konnte nicht verschoben werden",
   "notes_view_err_favorite": "Favorit konnte nicht aktualisiert werden",
   "notes_view_err_remove_folder": "Ordner konnte nicht entfernt werden",
-
   "tasks_view_title": "Aufgaben",
   "tasks_view_new_task": "Neue Aufgabe",
   "tasks_view_sync": "Synchronisieren",
@@ -933,5 +881,39 @@
   "profiles_switcher_only_profile": "Noch keine weiteren Profile.",
   "profiles_transition_switching": "Wechsel zu {name}…",
   "shell_starting": "Wird gestartet…",
-  "shell_loading": "Wird geladen…"
+  "shell_loading": "Wird geladen…",
+  "settings_updates_category": "Updates",
+  "settings_updates_title": "Updates",
+  "settings_updates_intro": "Unkai Mail aktuell halten. Updates werden von der Release-Seite des Projekts geladen und kryptografisch geprüft, bevor irgendetwas installiert wird.",
+  "settings_updates_current_label": "Aktuelle Version",
+  "settings_updates_check_button": "Nach Updates suchen",
+  "settings_updates_checking": "Suche nach Updates…",
+  "settings_updates_up_to_date": "Du bist auf dem neuesten Stand",
+  "settings_updates_available_title": "Version {version} ist verfügbar",
+  "settings_updates_available_date": "Veröffentlicht am {date}",
+  "settings_updates_notes_title": "Versionshinweise",
+  "settings_updates_download_button": "Herunterladen & installieren",
+  "settings_updates_downloading": "Wird heruntergeladen…",
+  "settings_updates_downloaded_hint": "Heruntergeladen und geprüft — zum Abschließen neu starten.",
+  "settings_updates_restart_button": "Jetzt neu starten",
+  "settings_updates_skip_button": "Diese Version überspringen",
+  "settings_updates_skipped_note": "Du hast Version {version} übersprungen. Sie wird nicht erneut angezeigt, manuelle Prüfungen finden sie aber weiterhin.",
+  "settings_updates_auto_check_label": "Automatisch nach Updates suchen",
+  "settings_updates_auto_check_hint": "Sucht beim Start und alle paar Stunden nach einer neuen Version. Deaktiviert kontaktiert Unkai Mail nie von selbst das Internet — nutze dann den Button oben.",
+  "settings_updates_auto_download_label": "Updates automatisch herunterladen",
+  "settings_updates_auto_download_hint": "Lädt ein gefundenes Update im Hintergrund, damit es bereitliegt. Installiert wird immer erst nach deinem Klick — die App startet dafür neu.",
+  "settings_updates_channel_label": "Release-Kanal",
+  "settings_updates_channel_hint": "Stable folgt den veröffentlichten Releases — die empfohlene Wahl.",
+  "settings_updates_channel_stable": "Stable",
+  "settings_updates_channel_beta": "Beta",
+  "settings_updates_channel_beta_note": "Beta liefert Vorabversionen, sobald es welche gibt; bis dahin folgt der Kanal Stable.",
+  "settings_updates_linux_hint": "In-App-Updates gelten für das AppImage. Wer das .deb- oder .rpm-Paket installiert hat, aktualisiert über die Paketverwaltung.",
+  "settings_updates_error_check": "Updateprüfung fehlgeschlagen. Bist du online?",
+  "settings_updates_error_download": "Das Update konnte nicht heruntergeladen werden.",
+  "settings_updates_error_install": "Das Update konnte nicht installiert werden.",
+  "settings_updates_error_save": "Update-Einstellungen konnten nicht gespeichert werden.",
+  "update_notification_title": "Update verfügbar",
+  "update_notification_body": "Unkai Mail {version} steht bereit. Öffne Einstellungen → Updates, um es zu installieren.",
+  "rail_version_tooltip": "Unkai Mail {version} — Update-Einstellungen öffnen",
+  "rail_update_available_tooltip": "Update verfügbar: Version {version}"
 }

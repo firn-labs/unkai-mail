@@ -21,6 +21,7 @@
   import Icon from './lib/Icon.svelte'
   import PasswordInput from './lib/PasswordInput.svelte'
   import IconRail, { type RailView } from './lib/IconRail.svelte'
+  import { initUpdater, type AppSettingsUpdater } from './lib/updaterStore.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import MailList from './lib/MailList.svelte'
   import MailView from './lib/MailView.svelte'
@@ -1026,6 +1027,11 @@
        * `invoke<AppPrefs>` generic provided — the api layer's
        * `AppSettings` DTO is still a loose alias (#473). */
       appPrefs = (await api.settings.getAppSettings()) as AppPrefs
+      // Wire the in-app updater's background schedule + progress
+      // listener (#229).  Re-entrant: repeat loads (post-Settings-
+      // save, profile switch) only refresh the store's mirrors of
+      // the updater prefs.
+      initUpdater(appPrefs as unknown as AppSettingsUpdater)
       // Seed the theme module's custom-theme registry so the
       // picker + the runtime <link> swap know about the user's
       // imported themes (#132).  Re-runs on every reload so
@@ -1733,6 +1739,13 @@
    *  Profiles settings category (#535). */
   function openProfileSettings() {
     settingsCategory = 'profiles'
+    currentView = 'settings'
+  }
+
+  /** Rail version label / update badge — deep-link into the
+   *  Updates settings category (#229). */
+  function openUpdatesSettings() {
+    settingsCategory = 'updates'
     currentView = 'settings'
   }
 
@@ -3882,6 +3895,7 @@
         onselectview={onSelectView}
         onswitchprofile={(id) => void switchProfile(id)}
         onmanageprofiles={openProfileSettings}
+        onopenupdates={openUpdatesSettings}
       />
     {/key}
 
