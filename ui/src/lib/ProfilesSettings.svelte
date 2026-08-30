@@ -442,17 +442,25 @@
         (icon) => (createIcon = icon),
       )}
 
+      <!-- Icon-only confirm / cancel pair, per the house form
+           vocabulary: `save-draft` (→ `loading` in flight) confirms,
+           `close` cancels.  Same shape as the create-folder row in
+           NextcloudFileBrowser. -->
       <div class="flex justify-end gap-2 mt-4">
         <button
-          class="btn preset-outlined-surface-500"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           disabled={busy}
           onclick={() => (createOpen = false)}
-        >{m.profiles_create_cancel()}</button>
+          title={m.profiles_create_cancel()}
+          aria-label={m.profiles_create_cancel()}
+        ><Icon name="close" size={14} /></button>
         <button
-          class="btn preset-filled-primary-500"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
           disabled={busy || createName.trim() === ''}
           onclick={() => void confirmCreate()}
-        >{m.profiles_create_confirm()}</button>
+          title={m.profiles_create_confirm()}
+          aria-label={m.profiles_create_confirm()}
+        ><Icon name={busy ? 'loading' : 'save-draft'} size={14} /></button>
       </div>
     </div>
   </div>
