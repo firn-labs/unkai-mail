@@ -557,13 +557,13 @@ mod tests {
         let work = registry.profiles[0].id.clone();
         let private = registry.profiles[1].id.clone();
 
-        check_deletable(&registry, "ghost", &work, &[work.clone()])
+        check_deletable(&registry, "ghost", &work, std::slice::from_ref(&work))
             .expect_err("unknown id refused");
-        check_deletable(&registry, &work, &work, &[work.clone()])
+        check_deletable(&registry, &work, &work, std::slice::from_ref(&work))
             .expect_err("the window's own profile is refused");
         check_deletable(&registry, &private, &work, &[work.clone(), private.clone()])
             .expect_err("a profile with an open context is refused");
-        check_deletable(&registry, &private, &work, &[work.clone()])
+        check_deletable(&registry, &private, &work, std::slice::from_ref(&work))
             .expect("a closed, non-active, non-last profile is deletable");
 
         registry.profiles.remove(1);
