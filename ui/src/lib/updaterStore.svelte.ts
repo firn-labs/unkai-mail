@@ -203,6 +203,13 @@ export async function installUpdate(): Promise<void> {
   } catch (e) {
     updater.error = formatError(e) || m.settings_updates_error_install()
     updater.installing = false
+    // Whatever failed backend-side, the parked bytes are gone (a
+    // failed install consumes them; #566's wiped-stash case never
+    // had them) — fall back to the Download button instead of
+    // stranding a dead "Restart now".  The backend re-parks the
+    // handle in both cases, so the re-download works immediately.
+    updater.downloaded = false
+    updater.progress = null
   }
 }
 

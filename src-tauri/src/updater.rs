@@ -104,10 +104,17 @@ fn manifest_urls(channel: &str) -> Vec<&'static str> {
 }
 
 /// Query the channel's manifest for a newer version.  A found
-/// update replaces whatever was parked (including any
-/// already-downloaded bytes — they belonged to the previous find);
-/// "no update" clears the park so a stale badge can't survive a
-/// release being pulled.
+/// update replaces whatever was parked — UNLESS it is the same
+/// version that's already parked, in which case the park (and any
+/// already-downloaded bytes) survives: checks run on per-window
+/// schedules (startup + 6-hourly, in every profile window) against
+/// this one machine-global park, so a background re-check routinely
+/// lands between "download finished" and the user's "Restart now"
+/// click, and wiping the stash there strands the install with
+/// "update not downloaded yet" (#566).  The frontend store applies
+/// the same rule (same version keeps `downloaded`), so the two
+/// state machines stay in step.  "No update" still clears the park
+/// so a stale badge can't survive a release being pulled.
 pub async fn check_for_update(
     app: &AppHandle,
     channel: &str,
@@ -140,7 +147,12 @@ pub async fn check_for_update(
                 notes: update.body.clone(),
                 date: update.date.map(|d| d.unix_timestamp()),
             };
-            *slot = Some((update, None));
+            match slot.take() {
+                // Same version already parked: keep it, bytes and
+                // all — see the doc comment above.
+                Some(parked) if parked.0.version == update.version => *slot = Some(parked),
+                _ => *slot = Some((update, None)),
+            }
             Ok(result)
         }
         None => {
@@ -241,8 +253,12 @@ pub async fn install_update(app: &AppHandle, pending: &PendingUpdate) -> Result<
         }
     };
 
-    update
-        .install(bytes)
-        .map_err(|e| UnkaiError::Other(format!("update install failed: {e}")))?;
+    if let Err(e) = update.install(bytes) {
+        // The bytes are gone (install consumed them), but re-parking
+        // the handle lets the UI recover with a plain re-download
+        // instead of demanding a fresh check first (#566).
+        *pending.0.lock().await = Some((update, None));
+        return Err(UnkaiError::Other(format!("update install failed: {e}")));
+    }
     app.restart();
 }
