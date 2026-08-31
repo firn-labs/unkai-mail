@@ -1196,6 +1196,7 @@ fn create_profile(
     cmds::profiles::create_profile(h.ctx.ui.as_ref(), name, icon, reg.paths())
 }
 
+#[allow(clippy::too_many_arguments)] // Tauri command: invoke parameters plus the profile-routing pair
 #[tauri::command]
 async fn create_talk_room(
     nc_id: String,
