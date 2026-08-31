@@ -195,10 +195,11 @@ mod tests {
     #[test]
     fn reopening_is_idempotent() {
         // Test-only scratch space, pid-suffixed for parallel runs;
-        // nothing security-relevant ever lives in it.
+        // nothing security-relevant ever lives in it.  Kept on one
+        // line: the nosemgrep marker only suppresses from the line
+        // directly above the temp_dir() call itself.
         // nosemgrep: rust.lang.security.temp-dir.temp-dir
-        let dir =
-            std::env::temp_dir().join(format!("unkai-shared-cache-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("unkai-shared-test-{}", std::process::id()));
         let path = dir.join("shared.db");
         let _ = std::fs::remove_dir_all(&dir);
 
