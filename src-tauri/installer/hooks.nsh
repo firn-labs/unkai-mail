@@ -22,6 +22,16 @@
 !define MUI_BGCOLOR "1E2A40"
 !define MUI_TEXTCOLOR "F5F7FA"
 
+; Visual-styles-themed checkboxes ignore the text colour SetCtlColors assigns
+; (NSIS bug #443), so the finish page's "Run Unkai-Mail" / "Create desktop
+; shortcut" labels rendered in the theme's default near-black on the navy
+; MUI_BGCOLOR. MUI2 only applies its workaround (drawing those controls
+; unthemed, which makes them honour MUI_TEXTCOLOR) when Windows runs in
+; high-contrast mode -- unless this define forces it unconditionally. In the
+; NSIS 3.11 that tauri-bundler pins, the define is consumed only by the
+; welcome/finish page code, so no other control changes appearance.
+!define MUI_FORCECLASSICCONTROLS
+
 ; Dock the header bitmap right so page titles keep their usual left position.
 !define MUI_HEADERIMAGE_RIGHT
 
@@ -44,3 +54,40 @@
 !define MUI_FINISHPAGE_LINK "Unkai Mail on GitHub"
 !define MUI_FINISHPAGE_LINK_LOCATION "https://github.com/firn-labs/unkai-mail"
 !define MUI_FINISHPAGE_LINK_COLOR "8FB3E8"
+
+; --- Legacy install-path registry migration (<= 0.3.0 upgrades) ---------------
+; Until 0.3.0 no bundle.publisher was configured, so tauri-bundler derived the
+; manufacturer "unkai" from the bundle identifier and installers recorded the
+; install directory under HKCU\Software\unkai\Unkai-Mail. Setting publisher =
+; "Firn Labs" (#556) moved that key to HKCU\Software\Firn Labs\Unkai-Mail. The
+; template's upgrade flow reads ONLY the new location to build the previous
+; uninstaller's "_?=<install dir>" argument; on machines that installed
+; <= 0.3.0 the new key does not exist, the argument expands empty, and the old
+; uninstaller aborts ("NSIS Error: Error launching installer", then the
+; template's "Unable to uninstall!").
+;
+; This invisible first page copies the legacy value into the new location
+; before the template's reinstall page reads it. A plain `Page custom` (not a
+; MUI page) cannot disturb the template's MUI page chain, and the Abort in the
+; creator function keeps the page from ever being displayed. It runs in GUI
+; and passive installs; silent installs skip all pages, but they skip the
+; uninstall-previous-version flow too, so nothing reads the key there. The
+; legacy key itself is left alone: the <= 0.3.0 uninstaller deletes it when
+; the upgrade runs it, exactly like a normal uninstall would.
+;
+; The two key paths must mirror the template's ${MANUPRODUCTKEY}
+; ("Software\<publisher>\<productName>"), but that define only exists AFTER
+; this include, so they are spelled out; revisit if bundle.publisher or
+; productName ever changes in tauri.conf.json.
+Var UnkaiLegacyInstallDir
+Function UnkaiMigrateLegacyInstallDir
+  ReadRegStr $UnkaiLegacyInstallDir SHCTX "Software\Firn Labs\Unkai-Mail" ""
+  ${If} $UnkaiLegacyInstallDir == ""
+    ReadRegStr $UnkaiLegacyInstallDir SHCTX "Software\unkai\Unkai-Mail" ""
+    ${If} $UnkaiLegacyInstallDir != ""
+      WriteRegStr SHCTX "Software\Firn Labs\Unkai-Mail" "" $UnkaiLegacyInstallDir
+    ${EndIf}
+  ${EndIf}
+  Abort
+FunctionEnd
+Page custom UnkaiMigrateLegacyInstallDir
