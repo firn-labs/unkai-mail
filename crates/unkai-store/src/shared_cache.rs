@@ -194,6 +194,9 @@ mod tests {
 
     #[test]
     fn reopening_is_idempotent() {
+        // Test-only scratch space, pid-suffixed for parallel runs;
+        // nothing security-relevant ever lives in it.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
         let dir =
             std::env::temp_dir().join(format!("unkai-shared-cache-test-{}", std::process::id()));
         let path = dir.join("shared.db");
