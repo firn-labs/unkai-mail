@@ -406,6 +406,10 @@ mod tests {
     struct TempRoot(PathBuf);
     impl TempRoot {
         fn new() -> Self {
+            // Test-only scratch space; the uuid segment makes the
+            // path unpredictable, and nothing security-relevant
+            // ever lives in it.
+            // nosemgrep: rust.lang.security.temp-dir.temp-dir
             let dir = std::env::temp_dir()
                 .join("unkai-profiles-cmd-test")
                 .join(uuid_ish());

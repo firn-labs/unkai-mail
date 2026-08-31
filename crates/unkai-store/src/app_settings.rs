@@ -68,6 +68,9 @@ mod tests {
 
     #[test]
     fn missing_file_yields_defaults() {
+        // Test-only scratch path; uuid-suffixed and never created,
+        // the test only needs a path that does not exist.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
         let path = std::env::temp_dir()
             .join("unkai-app-settings-test")
             .join(format!("{}.json", uuid::Uuid::new_v4()));
