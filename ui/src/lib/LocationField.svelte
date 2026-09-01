@@ -209,7 +209,7 @@
   {#if open}
     <div
       bind:this={listEl}
-      class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-lg shadow-lg"
+      class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto popover-opaque rounded-xl"
       role="listbox"
     >
       {#if loading && suggestions.length === 0}

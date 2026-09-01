@@ -3039,7 +3039,7 @@
 {#if openMenuFor && openMenuFor.startsWith('cat:')}
   {@const catMenuName = openMenuFor.slice('cat:'.length)}
   <div
-    class="z-30 w-56 py-1 rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+    class="z-30 w-56 py-1 glass-float rounded-xl text-sm"
     style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
     onclick={(e) => e.stopPropagation()}
     onmousedown={(e) => e.stopPropagation()}
@@ -3062,7 +3062,7 @@
   {@const menuList = mailingLists.find((l) => l.id === menuListId)}
   {#if menuList && menuList.source !== 'team'}
     <div
-      class="z-30 w-56 py-1 rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+      class="z-30 w-56 py-1 glass-float rounded-xl text-sm"
       style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
       onclick={(e) => e.stopPropagation()}
       onmousedown={(e) => e.stopPropagation()}
