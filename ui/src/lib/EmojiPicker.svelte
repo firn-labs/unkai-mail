@@ -85,7 +85,7 @@
      glass modals (Sidebar's icon picker, Compose via RichTextEditor),
      and stacking a second backdrop-filter layer there is off-limits. -->
 <div
-  class="{widthClass} bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-xl shadow-lg flex flex-col"
+  class="{widthClass} popover-opaque rounded-xl flex flex-col"
 >
   {#if allowClear}
     <div class="px-2 pt-2 pb-1 border-b border-surface-200 dark:border-surface-700">

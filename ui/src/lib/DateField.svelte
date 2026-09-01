@@ -268,7 +268,7 @@
 
   {#if open}
     <div
-      class="absolute z-50 mt-1 w-[280px] rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg p-3"
+      class="absolute z-50 mt-1 w-[280px] popover-opaque rounded-xl p-3"
       role="dialog"
       aria-label="Pick a date"
     >

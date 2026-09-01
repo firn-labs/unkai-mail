@@ -177,7 +177,7 @@
   {#if open}
     <ul
       bind:this={listEl}
-      class="absolute z-50 mt-1 w-full max-h-72 overflow-y-auto rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg"
+      class="absolute z-50 mt-1 w-full max-h-72 overflow-y-auto popover-opaque rounded-xl"
       role="listbox"
     >
       {#each options as opt, i (`${i}-${String(opt.value)}`)}

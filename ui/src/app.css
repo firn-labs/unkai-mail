@@ -90,6 +90,24 @@ body {
   background: color-mix(in oklab, var(--color-surface-900) 80%, transparent);
 }
 
+/* Opaque popover — the one canonical recipe for floating layers that
+   render INSIDE a glass surface (Compose / EventEditor modals, the
+   editor canvas), where stacking a second backdrop-filter is banned
+   (#451 performance rule; EmojiPicker is the founding case). Same
+   shadow token as .glass-float so the two float tiers stay siblings.
+   Page-level popovers/menus over plain content use .glass-float
+   instead. See docs/UI_CONVENTIONS.md rule 2. */
+.popover-opaque {
+  background: var(--color-surface-50);
+  border: 1px solid var(--color-surface-300);
+  box-shadow: var(--glass-shadow);
+}
+
+[data-mode='dark'] .popover-opaque {
+  background: var(--color-surface-900);
+  border-color: var(--color-surface-700);
+}
+
 /* WebKitGTK (Linux Tauri) handles backdrop-filter unreliably — the
    opaque fallback must look complete on its own, not like a bug. */
 @supports not (backdrop-filter: blur(1px)) {

@@ -1980,7 +1980,7 @@
           </button>
           {#if showFontPicker}
             <div
-              class="fixed z-60 mt-0 w-64 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1 flex flex-col"
+              class="fixed z-60 mt-0 w-64 popover-opaque rounded-xl py-1 flex flex-col"
               style="left: {Math.min(fontPickerPos.x, layoutViewport().width - 272)}px; top: {fontPickerPos.y}px;"
               role="menu"
               tabindex="-1"
@@ -2098,7 +2098,7 @@
               role="dialog"
               aria-label="Insert link"
               tabindex="-1"
-              class="fixed z-60 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md p-2 flex items-center gap-2"
+              class="fixed z-60 popover-opaque rounded-xl p-2 flex items-center gap-2"
               style="left: {Math.min(linkPopoverPos.x, layoutViewport().width - 320)}px; top: {linkPopoverPos.y}px; width: 304px;"
               onclick={(e) => e.stopPropagation()}
               onmousedown={(e) => e.stopPropagation()}
@@ -2167,7 +2167,7 @@
           {#if showTablePicker}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="fixed z-60 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-lg shadow-lg"
+              class="fixed z-60 p-2 popover-opaque rounded-xl"
               style="left: {Math.min(tablePickerPos.x, layoutViewport().width - 200)}px; top: {tablePickerPos.y}px;"
               onmouseleave={() => { tableHoverRows = 0; tableHoverCols = 0 }}
               onkeydown={(e) => e.key === 'Escape' && (showTablePicker = false)}
@@ -2360,8 +2360,7 @@
      popup never lingers in the DOM tree when no `@` is active. -->
 {#if mentionPicker.visible}
   <ul
-    class="fixed z-60 max-h-72 min-w-72 overflow-y-auto rounded-lg border border-surface-300
-           dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    class="fixed z-60 max-h-72 min-w-72 overflow-y-auto popover-opaque rounded-xl py-1 text-sm"
     style="left: {mentionPicker.position.left}px; top: {mentionPicker.position.top}px;"
     role="listbox"
   >
@@ -2426,8 +2425,7 @@
        allocating the popup at all in the common case where the
        user never types `/`. -->
   <ul
-    class="fixed z-60 max-h-72 min-w-64 overflow-y-auto rounded-lg border border-surface-300
-           dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    class="fixed z-60 max-h-72 min-w-64 overflow-y-auto popover-opaque rounded-xl py-1 text-sm"
     style="left: {attachmentPicker.position.left}px; top: {attachmentPicker.position.top}px; display: {attachmentPicker.visible ? 'block' : 'none'};"
     role="listbox"
   >

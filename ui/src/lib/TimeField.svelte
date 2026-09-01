@@ -166,7 +166,7 @@
   {#if open}
     <div
       id={popoverId}
-      class="absolute z-50 mt-1 rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg p-2 flex gap-1"
+      class="absolute z-50 mt-1 popover-opaque rounded-xl p-2 flex gap-1"
       role="dialog"
       aria-label="Pick a time"
     >
