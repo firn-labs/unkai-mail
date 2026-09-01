@@ -100,7 +100,7 @@
       title={m.search_input_clear()}
       aria-label={m.search_input_clear()}
     >
-      &#x2715;
+      <Icon name="close" size={14} />
     </button>
   {/if}
   {@render children?.()}

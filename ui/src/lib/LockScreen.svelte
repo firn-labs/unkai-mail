@@ -10,6 +10,7 @@
    * receives `onunlock()` and routes the user into the inbox.
    */
 
+  import Icon from './Icon.svelte'
   import { tick } from 'svelte'
   import * as api from './api'
   import { formatError } from './errors'
@@ -130,7 +131,9 @@
 <div class="fixed inset-0 z-[1000] flex items-center justify-center bg-surface-50 dark:bg-surface-900">
   <div class="w-full max-w-md p-8 space-y-6">
     <div class="text-center space-y-1">
-      <div class="text-5xl mb-2" aria-hidden="true">🔒</div>
+      <div class="mb-2 flex justify-center text-surface-400 dark:text-surface-500" aria-hidden="true">
+        <Icon name="lock" size={48} />
+      </div>
       <h1 class="text-2xl font-semibold">Unkai is locked</h1>
       <p class="text-sm text-surface-500">
         Authenticate to open your encrypted mail cache.
@@ -171,8 +174,8 @@
               onclick={() => (activeMethod = m)}
               disabled={busy}
             >
-              <span class="text-lg" aria-hidden="true">
-                {m.kind === 'passphrase' ? '🔐' : '🔑'}
+              <span class="inline-flex" aria-hidden="true">
+                <Icon name={m.kind === 'passphrase' ? 'passphrase' : 'security-key'} size={20} />
               </span>
               <span class="flex-1 min-w-0">
                 <span class="font-medium block truncate">

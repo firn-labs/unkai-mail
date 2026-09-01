@@ -1258,7 +1258,7 @@
                       <span
                         class="absolute bottom-0 right-0 text-[8px] uppercase tracking-wider font-bold px-1 py-px rounded-tl bg-primary-500 text-white leading-none"
                         title="Matches this invite"
-                      >✉ invite</span>
+                      >invite</span>
                     </div>
                   {:else}
                     <!-- Not-on-calendar branch: dashed primary

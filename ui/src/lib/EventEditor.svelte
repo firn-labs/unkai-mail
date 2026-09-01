@@ -1629,7 +1629,7 @@
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
         onclick={() => void cancel()}
         aria-label="Close"
-      >✕</button>
+      ><Icon name="close" size={18} /></button>
     </header>
 
     <!-- #236 follow-up — when the calendar is read-only we want

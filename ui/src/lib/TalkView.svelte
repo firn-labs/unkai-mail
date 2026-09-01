@@ -363,10 +363,10 @@
           >
             <span class="inline-flex items-center gap-2 shrink-0">
               <span
-                class="inline-block transition-transform text-lg leading-none"
+                class="inline-flex transition-transform"
                 style="transform: rotate({showArchived ? 90 : 0}deg)"
                 aria-hidden="true"
-              >▸</span>
+              ><Icon name="caret-right" size={14} /></span>
               <span class="font-medium">Archived</span>
               <span class="text-xs">({archivedRooms.length})</span>
             </span>

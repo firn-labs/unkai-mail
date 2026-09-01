@@ -187,7 +187,7 @@
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
         onclick={onclose}
         aria-label="Close"
-      >✕</button>
+      ><Icon name="close" size={18} /></button>
     </header>
 
     <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700">

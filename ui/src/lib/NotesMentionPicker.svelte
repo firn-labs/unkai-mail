@@ -58,6 +58,7 @@
    * lose focus first and `pickSelected` would fire against stale
    * state.
    */
+  import Icon from './Icon.svelte'
   import { layoutViewport, visualToLayoutRatio } from './coords'
   import { onMount, tick } from 'svelte'
 
@@ -268,7 +269,7 @@
                      dark:text-primary-400 flex items-center justify-center shrink-0"
               aria-hidden="true"
             >
-              ✉
+              <Icon name="email-envelope" size={16} />
             </div>
             <div class="flex-1 min-w-0">
               <p class="truncate {item.isRead ? 'font-normal' : 'font-semibold'}">

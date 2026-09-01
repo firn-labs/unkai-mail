@@ -251,7 +251,7 @@
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
         onclick={onclose}
         aria-label="Close"
-      >✕</button>
+      ><Icon name="close" size={18} /></button>
     </header>
 
     <NextcloudFileBrowser
@@ -353,7 +353,7 @@
       <button class="btn preset-outlined-surface-500" onclick={onclose}>Cancel</button>
       {#if pickFolderMode}
         <button
-          class="btn preset-filled-primary-500"
+          class="btn preset-filled-primary-500 inline-flex items-center gap-1.5"
           disabled={!accountId}
           onclick={() => {
             onpickfolder?.(accountId, currentPath)
@@ -361,7 +361,8 @@
           }}
           title="Save the file into this folder"
         >
-          💾 Save here
+          <Icon name="save-draft" size={14} />
+          Save here
         </button>
       {:else}
         {#if onlinks}
