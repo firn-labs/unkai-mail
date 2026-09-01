@@ -310,7 +310,7 @@
       <div class="text-xs text-surface-500">
         {m.encryption_active_key_label()}
       </div>
-      <div class="font-mono text-xs break-all p-2 rounded bg-surface-100 dark:bg-surface-800">
+      <div class="font-mono text-xs break-all p-2 rounded-lg bg-surface-100 dark:bg-surface-800">
         {status.fingerprint ? formatFingerprint(status.fingerprint) : '—'}
       </div>
       <!-- #341 — Per-account "Unlock automatically" opt-in.  Sits

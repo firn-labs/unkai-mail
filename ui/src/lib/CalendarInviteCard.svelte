@@ -869,7 +869,7 @@
         {invite.summary || '(untitled meeting)'}
       </span>
       {#if isCancel}
-        <span class="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-px rounded bg-error-500 text-white">
+        <span class="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-px rounded-sm bg-error-500 text-white">
           Cancelled
         </span>
       {/if}

@@ -291,7 +291,7 @@
            SHA-256 form (the universal X.509 display convention), so
            it's rendered verbatim — no four-char regrouping like the
            OpenPGP panel does. -->
-      <div class="font-mono text-xs break-all p-2 rounded bg-surface-100 dark:bg-surface-800">
+      <div class="font-mono text-xs break-all p-2 rounded-lg bg-surface-100 dark:bg-surface-800">
         {status.fingerprint ?? '—'}
       </div>
       <!-- Per-account "Unlock automatically" opt-in.  Sits below the

@@ -483,7 +483,7 @@
     src={imgUrl}
     alt=""
     loading="lazy"
-    class="{cls} object-cover rounded shrink-0 bg-surface-200 dark:bg-surface-800"
+    class="{cls} object-cover rounded-sm shrink-0 bg-surface-200 dark:bg-surface-800"
   />
 {:else}
   <!-- Fallback while a video frame is extracting (or for non-

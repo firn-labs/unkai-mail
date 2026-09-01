@@ -284,7 +284,7 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
     return escaped
-      .replace(/&lt;mark&gt;/g, '<mark class="bg-yellow-200 dark:bg-yellow-700/50 rounded-sm px-0.5">')
+      .replace(/&lt;mark&gt;/g, '<mark class="bg-warning-500/30 dark:bg-warning-500/40 rounded-sm px-0.5">')
       .replace(/&lt;\/mark&gt;/g, '</mark>')
   }
 </script>
@@ -373,7 +373,7 @@
           {/if}
           <div class="flex items-center gap-1 mt-0.5">
             {#if hit.folder !== currentFolder}
-              <span class="text-[10px] px-1.5 rounded bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300">
+              <span class="text-[10px] px-1.5 rounded-sm bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300">
                 {hit.folder}
               </span>
             {/if}
