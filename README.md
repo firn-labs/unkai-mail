@@ -13,14 +13,18 @@
 
 </div>
 
-> ⚠️ **Project status — early development.** Mail (IMAP / SMTP / JMAP)
+> ⚠️ **Project status — early releases.** Mail (IMAP / SMTP / JMAP)
 > works end-to-end with an encrypted local cache, end-to-end mail
-> encryption (OpenPGP + S/MIME), and a deep Nextcloud integration (Talk,
-> Files, Calendar, Contacts, Notes, Tasks). It's increasingly capable but
-> not yet hardened for daily-driver use. See the [Roadmap](#roadmap) and
-> the [issue tracker](https://github.com/firn-labs/unkai-mail/issues).
+> encryption (OpenPGP + S/MIME), multi-profile support, and a deep
+> Nextcloud integration (Talk, Files, Calendar, Contacts, Notes, Tasks).
+> Signed installers for Windows, macOS, and Linux ship on the
+> [Releases page](https://github.com/firn-labs/unkai-mail/releases), and
+> a built-in updater keeps installs current — but expect rough edges;
+> it's not yet hardened for daily-driver use. See the
+> [Roadmap](#roadmap) and the
+> [issue tracker](https://github.com/firn-labs/unkai-mail/issues).
 > We are searching for developers that like the vision of the app and
-> want to contribute to it's future to make it bigger and better.
+> want to contribute to its future to make it bigger and better.
 
 ---
 
@@ -106,7 +110,7 @@ you can tell them apart at a glance.
 <p align="center">
   <img src="docs/screenshots/talk-room.gif" alt="Creating a Nextcloud Talk room from a thread" width="800" />
   <br />
-  <em>Create a Talk room from a seperate UI and send a link via mail</em>
+  <em>Create a Talk room from a separate UI and send a link via mail</em>
 </p>
 
 - **Files** — attach files straight from your Nextcloud, share via
@@ -192,6 +196,14 @@ verification across IMAP, SMTP, and JMAP:
 - The local mail cache is encrypted at rest with **SQLCipher** (AES-256).
   The master key lives in the same OS keychain, optionally protected
   by FIDO2 PRF for hardware-backed unlock.
+- Unsafe-link protection: links in mail bodies are checked against the
+  [URLhaus](https://urlhaus.abuse.ch) malware-URL feed. Flagged links
+  get a red "Unsafe" pill and a confirm gate before anything opens.
+  The feed snapshot refreshes hourly and lookups happen locally — no
+  per-click phoning home.
+- Signed in-app updates: release bundles are minisign-signed, and the
+  built-in updater verifies the signature before installing. Check
+  manually from Settings or let it poll in the background.
 
 ### 🎨 Themable, accessible, fast
 
@@ -300,7 +312,27 @@ Rust core.
 
 ---
 
-## Getting started
+## Install
+
+Grab the installer for your platform from the
+[latest release](https://github.com/firn-labs/unkai-mail/releases/latest):
+
+- **Windows** — `Unkai-Mail_x.y.z_x64-setup.exe` (NSIS) or the `.msi` (WiX)
+- **macOS** (Apple Silicon) — `Unkai-Mail_x.y.z_aarch64.dmg`
+- **Linux** — `.deb` (Debian/Ubuntu), `.rpm` (Fedora/RHEL), or `.AppImage`
+  (any distro)
+
+Once installed, the app keeps itself current: the built-in updater
+checks the Releases feed, verifies each bundle's minisign signature
+against the key baked into the app, and applies updates on restart.
+The installers aren't OS code-signed yet
+([#558](https://github.com/firn-labs/unkai-mail/issues/558)), so
+Windows SmartScreen / macOS Gatekeeper will show a publisher warning on
+first launch.
+
+---
+
+## Building from source
 
 ### Prerequisites
 
@@ -450,11 +482,15 @@ Tracked in [GitHub Issues](https://github.com/firn-labs/unkai-mail/issues).
 - App-icon picker (14 styles) with hot-swap
 - Local MCP server for BYO AI agents ([#419](https://github.com/firn-labs/unkai-mail/issues/419),
   [docs/mcp.md](docs/mcp.md)) — per-tool permissions, no send tool
+- Profiles — fully separate mail universes with per-profile encrypted
+  caches, settings, and windows ([#530](https://github.com/firn-labs/unkai-mail/issues/530))
+- Unsafe-link checking against the URLhaus feed ([#165](https://github.com/firn-labs/unkai-mail/issues/165))
+- Signed in-app updater + branded installers ([#229](https://github.com/firn-labs/unkai-mail/issues/229))
 
 **Next up**
-- RAG / semantic search over mail ([#59](https://github.com/firn-labs/unkai-mail/issues/59))
-- RSVP polish — propose a new timeslot / additional response options
-- In-app updater ([#229](https://github.com/firn-labs/unkai-mail/issues/229))
+- Code signing for installers — remove the OS publisher warnings ([#558](https://github.com/firn-labs/unkai-mail/issues/558))
+- RSVP polish — propose a new timeslot ([#283](https://github.com/firn-labs/unkai-mail/issues/283)) /
+  additional response options ([#148](https://github.com/firn-labs/unkai-mail/issues/148))
 
 **Later**
 - Spam / phishing classification
