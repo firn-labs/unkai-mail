@@ -17,6 +17,7 @@
   import * as api from './api'
   import { formatError } from './errors'
   import Icon, { type IconName } from './Icon.svelte'
+  import { m } from '../paraglide/messages'
 
   interface Folder {
     name: string
@@ -182,11 +183,11 @@
 >
   <div class="glass-float rounded-2xl flex flex-col w-[420px] max-w-[90vw] max-h-[80vh]">
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
-      <h2 class="text-base font-semibold">Move to folder</h2>
+      <h2 class="text-base font-semibold">{m.move_folder_picker_title()}</h2>
       <button
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
         onclick={onclose}
-        aria-label="Close"
+        aria-label={m.move_folder_picker_close()}
       ><Icon name="close" size={18} /></button>
     </header>
 

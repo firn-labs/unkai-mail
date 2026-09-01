@@ -1623,12 +1623,12 @@
   >
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-3">
       <h2 class="text-base font-semibold shrink-0">
-        {mode === 'create' ? 'New event' : 'Edit event'}
+        {mode === 'create' ? m.event_editor_title_create() : m.event_editor_title_edit()}
       </h2>
       <button
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
         onclick={() => void cancel()}
-        aria-label="Close"
+        aria-label={m.event_editor_close()}
       ><Icon name="close" size={18} /></button>
     </header>
 

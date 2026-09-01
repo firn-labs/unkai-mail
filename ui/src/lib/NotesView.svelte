@@ -1068,7 +1068,7 @@
                 const r = anchorRect(e.currentTarget as HTMLElement)
                 openFolderMenu(node.path, r.right + 4, r.top)
               }}
-            >⋯</button>
+            ><Icon name="more" size={14} /></button>
           </div>
           {#if hasChildren && !isCollapsed}
             {#each node.children as child (child.path)}

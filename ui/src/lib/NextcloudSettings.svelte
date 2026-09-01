@@ -18,6 +18,7 @@
   import NextcloudConnect from './NextcloudConnect.svelte'
   import SyncStatusRow from './SyncStatusRow.svelte'
   import Toggle from './Toggle.svelte'
+  import Badge from './Badge.svelte'
   import { ncProbeBundle, ncRestoreBundle } from './settingsBundle'
   import { m } from '../paraglide/messages'
 
@@ -555,23 +556,26 @@
                     {#if acct.capabilities.talk}
                       <span class="text-xs px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-600 dark:text-blue-300">Talk</span>
                     {/if}
+                    <!-- Capability chips are informational, not
+                         categorical — one quiet tone, no rainbow
+                         (docs/UI_CONVENTIONS.md rule 1). -->
                     {#if acct.capabilities.files}
-                      <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-600 dark:text-green-300">Files</span>
+                      <Badge label="Files" tone="primary" />
                     {/if}
                     {#if acct.capabilities.caldav}
-                      <span class="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-600 dark:text-purple-300">Calendar</span>
+                      <Badge label="Calendar" tone="primary" />
                     {/if}
                     {#if acct.capabilities.carddav}
-                      <span class="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-600 dark:text-orange-300">Contacts</span>
+                      <Badge label="Contacts" tone="primary" />
                     {/if}
                     {#if acct.capabilities.office}
-                      <span class="text-xs px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-600 dark:text-pink-300">Office</span>
+                      <Badge label="Office" tone="primary" />
                     {/if}
                     {#if acct.capabilities.notes}
-                      <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-700 dark:text-yellow-300">Notes</span>
+                      <Badge label="Notes" tone="primary" />
                     {/if}
                     {#if acct.capabilities.tasks}
-                      <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-700 dark:text-cyan-300">Tasks</span>
+                      <Badge label="Tasks" tone="primary" />
                     {/if}
                   </div>
                 {/if}

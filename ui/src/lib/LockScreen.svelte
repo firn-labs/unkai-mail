@@ -11,6 +11,7 @@
    */
 
   import Icon from './Icon.svelte'
+  import { m } from '../paraglide/messages'
   import { tick } from 'svelte'
   import * as api from './api'
   import { formatError } from './errors'
@@ -134,9 +135,9 @@
       <div class="mb-2 flex justify-center text-surface-400 dark:text-surface-500" aria-hidden="true">
         <Icon name="lock" size={48} />
       </div>
-      <h1 class="text-2xl font-semibold">Unkai is locked</h1>
+      <h1 class="text-2xl font-semibold">{m.lock_screen_title()}</h1>
       <p class="text-sm text-surface-500">
-        Authenticate to open your encrypted mail cache.
+        {m.lock_screen_subtitle()}
       </p>
       {#if attemptsRemaining != null}
         <p
@@ -146,17 +147,16 @@
               ? 'text-warning-500'
               : 'text-surface-500'}"
         >
-          {attemptsRemaining}
-          {attemptsRemaining === 1 ? 'try' : 'tries'} remaining before the cache is wiped
+          {attemptsRemaining === 1
+            ? m.lock_screen_tries_remaining_one()
+            : m.lock_screen_tries_remaining_many({ count: attemptsRemaining })}
         </p>
       {/if}
     </div>
 
     {#if methods.length === 0}
       <div class="rounded-lg border border-error-500/40 bg-error-500/10 p-4 text-sm">
-        No unlock methods are registered.  Use the Settings → Security
-        panel to enroll a hardware key or recovery passphrase before
-        switching to FIDO-only mode.
+        {m.lock_screen_no_methods()}
       </div>
     {:else}
       <!-- Method picker — shown when more than one method is
@@ -164,25 +164,25 @@
            form for that method. -->
       {#if methods.length > 1}
         <div class="space-y-2">
-          {#each methods as m (m.credentialId)}
+          {#each methods as method (method.credentialId)}
             <button
               type="button"
               class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors
-                     border {activeMethod?.credentialId === m.credentialId
+                     border {activeMethod?.credentialId === method.credentialId
                        ? 'border-primary-500 bg-primary-500/10'
                        : 'border-surface-300 dark:border-surface-700 hover:bg-surface-200/60 dark:hover:bg-surface-800/40'}"
-              onclick={() => (activeMethod = m)}
+              onclick={() => (activeMethod = method)}
               disabled={busy}
             >
               <span class="inline-flex" aria-hidden="true">
-                <Icon name={m.kind === 'passphrase' ? 'passphrase' : 'security-key'} size={20} />
+                <Icon name={method.kind === 'passphrase' ? 'passphrase' : 'security-key'} size={20} />
               </span>
               <span class="flex-1 min-w-0">
                 <span class="font-medium block truncate">
-                  {m.kind === 'passphrase' ? 'Passphrase' : m.label}
+                  {method.kind === 'passphrase' ? m.lock_screen_method_passphrase() : method.label}
                 </span>
                 <span class="text-xs text-surface-500 block">
-                  {m.kind === 'passphrase' ? 'Recovery method' : 'Hardware key / biometric'}
+                  {method.kind === 'passphrase' ? m.lock_screen_method_passphrase_hint() : m.lock_screen_method_fido_hint()}
                 </span>
               </span>
             </button>
@@ -194,7 +194,7 @@
         <div class="space-y-2">
           <PasswordInput
             inputClass="text-sm px-3 py-2 rounded-lg"
-            placeholder="Passphrase"
+            placeholder={m.lock_screen_passphrase_placeholder()}
             bind:value={passphraseValue}
             bind:inputEl={passphraseInput}
             onkeydown={handleEnter}
@@ -211,20 +211,19 @@
             disabled={!busy && !passphraseValue}
             aria-disabled={busy || !passphraseValue}
             onclick={() => { if (!busy && passphraseValue) void unlockWithPassphrase() }}
-          >{busy ? 'Unlocking...' : 'Unlock'}</button>
+          >{busy ? m.lock_screen_unlocking() : m.lock_screen_unlock()}</button>
         </div>
       {:else if activeMethod?.kind === 'fido_prf'}
         <div class="space-y-2">
           <p class="text-sm text-surface-500 text-center">
-            Click below — your operating system will ask you to
-            authenticate with the registered key.
+            {m.lock_screen_fido_hint()}
           </p>
           <button
             class="btn preset-filled-primary-500 w-full {busy ? 'cursor-wait' : ''}"
             style={busy ? '--color-primary-500: var(--color-primary-800); --color-primary-contrast-500: white;' : ''}
             aria-disabled={busy}
             onclick={() => { if (!busy && activeMethod) void unlockWithFido(activeMethod) }}
-          >{busy ? 'Awaiting authenticator…' : `Unlock with ${activeMethod.label}`}</button>
+          >{busy ? m.lock_screen_fido_waiting() : m.lock_screen_unlock_with({ label: activeMethod.label })}</button>
         </div>
       {/if}
 

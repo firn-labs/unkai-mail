@@ -19,6 +19,7 @@
    */
 
   import Icon from './Icon.svelte'
+  import { m } from '../paraglide/messages'
   import * as api from './api'
   import { formatError } from './errors'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
@@ -166,11 +167,11 @@
 >
   <div class="w-[520px] max-h-[90vh] glass-float rounded-2xl flex flex-col">
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
-      <h2 class="text-base font-semibold">New Talk room</h2>
+      <h2 class="text-base font-semibold">{m.create_talk_room_title()}</h2>
       <button
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
         onclick={onclose}
-        aria-label="Close"
+        aria-label={m.create_talk_room_close()}
       ><Icon name="close" size={18} /></button>
     </header>
 

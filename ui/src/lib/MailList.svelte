@@ -20,6 +20,7 @@
   import { parseFromHeader, senderLabel } from './fromHeader'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import Icon from './Icon.svelte'
+  import Badge from './Badge.svelte'
   import { unifiedSpecialKind, displayFolderName } from './unifiedFolders'
   import { m } from '../paraglide/messages'
 
@@ -2041,45 +2042,18 @@
                       {formatDate(env.date)}
                     </span>
                     {#if env.protection === 'encrypted' || env.protection === 'signed-and-encrypted'}
-                      <span
-                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200"
-                        title="Encrypted with OpenPGP"
-                        aria-label="Encrypted with OpenPGP"
-                      >
-                        <Icon name="encrypted" size={11} />
-                        <span class="font-medium">PGP</span>
-                      </span>
+                      <Badge label="PGP" tone="primary" icon="encrypted" title={m.maillist_badge_pgp_title()} />
                     {:else if env.protection === 'signed'}
-                      <span
-                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200"
-                        title="Signed with OpenPGP"
-                        aria-label="Signed with OpenPGP"
-                      >
-                        <Icon name="signed" size={11} />
-                        <span class="font-medium">Signed</span>
-                      </span>
+                      <Badge label="Signed" tone="neutral" icon="signed" title={m.maillist_badge_signed_title()} />
                     {/if}
                     <!-- Priority badge (#414): sender-declared from
                          the headers, or the user's override when
                          set.  Normal renders nothing so ordinary
                          mail keeps the date-only layout. -->
                     {#if effectivePriority(env) === 'high'}
-                      <span
-                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-error-500/15 text-error-600 dark:text-error-400"
-                        title={m.mail_priority_high_badge()}
-                        aria-label={m.mail_priority_high_badge()}
-                      >
-                        <Icon name="important" size={11} />
-                        <span class="font-medium">{m.mail_priority_high()}</span>
-                      </span>
+                      <Badge label={m.mail_priority_high()} tone="error" icon="important" title={m.mail_priority_high_badge()} />
                     {:else if effectivePriority(env) === 'low'}
-                      <span
-                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300"
-                        title={m.mail_priority_low_badge()}
-                        aria-label={m.mail_priority_low_badge()}
-                      >
-                        <span class="font-medium">{m.mail_priority_low()}</span>
-                      </span>
+                      <Badge label={m.mail_priority_low()} tone="neutral" title={m.mail_priority_low_badge()} />
                     {/if}
                   </div>
                 </div>

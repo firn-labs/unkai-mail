@@ -20,6 +20,7 @@
   import * as api from './api'
   import { formatError } from './errors'
   import Icon from './Icon.svelte'
+  import { m } from '../paraglide/messages'
   import NextcloudFileBrowser, {
     type FileEntry,
     type NextcloudAccount,
@@ -245,12 +246,12 @@
   <div class="w-160 max-h-[80vh] glass-float rounded-2xl flex flex-col">
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
       <h2 class="text-base font-semibold">
-        {pickFolderMode ? 'Save to Nextcloud' : 'Attach from Nextcloud'}
+        {pickFolderMode ? m.nextcloud_file_picker_title_save() : m.nextcloud_file_picker_title_attach()}
       </h2>
       <button
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
         onclick={onclose}
-        aria-label="Close"
+        aria-label={m.nextcloud_file_picker_close()}
       ><Icon name="close" size={18} /></button>
     </header>
 
@@ -350,7 +351,7 @@
         {/if}
       </span>
       <div class="flex-1"></div>
-      <button class="btn preset-outlined-surface-500" onclick={onclose}>Cancel</button>
+      <button class="btn preset-outlined-surface-500" onclick={onclose}>{m.nextcloud_file_picker_cancel()}</button>
       {#if pickFolderMode}
         <button
           class="btn preset-filled-primary-500 inline-flex items-center gap-1.5"
@@ -359,10 +360,10 @@
             onpickfolder?.(accountId, currentPath)
             onclose()
           }}
-          title="Save the file into this folder"
+          title={m.nextcloud_file_picker_save_here_title()}
         >
           <Icon name="save-draft" size={14} />
-          Save here
+          {m.nextcloud_file_picker_save_here()}
         </button>
       {:else}
         {#if onlinks}

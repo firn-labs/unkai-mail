@@ -1204,11 +1204,18 @@
 </script>
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
-  <!-- Header bar -->
-  <div class="flex items-center justify-between p-4 border-b border-surface-200 dark:border-surface-700">
-    <h1 class="text-xl font-bold">Account Settings</h1>
-    <button class="btn btn-sm preset-outlined-surface-500" onclick={onclose}>
-      Back to Inbox
+  <!-- Header bar — shares the integration-view shell vocabulary
+       (glass header, h2 semibold, icon-only actions); Settings keeps
+       a back affordance as the documented shell exception. -->
+  <div class="flex items-center gap-3 px-6 py-3 border-b glass-panel">
+    <h2 class="text-xl font-semibold truncate flex-1 min-w-0">{m.settings_title()}</h2>
+    <button
+      class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+      onclick={onclose}
+      title={m.settings_back_to_inbox()}
+      aria-label={m.settings_back_to_inbox()}
+    >
+      <Icon name="arrow-left" size={14} />
     </button>
   </div>
 
@@ -1220,16 +1227,16 @@
     <!-- Category nav.  Single source-of-truth list, keeps order
          identical between mobile-collapse + desktop layouts when
          that comes. -->
-    <nav class="w-48 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 overflow-y-auto p-3">
+    <nav class="w-48 shrink-0 border-r glass-panel overflow-y-auto p-3">
       <ul class="space-y-1">
         {#each CATEGORIES as cat (cat.id)}
           {@const active = activeCategory === cat.id}
           <li>
             <button
               type="button"
-              class="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors {active
-                ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-                : 'hover:bg-primary-500/10 text-surface-700 dark:text-surface-200'}"
+              class="w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors duration-150 ease-out {active
+                ? 'bg-primary-500/12 text-primary-500 font-medium ring-1 ring-inset ring-primary-500/30'
+                : 'hover:bg-primary-500/10'}"
               onclick={() => (activeCategory = cat.id)}
               aria-current={active ? 'page' : undefined}
             >
@@ -2076,7 +2083,7 @@
 
     {:else if accounts.length === 0}
       <div class="text-center py-12">
-        <p class="text-surface-500 mb-4">No accounts configured yet.</p>
+        <p class="text-surface-500 mb-4">{m.account_settings_accounts_empty()}</p>
         <button class="btn preset-filled-primary-500" onclick={onaddaccount}>
           Add Account
         </button>
