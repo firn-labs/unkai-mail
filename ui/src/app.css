@@ -208,15 +208,17 @@ body {
   background: color-mix(in oklab, var(--color-primary-500) 15%, var(--color-surface-800));
 }
 
-/* Destructive variant — neutral at rest, red on hover, same contract
-   as the settings-panel icon-button vocabulary. */
+/* Destructive variant — neutral at rest, error-tinted on hover, same
+   contract as the settings-panel icon-button vocabulary. Uses the theme's
+   error token so user themes keep a coherent destructive hue
+   (docs/UI_CONVENTIONS.md rule 1). */
 .quick-action-btn-danger:hover {
-  background: color-mix(in oklab, var(--color-red-500) 15%, var(--color-surface-50));
-  color: var(--color-red-500);
+  background: color-mix(in oklab, var(--color-error-500) 15%, var(--color-surface-50));
+  color: var(--color-error-500);
 }
 
 [data-mode='dark'] .quick-action-btn-danger:hover {
-  background: color-mix(in oklab, var(--color-red-500) 20%, var(--color-surface-800));
+  background: color-mix(in oklab, var(--color-error-500) 20%, var(--color-surface-800));
 }
 
 /* ── Email body renderer ─────────────────────────────────────────────── */
