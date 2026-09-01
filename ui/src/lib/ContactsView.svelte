@@ -2028,7 +2028,7 @@
       {#if loading}
         <p class="px-3 py-2 text-xs text-surface-500">Loading contacts…</p>
       {:else if error}
-        <p class="px-3 py-2 text-xs text-red-500">{error}</p>
+        <p class="px-3 py-2 text-xs text-error-500">{error}</p>
       {:else if contacts.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500">
           {m.contacts_view_empty()}
@@ -2299,7 +2299,7 @@
               >Keep</button>
             {:else}
               <button
-                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                 onclick={() => (deleteConfirm = true)}
                 title={m.contact_view_button_delete()}
                 aria-label={m.contact_view_button_delete()}
@@ -2309,7 +2309,7 @@
         </div>
 
         {#if formError}
-          <p class="text-sm text-red-500">{formError}</p>
+          <p class="text-sm text-error-500">{formError}</p>
         {/if}
 
         {#if hasPersonalDetails(selectedContact)}
@@ -2530,7 +2530,7 @@
             {#if selectedPhotoBytes || formPhotoMime}
               <button
                 type="button"
-                class="text-xs text-error-500 hover:bg-red-500/20 rounded-lg px-2 py-1 self-start mt-1"
+                class="text-xs text-error-500 hover:bg-error-500/20 rounded-lg px-2 py-1 self-start mt-1"
                 onclick={() => {
                   selectedPhotoBytes = null
                   formPhotoMime = null
@@ -2619,7 +2619,7 @@
                   />
                   <button
                     type="button"
-                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeEmail(i)}
@@ -2649,7 +2649,7 @@
                   />
                   <button
                     type="button"
-                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removePhone(i)}
@@ -2679,7 +2679,7 @@
                   />
                   <button
                     type="button"
-                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeImpp(i)}
@@ -2799,7 +2799,7 @@
                     </div>
                     <button
                       type="button"
-                      class="ml-auto text-error-500 hover:bg-red-500/20 rounded-lg p-1 inline-flex items-center justify-center"
+                      class="ml-auto text-error-500 hover:bg-error-500/20 rounded-lg p-1 inline-flex items-center justify-center"
                       aria-label={m.contact_form_button_remove()}
                       title={m.contact_form_button_remove()}
                       onclick={() => removeAddress(i)}
@@ -2851,7 +2851,7 @@
                   />
                   <button
                     type="button"
-                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeWebsite(i)}
@@ -2885,7 +2885,7 @@
                   ></textarea>
                   <button
                     type="button"
-                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                     aria-label={m.contact_form_button_remove()}
                     title={m.contact_form_button_remove()}
                     onclick={() => removeKey(i)}
@@ -2998,7 +2998,7 @@
         {/if}
 
         {#if formError}
-          <p class="text-sm text-red-500">{formError}</p>
+          <p class="text-sm text-error-500">{formError}</p>
         {/if}
 
         <!-- Edit / create form action row.  Delete moved to the
@@ -3157,7 +3157,7 @@
       </div>
 
       {#if newListError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{newListError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{newListError}</p>
       {/if}
 
       <!-- Icon-only confirm / cancel — same pair AND order as the
@@ -3254,7 +3254,7 @@
           </div>
           {#if importReport.errors.length > 0}
             <p class="text-xs text-surface-500 mt-2 mb-1">{m.contact_import_errors_label()}</p>
-            <ul class="text-xs text-red-500 max-h-32 overflow-y-auto space-y-0.5">
+            <ul class="text-xs text-error-500 max-h-32 overflow-y-auto space-y-0.5">
               {#each importReport.errors as err}
                 <li class="wrap-break-word">{err}</li>
               {/each}
@@ -3264,7 +3264,7 @@
       {/if}
 
       {#if importError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{importError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{importError}</p>
       {/if}
 
       <div class="flex justify-end gap-2">

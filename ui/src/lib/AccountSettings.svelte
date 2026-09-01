@@ -1729,7 +1729,7 @@
                 <li class="flex items-center gap-3 px-3 py-2">
                   <span class="flex-1 min-w-0 truncate text-sm font-mono">{addr}</span>
                   <button
-                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                     title="Remove trusted sender"
                     aria-label="Remove trusted sender {addr}"
                     onclick={() => onRemoveTrustedSender(addr)}
@@ -2070,7 +2070,7 @@
       <p class="text-surface-500 text-center py-8">Loading accounts...</p>
 
     {:else if error}
-      <div class="text-sm text-red-500 p-4 bg-red-500/10 rounded-lg mb-4">
+      <div class="text-sm text-error-500 p-4 bg-error-500/10 rounded-lg mb-4">
         {error}
       </div>
 
@@ -2153,7 +2153,7 @@
                   onclick={() => openServerEdit(account)}
                 ><Icon name="settings" size={16} /></button>
                 <button
-                  class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                  class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                   title="Remove account"
                   aria-label="Remove account {account.email}"
                   onclick={() => removeAccount(account.id, account.email)}
@@ -2504,7 +2504,7 @@
         {#if backupStatus.kind !== 'idle'}
           <p
             class="text-sm wrap-break-word {backupStatus.kind === 'error'
-              ? 'text-red-500'
+              ? 'text-error-500'
               : backupStatus.kind === 'done'
               ? 'text-success-600 dark:text-success-400'
               : 'text-surface-500'}"
@@ -2655,7 +2655,7 @@
       </ul>
 
       {#if trustError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{trustError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{trustError}</p>
       {/if}
 
       <div class="flex justify-end gap-2">
@@ -2678,7 +2678,7 @@
      `startRetrust` itself errored (no modal opens) so the user
      still sees what went wrong. -->
 {#if trustError && !trustPrompt}
-  <div class="fixed bottom-4 right-4 z-50 max-w-sm bg-red-500/95 text-white text-sm rounded-lg shadow-lg px-3 py-2">
+  <div class="fixed bottom-4 right-4 z-50 max-w-sm bg-error-500/95 text-white text-sm rounded-lg shadow-lg px-3 py-2">
     {trustError}
     <button
       class="ml-2 underline"

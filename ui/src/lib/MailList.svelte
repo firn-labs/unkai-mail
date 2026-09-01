@@ -1860,7 +1860,7 @@
     {#if loading}
       <div class="p-6 text-center text-sm text-surface-500">Loading…</div>
     {:else if error}
-      <div class="p-4 text-sm text-red-500">{error}</div>
+      <div class="p-4 text-sm text-error-500">{error}</div>
     {:else if envelopes.length === 0}
       <div class="p-6 text-center text-sm text-surface-500">
         {m.maillist_empty_in_folder({ folder: displayFolderName(folder) })}
@@ -2065,7 +2065,7 @@
                          mail keeps the date-only layout. -->
                     {#if effectivePriority(env) === 'high'}
                       <span
-                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400"
+                        class="inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-error-500/15 text-error-600 dark:text-error-400"
                         title={m.mail_priority_high_badge()}
                         aria-label={m.mail_priority_high_badge()}
                       >
@@ -2479,7 +2479,7 @@
         {#if contextMenu.env.reminder_at}
           <button
             type="button"
-            class="ml-auto text-xs text-red-500 hover:underline"
+            class="ml-auto text-xs text-error-500 hover:underline"
             onclick={() => {
               if (!contextMenu) return
               void setEnvelopeReminder(contextMenu.env, null)
@@ -2529,7 +2529,7 @@
     <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
     <button
       type="button"
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 hover:text-red-500"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-error-500/10 hover:text-error-500"
       onclick={() => {
         if (!contextMenu) return
         // Single-row delete reuses the row-level `quickDelete` (which

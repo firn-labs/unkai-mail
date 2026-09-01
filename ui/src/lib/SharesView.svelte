@@ -463,7 +463,7 @@
     {/if}
 
     {#if error}
-      <p class="px-5 py-2 text-sm text-red-500">{error}</p>
+      <p class="px-5 py-2 text-sm text-error-500">{error}</p>
     {/if}
 
     {#if !accountId}
@@ -557,7 +557,7 @@
                 aria-label={m.shares_view_open()}
               ><Icon name="open-link" size={14} /></button>
               <button
-                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                 disabled={deletingId === row.id}
                 onclick={() => void deleteShare(row)}
                 title={deletingId === row.id ? m.shares_view_revoking() : m.shares_view_revoke_title()}
@@ -672,7 +672,7 @@
       {/if}
 
       {#if editError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{editError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{editError}</p>
       {/if}
 
       <div class="flex justify-end gap-2">

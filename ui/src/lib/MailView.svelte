@@ -2460,7 +2460,7 @@
   {:else if loading}
     <div class="flex-1 flex items-center justify-center text-surface-500">Loading message…</div>
   {:else if error}
-    <div class="p-6 text-sm text-red-500">{error}</div>
+    <div class="p-6 text-sm text-error-500">{error}</div>
   {:else if email}
     <!-- Email header -->
     <div class="p-6 border-b border-surface-200 dark:border-surface-700">
@@ -2485,7 +2485,7 @@
                nothing. -->
           {#if effectivePriority() === 'high'}
             <span
-              class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400"
+              class="inline-flex items-center gap-1 text-xs leading-none px-2 py-1 rounded-full bg-error-500/15 text-error-600 dark:text-error-400"
               title={m.mail_priority_high_badge()}
             >
               <Icon name="important" size={12} />
@@ -2719,7 +2719,7 @@
         ><Icon name="pin" size={16} /></button>
         <div class="relative">
           <button
-            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 {effectivePriority() === 'high' ? 'text-red-500 border-red-500/40' : ''}"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40 {effectivePriority() === 'high' ? 'text-error-500 border-error-500/40' : ''}"
             onclick={() => (priorityMenuOpen = !priorityMenuOpen)}
             title={m.mail_priority_label()}
             aria-label={m.mail_priority_label()}
@@ -2799,7 +2799,7 @@
         aria-label="Archive"
       ><Icon name="archive" size={16} /></button>
       <button
-        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
         onclick={deleteMessage}
         title="Move this message to Trash (permanently deletes if already in Trash or if the account has no Trash folder)"
         aria-label="Delete"

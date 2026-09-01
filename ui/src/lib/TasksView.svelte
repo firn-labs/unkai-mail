@@ -823,7 +823,7 @@
     if (isCompleted(t)) return 'text-surface-400'
     const ms = dueMs(t)
     if (ms == null) return 'text-surface-500'
-    if (ms < startOfTodayUtcMs) return 'text-red-500'
+    if (ms < startOfTodayUtcMs) return 'text-error-500'
     if (ms < endOfTodayUtcMs) return 'text-warning-500'
     return 'text-surface-500'
   }
@@ -836,7 +836,7 @@
   }
 
   function priorityClasses(p: number): string {
-    if (p >= 1 && p <= 4) return 'bg-red-500/15 text-red-500'
+    if (p >= 1 && p <= 4) return 'bg-error-500/15 text-error-500'
     if (p === 5) return 'bg-warning-500/15 text-warning-500'
     if (p >= 6 && p <= 9) return 'bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300'
     return ''
@@ -926,7 +926,7 @@
           class="tasks-side-row {selectionMatches(selection, { kind: 'overdue' }) ? 'is-active' : ''}"
           onclick={() => (selection = { kind: 'overdue' })}
         >
-          <span class="tasks-side-icon text-red-500"><Icon name="warning" size={16} /></span>
+          <span class="tasks-side-icon text-error-500"><Icon name="warning" size={16} /></span>
           <span class="flex-1 truncate text-left">{m.tasks_view_overdue()}</span>
           <span class="tasks-side-count">{overdueCount}</span>
         </button>
@@ -1011,7 +1011,7 @@
         {#if loading && tasks.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">{m.tasks_view_loading()}</div>
         {:else if error && tasks.length === 0}
-          <div class="p-4 text-sm text-red-500">{error}</div>
+          <div class="p-4 text-sm text-error-500">{error}</div>
         {:else if tasks.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">
             {m.tasks_view_empty()}
@@ -1185,7 +1185,7 @@
                  only on hover — the destructive variant from the
                  CLAUDE.md button vocabulary. -->
             <button
-              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
               onclick={deleteSelected}
               title={m.tasks_view_delete_task()}
               aria-label={m.tasks_view_delete_task()}

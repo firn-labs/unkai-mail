@@ -858,7 +858,7 @@
 {#if cardReady}
 <div class="rounded-lg p-4 mb-3 text-sm
             {isCancel
-              ? 'border border-red-500/40 bg-red-500/5'
+              ? 'border border-error-500/40 bg-error-500/5'
               : 'border border-primary-500/40 bg-primary-500/5'}">
   <div class="flex items-start justify-between gap-3 mb-2">
     <div class="flex items-center gap-2">
@@ -869,7 +869,7 @@
         {invite.summary || '(untitled meeting)'}
       </span>
       {#if isCancel}
-        <span class="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-px rounded bg-red-500 text-white">
+        <span class="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-px rounded bg-error-500 text-white">
           Cancelled
         </span>
       {/if}
@@ -928,7 +928,7 @@
   {/if}
 
   {#if error}
-    <p class="text-xs text-red-500 mt-2">{error}</p>
+    <p class="text-xs text-error-500 mt-2">{error}</p>
   {/if}
 
   <!-- RSVP action area — placed above the "More info" /
@@ -1142,7 +1142,7 @@
         {#if previewLoading && !previewLoaded}
           <p class="text-xs text-surface-500 italic">Loading…</p>
         {:else if previewError}
-          <p class="text-xs text-red-500">{previewError}</p>
+          <p class="text-xs text-error-500">{previewError}</p>
         {:else}
           {@const proposedGeom = proposedOnPreviewedDay ? blockGeometry(invite.start, invite.end) : null}
           <div

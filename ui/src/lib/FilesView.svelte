@@ -280,7 +280,7 @@
     />
 
     {#if error}
-      <p class="px-5 py-2 text-sm text-red-500 border-t border-surface-200 dark:border-surface-700">
+      <p class="px-5 py-2 text-sm text-error-500 border-t border-surface-200 dark:border-surface-700">
         {error}
       </p>
     {/if}
