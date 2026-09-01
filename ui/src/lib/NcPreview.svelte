@@ -101,7 +101,7 @@
     src={previewUrl}
     alt=""
     loading="lazy"
-    class="{cls} object-cover rounded shrink-0 bg-surface-200 dark:bg-surface-800"
+    class="{cls} object-cover rounded-sm shrink-0 bg-surface-200 dark:bg-surface-800"
   />
 {:else}
   <FileTypeIcon contentType={contentType} filename={filename} class={cls} />

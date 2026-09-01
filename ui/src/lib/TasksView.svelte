@@ -1086,12 +1086,12 @@
                       </span>
                     {/if}
                     {#if priorityLabel(t.priority)}
-                      <span class="text-[10px] px-1.5 py-0.5 rounded {priorityClasses(t.priority)}">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded-sm {priorityClasses(t.priority)}">
                         {priorityLabel(t.priority)}
                       </span>
                     {/if}
                     {#if sourceMail}
-                      <span class="text-[10px] inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary-500/10 text-primary-500">
+                      <span class="text-[10px] inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-primary-500/10 text-primary-500">
                         <Icon name="email-envelope" size={11} />
                         <span>{m.tasks_view_mail_chip()}</span>
                       </span>

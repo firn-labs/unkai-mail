@@ -1433,7 +1433,7 @@
                   <!-- svelte-ignore a11y_autofocus -->
                   <input
                     type="text"
-                    class="input flex-1 text-sm px-2 py-0.5 rounded"
+                    class="input flex-1 text-sm px-2 py-0.5 rounded-lg"
                     bind:value={calendarRenameValue}
                     disabled={calendarOpBusy}
                     autofocus
@@ -1446,7 +1446,7 @@
                 </div>
               {:else}
                 <div
-                  class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-sm cursor-default"
+                  class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-sm cursor-default"
                   role="listitem"
                   oncontextmenu={(e) => openCalendarContextMenu(e, c)}
                 >
@@ -1584,7 +1584,7 @@
                     {#each allDayVisible(b.allDay) as ev (ev.id)}
                       <button
                         type="button"
-                        class="ev-block ev-allday text-[11px] truncate rounded px-1.5 text-left {userTentative(ev) ? 'ev-tentative' : ''} {userDeclined(ev) ? 'ev-declined' : ''}"
+                        class="ev-block ev-allday text-[11px] truncate rounded-sm px-1.5 text-left {userTentative(ev) ? 'ev-tentative' : ''} {userDeclined(ev) ? 'ev-declined' : ''}"
                         style="--ev-color: {eventColor(ev)}; height: {ALL_DAY_ROW_HEIGHT_PX}px; line-height: {ALL_DAY_ROW_HEIGHT_PX}px;"
                         title={`${ev.summary || '(no title)'} — All-day${ev.location ? ` @ ${ev.location}` : ''}`}
                         onclick={() => openEditor(ev)}
@@ -1987,10 +1987,10 @@
         {#each COLOR_PRESETS as swatch (swatch)}
           <button
             type="button"
-            class="w-7 h-7 rounded-full transition-transform
+            class="w-7 h-7 rounded-full transition-shadow duration-150 ease-out
                    {newCalendarForm.color === swatch
                      ? 'ring-2 ring-offset-2 ring-offset-surface-50 dark:ring-offset-surface-900 ring-primary-500'
-                     : 'hover:scale-110'}"
+                     : 'hover:ring-2 hover:ring-offset-2 hover:ring-offset-surface-50 dark:hover:ring-offset-surface-900 hover:ring-primary-500/40'}"
             style="background-color: {swatch};"
             title={swatch}
             aria-label="Color {swatch}"
@@ -2039,10 +2039,10 @@
         {#each COLOR_PRESETS as swatch (swatch)}
           <button
             type="button"
-            class="w-7 h-7 rounded-full transition-transform
+            class="w-7 h-7 rounded-full transition-shadow duration-150 ease-out
                    {colorPicker.color === swatch
                      ? 'ring-2 ring-offset-2 ring-offset-surface-50 dark:ring-offset-surface-900 ring-primary-500'
-                     : 'hover:scale-110'}"
+                     : 'hover:ring-2 hover:ring-offset-2 hover:ring-offset-surface-50 dark:hover:ring-offset-surface-900 hover:ring-primary-500/40'}"
             style="background-color: {swatch};"
             title={swatch}
             aria-label="Color {swatch}"
@@ -2056,7 +2056,7 @@
         <input
           id="color-picker-custom"
           type="color"
-          class="w-10 h-8 border border-surface-300 dark:border-surface-600 rounded"
+          class="w-10 h-8 border border-surface-300 dark:border-surface-600 rounded-lg"
           bind:value={colorPicker.color}
           disabled={calendarOpBusy}
         />

@@ -634,7 +634,7 @@
                       {#each calendarsList[acct.id] as c (c.id)}
                         <li>
                           <div
-                            class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-xs"
+                            class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-xs"
                           >
                             <Toggle
                               checked={!c.hidden}
@@ -686,7 +686,7 @@
                       {#each taskListsList[acct.id] as l (l.id)}
                         <li>
                           <div
-                            class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-xs"
+                            class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-xs"
                           >
                             <Toggle
                               checked={!l.hidden}

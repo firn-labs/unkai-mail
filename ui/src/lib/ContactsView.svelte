@@ -1842,7 +1842,7 @@
                descendants, so a menu nested here would be offset by
                the aside's own viewport position. -->
           <button
-            class="w-5 h-5 rounded shrink-0 text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none"
+            class="w-5 h-5 rounded-sm shrink-0 text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none"
             title="More actions"
             aria-label="Contact Group actions"
             onclick={(e) => {
@@ -1923,7 +1923,7 @@
               <!-- svelte-ignore a11y_autofocus -->
               <input
                 type="text"
-                class="input flex-1 text-sm px-2 py-0.5 rounded min-w-0"
+                class="input flex-1 text-sm px-2 py-0.5 rounded-lg min-w-0"
                 bind:value={renameValue}
                 autofocus
                 onclick={(e) => e.stopPropagation()}
@@ -1945,7 +1945,7 @@
             <span class="text-xs text-surface-500">{ml.members.filter((m) => m.email).length}</span>
             {#if ml.source !== 'team'}
               <button
-                class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none shrink-0"
+                class="w-5 h-5 rounded-sm text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none shrink-0"
                 title="More actions"
                 aria-label="Mailing list actions"
                 onclick={(e) => {

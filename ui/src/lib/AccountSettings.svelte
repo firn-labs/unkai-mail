@@ -1968,7 +1968,7 @@
                   <div class="font-medium flex items-center gap-2">
                     <span>{theme.label}</span>
                     {#if theme.custom}
-                      <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded bg-primary-500/20 text-primary-600 dark:text-primary-300">
+                      <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded-sm bg-primary-500/20 text-primary-600 dark:text-primary-300">
                         custom
                       </span>
                     {/if}
@@ -1978,7 +1978,7 @@
                 {#if theme.custom}
                   <button
                     type="button"
-                    class="absolute top-1 right-1 w-6 h-6 rounded text-xs text-surface-500 hover:bg-error-500/20 hover:text-error-500"
+                    class="absolute top-1 right-1 w-6 h-6 rounded-sm text-xs text-surface-500 hover:bg-error-500/20 hover:text-error-500"
                     title="Remove custom theme"
                     aria-label={`Remove ${theme.label}`}
                     onclick={(e) => {
@@ -2125,7 +2125,7 @@
                 <div class="flex flex-col gap-1 mt-1">
                   <button
                     type="button"
-                    class="w-5 h-5 flex items-center justify-center rounded text-surface-500 hover:bg-primary-500/10 disabled:opacity-30"
+                    class="w-5 h-5 flex items-center justify-center rounded-sm text-surface-500 hover:bg-primary-500/10 disabled:opacity-30"
                     disabled={accountIdx === 0}
                     title="Move up"
                     aria-label="Move account up"
@@ -2133,7 +2133,7 @@
                   >▲</button>
                   <button
                     type="button"
-                    class="w-5 h-5 flex items-center justify-center rounded text-surface-500 hover:bg-primary-500/10 disabled:opacity-30"
+                    class="w-5 h-5 flex items-center justify-center rounded-sm text-surface-500 hover:bg-primary-500/10 disabled:opacity-30"
                     disabled={accountIdx === sortedRows.length - 1}
                     title="Move down"
                     aria-label="Move account down"
@@ -2652,7 +2652,7 @@
           ? 'leaf'
           : `leaf + ${trustPrompt.chain.length - 1} intermediate${trustPrompt.chain.length === 2 ? '' : 's'}`})
       </div>
-      <ul class="font-mono text-xs wrap-break-word p-2 rounded bg-surface-100 dark:bg-surface-800 mb-3 space-y-1">
+      <ul class="font-mono text-xs wrap-break-word p-2 rounded-lg bg-surface-100 dark:bg-surface-800 mb-3 space-y-1">
         {#each trustPrompt.chain as entry, i (entry.sha256)}
           <li>
             <span class="text-surface-500">{i === 0 ? 'leaf:' : `int${i}:`}</span>

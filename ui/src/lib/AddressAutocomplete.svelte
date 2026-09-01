@@ -416,7 +416,7 @@
             <div class="flex-1 min-w-0">
               <p class="font-medium truncate flex items-center gap-2">
                 <span class="truncate">{m.name}</span>
-                <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded {pillCls}">
+                <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded-sm {pillCls}">
                   {m.source}
                 </span>
               </p>

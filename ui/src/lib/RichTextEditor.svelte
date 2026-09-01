@@ -2110,7 +2110,7 @@
                 bind:value={linkUrlInput}
                 type="url"
                 placeholder="https://example.com"
-                class="flex-1 min-w-0 px-2 py-1 text-sm rounded border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900"
+                class="flex-1 min-w-0 px-2 py-1 text-sm rounded-lg border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900"
                 onkeydown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault()
@@ -2123,13 +2123,13 @@
               />
               <button
                 type="button"
-                class="text-xs px-2 py-1 rounded bg-primary-500 text-white hover:bg-primary-600"
+                class="text-xs px-2 py-1 rounded-lg bg-primary-500 text-white hover:bg-primary-600"
                 onclick={commitLink}
               >Apply</button>
               {#if linkPopoverHasExisting}
                 <button
                   type="button"
-                  class="text-xs px-2 py-1 rounded text-error-500 hover:bg-primary-500/10"
+                  class="text-xs px-2 py-1 rounded-lg text-error-500 hover:bg-primary-500/10"
                   title="Remove link"
                   onclick={removeLink}
                 >Remove</button>
@@ -2460,7 +2460,7 @@
             <img
               src={thumb}
               alt=""
-              class="w-7 h-7 object-cover rounded shrink-0 bg-surface-200 dark:bg-surface-800"
+              class="w-7 h-7 object-cover rounded-sm shrink-0 bg-surface-200 dark:bg-surface-800"
             />
           {:else}
             <FileTypeIcon contentType={a.content_type ?? null} filename={a.filename} class="w-7 h-7" />

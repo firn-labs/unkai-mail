@@ -2163,7 +2163,7 @@
                       <span class="truncate leading-tight font-medium" title={a.email}>{chipLabel(a)}</span>
                       {#if isInternal(a.email)}
                         <span
-                          class="text-[9px] uppercase tracking-wide font-semibold px-1 py-px rounded bg-primary-500/20 text-primary-700 dark:text-primary-300 leading-tight shrink-0"
+                          class="text-[9px] uppercase tracking-wide font-semibold px-1 py-px rounded-sm bg-primary-500/20 text-primary-700 dark:text-primary-300 leading-tight shrink-0"
                           title="Nextcloud user on this server"
                         >internal</span>
                       {/if}

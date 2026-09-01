@@ -25,6 +25,7 @@ Persistent chrome is `.glass-panel`; floating layers are `.glass-float`; text on
   `hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40`
   (This supersedes the older raw-red idiom. Migration is lazy — swap `red-*` → `error-*` whenever you're already touching a file; never add new `red-*`.)
 - Semantic colors mean semantics: `error` = destructive/failed, `warning` = caution, `success` = confirmed. Never decorative.
+- **Platform-convention literals** (documented, keep raw red): the calendar's today badge + now-line (`CalendarView`) and the unread/mention count badges (`IconRail`) — these mimic OS/calendar conventions that stay red regardless of accent, and are *not* error semantics.
 - **No gradients in app chrome.** No `bg-gradient-*`, no `linearGradient`, no gradient text (`bg-clip-text` + `text-transparent`). Documented exemptions: `inviteHtml.ts` (email cards live in foreign clients), functional `repeating-linear-gradient` hatch/dash patterns (calendar tentative-events, thread connector), the resize-cursor image.
 - Documented raw-color exemptions: `.email-html-body` renderer in `app.css` (email content must not follow the app theme), `AccountSettings` app-icon colorway swatches (literal previews), `FileTypeIcon.svelte` (extension-hash hues — under review, see Open decisions).
 
@@ -32,7 +33,7 @@ Persistent chrome is `.glass-panel`; floating layers are `.glass-float`; text on
 
 - Persistent chrome (rails, sidebars, headers, toolbars, nav columns) = `.glass-panel` + the structural border side you need.
 - **Every floating layer (modal, dropdown, popover, context menu, autocomplete panel) = `.glass-float` + its radius tier. Never re-add `border`, `shadow-*`, or a `bg-*` next to it.** The hand-rolled `bg-surface-50 dark:bg-surface-900 border … shadow-lg` recipe is banned; it is the single biggest source of "why does this popover look different from that one."
-- Exemption: a popover rendered *inside* a glass layer stays opaque (never stack blur) — `EmojiPicker` is the canonical case. If you claim this exemption, leave a comment saying so.
+- **Floating layers that render *inside* a glass surface stay opaque** (never stack blur — #451 performance rule) and use the second canonical utility, **`.popover-opaque`** (`app.css`): surface fill, 1px surface border, the same `--glass-shadow`. This covers everything anchored inside the Compose / EventEditor modals and the editor canvas — `EmojiPicker`, `Select`, `DateField`, `TimeField`, address/location autocompletes, the RichTextEditor menus. Two recipes total; anything else is a violation.
 - Text sitting on glass uses `.text-on-glass` / `.text-on-glass-muted`, never raw `text-surface-*` greys. Muted is the contrast floor — don't go weaker.
 - Shadows exist **only** via `--glass-shadow` inside `.glass-float`, plus `shadow-sm` on the opaque hover quick-action cluster (MailList/Notes/Tasks). No other `shadow-*`, no colored shadows, no glows.
 
@@ -43,9 +44,10 @@ Persistent chrome is `.glass-panel`; floating layers are `.glass-float`; text on
 | Panel | `rounded-2xl` | modal cards, settings section cards |
 | Menu | `rounded-xl` | compact anchored menus / dropdowns / popovers |
 | Control | `rounded-lg` | buttons, inputs, list rows, selection highlights |
-| Pill | `rounded-full` | badges, chips, avatars |
+| Micro | `rounded-sm` | elements ≤ ~32px where 8px corners would blob: color swatches, micro tags (`px-1 py-px` eyebrow tags), small thumbnails, calendar grid tiles, `w-5`/`w-6` micro icon buttons |
+| Pill | `rounded-full` | badges (via `Badge`), chips, avatars |
 
-Bare `rounded`, `rounded-sm`, `rounded-md`, `rounded-3xl` are **banned** in UI chrome (bare `rounded`/`rounded-sm` occurrences in the tree are drift — migrate lazily to the nearest tier).
+Bare `rounded`, `rounded-md`, `rounded-3xl` are **banned** in UI chrome.
 
 ### 4. Type: small, uniform, weight-driven
 
@@ -61,7 +63,8 @@ Bare `rounded`, `rounded-sm`, `rounded-md`, `rounded-3xl` are **banned** in UI c
 3. **Secondary** (Refresh/Sync): `btn btn-sm preset-tonal-surface inline-flex items-center justify-center`.
 
 - **Destructive** = shape 1 + the `error-*` hover overlay from rule 1. Neutral at rest, colored only on hover.
-- No fourth shape, ever. `btn-danger` is dead — remove on sight. `preset-filled-error-500` is allowed only as a modal's final destructive confirm button, not for row actions.
+- **Primary-action hover** = shape 1 + `hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40` — the accent companion of the destructive overlay, for an icon button whose action is the surface's primary one (canonical ref: MailView's reader action bar). Same contract: neutral at rest.
+- No fourth shape, ever. `preset-filled-error-500` is allowed only as a modal's final destructive confirm button, not for row actions. (The opaque hover quick-action cluster on list rows uses the dedicated `.quick-action-btn` / `.quick-action-btn-danger` utilities from `app.css` — that pair is part of the system, not a violation.)
 - Labeled buttons (footers, wizards) are the same `btn-sm` shape with the label after the icon. Loading swaps the leading icon to `loading`, never the label.
 
 ### 6. Icons: registry or nothing
@@ -95,25 +98,24 @@ If any of these matches inside `ui/src/` (outside the documented exemptions abov
 
 ```
 bg-gradient- | bg-clip-text | transition-all | hover:scale- | shadow-2xl | drop-shadow
-rounded-3xl | rounded-md | btn-danger
+rounded-3xl | rounded-md
 (bg|text|border|ring)-(red|blue|green|purple|violet|indigo|pink|rose|cyan|sky|slate|emerald|orange|yellow)-
 ```
 
-## Drift ledger (audit 2026-09-01)
+## Drift ledger
 
-Known violations at the time this document was written. Migration is lazy unless an item gets its own issue — fix when touching the file, never regress, tick off here when a file is clean.
+Audited 2026-09-01; sweep applied 2026-09-01 (#568). Remaining items migrate lazily — fix when touching the file, never regress, tick off here when a file is clean.
 
-1. **Raw `red-*` → `error-*`** (~161 occurrences; heaviest: `CalendarView`, `Sidebar`, `MailList`, `ContactsView`, `ProfilesSettings`, `SharesView`, `AiSettings`; also the `.quick-action-btn-danger` rule in `app.css` and the old idiom text in `CLAUDE.md` — the latter two are updated with this doc).
-2. **Hand-rolled popover recipe → `.glass-float`** (~14 files: `Select`, `DateField`, `TimeField`, `LocationField`, `AddressSuggestField`, `AddressAutocomplete`, `EventEditor`, `ContactsView` ×2, `RichTextEditor` ×5, `SearchBar`, `AccountSettings`). One-line class swaps; biggest single visual win.
-3. **`✕`/`▸`/`▾` raw glyphs → registry icons** (9 close buttons: `Compose` ×2, `CreateTalkRoomModal`, `EventEditor`, `EventPlanner`, `MoveFolderPicker`, `NextcloudFilePicker`, `NotesView`, `SearchInput`; carets in `NotesView`, `TalkView`, `RichTextEditor`, `app.css`). Needs `caret-right`/`caret-down` icons registered.
-4. **Emoji-as-icon** (5 spots: `LockScreen` ×3 → `lock`/`passphrase`/`security-key`, `MailView` ⚠️ → `warning`, `NextcloudFilePicker` 💾 → `save-draft`, `NotesMentionPicker` ✉ → `email-envelope`).
-5. **Settings shell off-vocabulary** (`AccountSettings` header: plain border instead of `glass-panel`, `font-bold` `<h1>` instead of `font-semibold` `<h2>`, text-label back button, `bg-primary-500/15` selection instead of `/12` + inset ring).
-6. **`.text-on-glass*` under-adopted** (~22 files put raw `text-surface-*` on glass surfaces).
-7. **Badge shapes ×4 → one component** (`EmailKindChip`, `MailList` inline pills ×4, `NextcloudSettings` variant, Skeleton `chip` in `SearchBar`).
-8. **Undocumented radius tiers** (34 bare `rounded`, 15 `rounded-sm`).
-9. **`MailView` undocumented primary-hover button overlay** (`hover:bg-primary-500/15 …` at the reader action bar) — either register it here as a legal "active-tool" overlay or remove.
-10. **`FileTypeIcon` 9-hue rainbow** — see Open decisions.
-11. **Hand-written `border-surface-N dark:border-surface-M` pairs** (~121, three variants) where a glass utility would supply the border.
+**Done (#568):** raw `red-*` → `error-*` (platform-convention literals documented above kept); hand-rolled popover recipes → `.glass-float` / `.popover-opaque`; raw `✕`/`▸`/`▾`/`⋯`/`–` glyphs and emoji-as-icon → registry (new v14 icons `caret-right`/`caret-down`/`minimize`); Settings shell onto the view-shell vocabulary; `Badge` component extracted and adopted (`EmailKindChip`, `MailList`, `NextcloudSettings` — whose six-color capability rainbow is gone); bare `rounded` mapped onto the tier table (micro tier legalized); MailView's primary-hover overlay registered under rule 5; raw-yellow search highlight → `warning` tokens.
+
+**Open:**
+
+1. **`.text-on-glass*` under-adopted** (~22 files put raw `text-surface-*` on glass surfaces). Contrast-calibrated (#453) — migrate deliberately, checking themes, not mechanically.
+2. **`FileTypeIcon` 9-hue rainbow** — see Open decisions.
+3. **Hand-written `border-surface-N dark:border-surface-M` pairs** (~121, three variants) where a glass utility would supply the border.
+4. **CSS pseudo-element `▸` disclosure markers** (`ContactsView` `.contact-form-section-title::before`; the quoted-mail markers in `app.css` are email-renderer exempt) — CSS `content` can't render a registry icon; needs a markup or mask-image approach when the form is next touched.
+5. **Skeleton `chip` class in `SearchBar`** (×3) — fold into `Badge` when SearchBar is next touched.
+6. **`ShrunkenComposesBar` / toast one-off shadows** (`shadow-md` docked bar, `AccountSettings` error toast) — decide a docked/toast tier or fold into existing utilities.
 
 ## Open decisions
 
