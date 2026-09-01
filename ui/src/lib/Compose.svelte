@@ -2755,7 +2755,7 @@
             title={m.compose_button_minimize_title()}
           ><Icon name="minimize" size={18} /></button>
         {/if}
-        <button class="text-on-glass-muted hover:text-on-glass" onclick={cancel} aria-label="Close"><Icon name="close" size={18} /></button>
+        <button class="text-on-glass-muted hover:text-on-glass" onclick={cancel} aria-label={m.compose_button_close_aria_label()}><Icon name="close" size={18} /></button>
       </div>
     </header>
 
@@ -2925,7 +2925,7 @@
                   e.stopPropagation()
                   removeAttachment(i)
                 }}
-                aria-label="Remove"
+                aria-label={m.compose_attachment_remove_aria_label()}
               ><Icon name="close" size={12} /></button>
             </span>
           {/each}

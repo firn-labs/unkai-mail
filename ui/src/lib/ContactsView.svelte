@@ -1852,13 +1852,12 @@
               menuLeft = r.right + 6
               openMenuFor = openMenuFor === `cat:${c.name}` ? null : `cat:${c.name}`
             }}
-          >⋯</button>
+          ><Icon name="more" size={14} /></button>
         </div>
       {/each}
       {#if categories.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500 italic">
-          No Contact Groups yet. Click <span class="font-semibold">+</span> to
-          create one — drag contacts onto it after to tag them.
+          {m.contacts_view_groups_empty()}
         </p>
       {/if}
     </div>
@@ -1956,7 +1955,7 @@
                   menuLeft = r.right + 6
                   openMenuFor = openMenuFor === `ml:${ml.id}` ? null : `ml:${ml.id}`
                 }}
-              >⋯</button>
+              ><Icon name="more" size={14} /></button>
             {/if}
           </div>
           <!-- The three-dot menu + emoji picker render at the

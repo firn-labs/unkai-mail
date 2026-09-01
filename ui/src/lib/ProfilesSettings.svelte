@@ -303,7 +303,7 @@
                 const r = anchorRect(e.currentTarget as HTMLElement)
                 contextMenu = { profile, ...clampToViewport({ x: r.right + 4, y: r.top }, 200, 140) }
               }}
-            >⋯</button>
+            ><Icon name="more" size={14} /></button>
           </div>
         {/if}
       {/each}

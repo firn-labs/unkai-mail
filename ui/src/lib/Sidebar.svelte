@@ -999,7 +999,7 @@
             // share one menu component.
             contextMenu = { folder, ...clampToViewport({ x: r.right + 4, y: r.top }, 200, 220) }
           }}
-        >⋯</button>
+        ><Icon name="more" size={14} /></button>
       </div>
     {/if}
   {/snippet}
