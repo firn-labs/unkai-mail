@@ -346,7 +346,7 @@
             <span>{m.settings_ai_master_running({ endpoint: status.endpoint })}</span>
           </div>
         {:else if enabled && status?.last_error}
-          <p class="text-xs text-red-500 leading-snug mt-1">
+          <p class="text-xs text-error-500 leading-snug mt-1">
             {m.settings_ai_master_error({ error: status.last_error })}
           </p>
         {:else if enabled}
@@ -424,7 +424,7 @@
           </button>
           {#if hasToken}
             <button
-              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
               disabled={generating || !enabled}
               title={m.settings_ai_token_revoke()}
               aria-label={m.settings_ai_token_revoke()}
@@ -565,7 +565,7 @@
     </div>
 
     {#if error}
-      <p class="text-sm text-red-500 wrap-break-word">{error}</p>
+      <p class="text-sm text-error-500 wrap-break-word">{error}</p>
     {/if}
   {/if}
 </section>

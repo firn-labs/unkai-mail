@@ -2187,7 +2187,7 @@
                   </span>
                   <button
                     type="button"
-                    class="text-surface-500 hover:text-red-500 ml-1 text-base leading-none"
+                    class="text-surface-500 hover:text-error-500 ml-1 text-base leading-none"
                     title="Remove"
                     aria-label={`Remove ${a.email}`}
                     onclick={() => removeAttendee(role, a.email)}
@@ -2232,7 +2232,7 @@
       {@render chipList('Optional', 'OPT-PARTICIPANT', optionalAttendees)}
 
       {#if error}
-        <p class="text-sm text-red-500">{error}</p>
+        <p class="text-sm text-error-500">{error}</p>
       {/if}
       </div>
     </div>

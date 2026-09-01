@@ -1088,7 +1088,7 @@
               </div>
 
               {#if davError}
-                <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-lg flex items-start gap-2">
+                <div class="text-sm text-error-500 mb-4 p-3 bg-error-500/10 rounded-lg flex items-start gap-2">
                   <span class="mt-0.5"><Icon name="error" size={16} /></span>
                   <span>{davError}</span>
                 </div>
@@ -1172,7 +1172,7 @@
 
       <!-- Error message -->
       {#if error}
-        <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-lg flex items-start gap-2">
+        <div class="text-sm text-error-500 mb-4 p-3 bg-error-500/10 rounded-lg flex items-start gap-2">
           <span class="mt-0.5"><Icon name="error" size={16} /></span>
           <span>{error}</span>
         </div>

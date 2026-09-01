@@ -111,7 +111,7 @@
 
 {#if loadError}
   <div
-    class="h-screen w-screen flex items-center justify-center text-sm text-red-500 p-6 bg-surface-50 dark:bg-surface-900"
+    class="h-screen w-screen flex items-center justify-center text-sm text-error-500 p-6 bg-surface-50 dark:bg-surface-900"
   >
     {loadError}
   </div>

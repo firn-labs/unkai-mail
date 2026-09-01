@@ -203,7 +203,7 @@
       {#if loading}
         <p class="px-3 py-2 text-xs text-surface-500">Loading folders…</p>
       {:else if error}
-        <p class="px-3 py-2 text-sm text-red-500">{error}</p>
+        <p class="px-3 py-2 text-sm text-error-500">{error}</p>
       {:else if visibleFolders.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500">
           {filterText ? 'No folders match.' : 'No folders.'}

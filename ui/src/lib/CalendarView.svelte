@@ -1362,7 +1362,7 @@
   {#if loading}
     <p class="px-6 py-4 text-sm text-surface-500">Loading calendars…</p>
   {:else if error}
-    <p class="px-6 py-4 text-sm text-red-500">{error}</p>
+    <p class="px-6 py-4 text-sm text-error-500">{error}</p>
   {:else if calendars.length === 0}
     <p class="px-6 py-4 text-sm text-surface-500">
       No calendars cached yet. Open
@@ -1483,7 +1483,7 @@
           {/if}
         </ul>
         {#if calendarOpError}
-          <p class="mt-2 px-1 text-xs text-red-500 wrap-break-word">{calendarOpError}</p>
+          <p class="mt-2 px-1 text-xs text-error-500 wrap-break-word">{calendarOpError}</p>
         {/if}
         </div>
       </aside>
@@ -1847,7 +1847,7 @@
 
         {#if syncErrors.length > 0}
           <div
-            class="mx-6 my-2 p-3 rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-950 text-xs text-red-700 dark:text-red-200 shrink-0"
+            class="mx-6 my-2 p-3 rounded-lg border border-error-200 dark:border-error-700 bg-error-50 dark:bg-error-950 text-xs text-error-700 dark:text-error-200 shrink-0"
           >
             <p class="font-semibold mb-1">Some calendars failed to sync:</p>
             <ul class="list-disc list-inside space-y-0.5">
@@ -1915,7 +1915,7 @@
       }}
     >Change color…</button>
     <button
-      class="w-full text-left px-3 py-1.5 hover:bg-red-500/10 text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+      class="w-full text-left px-3 py-1.5 hover:bg-error-500/10 text-error-600 dark:text-error-400 disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={calendarOpBusy}
       onclick={() => {
         const c = calendarContextMenu!.calendar
@@ -2000,7 +2000,7 @@
       </div>
 
       {#if calendarOpError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{calendarOpError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{calendarOpError}</p>
       {/if}
 
       <div class="flex justify-end gap-2">
@@ -2064,7 +2064,7 @@
       </div>
 
       {#if calendarOpError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{calendarOpError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{calendarOpError}</p>
       {/if}
 
       <div class="flex justify-end gap-2">
@@ -2101,7 +2101,7 @@
         This can't be undone.
       </p>
       {#if calendarOpError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{calendarOpError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{calendarOpError}</p>
       {/if}
       <div class="flex justify-end gap-2">
         <button
@@ -2177,7 +2177,7 @@
           </div>
           {#if importReport.errors.length > 0}
             <p class="text-xs text-surface-500 mt-2 mb-1">{m.calendar_import_errors_label()}</p>
-            <ul class="text-xs text-red-500 max-h-32 overflow-y-auto space-y-0.5">
+            <ul class="text-xs text-error-500 max-h-32 overflow-y-auto space-y-0.5">
               {#each importReport.errors as err}
                 <li class="wrap-break-word">{err}</li>
               {/each}
@@ -2187,7 +2187,7 @@
       {/if}
 
       {#if importError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{importError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{importError}</p>
       {/if}
 
       <div class="flex justify-end gap-2">

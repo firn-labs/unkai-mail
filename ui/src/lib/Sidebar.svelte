@@ -1171,7 +1171,7 @@
     {:else if loading}
       <p class="px-3 py-2 text-xs text-surface-500">Loading folders…</p>
     {:else if error}
-      <p class="px-3 py-2 text-xs text-red-500">{error}</p>
+      <p class="px-3 py-2 text-xs text-error-500">{error}</p>
     {:else if folders.length === 0}
       <p class="px-3 py-2 text-xs text-surface-500">No folders.</p>
     {:else}
@@ -1227,7 +1227,7 @@
            operation's error. Clears when the next menu opens or the
            user starts a new operation. -->
       {#if folderOpError}
-        <p class="px-3 py-1.5 mt-1 text-xs text-red-500 wrap-break-word">{folderOpError}</p>
+        <p class="px-3 py-1.5 mt-1 text-xs text-error-500 wrap-break-word">{folderOpError}</p>
       {/if}
     {/if}
   </nav>
@@ -1310,7 +1310,7 @@
          everything away unread" is the normal gesture. -->
     {#if isJunk(contextMenu.folder)}
       <button
-        class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 transition-colors duration-150 ease-out text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+        class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-error-500/10 transition-colors duration-150 ease-out text-error-600 dark:text-error-400 disabled:opacity-50 disabled:hover:bg-transparent"
         disabled={folderOpBusy}
         onclick={() => {
           const f = contextMenu!.folder
@@ -1323,7 +1323,7 @@
       </button>
     {/if}
     <button
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 transition-colors duration-150 ease-out text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-error-500/10 transition-colors duration-150 ease-out text-error-600 dark:text-error-400 disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy || stdFolder}
       title={stdFolder ? "Standard folders can't be deleted" : ''}
       onclick={() => {
@@ -1358,7 +1358,7 @@
         This can't be undone.
       </p>
       {#if folderOpError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{folderOpError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{folderOpError}</p>
       {/if}
       <div class="flex justify-end gap-2">
         <button
@@ -1394,7 +1394,7 @@
         {m.sidebar_clear_spam_body({ folder: displayName(clearSpamConfirm.folder) })}
       </p>
       {#if folderOpError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{folderOpError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{folderOpError}</p>
       {/if}
       <div class="flex justify-end gap-2">
         <button
@@ -1438,7 +1438,7 @@
       />
 
       {#if folderOpError}
-        <p class="text-xs text-red-500 mt-3 wrap-break-word">{folderOpError}</p>
+        <p class="text-xs text-error-500 mt-3 wrap-break-word">{folderOpError}</p>
       {/if}
 
       <div class="flex justify-end mt-3">

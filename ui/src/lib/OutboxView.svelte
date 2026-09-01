@@ -328,7 +328,7 @@
         </button>
         <button
           type="button"
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5 hover:bg-red-500/15 hover:text-red-500"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5 hover:bg-error-500/15 hover:text-error-500"
           disabled={busy}
           onclick={() => void discard()}
           title={m.outbox_button_delete_title()}

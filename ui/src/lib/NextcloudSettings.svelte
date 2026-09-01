@@ -520,7 +520,7 @@
   </div>
 
   {#if error}
-    <div class="text-sm text-red-500 p-3 bg-red-500/10 rounded-lg">{error}</div>
+    <div class="text-sm text-error-500 p-3 bg-error-500/10 rounded-lg">{error}</div>
   {/if}
 
   {#if loading}

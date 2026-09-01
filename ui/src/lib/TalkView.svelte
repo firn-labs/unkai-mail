@@ -278,7 +278,7 @@
     {/if}
 
     {#if error}
-      <p class="px-5 py-2 text-sm text-red-500">{error}</p>
+      <p class="px-5 py-2 text-sm text-error-500">{error}</p>
     {/if}
 
     {#if !accountId}
@@ -334,7 +334,7 @@
             aria-label={m.talk_view_open()}
           ><Icon name="open-link" size={14} /></button>
           <button
-            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
             disabled={deletingToken === room.token}
             onclick={() => void deleteRoom(room)}
             title={deletingToken === room.token ? m.talk_view_deleting() : m.talk_view_delete_title()}

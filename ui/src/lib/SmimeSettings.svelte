@@ -267,7 +267,7 @@
         </button>
         <button
           type="button"
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
           onclick={removeCert}
           disabled={busy}
           title={m.smime_remove_button()}

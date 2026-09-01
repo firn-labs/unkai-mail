@@ -226,7 +226,7 @@
       {/if}
 
       {#if error}
-        <p class="text-sm text-red-500 wrap-break-word text-center">{error}</p>
+        <p class="text-sm text-error-500 wrap-break-word text-center">{error}</p>
       {/if}
     {/if}
   </div>

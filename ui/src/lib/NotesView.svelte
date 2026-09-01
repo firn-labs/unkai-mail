@@ -1162,7 +1162,7 @@
         {#if loading && notes.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">{m.notes_view_loading()}</div>
         {:else if error && notes.length === 0}
-          <div class="p-4 text-sm text-red-500">{error}</div>
+          <div class="p-4 text-sm text-error-500">{error}</div>
         {:else if filteredNotes.length === 0}
           <div class="p-6 text-center text-sm text-surface-500">
             {#if searchQuery.trim()}
@@ -1309,7 +1309,7 @@
                 <Icon name="email-envelope" size={14} />
               </button>
               <button
-                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                 onclick={deleteSelected}
                 title={m.notes_view_delete_note()}
                 aria-label={m.notes_view_delete_note()}
@@ -1435,7 +1435,7 @@
     onmousedown={(e) => e.stopPropagation()}
   >
     <button
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-error-500/10 text-error-600 dark:text-error-400 disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy}
       onclick={() => startRemoveFolder(folderMenu!.path)}
     >

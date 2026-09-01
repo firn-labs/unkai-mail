@@ -600,7 +600,7 @@
       </div>
 
       {#if error}
-        <p class="text-sm text-red-500 wrap-break-word">{error}</p>
+        <p class="text-sm text-error-500 wrap-break-word">{error}</p>
       {/if}
     </div>
   {/if}

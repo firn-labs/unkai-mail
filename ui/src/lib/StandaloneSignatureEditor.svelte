@@ -235,7 +235,7 @@
 
 <div class="h-screen w-screen flex flex-col bg-surface-50 dark:bg-surface-900">
   {#if loadError}
-    <div class="flex-1 flex items-center justify-center text-sm text-red-500 p-6">
+    <div class="flex-1 flex items-center justify-center text-sm text-error-500 p-6">
       {loadError}
     </div>
   {:else if account}

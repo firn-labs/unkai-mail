@@ -252,7 +252,7 @@
   </header>
 
   {#if opError}
-    <div class="text-sm text-red-500 p-4 bg-red-500/10 rounded-lg">
+    <div class="text-sm text-error-500 p-4 bg-error-500/10 rounded-lg">
       {opError}
     </div>
   {/if}
@@ -439,7 +439,7 @@
       <span>{m.profiles_menu_change_icon()}</span>
     </button>
     <button
-      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 transition-colors duration-150 ease-out text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-error-500/10 transition-colors duration-150 ease-out text-error-600 dark:text-error-400 disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={busy || blocked !== ''}
       title={blocked}
       onclick={() => {
@@ -581,7 +581,7 @@
         {m.profiles_delete_body({ name: deleteConfirm.name })}
       </p>
       {#if deleteError}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{deleteError}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{deleteError}</p>
       {/if}
       <div class="flex justify-end gap-2">
         <button

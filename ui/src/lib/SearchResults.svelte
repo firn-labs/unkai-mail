@@ -314,7 +314,7 @@
 
   <div class="flex-1 overflow-y-auto" onscroll={onListScroll}>
     {#if error}
-      <div class="p-4 text-sm text-red-500">{error}</div>
+      <div class="p-4 text-sm text-error-500">{error}</div>
     {:else if !loading && hits.length === 0}
       <!-- Empty-state.  When local FTS5 returned no hits and the
            user hasn't yet asked the server, we explain *why*

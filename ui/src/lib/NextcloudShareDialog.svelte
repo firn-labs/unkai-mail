@@ -300,7 +300,7 @@
       {/if}
 
       {#if error}
-        <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{error}</p>
       {/if}
 
       <div class="flex justify-end gap-2">

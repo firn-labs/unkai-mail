@@ -480,7 +480,7 @@
           autofocus={!pendingDecryptPrompt.busy}
         />
         {#if pendingDecryptPrompt.error}
-          <p class="text-xs text-red-500 mb-3">{pendingDecryptPrompt.error}</p>
+          <p class="text-xs text-error-500 mb-3">{pendingDecryptPrompt.error}</p>
         {/if}
         <div class="flex justify-end gap-2 mt-2">
           <button

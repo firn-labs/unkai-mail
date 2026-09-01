@@ -128,7 +128,7 @@
     {#if updater.checking}
       <p class="text-xs text-surface-500">{m.settings_updates_checking()}</p>
     {:else if updater.error}
-      <p class="text-xs text-red-500 wrap-break-word">{updater.error}</p>
+      <p class="text-xs text-error-500 wrap-break-word">{updater.error}</p>
     {:else if updater.lastCheckedAt !== null && !updater.available}
       <div class="inline-flex items-center gap-1 text-xs text-success-500" aria-live="polite">
         <Icon name="success" size={14} />
@@ -293,6 +293,6 @@
   </div>
 
   {#if saveError}
-    <p class="text-sm text-red-500 wrap-break-word">{saveError}</p>
+    <p class="text-sm text-error-500 wrap-break-word">{saveError}</p>
   {/if}
 </section>
