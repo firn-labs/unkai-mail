@@ -1976,7 +1976,8 @@
             }}
           >
             <span class="rt-btn-icon" aria-hidden="true">𝐀</span>
-            <span class="rt-btn-label">{currentFontLabel()} ▾</span>
+            <span class="rt-btn-label">{currentFontLabel()}</span>
+            <Icon name="caret-down" size={12} />
           </button>
           {#if showFontPicker}
             <div

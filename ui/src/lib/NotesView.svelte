@@ -1038,7 +1038,7 @@
                 }}
                 aria-label={isCollapsed ? m.notes_view_expand_folder() : m.notes_view_collapse_folder()}
               >
-                {isCollapsed ? '▸' : '▾'}
+                <Icon name={isCollapsed ? 'caret-right' : 'caret-down'} size={14} />
               </button>
             {:else}
               <span class="notes-side-caret-spacer"></span>
@@ -1357,7 +1357,7 @@
           class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
           onclick={() => (movingNote = null)}
           aria-label={m.notes_view_close()}
-        >✕</button>
+        ><Icon name="close" size={18} /></button>
       </header>
 
       <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700">

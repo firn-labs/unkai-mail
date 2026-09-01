@@ -3173,7 +3173,7 @@
     >
       <div class="glass-float rounded-2xl w-md max-w-full mx-4 p-6 space-y-4">
         <div class="flex items-start gap-3">
-          <span class="text-2xl" aria-hidden="true">⚠️</span>
+          <span class="inline-flex text-warning-500 shrink-0" aria-hidden="true"><Icon name="warning" size={24} /></span>
           <div class="flex-1 min-w-0">
             <h3 class="text-base font-semibold">This link is on URLhaus</h3>
             <p class="text-sm text-surface-600 dark:text-surface-300 mt-1">

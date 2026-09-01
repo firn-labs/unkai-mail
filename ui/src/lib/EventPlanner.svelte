@@ -24,6 +24,7 @@
    *     free-busy-query (NC users) or a local-cache scan
    *     (externals), so what we receive is already aggregated.
    */
+  import Icon from './Icon.svelte'
   import * as api from './api'
   import { pointerOffsetIn, visualDeltaToLayout } from './coords'
   import { m } from '../paraglide/messages'
@@ -490,7 +491,7 @@
           class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
           onclick={close}
           aria-label={m.event_planner_close()}
-        >✕</button>
+        ><Icon name="close" size={18} /></button>
       </header>
 
       <!-- Scrub strip: 7 days ±3 around the focused day -->

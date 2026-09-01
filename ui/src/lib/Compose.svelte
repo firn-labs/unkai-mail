@@ -2753,9 +2753,9 @@
             onclick={() => void minimizeAndSave()}
             aria-label={m.compose_button_minimize_aria_label()}
             title={m.compose_button_minimize_title()}
-          >–</button>
+          ><Icon name="minimize" size={18} /></button>
         {/if}
-        <button class="text-on-glass-muted hover:text-on-glass" onclick={cancel} aria-label="Close">✕</button>
+        <button class="text-on-glass-muted hover:text-on-glass" onclick={cancel} aria-label="Close"><Icon name="close" size={18} /></button>
       </div>
     </header>
 
@@ -2881,7 +2881,7 @@
           class="flex items-start gap-3 px-3 py-2 rounded-lg border border-warning-500/40 bg-warning-500/10 text-sm text-warning-700 dark:text-warning-300"
           role="alert"
         >
-          <span aria-hidden="true">⚠️</span>
+          <span class="inline-flex shrink-0 mt-0.5" aria-hidden="true"><Icon name="warning" size={16} /></span>
           <div class="flex-1 min-w-0">
             <p class="font-medium">{m.compose_attachment_warning_title()}</p>
             <p class="text-xs mt-0.5">{m.compose_attachment_warning_body()}</p>
@@ -2926,7 +2926,7 @@
                   removeAttachment(i)
                 }}
                 aria-label="Remove"
-              >✕</button>
+              ><Icon name="close" size={12} /></button>
             </span>
           {/each}
         </div>

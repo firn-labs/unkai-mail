@@ -18,6 +18,7 @@
    * pre-resolve which is which on the client.
    */
 
+  import Icon from './Icon.svelte'
   import * as api from './api'
   import { formatError } from './errors'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
@@ -170,7 +171,7 @@
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
         onclick={onclose}
         aria-label="Close"
-      >✕</button>
+      ><Icon name="close" size={18} /></button>
     </header>
 
     <div class="flex-1 overflow-y-auto p-5 space-y-3">

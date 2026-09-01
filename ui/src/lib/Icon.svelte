@@ -76,6 +76,9 @@
     // circle of `success`, for tiny "selected" marks like the
     // startup-profile swatch.
     | 'check'
+    // v14 — disclosure carets + window minimize (#568): replace raw
+    // ▸/▾/– glyphs so these affordances share the stroke vocabulary.
+    | 'caret-right' | 'caret-down' | 'minimize'
 </script>
 
 <script lang="ts">
@@ -217,6 +220,9 @@
   import MusicNote from './icons/MusicNote.svelte'
   // v13
   import Check from './icons/Check.svelte'
+  import CaretRight from './icons/CaretRight.svelte'
+  import CaretDown from './icons/CaretDown.svelte'
+  import Minimize from './icons/Minimize.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -358,6 +364,9 @@
     'gamepad': Gamepad,
     'music-note': MusicNote,
     'check': Check,
+    'caret-right': CaretRight,
+    'caret-down': CaretDown,
+    'minimize': Minimize,
   }
   const Cmp = $derived(map[name])
 </script>
