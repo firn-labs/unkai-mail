@@ -276,6 +276,16 @@
           <Icon name="trash" size={14} />
         </button>
       </div>
+    {:else if status !== null && !importing}
+      <button
+        type="button"
+        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+        onclick={startImport}
+        title={m.smime_import_button()}
+        aria-label={m.smime_import_button()}
+      >
+        <Icon name="upload" size={14} />
+      </button>
     {/if}
   </div>
 
@@ -416,22 +426,24 @@
       {#if errorMessage}
         <div class="text-xs text-error-500">{errorMessage}</div>
       {/if}
-      <div class="flex gap-2">
+      <div class="flex justify-end gap-2">
         <button
           type="button"
-          class="btn btn-sm preset-filled-primary"
-          onclick={submitImport}
-          disabled={busy || !selectedFile}
-        >
-          {m.smime_import_submit()}
-        </button>
-        <button
-          type="button"
-          class="btn btn-sm preset-tonal-surface"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5"
           onclick={cancelImport}
           disabled={busy}
         >
+          <Icon name="close" size={14} />
           {m.smime_import_cancel()}
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center gap-1.5"
+          onclick={submitImport}
+          disabled={busy || !selectedFile}
+        >
+          <Icon name={busy ? 'loading' : 'upload'} size={14} />
+          {m.smime_import_submit()}
         </button>
       </div>
       <div class="text-xs text-surface-400">
@@ -439,18 +451,12 @@
       </div>
     </div>
   {:else}
-    <!-- No certificate: invite the user to import. -->
+    <!-- No certificate: explanation only; the import CTA is the
+         icon button in the title row above. -->
     <div class="space-y-2">
       <div class="text-xs text-surface-500">
         {m.smime_no_cert_explanation()}
       </div>
-      <button
-        type="button"
-        class="btn btn-sm preset-tonal-primary"
-        onclick={startImport}
-      >
-        {m.smime_import_button()}
-      </button>
     </div>
   {/if}
 </div>

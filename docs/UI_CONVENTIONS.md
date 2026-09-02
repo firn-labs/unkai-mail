@@ -108,6 +108,8 @@ Audited 2026-09-01; sweep applied 2026-09-01 (#568). Remaining items migrate laz
 
 **Done (#568):** raw `red-*` → `error-*` (platform-convention literals documented above kept); hand-rolled popover recipes → `.glass-float` / `.popover-opaque`; raw `✕`/`▸`/`▾`/`⋯`/`–` glyphs and emoji-as-icon → registry (new v14 icons `caret-right`/`caret-down`/`minimize`); Settings shell onto the view-shell vocabulary; `Badge` component extracted and adopted (`EmailKindChip`, `MailList`, `NextcloudSettings` — whose six-color capability rainbow is gone); bare `rounded` mapped onto the tier table (micro tier legalized); MailView's primary-hover overlay registered under rule 5; raw-yellow search highlight → `warning` tokens.
 
+**Done (#571):** the oversized / label-only buttons the issue named moved onto the rule-5 shapes — Sidebar Compose (`btn-sm`, labeled, i18n); EventEditor footer (`btn-sm`, house order Delete · spacer · Cancel · Create/Save, loading swaps the icon); settings panels: Sync now / Check mail / Refresh now → secondary icon-only, Disconnect / Remove key → destructive overlay + `trash`, Add key / Add rule / passphrase Save·Cancel / New profile / Add another account → icon-only, Import theme / Import certificate / Import private key → icon-only `upload` in the title row, Backup & Sync + Connect → labeled `btn-sm` with a leading icon. The shade-less `preset-filled-primary` class (not a Skeleton 5 utility — the import-form submit buttons rendered unstyled) is gone.
+
 **Open:**
 
 1. **`.text-on-glass*` under-adopted** (~22 files put raw `text-surface-*` on glass surfaces). Contrast-calibrated (#453) — migrate deliberately, checking themes, not mechanically.
@@ -116,6 +118,7 @@ Audited 2026-09-01; sweep applied 2026-09-01 (#568). Remaining items migrate laz
 4. **CSS pseudo-element `▸` disclosure markers** (`ContactsView` `.contact-form-section-title::before`; the quoted-mail markers in `app.css` are email-renderer exempt) — CSS `content` can't render a registry icon; needs a markup or mask-image approach when the form is next touched.
 5. **Skeleton `chip` class in `SearchBar`** (×3) — fold into `Badge` when SearchBar is next touched.
 6. **`ShrunkenComposesBar` / toast one-off shadows** (`shadow-md` docked bar, `AccountSettings` error toast) — decide a docked/toast tier or fold into existing utilities.
+7. **Full-size `btn` / label-only footers** still in `ProfilesSettings` (delete confirm), `Sidebar` (folder modals), `AccountSettings` (server-edit / remove confirms), `CreateTalkRoomModal`, plus the `preset-outlined-primary-500` Find-time / planner buttons in `EventEditor` — same `btn-sm` + leading-icon treatment as the #571 footers when next touched.
 
 ## Open decisions
 

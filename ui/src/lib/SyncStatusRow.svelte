@@ -12,6 +12,7 @@
    */
 
   import Icon from './Icon.svelte'
+  import { m } from '../paraglide/messages'
 
   interface Props {
     /** Row label — "Contacts" / "Calendars" / future categories. */
@@ -24,7 +25,7 @@
         if the account has never finished one. */
     lastSyncedAt?: string | null
     /** True while a sync is in flight — disables the button and
-        flips its label to "Syncing…". */
+        swaps its icon to `loading`. */
     syncing?: boolean
     /** Most recent sync error to surface, or empty/null for none. */
     error?: string | null
@@ -89,12 +90,13 @@
   {#if onsync}
     <button
       type="button"
-      class="btn btn-sm preset-outlined-primary-500 shrink-0 inline-flex items-center gap-1.5"
+      class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center shrink-0"
       onclick={onsync}
       disabled={syncing}
+      title={m.sync_status_row_sync_now()}
+      aria-label={m.sync_status_row_sync_now()}
     >
       <Icon name={syncing ? 'loading' : 'sync'} size={14} />
-      {syncing ? 'Syncing…' : 'Sync now'}
     </button>
   {/if}
 </div>

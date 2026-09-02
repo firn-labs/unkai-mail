@@ -27,6 +27,7 @@
   } from './webauthnPrf'
   import Toggle from './Toggle.svelte'
   import PasswordInput from './PasswordInput.svelte'
+  import { m } from '../paraglide/messages'
 
   interface FidoCredential {
     kind: 'fido_prf' | 'passphrase'
@@ -54,11 +55,11 @@
   let status = $state<FidoStatus | null>(null)
   let loading = $state(true)
   // Per-action in-flight flags.  A single shared `busy` flag would
-  // make every button's "Working…" label flip on at the same time,
+  // make every button's loading icon flip on at the same time,
   // even when only one action is actually running — so each
   // mutating handler owns its own flag, and `anyBusy` is the
   // derived "block other actions while something is in flight"
-  // gate.  Buttons read their own flag for the label, and
+  // gate.  Buttons read their own flag for the loading icon, and
   // `anyBusy` for `disabled` so the user can't kick off two
   // mutations concurrently.
   let addingKey = $state(false)
@@ -478,10 +479,12 @@
               disabled={anyBusy}
             />
             <button
-              class="btn preset-filled-primary-500"
+              class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
               disabled={anyBusy}
+              title={m.security_add_key_button()}
+              aria-label={m.security_add_key_button()}
               onclick={() => void addKey()}
-            >{addingKey ? 'Working…' : 'Add'}</button>
+            ><Icon name={addingKey ? 'loading' : 'plus'} size={14} /></button>
           </div>
         </div>
       {:else}
@@ -525,23 +528,27 @@
               disabled={anyBusy}
               autocomplete="new-password"
             />
-            <div class="flex gap-2">
+            <div class="flex justify-end gap-2">
               {#if passphraseEditing}
                 <button
-                  class="btn preset-outlined-surface-500 flex-1"
+                  class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                   disabled={anyBusy}
+                  title={m.security_passphrase_cancel_button()}
+                  aria-label={m.security_passphrase_cancel_button()}
                   onclick={() => {
                     passphraseEditing = false
                     passphraseValue = ''
                     passphraseConfirm = ''
                   }}
-                >Cancel</button>
+                ><Icon name="close" size={14} /></button>
               {/if}
               <button
-                class="btn preset-filled-primary-500 flex-1"
+                class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
                 disabled={anyBusy || passphraseValue.length < 8}
+                title={hasPassphrase ? m.security_passphrase_update_button() : m.security_passphrase_save_button()}
+                aria-label={hasPassphrase ? m.security_passphrase_update_button() : m.security_passphrase_save_button()}
                 onclick={() => void addPassphrase()}
-              >{savingPassphrase ? 'Working…' : hasPassphrase ? 'Update passphrase' : 'Save passphrase'}</button>
+              ><Icon name={savingPassphrase ? 'loading' : 'save-draft'} size={14} /></button>
             </div>
           </div>
         </div>
@@ -577,10 +584,10 @@
                 </div>
                 {#if c.kind === 'passphrase'}
                   <button
-                    class="btn btn-sm preset-outlined-surface-500"
+                    class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
                     disabled={anyBusy}
-                    title="Change passphrase"
-                    aria-label="Change passphrase"
+                    title={m.security_passphrase_change_button()}
+                    aria-label={m.security_passphrase_change_button()}
                     onclick={() => {
                       passphraseValue = ''
                       passphraseConfirm = ''
@@ -589,10 +596,12 @@
                   ><Icon name="compose" size={14} /></button>
                 {/if}
                 <button
-                  class="btn btn-sm preset-outlined-error-500"
+                  class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                   disabled={anyBusy}
+                  title={m.security_remove_key_button()}
+                  aria-label={m.security_remove_key_button()}
                   onclick={() => void removeKey(c)}
-                >Remove</button>
+                ><Icon name="trash" size={14} /></button>
               </li>
             {/each}
           </ul>
