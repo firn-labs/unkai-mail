@@ -311,12 +311,13 @@
 
     <div class="mt-4">
       <button
-        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center gap-1.5"
+        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
         disabled={busy}
+        title={m.profiles_new_button()}
+        aria-label={m.profiles_new_button()}
         onclick={openCreate}
       >
         <Icon name="plus" size={14} />
-        <span>{m.profiles_new_button()}</span>
       </button>
     </div>
   </div>

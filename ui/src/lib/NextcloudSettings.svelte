@@ -19,6 +19,7 @@
   import SyncStatusRow from './SyncStatusRow.svelte'
   import Toggle from './Toggle.svelte'
   import Badge from './Badge.svelte'
+  import Icon from './Icon.svelte'
   import { ncProbeBundle, ncRestoreBundle } from './settingsBundle'
   import { m } from '../paraglide/messages'
 
@@ -581,10 +582,12 @@
                 {/if}
               </div>
               <button
-                class="btn btn-sm preset-outlined-error-500"
+                class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40"
                 onclick={() => removeAccount(acct)}
+                title={m.nextcloud_settings_disconnect_button()}
+                aria-label={m.nextcloud_settings_disconnect_button()}
               >
-                Disconnect
+                <Icon name="trash" size={14} />
               </button>
             </div>
 

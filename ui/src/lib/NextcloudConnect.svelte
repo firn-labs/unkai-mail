@@ -269,12 +269,16 @@
     <div class="flex gap-2">
       <input
         id="nc-connect-server"
-        class="input flex-1 px-3 py-2 text-sm rounded-lg"
+        class="input flex-1 px-3 py-1.5 text-sm rounded-lg"
         placeholder="https://cloud.example.com"
         bind:value={serverInput}
         onkeydown={(e) => e.key === 'Enter' && startConnect()}
       />
-      <button class="btn preset-filled-primary-500" onclick={startConnect}>
+      <button
+        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center gap-1.5 shrink-0"
+        onclick={startConnect}
+      >
+        <Icon name="cloud" size={14} />
         {m.nextcloud_connect_button_connect()}
       </button>
     </div>

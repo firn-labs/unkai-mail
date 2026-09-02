@@ -269,11 +269,11 @@
 >
   <!-- Title row doubles as the per-key action surface: Replace
        (compose / edit) and Remove (trash, red on hover) sit
-       inline with the section header on the right.  Gated on
-       `has_key && !importing` so the affordances only appear
-       when there's actually a key to act on; the no-key +
-       importing states render their own primary CTAs lower in
-       the block. -->
+       inline with the section header on the right when a key
+       exists; the no-key state shows a single primary Import
+       CTA (upload) in the same slot.  Both are hidden while the
+       import form is open — that form carries its own
+       Cancel / Import footer. -->
   <div class="flex items-center justify-between mb-2">
     <span class="text-sm font-medium">{m.encryption_section_title()}</span>
     {#if status?.has_key && !importing}
@@ -299,6 +299,16 @@
           <Icon name="trash" size={14} />
         </button>
       </div>
+    {:else if status !== null && !importing}
+      <button
+        type="button"
+        class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+        onclick={startImport}
+        title={m.encryption_import_button()}
+        aria-label={m.encryption_import_button()}
+      >
+        <Icon name="upload" size={14} />
+      </button>
     {/if}
   </div>
 
@@ -440,22 +450,24 @@
       {#if errorMessage}
         <div class="text-xs text-error-500">{errorMessage}</div>
       {/if}
-      <div class="flex gap-2">
+      <div class="flex justify-end gap-2">
         <button
           type="button"
-          class="btn btn-sm preset-filled-primary"
-          onclick={submitImport}
-          disabled={busy || !armoredKeyInput.trim()}
-        >
-          {m.encryption_import_submit()}
-        </button>
-        <button
-          type="button"
-          class="btn btn-sm preset-tonal-surface"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5"
           onclick={cancelImport}
           disabled={busy}
         >
+          <Icon name="close" size={14} />
           {m.encryption_import_cancel()}
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center gap-1.5"
+          onclick={submitImport}
+          disabled={busy || !armoredKeyInput.trim()}
+        >
+          <Icon name={busy ? 'loading' : 'upload'} size={14} />
+          {m.encryption_import_submit()}
         </button>
       </div>
       <div class="text-xs text-surface-400">
@@ -463,18 +475,12 @@
       </div>
     </div>
   {:else}
-    <!-- No key: invite the user to import. -->
+    <!-- No key: explanation only — the Import CTA lives in the
+         title row above. -->
     <div class="space-y-2">
       <div class="text-xs text-surface-500">
         {m.encryption_no_key_explanation()}
       </div>
-      <button
-        type="button"
-        class="btn btn-sm preset-tonal-primary"
-        onclick={startImport}
-      >
-        {m.encryption_import_button()}
-      </button>
     </div>
   {/if}
 </div>

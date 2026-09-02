@@ -897,11 +897,11 @@
   class="shrink-0 border-r glass-panel flex flex-col"
   use:resizableSidebar={{ key: 'mail.folderSidebar', defaultWidth: 224, min: 160, max: 480 }}
 >
-  <!-- Compose CTA. Emoji makes the primary action visually anchored —
-       matches Nick's ask for "nice emoji" on the button. -->
+  <!-- Compose CTA: the rule-5 primary shape at btn-sm, labeled because it is
+       the mail surface's one top-level action (hence w-full). -->
   <div class="p-3">
-    <button class="btn preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5" data-tour="compose" onclick={() => oncompose?.()}>
-      <Icon name="compose" size={16} /> Compose
+    <button class="btn btn-sm preset-filled-primary-500 w-full inline-flex items-center justify-center gap-1.5" data-tour="compose" onclick={() => oncompose?.()}>
+      <Icon name="compose" size={14} /> {m.sidebar_compose_button()}
     </button>
   </div>
 

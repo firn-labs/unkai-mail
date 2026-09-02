@@ -1552,12 +1552,13 @@
             <span class="text-xs text-success-500">Saved</span>
           {/if}
           <button
-            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
+            class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
             disabled={checkNowBusy}
             onclick={runCheckMailNow}
+            title={m.account_settings_check_mail_now_button()}
+            aria-label={m.account_settings_check_mail_now_button()}
           >
             <Icon name={checkNowBusy ? 'loading' : 'sync'} size={14} />
-            {checkNowBusy ? 'Checking…' : 'Check Mail Now'}
           </button>
         </div>
       </div>
@@ -1591,11 +1592,7 @@
               <!-- Wrapping <div> instead of <p> so the
                    `text-surface-500` on the status line stays
                    on the status line and doesn't cascade into
-                   the button via `currentColor` — Skeleton's
-                   outlined preset paints the label in
-                   `currentColor`, so a parent `text-*` class
-                   would otherwise override the theme's
-                   primary-on colour and give us grey text. -->
+                   the refresh button's icon via `currentColor`. -->
               <div class="flex flex-wrap items-center gap-2 mt-2">
                 <span class="text-xs text-surface-500">
                   Last refreshed: <strong>{formatRefreshAge(linkCheckStatus.lastRefreshedAt)}</strong>
@@ -1603,12 +1600,13 @@
                 </span>
                 <button
                   type="button"
-                  class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
+                  class="btn btn-sm preset-tonal-surface inline-flex items-center justify-center"
                   disabled={linkCheckRefreshing}
                   onclick={() => void onRefreshUrlhausNow()}
+                  title={m.account_settings_link_check_refresh_button()}
+                  aria-label={m.account_settings_link_check_refresh_button()}
                 >
                   <Icon name={linkCheckRefreshing ? 'loading' : 'sync'} size={14} />
-                  {linkCheckRefreshing ? 'Refreshing…' : 'Refresh now'}
                 </button>
               </div>
             {/if}
@@ -1948,11 +1946,12 @@
             <p class="font-medium">Theme</p>
             <button
               type="button"
-              class="btn btn-sm preset-outlined-primary-500 text-xs"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
               disabled={importingTheme}
               onclick={() => void importCustomTheme()}
-              title="Pick a Skeleton-shape CSS file from disk. The Skeleton theme generator (skeleton.dev) exports compatible files; community themes also work."
-            >{importingTheme ? 'Importing…' : '+ Import theme…'}</button>
+              title={m.settings_design_import_theme_button()}
+              aria-label={m.settings_design_import_theme_button()}
+            ><Icon name={importingTheme ? 'loading' : 'upload'} size={14} /></button>
           </div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {#each pickerThemes as theme (theme.id)}
@@ -2084,8 +2083,9 @@
     {:else if accounts.length === 0}
       <div class="text-center py-12">
         <p class="text-surface-500 mb-4">{m.account_settings_accounts_empty()}</p>
-        <button class="btn preset-filled-primary-500" onclick={onaddaccount}>
-          Add Account
+        <button class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center gap-1.5" onclick={onaddaccount}>
+          <Icon name="add-account" size={14} />
+          {m.account_settings_add_account_button()}
         </button>
       </div>
 
@@ -2336,10 +2336,12 @@
                   />
                   <button
                     type="button"
-                    class="btn btn-sm preset-outlined-primary-500"
+                    class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
                     disabled={!iconDrafts[account.id].icon.trim() || !iconDrafts[account.id].keyword.trim()}
+                    title={m.account_settings_folder_icon_rule_add_button()}
+                    aria-label={m.account_settings_folder_icon_rule_add_button()}
                     onclick={() => addIconRule(account)}
-                  >Add</button>
+                  ><Icon name="plus" size={14} /></button>
                 </div>
               {/if}
               <p class="text-xs text-surface-400 mt-1">
@@ -2365,8 +2367,13 @@
 
       <!-- Add another account -->
       <div class="mt-6">
-        <button class="btn preset-outlined-primary-500" onclick={onaddaccount}>
-          + Add Another Account
+        <button
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+          onclick={onaddaccount}
+          title={m.account_settings_add_another_account_button()}
+          aria-label={m.account_settings_add_another_account_button()}
+        >
+          <Icon name="add-account" size={14} />
         </button>
       </div>
     {/if}
@@ -2443,15 +2450,21 @@
           </div>
           <div class="flex flex-wrap gap-2">
             <button
-              class="btn preset-filled-primary-500"
+              class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center gap-1.5"
               disabled={backupStatus.kind === 'busy'}
               onclick={() => void onDownloadClick()}
-            >Download settings.json</button>
+            >
+              <Icon name="download" size={14} />
+              {m.settings_backup_download_button()}
+            </button>
             <button
-              class="btn preset-outlined-surface-500"
+              class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5"
               disabled={backupStatus.kind === 'busy'}
               onclick={() => void onUploadClick()}
-            >Import from file…</button>
+            >
+              <Icon name="upload" size={14} />
+              {m.settings_backup_import_button()}
+            </button>
           </div>
         </div>
 
@@ -2499,10 +2512,13 @@
               </select>
               {#if syncState.targetNcId}
                 <button
-                  class="btn btn-sm preset-outlined-surface-500"
+                  class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5"
                   disabled={backupStatus.kind === 'busy'}
                   onclick={() => void onRestoreFromNcClick()}
-                >Restore from Nextcloud</button>
+                >
+                  <Icon name="cloud" size={14} />
+                  {m.settings_backup_restore_nc_button()}
+                </button>
               {/if}
             </div>
           {/if}

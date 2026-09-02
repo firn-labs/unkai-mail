@@ -2252,6 +2252,22 @@
     {/if}
 
     <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-700 flex items-center gap-2">
+      {#if mode === 'edit' && !currentCalendarReadOnly}
+        <!-- #236: hide Delete when the calendar is read-only.
+             A user can still open such an event to view the
+             details, but the server would reject the
+             `DELETE` so showing the button would just produce
+             a confusing error toast. -->
+        <button class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5 hover:bg-error-500/15 hover:text-error-500 hover:border-error-500/40" disabled={saving || deleting} onclick={remove}>
+          <Icon name={deleting ? 'loading' : 'trash'} size={14} />
+          {m.event_editor_delete()}
+        </button>
+      {/if}
+      <div class="flex-1"></div>
+      <button class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center gap-1.5" disabled={saving || deleting} onclick={() => void cancel()}>
+        <Icon name="close" size={14} />
+        {mode === 'edit' && currentCalendarReadOnly ? m.event_editor_close() : m.event_editor_cancel()}
+      </button>
       {#if !(mode === 'edit' && currentCalendarReadOnly)}
         <!-- #236: hide Save when the calendar is read-only.
              The server would reject the PUT (NC's permission-
@@ -2260,30 +2276,11 @@
              just produces a confusing error toast.  Create-
              mode never lands here because the calendar
              picker filters read-only entries out upstream. -->
-        <button class="btn preset-filled-primary-500" disabled={saving || deleting} onclick={save}>
-          {saving
-            ? 'Saving…'
-            : mode === 'create'
-              ? 'Create'
-              : mode === 'stage'
-                ? 'Add to message'
-                : 'Save'}
+        <button class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center gap-1.5" disabled={saving || deleting} onclick={save}>
+          <Icon name={saving ? 'loading' : mode === 'edit' ? 'save-draft' : 'plus'} size={14} />
+          {mode === 'create' ? m.event_editor_create() : mode === 'stage' ? m.event_editor_add_to_message() : m.event_editor_save()}
         </button>
       {/if}
-      {#if mode === 'edit' && !currentCalendarReadOnly}
-        <!-- #236: hide Delete when the calendar is read-only.
-             A user can still open such an event to view the
-             details, but the server would reject the
-             `DELETE` so showing the button would just produce
-             a confusing error toast. -->
-        <button class="btn preset-outlined-error-500" disabled={saving || deleting} onclick={remove}>
-          {deleting ? 'Deleting…' : 'Delete'}
-        </button>
-      {/if}
-      <div class="flex-1"></div>
-      <button class="btn preset-outlined-surface-500" disabled={saving || deleting} onclick={() => void cancel()}>
-        {mode === 'edit' && currentCalendarReadOnly ? m.event_editor_close() : 'Cancel'}
-      </button>
     </footer>
   </div>
 </div>
