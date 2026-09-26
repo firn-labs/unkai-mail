@@ -9,6 +9,14 @@ package on the Arch User Repository (#602, part of #600).
 | `render.sh` | Renders the template for one tag (downloads the `.deb` for its sha256) |
 | `../../.github/workflows/aur.yml` | Validates with `makepkg` in an Arch container; pushes to AUR on `release: published` |
 
+> **Status (2026-09):** AUR account registration has been closed by the
+> Arch team since the mid-2026 malware wave, so the publish job is
+> skipped until `AUR_SSH_PRIVATE_KEY` exists. Arch users get the same
+> package from the signed pacman repository at
+> https://firn-labs.github.io/unkai-packages/ (built by
+> [firn-labs/unkai-packages](https://github.com/firn-labs/unkai-packages)
+> from this PKGBUILD) — see `docs/INSTALL.md`.
+
 ## How a release reaches AUR
 
 1. `release.yml` builds the `.deb` and attaches it to a **draft** Release.

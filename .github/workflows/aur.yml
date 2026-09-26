@@ -50,8 +50,18 @@ jobs:
     if: github.event_name != 'release' || !github.event.release.prerelease
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      aur_configured: ${{ steps.aur.outputs.configured }}
     steps:
       - uses: actions/checkout@v7
+
+      # AUR sign-ups have been closed since the mid-2026 malware wave,
+      # so the account (and its deploy key) may not exist yet.  Until
+      # the secret is set, the publish job is skipped and Arch users
+      # get the package from the pacman repository instead (#603,
+      # https://firn-labs.github.io/unkai-packages/).
+      - name: AUR secrets present?
+        id: aur
+        run: echo "configured=${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve release tag
         id: tag
@@ -134,7 +144,7 @@ jobs:
   publish:
     name: Push to AUR
     needs: [render, validate]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && needs.render.outputs.aur_configured == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7

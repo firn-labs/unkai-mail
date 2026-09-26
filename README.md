@@ -314,31 +314,27 @@ Rust core.
 
 ## Install
 
-Grab the installer for your platform from the
-[latest release](https://github.com/firn-labs/unkai-mail/releases/latest):
+**Full guide with every platform and package manager: [docs/INSTALL.md](docs/INSTALL.md).**
 
-- **Windows** — `Unkai-Mail_x.y.z_x64-setup.exe` (NSIS) or the `.msi` (WiX)
+- **Windows** — `Unkai-Mail_x.y.z_x64-setup.exe` (NSIS) or the `.msi`
+  from the [latest release](https://github.com/firn-labs/unkai-mail/releases/latest)
 - **macOS** (Apple Silicon) — `Unkai-Mail_x.y.z_aarch64.dmg`
-- **Linux** — `.deb` (Debian/Ubuntu), `.rpm` (Fedora/RHEL), or `.AppImage`
-  (any distro)
-- **Arch Linux** (and Manjaro, EndeavourOS, …) — from the
-  [AUR](https://aur.archlinux.org/packages/unkai-mail-bin):
+- **Linux, via your package manager** (signed repositories on
+  [firn-labs.github.io/unkai-packages](https://firn-labs.github.io/unkai-packages/)):
 
-  ```sh
-  yay -S unkai-mail-bin      # or: paru -S unkai-mail-bin
-  ```
+  | Distro family | Package |
+  |---|---|
+  | Arch, CachyOS, Manjaro, EndeavourOS | `pacman -Syu unkai-mail-bin` after adding the `[unkai-mail]` repo |
+  | Debian, Ubuntu, Mint, Pop!_OS | `apt install unkai-mail` after adding the apt source |
+  | Fedora, RHEL, Alma, Rocky, openSUSE | `dnf install unkai-mail` / `zypper install unkai-mail` after adding the `.repo` |
 
-  The package repacks the release `.deb`, so it is the same build as
-  every other Linux download; updates arrive through `pacman` like any
-  other package (the in-app updater steps aside on package-manager
-  installs).
+- **Linux, single file** — `.deb`, `.rpm` or `.AppImage` from the release page.
 
-Once installed, the app keeps itself current: the built-in updater
-checks the Releases feed, verifies each bundle's minisign signature
-against the key baked into the app, and applies updates on restart.
-On Linux this applies to the AppImage; `.deb`, `.rpm`, AUR and Flatpak
-installs are updated by their package manager instead, and the app
-only tells you a new version exists.
+Once installed, the app keeps itself current on Windows, macOS and the
+AppImage: the built-in updater checks the Releases feed, verifies each
+bundle's minisign signature against the key baked into the app, and
+applies updates on restart. Package-manager installs are updated by the
+package manager instead; the app only tells you a new version exists.
 The installers aren't OS code-signed yet
 ([#558](https://github.com/firn-labs/unkai-mail/issues/558)), so
 Windows SmartScreen / macOS Gatekeeper will show a publisher warning on
