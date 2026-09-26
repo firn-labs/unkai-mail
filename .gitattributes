@@ -1,0 +1,5 @@
+# Keep shell scripts and Arch packaging files LF on every platform —
+# they are executed/parsed on Linux (CI containers, makepkg) even when
+# checked out on Windows.
+*.sh text eol=lf
+PKGBUILD text eol=lf

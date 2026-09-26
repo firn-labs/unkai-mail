@@ -33,6 +33,18 @@
     "publisher": "Firn Labs",
     "copyright": "© 2026 Firn Labs",
     "homepage": "https://github.com/firn-labs/unkai-mail",
+    "category": "Productivity",
+    "shortDescription": "Native mail client with deep Nextcloud integration",
+    "longDescription": "Unkai Mail is a native desktop mail client (IMAP, SMTP, JMAP) built around Nextcloud: Talk rooms, Files, Calendar, Contacts and Forms are first-class, with OpenPGP and S/MIME end-to-end encryption, offline-first caching and an encrypted local store.",
+    "linux": {
+      "deb": {
+        "section": "mail",
+        "desktopTemplate": "installer/unkai-mail.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "installer/unkai-mail.desktop"
+      }
+    },
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",

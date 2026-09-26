@@ -56,6 +56,7 @@
 | Linux (Fedora / RHEL, x86_64) | `Unkai-Mail-X.Y.Z-1.x86_64.rpm` |
 | Linux (Ubuntu / Debian, x86_64) | `Unkai-Mail_X.Y.Z_amd64.deb` |
 | Linux (any distro, x86_64) | `Unkai-Mail_X.Y.Z_amd64.AppImage` |
+| Arch Linux (AUR) | `yay -S unkai-mail-bin` — updated automatically when this release is published |
 
 > **No Intel Mac build yet:** releases ship Apple-Silicon (`aarch64`) macOS only — `macos-latest` CI runners are arm64. Intel-Mac users need an x64 build we don't yet produce. Delete this note once we add an x64 macOS matrix entry.
 

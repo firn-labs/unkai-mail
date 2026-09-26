@@ -1,0 +1,154 @@
+name: AUR
+
+# Publishes `unkai-mail-bin` to the Arch User Repository (#602).
+#
+# Three jobs:
+#
+#   render    — picks the release tag (event payload, dispatch input,
+#               or the latest published release for a PR), downloads
+#               that tag's .deb and fills the PKGBUILD template via
+#               packaging/aur/render.sh.
+#   validate  — builds the rendered PKGBUILD with `makepkg -s` in an
+#               archlinux:base-devel container and lints it with
+#               namcap.  Runs on PRs that touch the packaging files,
+#               and ALWAYS before a publish — a broken package can't
+#               reach AUR.
+#   publish   — pushes PKGBUILD + generated .SRCINFO to
+#               ssh://aur@aur.archlinux.org/unkai-mail-bin.git.
+#
+# Triggers on `release: published`, NOT on the tag push: release.yml
+# creates a *draft* release, and the human "Publish release" click is
+# the ship moment (same rule as the in-app updater's latest.json).
+# Pre-releases are skipped.  `workflow_dispatch` re-publishes a tag
+# by hand — also how the AUR repo gets bootstrapped the first time.
+#
+# Secrets: AUR_USERNAME, AUR_EMAIL, AUR_SSH_PRIVATE_KEY — see
+# packaging/aur/README.md.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.5.0)"
+        required: true
+        type: string
+  pull_request:
+    branches: [main]
+    paths:
+      - "packaging/aur/**"
+      - ".github/workflows/aur.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: Render PKGBUILD
+    runs-on: ubuntu-latest
+    if: github.event_name != 'release' || !github.event.release.prerelease
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "${{ github.event_name }}" in
+            release)          tag="${{ github.event.release.tag_name }}" ;;
+            workflow_dispatch) tag="${{ inputs.tag }}" ;;
+            # PR validation: exercise the template against the newest
+            # published release so the .deb URL actually resolves.
+            *) tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Rendering for $tag"
+
+      - name: Render
+        run: packaging/aur/render.sh "${{ steps.tag.outputs.tag }}" "$RUNNER_TEMP/aur"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: pkgbuild
+          path: ${{ runner.temp }}/aur/PKGBUILD
+          if-no-files-found: error
+
+  validate:
+    name: makepkg + namcap
+    needs: render
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: pkgbuild
+          path: aur
+
+      # makepkg refuses to run as root; `-s` needs sudo to pull the
+      # runtime deps (webkit2gtk-4.1 & co.) so their names are proven
+      # to exist in the Arch repos.
+      - name: Prepare build user
+        run: |
+          pacman -Syu --noconfirm --needed sudo namcap
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+          chown -R builder aur
+
+      - name: makepkg
+        working-directory: aur
+        run: sudo -u builder makepkg -s --noconfirm
+
+      - name: .SRCINFO
+        working-directory: aur
+        run: sudo -u builder makepkg --printsrcinfo | tee .SRCINFO
+
+      - name: namcap
+        working-directory: aur
+        run: namcap -i PKGBUILD *.pkg.tar.zst
+
+      - name: Smoke-run the installed binary
+        working-directory: aur
+        run: |
+          pacman -U --noconfirm *.pkg.tar.zst
+          test -x /usr/bin/unkai-app
+          test -L /usr/bin/unkai-mail
+          test -f /usr/share/applications/Unkai-Mail.desktop
+          test -f /usr/share/icons/hicolor/128x128/apps/unkai-app.png
+          grep -q 'x-scheme-handler/mailto' /usr/share/applications/Unkai-Mail.desktop
+          # Once a release carries the desktop template from #602
+          # (Exec=… %U, Categories=Network;Email;Office;), tighten:
+          #   grep -q '^Exec=unkai-app %U' /usr/share/applications/Unkai-Mail.desktop
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: aur-package
+          path: |
+            aur/PKGBUILD
+            aur/.SRCINFO
+            aur/*.pkg.tar.zst
+
+  publish:
+    name: Push to AUR
+    needs: [render, validate]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: pkgbuild
+          path: aur
+
+      - name: Publish unkai-mail-bin
+        uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
+        with:
+          pkgname: unkai-mail-bin
+          pkgbuild: aur/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.render.outputs.tag }}"
+          ssh_keyscan_types: rsa,ecdsa,ed25519
