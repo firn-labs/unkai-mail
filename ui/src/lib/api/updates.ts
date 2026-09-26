@@ -16,6 +16,19 @@
 
 import { call } from './core'
 
+/**
+ * How this process was installed (#601).  `native` (Windows /
+ * macOS) and `app-image` self-update in-app; `package` (.deb /
+ * .rpm / pacman) and `flatpak` are the package manager's — the
+ * backend still reports found versions for those but refuses
+ * download / install.
+ */
+export type InstallKind = 'native' | 'app-image' | 'package' | 'flatpak'
+
+export function getInstallKind(): Promise<InstallKind> {
+  return call('get_install_kind')
+}
+
 export interface UpdateCheckResult {
   available: boolean
   currentVersion: string

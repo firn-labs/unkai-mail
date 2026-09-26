@@ -740,6 +740,14 @@ fn get_app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// How this process was installed (#601) — the Updates page hides
+/// Download / Restart and points at the package manager when the
+/// answer is `package` / `flatpak`.
+#[tauri::command]
+fn get_install_kind() -> updater::InstallKind {
+    updater::InstallKind::detect()
+}
+
 #[tauri::command]
 async fn check_app_update(
     channel: String,
@@ -4654,6 +4662,7 @@ fn main() {
             restart_app,
             // #229 — in-app updater
             get_app_version,
+            get_install_kind,
             check_app_update,
             download_app_update,
             install_app_update,

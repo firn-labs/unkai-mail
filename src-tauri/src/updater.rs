@@ -33,6 +33,18 @@
 //!                        then restarts.  On Windows the installer
 //!                        exits the process itself, so the restart
 //!                        call is only reached on macOS/Linux.
+//!
+//! Install kinds (#601): the updater only *owns* the install on
+//! Windows, macOS and the Linux AppImage.  A `.deb` / `.rpm` /
+//! pacman (AUR) / Flatpak install is the distro package manager's
+//! property — the plugin's Linux install path writes to the file
+//! named by `$APPIMAGE`, which such installs don't have, and a
+//! "successful" self-update on a pacman-owned binary would desync
+//! the package database.  So on a *managed* install the check still
+//! runs (badge + "vX is available" keep working) but nothing is
+//! parked, and download / install refuse outright.  [`InstallKind`]
+//! is the one source of truth; the frontend reads it via
+//! `get_install_kind` and adapts the Updates page.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Window};
@@ -65,6 +77,69 @@ const BETA_MANIFEST_URL: &str =
 /// window is visible to every window.
 #[derive(Default)]
 pub struct PendingUpdate(pub Mutex<Option<(Update, Option<Vec<u8>>)>>);
+
+/// How this process was installed — decides whether the in-app
+/// updater may touch the install at all (#601).  Serialised in
+/// kebab-case for the `get_install_kind` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstallKind {
+    /// Windows (NSIS / MSI) or macOS (.app) — the updater plugin
+    /// owns these installs.
+    Native,
+    /// Linux AppImage — self-contained, the plugin swaps the file
+    /// named by `$APPIMAGE`.
+    AppImage,
+    /// Linux `.deb` / `.rpm` / pacman (AUR) / any other distro
+    /// package — updates belong to the package manager.
+    Package,
+    /// Flatpak sandbox — updates belong to `flatpak update`.
+    Flatpak,
+}
+
+impl InstallKind {
+    /// Whether the in-app updater may download + install here.
+    pub fn self_update(self) -> bool {
+        matches!(self, InstallKind::Native | InstallKind::AppImage)
+    }
+
+    /// Pure mapping over the environment facts, so the rule is unit
+    /// testable without faking `std::env`.  `flatpak_info` is
+    /// "`/.flatpak-info` exists" — Flatpak always mounts it, even
+    /// when `FLATPAK_ID` was scrubbed from the environment.
+    fn classify(linux: bool, appimage: bool, flatpak_id: bool, flatpak_info: bool) -> Self {
+        if !linux {
+            InstallKind::Native
+        } else if flatpak_id || flatpak_info {
+            InstallKind::Flatpak
+        } else if appimage {
+            InstallKind::AppImage
+        } else {
+            InstallKind::Package
+        }
+    }
+
+    /// Detect the running process's install kind.  Cheap (two env
+    /// reads + one stat), so it isn't cached — and the env can't
+    /// change under a running process anyway.
+    pub fn detect() -> Self {
+        let has = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+        Self::classify(
+            cfg!(target_os = "linux"),
+            has("APPIMAGE"),
+            has("FLATPAK_ID"),
+            std::path::Path::new("/.flatpak-info").exists(),
+        )
+    }
+}
+
+/// The error every managed-install refusal carries — one string so
+/// the frontend can match it if it ever needs to.
+fn managed_install_error(kind: InstallKind) -> UnkaiError {
+    UnkaiError::Other(format!(
+        "this install is managed by the system package manager ({kind:?}) — update it there"
+    ))
+}
 
 /// What `check_for_update` reports back to the UI.  `version` etc.
 /// are `None` when the app is already current.
@@ -147,6 +222,13 @@ pub async fn check_for_update(
                 notes: update.body.clone(),
                 date: update.date.map(|d| d.unix_timestamp()),
             };
+            // Managed install (#601): report it, never park it —
+            // the park is what download / install act on, and a
+            // package-manager-owned binary is not ours to replace.
+            if !InstallKind::detect().self_update() {
+                *slot = None;
+                return Ok(result);
+            }
             match slot.take() {
                 // Same version already parked: keep it, bytes and
                 // all — see the doc comment above.
@@ -176,6 +258,10 @@ pub async fn check_for_update(
 /// time.  Idempotent: re-invoking after a completed download is a
 /// no-op, so the UI can't double-fetch.
 pub async fn download_update(window: &Window, pending: &PendingUpdate) -> Result<(), UnkaiError> {
+    let kind = InstallKind::detect();
+    if !kind.self_update() {
+        return Err(managed_install_error(kind));
+    }
     // Clone the handle out instead of holding the lock across the
     // whole download — a concurrent `check_for_update` from another
     // window must not deadlock behind a multi-minute fetch.
@@ -235,6 +321,10 @@ pub async fn download_update(window: &Window, pending: &PendingUpdate) -> Result
 /// the frontend treats this as fire-and-forget after its own
 /// "restart now?" confirmation.
 pub async fn install_update(app: &AppHandle, pending: &PendingUpdate) -> Result<(), UnkaiError> {
+    let kind = InstallKind::detect();
+    if !kind.self_update() {
+        return Err(managed_install_error(kind));
+    }
     let (update, bytes) = {
         let mut slot = pending.0.lock().await;
         match slot.take() {
@@ -261,4 +351,66 @@ pub async fn install_update(app: &AppHandle, pending: &PendingUpdate) -> Result<
         return Err(UnkaiError::Other(format!("update install failed: {e}")));
     }
     app.restart();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InstallKind;
+
+    #[test]
+    fn non_linux_is_always_native() {
+        // Whatever env leaks in (an AppImage var set by a shell
+        // profile, say), Windows / macOS installs are the plugin's.
+        assert_eq!(
+            InstallKind::classify(false, true, true, true),
+            InstallKind::Native
+        );
+        assert_eq!(
+            InstallKind::classify(false, false, false, false),
+            InstallKind::Native
+        );
+    }
+
+    #[test]
+    fn linux_appimage_self_updates() {
+        let k = InstallKind::classify(true, true, false, false);
+        assert_eq!(k, InstallKind::AppImage);
+        assert!(k.self_update());
+    }
+
+    #[test]
+    fn linux_without_appimage_is_a_managed_package() {
+        let k = InstallKind::classify(true, false, false, false);
+        assert_eq!(k, InstallKind::Package);
+        assert!(!k.self_update());
+    }
+
+    #[test]
+    fn flatpak_wins_over_appimage_and_is_managed() {
+        // Either Flatpak signal is enough on its own.
+        assert_eq!(
+            InstallKind::classify(true, false, true, false),
+            InstallKind::Flatpak
+        );
+        assert_eq!(
+            InstallKind::classify(true, false, false, true),
+            InstallKind::Flatpak
+        );
+        // A stray APPIMAGE inside the sandbox doesn't unmanage it.
+        let k = InstallKind::classify(true, true, true, false);
+        assert_eq!(k, InstallKind::Flatpak);
+        assert!(!k.self_update());
+    }
+
+    #[test]
+    fn serialises_kebab_case_for_the_frontend() {
+        assert_eq!(
+            serde_json::to_string(&InstallKind::AppImage).unwrap(),
+            "\"app-image\""
+        );
+        assert_eq!(
+            serde_json::to_string(&InstallKind::Package).unwrap(),
+            "\"package\""
+        );
+    }
 }
