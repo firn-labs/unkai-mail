@@ -22,6 +22,7 @@
 
   import {
     updater,
+    canSelfUpdate,
     checkForUpdates,
     downloadUpdate,
     installUpdate,
@@ -45,12 +46,20 @@
   let saving = $state(false)
   let saveError = $state('')
 
-  /** In-app updates only reach AppImage installs on Linux — a
-   *  .deb/.rpm install updates through the distro's package
-   *  manager, and the updater plugin refuses to touch it.  The
-   *  webview can't see which package format launched it, so the
-   *  hint renders on every Linux install. */
-  const isLinux = navigator.userAgent.includes('Linux')
+  /** A .deb / .rpm / pacman / Flatpak install (#601): the backend
+   *  reports found versions but refuses download / install, so the
+   *  page swaps the Download → Restart flow for a "update through
+   *  your package manager" note.  `managed` stays false until the
+   *  backend answered, so a Windows install never flashes it. */
+  const managed = $derived(!canSelfUpdate())
+  /** Which manager the note names — `flatpak update` is specific,
+   *  everything else is "your package manager" (we can't tell
+   *  pacman from apt from dnf, and shouldn't guess). */
+  const managedHint = $derived(
+    updater.installKind === 'flatpak'
+      ? m.settings_updates_managed_flatpak()
+      : m.settings_updates_managed_package(),
+  )
 
   const busy = $derived(updater.downloading || updater.installing)
   const skipped = $derived(
@@ -151,7 +160,9 @@
             </p>
           {/if}
         </div>
-        {#if updater.downloaded}
+        {#if managed}
+          <!-- No button: the package manager owns the install. -->
+        {:else if updater.downloaded}
           <button
             class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
             disabled={updater.installing}
@@ -172,7 +183,9 @@
         {/if}
       </div>
 
-      {#if updater.downloading}
+      {#if managed}
+        <p class="text-xs text-surface-500 max-w-xl">{managedHint}</p>
+      {:else if updater.downloading}
         <div>
           <div class="h-1.5 rounded-full bg-surface-200 dark:bg-surface-700 overflow-hidden">
             {#if progressPercent !== null}
@@ -227,8 +240,10 @@
     </div>
   {/if}
 
-  {#if isLinux}
-    <p class="text-xs text-surface-500 max-w-xl">{m.settings_updates_linux_hint()}</p>
+  <!-- Standing note for managed installs, shown even when no update
+       is pending so the missing Download button isn't a mystery. -->
+  {#if managed && !updater.available?.version}
+    <p class="text-xs text-surface-500 max-w-xl">{managedHint}</p>
   {/if}
 
   <!-- Preferences. -->
@@ -252,7 +267,7 @@
     <div class="flex items-start gap-3">
       <Toggle
         checked={updater.autoDownload}
-        disabled={saving || !updater.autoCheck}
+        disabled={saving || !updater.autoCheck || managed}
         label={m.settings_updates_auto_download_label()}
         onchange={(v) => void save((s) => (s.update_auto_download = v))}
         class="mt-0.5"
