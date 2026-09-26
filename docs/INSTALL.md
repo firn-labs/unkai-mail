@@ -63,7 +63,7 @@ Import the packaging key, sign it locally, add the repository, install:
 
 ```sh
 curl -fsSL https://firn-labs.github.io/packages/keys/firn-labs.asc | sudo pacman-key --add -
-sudo pacman-key --lsign-key "$(curl -fsSL https://firn-labs.github.io/packages/keys/FINGERPRINT)"
+sudo pacman-key --lsign-key 5DF44E3B0086BA2276623A2A5AFF7E6FCB4F0F46
 
 sudo tee -a /etc/pacman.conf <<'EOF'
 
@@ -193,12 +193,10 @@ https://firn-labs.github.io/packages/unkai/#key and in
 Check it against this document before trusting the key:
 
 ```
-FINGERPRINT: see https://firn-labs.github.io/packages/keys/FINGERPRINT
+5DF4 4E3B 0086 BA22 7662 3A2A 5AFF 7E6F CB4F 0F46
 ```
 
-<!-- maintainers: after the first deploy of firn-labs/packages, paste the
-     fingerprint here (space-grouped) so the two sources can be
-     compared out of band. -->
+Key: *Firn Labs Packaging \<packages@firn-labs.com\>*, ed25519, no expiry.
 
 Release assets themselves (installers, AppImage, `.deb`, `.rpm`) carry a
 `.sig` produced with the project's minisign key — that is what the
