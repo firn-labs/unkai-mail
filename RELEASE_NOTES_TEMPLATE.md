@@ -56,7 +56,9 @@
 | Linux (Fedora / RHEL, x86_64) | `Unkai-Mail-X.Y.Z-1.x86_64.rpm` |
 | Linux (Ubuntu / Debian, x86_64) | `Unkai-Mail_X.Y.Z_amd64.deb` |
 | Linux (any distro, x86_64) | `Unkai-Mail_X.Y.Z_amd64.AppImage` |
-| Arch Linux (AUR) | `yay -S unkai-mail-bin` — updated automatically when this release is published |
+| Linux via package manager (pacman / apt / dnf / zypper) | [firn-labs.github.io/unkai-packages](https://firn-labs.github.io/unkai-packages/) — repositories refresh automatically when this release is published |
+
+📖 **Step-by-step instructions for every platform and package manager: [docs/INSTALL.md](https://github.com/firn-labs/unkai-mail/blob/main/docs/INSTALL.md)**
 
 > **No Intel Mac build yet:** releases ship Apple-Silicon (`aarch64`) macOS only — `macos-latest` CI runners are arm64. Intel-Mac users need an x64 build we don't yet produce. Delete this note once we add an x64 macOS matrix entry.
 

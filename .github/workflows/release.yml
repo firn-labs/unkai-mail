@@ -176,3 +176,5 @@ jobs:
             See `RELEASE_NOTES_TEMPLATE.md` for the manual editorial
             section (What's new / Known issues / Install).  The
             auto-generated changelog from PRs follows below.
+
+            📦 **Install / upgrade instructions for every platform and package manager:** https://github.com/firn-labs/unkai-mail/blob/main/docs/INSTALL.md
