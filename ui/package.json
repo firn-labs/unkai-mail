@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@inlang/paraglide-js": "^2.24.1",
+    "@inlang/paraglide-js": "^2.25.4",
     "@skeletonlabs/skeleton": "^5.0.0",
     "@skeletonlabs/skeleton-svelte": "^5.0.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
@@ -20,21 +20,21 @@
     "@tailwindcss/vite": "^4.3.3",
     "@tsconfig/svelte": "^5.0.8",
     "@types/dompurify": "^3.2.0",
-    "@types/node": "^26.2.0",
-    "svelte": "^5.56.10",
+    "@types/node": "^26.6.2",
+    "svelte": "^5.57.1",
     "svelte-check": "^4.7.6",
     "tailwindcss": "^4.2.2",
     "typescript": "~6.0.3",
-    "vite": "^8.2.2",
+    "vite": "^8.3.0",
     "vitest": "^4.1.11"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
-    "@codemirror/commands": "^6.11.0",
+    "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/language": "^6.12.4",
-    "@codemirror/state": "^6.6.0",
-    "@codemirror/view": "^6.43.9",
+    "@codemirror/state": "^6.7.5",
+    "@codemirror/view": "^6.43.12",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-notification": "^2",
@@ -60,7 +60,7 @@
     "codemirror": "^6.0.2",
     "dompurify": "^3.4.14",
     "emoji-picker-element": "^1.29.1",
-    "marked": "^18.0.10",
+    "marked": "^18.0.13",
     "svelte-tiptap": "^3.0.1"
   }
 }
