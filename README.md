@@ -321,10 +321,24 @@ Grab the installer for your platform from the
 - **macOS** (Apple Silicon) — `Unkai-Mail_x.y.z_aarch64.dmg`
 - **Linux** — `.deb` (Debian/Ubuntu), `.rpm` (Fedora/RHEL), or `.AppImage`
   (any distro)
+- **Arch Linux** (and Manjaro, EndeavourOS, …) — from the
+  [AUR](https://aur.archlinux.org/packages/unkai-mail-bin):
+
+  ```sh
+  yay -S unkai-mail-bin      # or: paru -S unkai-mail-bin
+  ```
+
+  The package repacks the release `.deb`, so it is the same build as
+  every other Linux download; updates arrive through `pacman` like any
+  other package (the in-app updater steps aside on package-manager
+  installs).
 
 Once installed, the app keeps itself current: the built-in updater
 checks the Releases feed, verifies each bundle's minisign signature
 against the key baked into the app, and applies updates on restart.
+On Linux this applies to the AppImage; `.deb`, `.rpm`, AUR and Flatpak
+installs are updated by their package manager instead, and the app
+only tells you a new version exists.
 The installers aren't OS code-signed yet
 ([#558](https://github.com/firn-labs/unkai-mail/issues/558)), so
 Windows SmartScreen / macOS Gatekeeper will show a publisher warning on

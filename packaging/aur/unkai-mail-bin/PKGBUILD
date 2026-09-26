@@ -1,0 +1,51 @@
+# Maintainer: Firn Labs (https://github.com/firn-labs)
+#
+# Binary package for Arch Linux and derivatives (#602).  Repackages the
+# .deb that release.yml builds and attaches to every GitHub Release —
+# the same bytes Debian/Ubuntu users install, so there is exactly one
+# Linux build to trust.  A from-source `unkai-mail` package may follow.
+#
+# This file is a TEMPLATE: `@VERSION@` and `@SHA256@` are filled in by
+# packaging/aur/render.sh (locally or in .github/workflows/aur.yml)
+# from the release's actual .deb.  The AUR git repo is a mirror written
+# only by CI — edit here, never on aur.archlinux.org.
+
+pkgname=unkai-mail-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Native mail client with deep Nextcloud integration (Talk, Files, Calendar, Contacts)"
+arch=('x86_64')
+url="https://github.com/firn-labs/unkai-mail"
+license=('GPL-3.0-only')
+# Mirrors the .deb's Depends: (libwebkit2gtk-4.1-0, libgtk-3-0,
+# libayatana-appindicator3-1).  OpenSSL and SQLCipher are vendored
+# into the binary, so nothing else is needed at runtime.  namcap
+# reports libayatana-appindicator as "may not be needed" because
+# Tauri dlopen()s it for the tray icon instead of linking it —
+# keep it, the tray is silently absent without it.
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'hicolor-icon-theme')
+optdepends=('libnotify: desktop notifications'
+            'xdg-utils: open links and attachments with the default app')
+provides=('unkai-mail')
+conflicts=('unkai-mail')
+# Let makepkg strip the (unstripped) Tauri release binary; there is
+# no debug package to split out of a repack.
+options=('!debug')
+source=("${pkgname}-${pkgver}.deb::${url}/releases/download/v${pkgver}/Unkai-Mail_${pkgver}_amd64.deb")
+sha256sums=('@SHA256@')
+
+package() {
+  # makepkg already unpacked the outer ar archive; the payload is
+  # the inner data tarball.
+  bsdtar -xf "${srcdir}/data.tar.gz" -C "${pkgdir}"
+
+  # The Tauri binary is called `unkai-app`; give people the name they
+  # typed into pacman as well.
+  ln -s unkai-app "${pkgdir}/usr/bin/unkai-mail"
+
+  # Tauri's tarball carries the packer's umask — normalise so pacman
+  # doesn't warn about world-writable or unreadable paths.
+  find "${pkgdir}" -type d -exec chmod 755 {} +
+  find "${pkgdir}" -type f -exec chmod 644 {} +
+  chmod 755 "${pkgdir}/usr/bin/unkai-app"
+}

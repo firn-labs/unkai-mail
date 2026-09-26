@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}} %U
+StartupWMClass={{exec}}
+Icon={{icon}}
+Terminal=false
+Categories=Network;Email;Office;
+{{#if mime_type}}
+MimeType={{mime_type}}
+{{/if}}
+Keywords=mail;email;imap;jmap;nextcloud;calendar;contacts;
