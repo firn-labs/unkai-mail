@@ -1,6 +1,6 @@
 name: Package repositories
 
-# Tells firn-labs/unkai-packages to rebuild the Linux package
+# Tells firn-labs/packages to rebuild the Linux package
 # repositories (pacman / apt / dnf on GitHub Pages, #603) after a
 # release is *published*.  The heavy lifting lives over there — this
 # workflow is one API call.
@@ -11,9 +11,9 @@ name: Package repositories
 # the AUR publish).  Pre-releases are skipped.
 #
 # Secret: PACKAGES_DISPATCH_TOKEN — fine-grained PAT scoped to the
-# unkai-packages repo with "Contents: read and write" (what
+# packages repo with "Contents: read and write" (what
 # repository_dispatch needs).  Without it the step warns and exits
-# green; run the unkai-packages workflow by hand instead.
+# green; run the packages workflow by hand instead.
 
 on:
   release:
@@ -25,20 +25,20 @@ permissions:
 
 jobs:
   dispatch:
-    name: Trigger unkai-packages rebuild
+    name: Trigger firn-labs/packages rebuild
     if: github.event_name != 'release' || !github.event.release.prerelease
     runs-on: ubuntu-latest
     steps:
-      - name: repository_dispatch → firn-labs/unkai-packages
+      - name: repository_dispatch → firn-labs/packages
         env:
           GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
           TAG: ${{ github.event.release.tag_name || github.ref_name }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::PACKAGES_DISPATCH_TOKEN is not set — trigger https://github.com/firn-labs/unkai-packages/actions manually"
+            echo "::warning::PACKAGES_DISPATCH_TOKEN is not set — trigger https://github.com/firn-labs/packages/actions manually"
             exit 0
           fi
-          gh api repos/firn-labs/unkai-packages/dispatches \
+          gh api repos/firn-labs/packages/dispatches \
             -f event_type=release-published \
             -f "client_payload[tag]=$TAG"
           echo "Dispatched rebuild for $TAG"

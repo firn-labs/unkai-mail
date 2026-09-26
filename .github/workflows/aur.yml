@@ -58,7 +58,7 @@ jobs:
       # so the account (and its deploy key) may not exist yet.  Until
       # the secret is set, the publish job is skipped and Arch users
       # get the package from the pacman repository instead (#603,
-      # https://firn-labs.github.io/unkai-packages/).
+      # https://firn-labs.github.io/packages/unkai/).
       - name: AUR secrets present?
         id: aur
         run: echo "configured=${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}" >> "$GITHUB_OUTPUT"

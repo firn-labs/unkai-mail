@@ -18,7 +18,7 @@ you that a new version exists.
 All downloads come from the
 [GitHub Releases](https://github.com/firn-labs/unkai-mail/releases/latest)
 page; the Linux repositories are served from
-**https://firn-labs.github.io/unkai-packages/** and are signed by Firn Labs.
+**https://firn-labs.github.io/packages/unkai/** and are signed by Firn Labs.
 
 > **Not yet OS code-signed** ([#558](https://github.com/firn-labs/unkai-mail/issues/558)):
 > Windows SmartScreen and macOS Gatekeeper show a publisher warning the
@@ -62,14 +62,14 @@ Arch, CachyOS, Manjaro, EndeavourOS, Garuda — anything with `pacman`.
 Import the packaging key, sign it locally, add the repository, install:
 
 ```sh
-curl -fsSL https://firn-labs.github.io/unkai-packages/keys/unkai-mail.asc | sudo pacman-key --add -
-sudo pacman-key --lsign-key "$(curl -fsSL https://firn-labs.github.io/unkai-packages/keys/FINGERPRINT)"
+curl -fsSL https://firn-labs.github.io/packages/keys/firn-labs.asc | sudo pacman-key --add -
+sudo pacman-key --lsign-key "$(curl -fsSL https://firn-labs.github.io/packages/keys/FINGERPRINT)"
 
 sudo tee -a /etc/pacman.conf <<'EOF'
 
 [unkai-mail]
 SigLevel = Required DatabaseOptional
-Server = https://firn-labs.github.io/unkai-packages/arch/$arch
+Server = https://firn-labs.github.io/packages/unkai/arch/$arch
 EOF
 
 sudo pacman -Syu unkai-mail-bin
@@ -105,8 +105,8 @@ Debian 12+, Ubuntu 22.04+, Linux Mint 21+, Pop!_OS 22.04+ (amd64).
 
 ```sh
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://firn-labs.github.io/unkai-packages/keys/unkai-mail.gpg | sudo tee /etc/apt/keyrings/unkai-mail.gpg >/dev/null
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/unkai-mail.gpg] https://firn-labs.github.io/unkai-packages/apt stable main" | sudo tee /etc/apt/sources.list.d/unkai-mail.list
+curl -fsSL https://firn-labs.github.io/packages/keys/firn-labs.gpg | sudo tee /etc/apt/keyrings/firn-labs.gpg >/dev/null
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/firn-labs.gpg] https://firn-labs.github.io/packages/unkai/apt stable main" | sudo tee /etc/apt/sources.list.d/unkai-mail.list
 
 sudo apt update && sudo apt install unkai-mail
 ```
@@ -132,21 +132,21 @@ Fedora 40+, RHEL / AlmaLinux / Rocky 9+, openSUSE Leap 15.6+ / Tumbleweed (x86_6
 Fedora 41+ (dnf 5):
 
 ```sh
-sudo dnf config-manager addrepo --from-repofile=https://firn-labs.github.io/unkai-packages/rpm/unkai-mail.repo
+sudo dnf config-manager addrepo --from-repofile=https://firn-labs.github.io/packages/unkai/rpm/unkai-mail.repo
 sudo dnf install unkai-mail
 ```
 
 RHEL / Alma / Rocky / Fedora 40 (dnf 4):
 
 ```sh
-sudo dnf config-manager --add-repo https://firn-labs.github.io/unkai-packages/rpm/unkai-mail.repo
+sudo dnf config-manager --add-repo https://firn-labs.github.io/packages/unkai/rpm/unkai-mail.repo
 sudo dnf install unkai-mail
 ```
 
 openSUSE:
 
 ```sh
-sudo zypper addrepo https://firn-labs.github.io/unkai-packages/rpm/unkai-mail.repo
+sudo zypper addrepo https://firn-labs.github.io/packages/unkai/rpm/unkai-mail.repo
 sudo zypper refresh && sudo zypper install unkai-mail
 ```
 
@@ -188,15 +188,15 @@ Until it lands on Flathub, use one of the repositories above.
 
 All three Linux repositories are signed with one OpenPGP key held by
 Firn Labs. Its fingerprint is published at
-https://firn-labs.github.io/unkai-packages/#key and in
-`https://firn-labs.github.io/unkai-packages/keys/FINGERPRINT`.
+https://firn-labs.github.io/packages/unkai/#key and in
+`https://firn-labs.github.io/packages/keys/FINGERPRINT`.
 Check it against this document before trusting the key:
 
 ```
-FINGERPRINT: see https://firn-labs.github.io/unkai-packages/keys/FINGERPRINT
+FINGERPRINT: see https://firn-labs.github.io/packages/keys/FINGERPRINT
 ```
 
-<!-- maintainers: after the first deploy of unkai-packages, paste the
+<!-- maintainers: after the first deploy of firn-labs/packages, paste the
      fingerprint here (space-grouped) so the two sources can be
      compared out of band. -->
 

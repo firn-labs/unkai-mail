@@ -13,8 +13,8 @@ package on the Arch User Repository (#602, part of #600).
 > Arch team since the mid-2026 malware wave, so the publish job is
 > skipped until `AUR_SSH_PRIVATE_KEY` exists. Arch users get the same
 > package from the signed pacman repository at
-> https://firn-labs.github.io/unkai-packages/ (built by
-> [firn-labs/unkai-packages](https://github.com/firn-labs/unkai-packages)
+> https://firn-labs.github.io/packages/unkai/ (built by
+> [firn-labs/packages](https://github.com/firn-labs/packages)
 > from this PKGBUILD) — see `docs/INSTALL.md`.
 
 ## How a release reaches AUR
