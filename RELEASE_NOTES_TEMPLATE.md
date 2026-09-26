@@ -56,7 +56,7 @@
 | Linux (Fedora / RHEL, x86_64) | `Unkai-Mail-X.Y.Z-1.x86_64.rpm` |
 | Linux (Ubuntu / Debian, x86_64) | `Unkai-Mail_X.Y.Z_amd64.deb` |
 | Linux (any distro, x86_64) | `Unkai-Mail_X.Y.Z_amd64.AppImage` |
-| Linux via package manager (pacman / apt / dnf / zypper) | [firn-labs.github.io/unkai-packages](https://firn-labs.github.io/unkai-packages/) — repositories refresh automatically when this release is published |
+| Linux via package manager (pacman / apt / dnf / zypper) | [firn-labs.github.io/packages/unkai](https://firn-labs.github.io/packages/unkai/) — repositories refresh automatically when this release is published |
 
 📖 **Step-by-step instructions for every platform and package manager: [docs/INSTALL.md](https://github.com/firn-labs/unkai-mail/blob/main/docs/INSTALL.md)**
 

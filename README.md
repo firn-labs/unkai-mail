@@ -320,7 +320,7 @@ Rust core.
   from the [latest release](https://github.com/firn-labs/unkai-mail/releases/latest)
 - **macOS** (Apple Silicon) — `Unkai-Mail_x.y.z_aarch64.dmg`
 - **Linux, via your package manager** (signed repositories on
-  [firn-labs.github.io/unkai-packages](https://firn-labs.github.io/unkai-packages/)):
+  [firn-labs.github.io/packages/unkai](https://firn-labs.github.io/packages/unkai/)):
 
   | Distro family | Package |
   |---|---|
