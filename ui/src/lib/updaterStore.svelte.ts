@@ -44,6 +44,10 @@ const NOTIFIED_VERSION_KEY = 'unkai-update-notified-version'
 export const updater = $state({
   /** The running app's version (`get_app_version`). */
   currentVersion: '',
+  /** How this process was installed (#601).  `null` until the
+   *  backend answered; treated as self-updating meanwhile so the
+   *  page never flashes the package-manager note on Windows. */
+  installKind: null as api.updates.InstallKind | null,
   /** Result of the last check that found something; null = current
    *  (or never checked). */
   available: null as api.updates.UpdateCheckResult | null,
@@ -75,6 +79,15 @@ export interface AppSettingsUpdater {
   [key: string]: unknown
 }
 
+/** Can the in-app updater download + install here?  False on a
+ *  .deb / .rpm / pacman / Flatpak install (#601) — the backend
+ *  refuses those anyway; this only decides what the page offers.
+ *  The badge and "vX is available" are unaffected: knowing about
+ *  a release is useful even when `pacman -Syu` is how you get it. */
+export function canSelfUpdate(): boolean {
+  return updater.installKind !== 'package' && updater.installKind !== 'flatpak'
+}
+
 /** Should the rail show the "update available" badge?  Suppressed
  *  for a skipped version and while the check is mid-flight. */
 export function updateBadgeVisible(): boolean {
@@ -101,6 +114,10 @@ export function initUpdater(prefs: AppSettingsUpdater): void {
   wired = true
 
   void api.system.getAppVersion().then((v) => (updater.currentVersion = v))
+  void api.updates
+    .getInstallKind()
+    .then((k) => (updater.installKind = k))
+    .catch((e) => console.warn('install kind lookup failed', e))
   void api.onAppEvent('update-download-progress', (e) => {
     updater.progress = e.payload
   })
@@ -141,7 +158,7 @@ export async function checkForUpdates(opts: { manual: boolean }): Promise<void> 
       }
       updater.available = result
       if (!opts.manual) {
-        if (updater.autoDownload) void downloadUpdate()
+        if (updater.autoDownload && canSelfUpdate()) void downloadUpdate()
         void notifyOnce(result)
       }
     } else {
@@ -168,7 +185,11 @@ async function notifyOnce(result: api.updates.UpdateCheckResult): Promise<void> 
     if (!(await api.platform.notificationsPermissionGranted())) return
     api.platform.showNotification({
       title: m.update_notification_title(),
-      body: m.update_notification_body({ version }),
+      // A managed install can't "install it" from Settings — say
+      // where the update actually comes from (#601).
+      body: canSelfUpdate()
+        ? m.update_notification_body({ version })
+        : m.update_notification_body_managed({ version }),
     })
     window.localStorage.setItem(NOTIFIED_VERSION_KEY, version)
   } catch (e) {
@@ -178,6 +199,7 @@ async function notifyOnce(result: api.updates.UpdateCheckResult): Promise<void> 
 
 export async function downloadUpdate(): Promise<void> {
   if (updater.downloading || updater.downloaded || !updater.available) return
+  if (!canSelfUpdate()) return
   updater.downloading = true
   updater.error = ''
   updater.progress = null
