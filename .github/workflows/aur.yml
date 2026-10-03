@@ -81,7 +81,7 @@ jobs:
       - name: Render
         run: packaging/aur/render.sh "${{ steps.tag.outputs.tag }}" "$RUNNER_TEMP/aur"
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: pkgbuild
           path: ${{ runner.temp }}/aur/PKGBUILD
@@ -133,7 +133,7 @@ jobs:
           # (Exec=… %U, Categories=Network;Email;Office;), tighten:
           #   grep -q '^Exec=unkai-app %U' /usr/share/applications/Unkai-Mail.desktop
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: aur-package
           path: |
