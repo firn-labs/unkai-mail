@@ -58,7 +58,7 @@
     "@tiptap/starter-kit": "^3.31.3",
     "@tiptap/suggestion": "^3.31.3",
     "codemirror": "^6.0.2",
-    "dompurify": "^3.4.14",
+    "dompurify": "^3.4.17",
     "emoji-picker-element": "^1.29.1",
     "marked": "^18.0.10",
     "svelte-tiptap": "^3.0.1"
